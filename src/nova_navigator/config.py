@@ -1,11 +1,21 @@
+# from __future__ import annotations
+
 import mimetypes
 import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePath
-from typing import override
+from typing import Self
 
 import tomlkit
+
+from .icon_set import ICONS
+from .toml_config import Field, TomlConfig, TOMLTable
+
+__all__ = (
+    "GLOBAL_CONFIG",
+    "get_config_file_path",
+)
 
 
 def _get_config_path(appname: str) -> Path:
@@ -18,88 +28,84 @@ def _get_config_path(appname: str) -> Path:
 
 
 _APP_CONFIG_DIR: Path = _get_config_path("nova_navigator")
+_DEFAULT_CONFIG_DIR: Path = Path(__file__).parent.parent.parent / "config" / "default"
 
 
 def _compile_pattern(pattern_str: str | None) -> re.Pattern[str] | None:
     return re.compile(pattern_str) if pattern_str else None
 
 
-class Config:
-    _name: str
-    _default: str
-    _config: tomlkit.TOMLDocument
-    _config_file_path: Path
+@dataclass
+class TomlFile:
+    file_path: Path
+    toml: tomlkit.TOMLDocument
 
-    def __init__(self, name: str, default: str = "") -> None:
-        self._name = name
-        self._default = default
-        self._config_file_path = _APP_CONFIG_DIR / f"{self._name}.toml"
 
-    def load(self) -> None:
+class ConfigBase:
+    CONFIG_NAME: str
+    _toml_file: TomlFile
+
+    def __init__(self, toml_file: TomlFile) -> None:
+        self._toml_file = toml_file
+
+    @classmethod
+    def load(cls) -> Self:
+        if not hasattr(cls, "CONFIG_NAME"):
+            raise AttributeError(f"Class {cls.__name__} is missing 'CONFIG_NAME' class variable")
+        name = cls.CONFIG_NAME  # pyright: ignore[reportAttributeAccessIssue]
+        config_file_path = _APP_CONFIG_DIR / f"{name}.toml"
         try:
-            with open(self._config_file_path) as f:
-                self.config = tomlkit.load(f)
+            with open(config_file_path) as f:
+                toml = tomlkit.load(f)
         except FileNotFoundError:
-            self.config = tomlkit.loads(self._default)
-            self.write()
-        self._on_loaded(self.config)
+            default_file_path = _DEFAULT_CONFIG_DIR / f"{name}.toml"
+            with open(default_file_path) as f:
+                toml = tomlkit.load(f)
 
-    def _on_loaded(self, config: tomlkit.TOMLDocument) -> None:
-        pass
-
-    def write(self) -> None:
-        try:
-            _APP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            with open(self._config_file_path, "w") as f:
-                tomlkit.dump(self.config, f)
-        except Exception as e:  # noqa: BLE001
-            print(f"Error writing config file {self._config_file_path}: {e}")
+        toml_file = TomlFile(file_path=config_file_path, toml=toml)
+        return cls(toml_file)
 
 
-class ExtensionConfig(Config):
-    _DEFAULT = """# Nova Navigator Extension File
-[default]
-open="xdg-open %f"
-"""
+class Config(ConfigBase, TomlConfig):
+    def __init__(self, toml_file: TomlFile) -> None:
+        ConfigBase.__init__(self, toml_file)
+        TomlConfig.__init__(self, toml_file.toml)
 
-    @dataclass
-    class Section:
-        name: str
-        mimetype: re.Pattern[str] | None
-        regex: re.Pattern[str] | None
-        open_cmd: list[str]
-        color: str | None = None
-        background_color: str | None = None
+
+class FileTypeConfig(ConfigBase):
+    CONFIG_NAME = "filetypes"
+
+    class Section(TomlConfig):
+        name: str = Field(exclude=True)
+        mimetype: str | None
+        mimetype_pattern: re.Pattern[str] = Field(
+            default_factory=lambda section: _compile_pattern(section.mimetype), exclude=True
+        )
+        regex: str | None
+        regex_pattern: re.Pattern[str] = Field(
+            default_factory=lambda section: _compile_pattern(section.regex), exclude=True
+        )
+        open: str | None
+        open_cmd: list[str] | None = Field(
+            default_factory=lambda section: section.open.split() if section.open else None, exclude=True
+        )
+        color: str | None
+        icon: str | None
+        background_color: str | None
 
     _sections: list[Section]
     _default_section: Section
 
-    def __init__(self) -> None:
-        super().__init__("extensions", self._DEFAULT)
-        self._sections = []
+    def __init__(self, toml_file: TomlFile) -> None:
+        super().__init__(toml_file)
+        self._sections = [self.Section(item, name=name) for name, item in toml_file.toml.items()]
 
-    @override
-    def _on_loaded(self, config: tomlkit.TOMLDocument) -> None:
-        self._sections = []
-        default_section = None
-        for name, value in config.items():
-            open_cmd = value.get("open")
-            if not open_cmd:
-                raise ValueError(f"Extension section '{name}' missing 'open' command in {self._config_file_path}'")
-            section = ExtensionConfig.Section(
-                name=name,
-                mimetype=_compile_pattern(value.get("mimetype")),
-                regex=_compile_pattern(value.get("regex")),
-                open_cmd=open_cmd.split(),
-                color=value.get("color"),
-                background_color=value.get("background_color"),
-            )
-            self._sections.append(section)
-            if name == "default":
-                default_section = section
+        default_section = next((ft for ft in self._sections if ft.name == "default"), None)
 
         if not default_section:
-            raise ValueError(f"Extension config missing 'default' section in {self._config_file_path}'")
+            raise ValueError(f"Extension config missing 'default' section in {toml_file.file_path}'")
+
+        assert default_section
         self._default_section = default_section
 
     def _replace_variables(self, cmd: list[str], path: PurePath) -> list[str]:
@@ -109,45 +115,89 @@ open="xdg-open %f"
         cmd = [c.replace("%d", str(path.parent)) for c in cmd]
         return cmd  # noqa: RET504
 
-    def _find_section_for_path(self, path: PurePath) -> "ExtensionConfig.Section":
+    def _find_section_for_path(self, path: PurePath) -> "Section":
         mimetype = mimetypes.guess_type(path.as_posix())[0]
-        for section in self._sections:
-            if section.mimetype and mimetype and section.mimetype.search(mimetype):
-                return section
-            if section.regex and section.regex.search(path.as_posix()):
-                return section
+        for file_type in self._sections:
+            if file_type.mimetype and mimetype and file_type.mimetype_pattern.search(mimetype):
+                return file_type
+            if file_type.regex and file_type.regex_pattern.search(path.as_posix()):
+                return file_type
         return self._default_section
 
     def get_open_command_for_file_path(self, path: PurePath) -> list[str]:
         section = self._find_section_for_path(path)
-        return self._replace_variables(section.open_cmd, path)
+        open_cmd = section.open_cmd
+        if not section.open_cmd:
+            open_cmd = self._default_section.open_cmd
+
+        assert open_cmd is not None
+        return self._replace_variables(open_cmd, path)
 
     def get_colors_for_filename(self, filename: str) -> tuple[str | None, str | None]:
         section = self._find_section_for_path(PurePath(filename))
         return section.color, section.background_color
 
+    def get_icon_for_filename(self, filename: str, default: str) -> str:
+        section = self._find_section_for_path(PurePath(filename))
+        if not section.icon:
+            return default
 
-# singletone
+        return ICONS.get_icon(section.icon, default=default)
+
+
+class BookmarkConfig(ConfigBase):
+    CONFIG_NAME = "bookmarks"
+
+    class Bookmark(TomlConfig):
+        name: str = Field(exclude=True)
+        path: str
+        icon: str | None
+
+    class Group(TomlConfig):
+        name: str = Field(exclude=True)
+        bookmarks: list["BookmarkConfig.Bookmark"] = Field(exclude=True)
+        icon: str | None
+
+    # bookmarks: list[Bookmark]
+    groups: list[Group]
+
+    def __init__(self, toml_file: TomlFile) -> None:
+        super().__init__(toml_file)
+
+        self.groups = []
+        for name, item in toml_file.toml.items():
+            print(name)
+            print(item)
+
+            group = self.Group(item, name=name)
+            group.bookmarks = [
+                self.Bookmark(bm, name=bm_name) for bm_name, bm in item.items() if isinstance(bm, TOMLTable)
+            ]
+            self.groups.append(group)
+
+
+# singleton
 class GlobalConfig:
-    CONFIGS = ("extensions",)
-
-    _extensions: ExtensionConfig
-
-    def __init__(self) -> None:
-        self._extensions = ExtensionConfig()
-
-    @property
-    def extensions(self) -> ExtensionConfig:
-        return self._extensions
+    filetypes: FileTypeConfig
+    bookmarks: BookmarkConfig
 
     def load_all_configs(self) -> None:
-        for config_name in self.CONFIGS:
-            self.__getattribute__(f"_{config_name}").load()
+        for name, cls in GlobalConfig.__annotations__.items():
+            config_instance = cls.load()
+            setattr(self, name, config_instance)
 
     def write_all_configs(self) -> None:
-        for config_name in self.CONFIGS:
-            self.__getattribute__(f"_{config_name}").write()
+        raise NotImplementedError
 
 
-global_config = GlobalConfig()
-__all__ = ("global_config",)
+def get_config_file_path(config_filename: str) -> Path:
+    config_file_path = _APP_CONFIG_DIR / f"{config_filename}"
+    # if not config_file_path.exists():
+    #    shutil.copy(
+    #        _DEFAULT_CONFIG_DIR / config_filename,
+    #        config_file_path,
+    #    )
+    return _DEFAULT_CONFIG_DIR / config_filename  # config_file_path
+
+
+GLOBAL_CONFIG = GlobalConfig()

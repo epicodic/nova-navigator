@@ -1,0 +1,34 @@
+
+
+[Computer]
+icon = "computer"
+
+[Computer.Home]
+path = "$HOME"
+icon = "house"
+
+[Computer.Documents]
+path = "$HOME/Documents"
+icon = "file"
+
+[Computer.Downloads]
+path = "$HOME/Downloads"
+icon = "download"
+
+[Computer.Filesystem]
+path = "/"
+icon = "open_folder"
+
+[Computer.Media]
+path = "/media"
+icon = "disc"
+
+
+[Bookmarks]
+icon = "bookmark"
+
+[Bookmarks.datenhub]
+path = "/mnt/datenhub"
+
+[Remote]
+icon = "remote"
