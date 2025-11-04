@@ -4,7 +4,16 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["pyte>=0.8.2", "textual>=6.5.0", "tomlkit>=0.13.3"]
+dependencies = [
+    "pyte>=0.8.2",
+    "textual[syntax]>=6.5.0",
+    "textual>=6.5.0",
+    "tomlkit>=0.13.3",
+    #"tree-sitter-c>=0.24.1",
+    #"tree-sitter-cpp>=0.23.4",
+    "watchdog>=6.0.0",
+    "paramiko>=4.0.0",
+]
 
 [project.scripts]
 nn = "nova_navigator.main:main"
@@ -16,11 +25,13 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "mypy>=1.18.1",
+    "nuitka>=2.8.9",
     "pre-commit>=4.3.0",
     "pre-commit-hooks>=6.0.0",
     "pytest>=8.4.2",
-    "textual-dev>=1.8.0",
     "ruff>=0.13.0",
+    "textual-dev>=1.8.0",
+    "types-paramiko>=4.0.0.20250822",
 ]
 
 #######################################
@@ -39,6 +50,8 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["ALL"]
+
+mccabe.max-complexity = 15
 
 ignore = [
 
@@ -88,6 +101,7 @@ ignore = [
     "D103", # Missing docstring in public function
     "D104", # Missing docstring in public package
     "D105", # Missing docstring in magic method
+    "D106", # Missing docstring in public nested class
     "D107", # Missing docstring in `__init__`
 
     # pygrep-hooks (PGH) 
@@ -95,6 +109,8 @@ ignore = [
 
     # pylint (PL)
     "PLR0913", # Too many arguments in function definition
+    "PLR0911", # Too many return statements
+    "PLR0912", # Too many branches
 
     "S101", # Use of assert detected.
     "S301", # Pickle usage

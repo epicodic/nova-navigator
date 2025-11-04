@@ -1,81 +1,65 @@
+from __future__ import annotations
+
 import os
-from pathlib import PurePath
 from stat import S_ISDIR, S_ISLNK
-from typing import override
 
-from .path import PathStats, VFSPath
+from .filesystem import Filesystem, PathStats, VFSPath
 
 
-class LocalPath(VFSPath):
-    """A class representing a local filesystem path."""
+class LocalFilesystem(Filesystem):
+    def cwd(self) -> VFSPath:
+        return VFSPath(os.getcwd(), self)
 
-    _path: PurePath
-    _stat: os.stat_result | None = None
-    _lstat: os.stat_result | None = None
+    def root(self) -> VFSPath:
+        return VFSPath("/", self)
 
-    def __init__(self, path: str | os.PathLike[str]) -> None:
-        self._path = PurePath(path)
-        self._lstat = None
-        self._stat = None
+    def home(self) -> VFSPath:
+        return VFSPath(os.path.expanduser("~"), self)
 
-    def _ensure_stat(self) -> None:
-        if self._stat is not None:
-            return
+    def iterdir(self, path: VFSPath) -> list[VFSPath]:
+        return [path / name for name in os.listdir(path.path)]
+
+    def path(self, path: str) -> VFSPath:
+        return VFSPath(path, self)
+
+    def parent(self, path: VFSPath) -> VFSPath:
+        return VFSPath(path.path.parent, self)
+
+    def stat(self, path: VFSPath) -> PathStats:
+        lstat = os.stat(path, follow_symlinks=False)
+
         try:
-            self._lstat = os.stat(self._path, follow_symlinks=False)
-            self._stat = os.stat(self._path, follow_symlinks=True)
-        except:  # noqa: E722
-            self._stat = os.stat_result((0,) * 10)
-            self._lstat = self._stat
+            stat = os.stat(path, follow_symlinks=True)
+            is_broken_symlink = False
+        except FileNotFoundError:
+            stat = lstat
+            is_broken_symlink = True
 
-    def __truediv__(self, other: str | os.PathLike[str]) -> "LocalPath":
-        try:
-            return LocalPath(self._path.joinpath(other))
-        except TypeError:
-            return NotImplemented
+        if os.name != "nt":
+            is_hidden = path.name.startswith(".")
+        else:
+            is_hidden = stat.st_file_attributes & 0x2  # = FILE_ATTRIBUTE_HIDDEN
 
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, LocalPath):
-            return False
-        return self._path == other._path
-
-    def __hash__(self) -> int:
-        return hash(self._path)
-
-    @property
-    @override
-    def stats(self) -> PathStats:
-        self._ensure_stat()
-        assert self._stat is not None
-        assert self._lstat is not None
         return PathStats(
-            size=self._stat.st_size,
-            modified=self._stat.st_mtime,
-            is_hidden=self.name.startswith("."),
-            is_directory=S_ISDIR(self._stat.st_mode),
-            is_executable=self._stat.st_mode & 0o111 != 0,
-            is_symlink=S_ISLNK(self._lstat.st_mode),
+            size=stat.st_size,
+            modified=stat.st_mtime,
+            is_hidden=is_hidden,
+            is_directory=S_ISDIR(stat.st_mode),
+            is_executable=stat.st_mode & 0o111 != 0,
+            is_symlink=S_ISLNK(lstat.st_mode),
+            is_broken_symlink=is_broken_symlink,
         )
 
-    @override
-    def iterdir(self) -> list[VFSPath]:
-        return [self / name for name in os.listdir(self._path)]
-
-    @property
-    @override
-    def name(self) -> str:
-        return self._path.name
-
-    @property
-    @override
-    def parent(self) -> "LocalPath":
-        return LocalPath(self._path.parent)
-
-    @property
-    def path(self) -> PurePath:
-        return self._path
+    _singleton: LocalFilesystem | None = None
 
     @staticmethod
-    def cwd() -> "LocalPath":
-        """Get the current working directory as a LocalPath."""
-        return LocalPath(os.getcwd())
+    def singleton() -> LocalFilesystem:
+        if LocalFilesystem._singleton is None:
+            LocalFilesystem._singleton = LocalFilesystem()
+        return LocalFilesystem._singleton
+
+    def __eq__(self, value: object) -> bool:
+        return isinstance(value, LocalFilesystem)
+
+    def __hash__(self) -> int:
+        return hash("LocalFilesystem")

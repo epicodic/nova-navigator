@@ -1,0 +1,43 @@
+# Nova Navigator File Fype File
+[default]
+open = "xdg-open %f"
+
+[videos]
+mimetype = "video/.*"
+icon = "video"
+
+[images]
+mimetype = "image/.*"
+icon = "image"
+
+[python]
+mimetype = "text/x-python"
+icon = "python"
+
+[archives]
+mimetype = "application/zip|application/x-tar|application/x-gzip|application/x-bzip2|application/java-archive"
+icon = "archive"
+
+[pdf]
+mimetype = "application/pdf"
+icon = "pdf"
+
+[deb]
+mimetype = "application/vnd.debian.binary-package"
+icon = "deb"
+
+[audio]
+mimetype = "audio/.*"
+icon = "audio"
+
+[cpp]
+mimetype = "text/x-c\\+\\+src"
+icon = "cpp"
+
+[text]
+mimetype = "text/.*"
+icon = "text"
+
+[model]
+mimetype = "model/.*"
+icon = "model"
