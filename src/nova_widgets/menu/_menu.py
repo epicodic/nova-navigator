@@ -1,6 +1,6 @@
-import traceback
 from collections.abc import Callable
-from typing import Any, ClassVar, Literal
+from enum import Enum, auto
+from typing import ClassVar, Literal
 
 from rich.segment import Segment
 from rich.style import Style
@@ -8,12 +8,13 @@ from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.geometry import Offset
-from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.strip import Strip
+from textual.timer import Timer, TimerCallback
 from textual.widget import Widget
 
-from ._menu_items import AbstractMenuItem, AbstractSelectableMenuItem, MenuItem, MenuItemSeparator, MenuItemSubmenu
+from ._action import Action, ActionCollection
+from ._symbol_table import SYMBOL_TABLE
 
 BorderStyle = Literal["round", "solid", "heavy"]
 
@@ -41,7 +42,7 @@ BOX_CHARS: dict[
 }
 
 
-class Menu(Widget, can_focus=True):
+class Menu(Widget, Action, ActionCollection, can_focus=True):
     DEFAULT_CSS = """
     Menu {
         overlay: screen;
@@ -72,7 +73,7 @@ class Menu(Widget, can_focus=True):
         "shortcut",
     }
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("enter", "select_cursor", "Select", show=False),
+        Binding("enter", "select", "Select", show=False),
         Binding("up", "cursor_up", "Cursor up", show=False),
         Binding("down", "cursor_down", "Cursor down", show=False),
         Binding(key="left", action="cursor_left", description="Cursor left", show=False),
@@ -80,69 +81,94 @@ class Menu(Widget, can_focus=True):
         Binding(key="escape", action="dismiss", description="Close"),
     ]
 
+    # region -------------------------- Constants -----------------------------
     LABEL_SHORTCUT_GAP = 3
+    TIMER_DELAY = 0.5  # seconds
+    # endregion
+
+    # region --------------------------- Events -------------------------------
+
+    class Highlighted(events.Event):
+        menu: "Menu"
+        index: int | None
+
+        def __init__(self, menu: "Menu", index: int | None) -> None:
+            self.menu = menu
+            self.index = index
+            super().__init__()
+
+    class Triggered(events.Event):
+        menu: "Menu"
+        action: Action
+
+        def __init__(self, menu: "Menu", action: Action) -> None:
+            self.menu = menu
+            self.action = action
+            super().__init__()
 
     class Dismissed(events.Event):
         menu: "Menu"
-        item: MenuItem | None
+        dismiss_parents: bool
 
-        def __init__(self, menu: "Menu", item: MenuItem | None) -> None:
+        def __init__(self, menu: "Menu", dismiss_parents: bool = False) -> None:
             self.menu = menu
-            self.item = item
+            self.dismiss_parents = dismiss_parents
             super().__init__()
 
-    # Menu
+    # endregion
 
+    # region --------------------------- Members ------------------------------
     _parent: Widget | None
-    _title: str | None
-    _items: list[AbstractMenuItem]
     _has_icons: bool
     _item_width: int
     _border_style: BorderStyle
     _opened_submenu: "Menu | None"
-    highlighted = reactive[int | None](None, init=False)
+    _submenu_timer: Timer | None
+    _highlighted: int | None
 
-    def __init__(self, title: str | None = None, items: list[AbstractMenuItem] | None = None, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
+    # endregion
+    # region ----------------------- Public Methods ---------------------------
+    def __init__(self, text: str | None = None, *actions: Action, name: str | None = None) -> None:
+        Widget.__init__(self)
+        Action.__init__(self, text=text, name=name)
+
         self._parent = None
-        self._title = title
-        self._items = items or []
+        self._actions = list(actions)
         self._border_style: BorderStyle = "solid"
+        self._submenu_timer = None
+        self._highlighted = None
         self._reset()
         self._refresh_items()
 
-    def _reset(self) -> None:
-        self._opened_submenu = None
-        self.highlighted = None
+    def add(self, *actions: Action) -> None:
+        self._actions.extend(list(actions))
+        self._refresh_items()
 
-    def set_title(self, title: str) -> None:
-        self._title = title
-
-    @property
-    def title(self) -> str | None:
-        return self._title
-
-    def add_item(
+    def add_action(
         self,
-        label: str,
+        text: str,
         *,
-        id: str | None = None,
-        action: Callable[[], None] | None = None,
+        name: str | None = None,
+        action: str | None = None,
         icon: str | None = None,
         shortcut: str | None = None,
-        disabled: bool = False,
-    ) -> MenuItem:
-        item = MenuItem(
-            label=label,
-            id=id,
+        enabled: bool = True,
+        checkable: bool = False,
+        checked: bool = False,
+    ) -> Action:
+        a = Action(
+            text=text,
+            name=name,
             action=action,
             icon=icon,
             shortcut=shortcut,
-            disabled=disabled,
+            enabled=enabled,
+            checkable=checkable,
+            checked=checked,
         )
-        self._items.append(item)
+        self._add_action(a)
         self._refresh_items()
-        return item
+        return a
 
     def add_menu(
         self,
@@ -152,12 +178,12 @@ class Menu(Widget, can_focus=True):
         disabled: bool = False,
     ) -> "Menu":
         menu = Menu(title)
-        self._items.append(MenuItemSubmenu(menu, icon=icon, disabled=disabled))
+        self._actions.append(menu)
         self._refresh_items()
         return menu
 
     def add_separator(self) -> None:
-        self._items.append(MenuItemSeparator())
+        self._actions.append(Action(is_separator=True))
 
     def show(self, position: Offset | None = None, parent: Widget | None = None) -> None:
         self.offset = position or self.app.mouse_position
@@ -171,42 +197,127 @@ class Menu(Widget, can_focus=True):
         self.focus()
 
     # exclusive/modal execution of the menu
-    async def exec(self, position: Offset | None = None) -> MenuItem | None:
+    async def exec(self, position: Offset | None = None) -> Action | None:
         self._parent = None
         self._reset()
         menu_screen = MenuScreen(self)
         return await menu_screen.run(position)
 
-    def _refresh_items(self) -> None:
-        self._has_icons = any(item.icon is not None for item in self._items if isinstance(item, MenuItem))
-
-        self._item_width = 0
-        for item in self._items:
-            if isinstance(item, MenuItem):
-                if item.shortcut is not None:
-                    self._item_width = max(
-                        self._item_width, len(item.label) + len(item.shortcut) + self.LABEL_SHORTCUT_GAP
-                    )
-                else:
-                    self._item_width = max(self._item_width, len(item.label))
-            elif isinstance(item, MenuItemSubmenu):
-                self._item_width = max(self._item_width, len(item.label))
-
-        width = self._item_width
-        if self._has_icons:
-            width += 3  # space for icon and a gap
-
-        self.styles.width = width + 4  # padding
-        self.styles.height = len(self._items) + 2
-
-    def dismiss(self, item: MenuItem | None = None) -> None:
-        self.log(f"dismiss {self}")
-        # self.log(traceback.format_stack())
+    def dismiss(self, dismiss_parents: bool = False) -> None:
+        if self._opened_submenu:
+            self._opened_submenu.dismiss()
+            self._opened_submenu = None
         self.remove()
-        self.post_message(self.Dismissed(self, item))
+        self.post_message(self.Dismissed(self, dismiss_parents=dismiss_parents))
+
+    def is_in_menu_or_submenus(self, x: int, y: int) -> bool:
+        # check if the position is inside this menu or any of its open submenus
+        menus = self.get_menu_and_open_submenus()
+        regions = [menu.region for menu in menus]
+        return any(region.contains(x, y) for region in regions)
+
+    def get_menu_and_open_submenus(self) -> list["Menu"]:
+        menus: list[Menu] = [self]
+        m = self._opened_submenu
+        while m:
+            assert m is not None
+            menus.append(m)
+            m = m._opened_submenu
+        return menus
+
+    # endregion
+    # region ----------------------------- Actions ----------------------------
+
+    def _action_dismiss(self) -> None:
+        self.dismiss()
+
+    def _watch_highlighted(self, old_index: int | None, new_index: int | None) -> None:
+        self.refresh()
+
+        if old_index != new_index and self._opened_submenu:
+            self._opened_submenu.dismiss()  # close submenu if highlighted item changed
+            self._opened_submenu = None
+
+    def _action_cursor_up(self) -> None:
+        self._set_highlighted(self._next_highlighted(self._highlighted, -1), Menu._HighlightReason.KEYBOARD)
+
+    def _action_cursor_down(self) -> None:
+        self._set_highlighted(self._next_highlighted(self._highlighted, 1), Menu._HighlightReason.KEYBOARD)
+
+    def _action_cursor_left(self) -> None:
+        if self._parent and isinstance(self._parent, Menu):
+            self.dismiss()
+
+    def _action_cursor_right(self) -> None:
+        if self._highlighted is None:
+            return
+        action = self._actions[self._highlighted]
+        if not action.enabled:
+            return
+
+        if isinstance(action, Menu):
+            self._open_submenu(action, self._highlighted)
+
+    def _action_select(self) -> None:
+        if self._highlighted is None:
+            return
+
+        action = self._actions[self._highlighted]
+        if not action.enabled or action.is_separator:
+            return
+
+        if isinstance(action, Menu):
+            self._open_submenu(action, self._highlighted)
+            return
+
+        self._triggered(action)
+
+    # endregion
+
+    # region ------------------------ Event Handlers --------------------------
+
+    def _on_menu_triggered(self, event: Triggered) -> None:
+        self.remove()  # close this menu as well
+
+    def _on_menu_dismissed(self, event: Dismissed) -> None:
+        if self._opened_submenu == event.menu:
+            self._opened_submenu = None
+        if event.dismiss_parents:
+            self.remove()
+
+    def _on_leave(self, event: events.Leave) -> None:
+        pos = self.app.mouse_position
+        if not self.is_in_menu_or_submenus(pos.x, pos.y):
+            self._set_highlighted(None, Menu._HighlightReason.HOVER)
+
+    def _on_blur(self, event: events.Blur) -> None:
+        # dismiss menu if we lose focus not to any the submenus
+        if not self.has_focus_within:
+            self.dismiss(dismiss_parents=True)
+
+    async def _on_click(self, event: events.Click) -> None:
+        event.stop()
+        self._action_select()
+
+    def _on_mouse_move(self, event: events.MouseMove) -> None:
+        event.stop()
+        index = event.y - 1
+        if 0 <= index < len(self._actions):
+            self._set_highlighted(index, Menu._HighlightReason.HOVER)
+        else:
+            self._set_highlighted(None, Menu._HighlightReason.HOVER)
+
+    def _on_menu_highlighted(self, event: Highlighted) -> None:
+        if event.index is not None and event.menu == self._opened_submenu:
+            # propagate highlight to parent menu
+            for i, action in enumerate(self._actions):
+                if isinstance(action, Menu) and action == event.menu:
+                    self._set_highlighted(i, Menu._HighlightReason.HOVER)
+                    # self._stop_timer()
+                    break
 
     def render_line(self, y: int) -> Strip:
-        if y < 0 or y > len(self._items) + 2:
+        if y < 0 or y > len(self._actions) + 2:
             return Strip.blank(0)
 
         style = self.rich_style
@@ -217,25 +328,23 @@ class Menu(Widget, can_focus=True):
             left, mid, right = box_chars[0]
             line = left + mid * (self.size.width - 2) + right
             return Strip([Segment(line, style)])
-        if y == len(self._items) + 1:
+        if y == len(self._actions) + 1:
             # bottom border
             left, mid, right = box_chars[3]
             line = left + mid * (self.size.width - 2) + right
             return Strip([Segment(line, style)])
 
         index = y - 1
-        item = self._items[index]
-        if isinstance(item, MenuItemSeparator):
+        action = self._actions[index]
+        if action.is_separator:
             left, mid, right = box_chars[2]
             line = left + mid * (self.size.width - 2) + right
             return Strip([Segment(line, style)])
 
-        assert isinstance(item, (AbstractSelectableMenuItem))
-
         item_style = style
-        if item.disabled:
+        if not action.enabled:
             item_style += self.get_component_rich_style("disabled")
-        elif self.highlighted is not None and self.highlighted == index:
+        elif self._highlighted is not None and self._highlighted == index:
             item_style += self.get_component_rich_style("highlight")
 
         left, mid, right = box_chars[1]
@@ -243,136 +352,163 @@ class Menu(Widget, can_focus=True):
         # left border
         segments.append(Segment(left, style))
 
-        fill_size = self._item_width - len(item.label)
-        if isinstance(item, MenuItem) and item.shortcut:
-            fill_size -= len(item.shortcut) + self.LABEL_SHORTCUT_GAP
+        fill_size = self._item_width - len(action.text)
+        if action.shortcut:
+            fill_size -= len(action.shortcut) + self.LABEL_SHORTCUT_GAP
 
-        item_text = item.label + " " * fill_size
+        item_text = action.text + " " * fill_size
 
-        segments.append(Segment(" ", item_style))
+        if action.checkable:
+            kind = "radio" if action.is_exclusive else "checkbox"
+            segments.append(Segment(SYMBOL_TABLE[kind][1 if action.checked else 0], item_style))
+        else:
+            segments.append(Segment("  ", item_style))
 
         if self._has_icons:
             icon_text = ""
-            if item.icon:
-                icon_text = item.icon
+            if action.icon:
+                icon_text = action.icon
             segments.append(Segment(icon_text.ljust(3), item_style))
 
         segments.append(Segment(item_text, item_style))
 
-        if isinstance(item, MenuItem) and item.shortcut:
-            if not item.disabled:
+        if action.shortcut:
+            if action.enabled:
                 shortcut_style = self.get_component_rich_style("shortcut")
                 shortcut_style += Style(bgcolor=item_style.bgcolor)
             else:
                 shortcut_style = item_style
-            segments.append(Segment(" " * self.LABEL_SHORTCUT_GAP + item.shortcut, shortcut_style))
+            segments.append(Segment(" " * self.LABEL_SHORTCUT_GAP + action.shortcut, shortcut_style))
 
-        if isinstance(item, MenuItemSubmenu):
-            segments.append(Segment("❯", item_style))  # noqa: RUF001
+        if isinstance(action, Menu):
+            segments.append(Segment(" 🞂", item_style))  # noqa: RUF001
         else:
-            segments.append(Segment(" ", item_style))
+            segments.append(Segment("  ", item_style))
 
         # right border
         segments.append(Segment(right, style))
 
         return Strip(segments)
 
-    def _watch_highlighted(self, old_index: int | None, new_index: int | None) -> None:
-        self.refresh()
+    # endregion
+    # region ----------------------- Private Methods --------------------------
 
-        if old_index != new_index and self._opened_submenu:
-            self._opened_submenu.dismiss(None)
-            self._opened_submenu = None
+    def _triggered(self, action: Action) -> None:
+        self.remove()
+        if action.checkable:
+            action.set_checked(not action.checked)
+        self.post_message(self.Triggered(self, action))
 
-    def _next_highlighted(self, old_index: int | None, direction: int) -> int | None:
-        if old_index is None:
-            if direction > 0:
-                new_index = 0
+    def _reset(self) -> None:
+        self._opened_submenu = None
+        self._set_highlighted(None, Menu._HighlightReason.PROGRAMMATIC)
+
+    def _refresh_items(self) -> None:
+        self._has_icons = any(action.icon is not None for action in self._actions)
+
+        self._item_width = 0
+        for action in self._actions:
+            if action.shortcut is not None:
+                self._item_width = max(
+                    self._item_width, len(action.text) + len(action.shortcut) + self.LABEL_SHORTCUT_GAP
+                )
             else:
-                new_index = len(self._items) - 1
-        else:
-            new_index = (old_index + direction) % len(self._items)
-        checked = 0
-        while self._items[new_index].disabled:
-            new_index = (new_index + direction) % len(self._items)
-            checked += 1
-            if checked >= len(self._items):  # all items are disabled or separators
-                return None
-        return new_index
+                self._item_width = max(self._item_width, len(action.text))
 
-    def _action_cursor_up(self) -> None:
-        self.highlighted = self._next_highlighted(self.highlighted, -1)
+        width = self._item_width
+        if self._has_icons:
+            width += 3  # space for icon and a gap
 
-    def _action_cursor_down(self) -> None:
-        self.highlighted = self._next_highlighted(self.highlighted, 1)
+        self.styles.width = width + 6  # padding
+        self.styles.height = len(self._actions) + 2
 
-    def _action_cursor_left(self) -> None:
-        if self._parent and isinstance(self._parent, Menu):
-            self.dismiss(None)
+    class _Mode(Enum):
+        IMMEDIATE = auto()
+        DELAYED = auto()
 
-    def _action_cursor_right(self) -> None:
-        if self.highlighted is None:
+    def _open_submenu(self, menu: "Menu", y: int, mode: _Mode = _Mode.IMMEDIATE) -> None:
+        if mode == Menu._Mode.DELAYED:
+            self._start_timer(lambda: self._open_submenu(menu, y, mode=Menu._Mode.IMMEDIATE))
             return
 
-        item = self._items[self.highlighted]
-        if item.disabled:
-            return
+        self._stop_timer()
+        if self._opened_submenu == menu:
+            return  # already opened
 
-        if isinstance(item, MenuItemSubmenu):
-            self._open_submenu(item.menu, self.highlighted)
+        if self._opened_submenu:
+            self._opened_submenu.dismiss()
 
-    def _on_mouse_move(self, event: events.MouseMove) -> None:
-        if event.widget != self:
-            return
-        index = event.y - 1
-        if 0 <= index < len(self._items):
-            new_highlighted = index
-            if new_highlighted != self.highlighted:
-                self.highlighted = new_highlighted
-
-    # def _on_mouse_leave(self, event: events.Leave) -> None:
-    #    self.highlighted = None
-
-    def _action_select_cursor(self) -> None:
-        self._handle_section()
-
-    async def _on_click(self, event: events.Click) -> None:
-        self.log(f"on_click {self}")
-        self._handle_section()
-
-    def _handle_section(self) -> None:
-        if self.highlighted is None:
-            return
-
-        item = self._items[self.highlighted]
-        if item.disabled:
-            return
-
-        if isinstance(item, MenuItem):
-            self.dismiss(item)
-            return
-
-        if isinstance(item, MenuItemSubmenu):
-            self._open_submenu(item.menu, self.highlighted)
-
-    def _open_submenu(self, menu: "Menu", y: int) -> None:
-        self.log(f"Opening submenu {self}")
         menu.show(
             position=Offset(self.region.width, y),
             parent=self,
         )
         self._opened_submenu = menu
 
-    def _on_blur(self, event: events.Blur) -> None:
-        super()._on_blur(event)
-        if not self.has_focus and not self.has_focus_within:
-            self.dismiss(None)
+    def _dismiss_submenu(self, mode: _Mode = _Mode.IMMEDIATE) -> None:
+        if mode == Menu._Mode.DELAYED:
+            self._start_timer(lambda: self._dismiss_submenu(mode=Menu._Mode.IMMEDIATE))
+            return
 
-    def _action_dismiss(self) -> None:
-        self.dismiss(None)
+        if self._opened_submenu:
+            self._opened_submenu.dismiss()
+            self._opened_submenu = None
+
+    class _HighlightReason(Enum):
+        HOVER = auto()
+        KEYBOARD = auto()
+        PROGRAMMATIC = auto()
+
+    def _set_highlighted(self, index: int | None, reason: _HighlightReason) -> None:
+        if index == self._highlighted:
+            return
+
+        self._highlighted = index
+        self.refresh()
+
+        self.post_message(self.Highlighted(self, index))
+
+        # close any open submenu if highlight changed
+        self._dismiss_submenu(Menu._Mode.DELAYED if reason == Menu._HighlightReason.HOVER else Menu._Mode.IMMEDIATE)
+
+        # open submenu if hovering over a submenu item
+        if reason == Menu._HighlightReason.HOVER and self._highlighted is not None:
+            action = self._actions[self._highlighted]
+            if isinstance(action, Menu) and action.enabled:
+                self._open_submenu(
+                    action,
+                    self._highlighted,
+                    mode=Menu._Mode.DELAYED,
+                )
+
+    def _next_highlighted(self, old_index: int | None, direction: int) -> int | None:
+        if old_index is None:
+            if direction > 0:
+                new_index = 0
+            else:
+                new_index = len(self._actions) - 1
+        else:
+            new_index = (old_index + direction) % len(self._actions)
+        checked = 0
+        while not self._actions[new_index].enabled or self._actions[new_index].is_separator:
+            new_index = (new_index + direction) % len(self._actions)
+            checked += 1
+            if checked >= len(self._actions):  # all items are disabled or separators
+                return None
+        return new_index
+
+    def _stop_timer(self) -> None:
+        if self._submenu_timer:
+            self._submenu_timer.stop()
+            self._submenu_timer = None
+
+    def _start_timer(self, callback: TimerCallback) -> None:
+        self._stop_timer()
+        self._submenu_timer = self.set_timer(self.TIMER_DELAY, callback)
+
+    # endregion
 
 
-class MenuScreen(ModalScreen[MenuItem]):
+class MenuScreen(ModalScreen[Action]):
     DEFAULT_CSS = """
     MenuScreen {
         align: center middle;
@@ -392,7 +528,7 @@ class MenuScreen(ModalScreen[MenuItem]):
     async def run(
         self,
         position: Offset | None = None,
-    ) -> MenuItem | None:
+    ) -> Action | None:
         self._menu.offset = position or self.app.mouse_position
         return await self.app.push_screen_wait(screen=self)
 
@@ -402,23 +538,14 @@ class MenuScreen(ModalScreen[MenuItem]):
     def on_menu_dismissed(self, event: Menu.Dismissed) -> None:
         if event.menu != self._menu:
             return
-        self.dismiss(event.item)
+        self.dismiss(None)
+
+    def on_menu_triggered(self, event: Menu.Triggered) -> None:
+        self.dismiss(event.action)
 
     async def _on_mouse_down(self, event: events.MouseDown) -> None:
         # check if the click is outside the menu and all its open submenus
-        regions = [self._menu.region]
-        m = self._menu._opened_submenu
-        while m:
-            regions.append(m.region)
-            m = m._opened_submenu
-
-        contains = False
-        for region in regions:
-            if region.contains(event.screen_x, event.screen_y):
-                contains = True
-                break
-
-        if not contains:
-            self._menu.dismiss(None)
+        if not self._menu.is_in_menu_or_submenus(event.screen_x, event.screen_y):
+            self._menu.dismiss()
 
         await super()._on_mouse_down(event)

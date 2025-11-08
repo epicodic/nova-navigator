@@ -5,6 +5,7 @@ from textual.events import Enter, MouseDown
 from textual.widget import Widget
 from textual.widgets import Static
 
+from ._action import Action, ActionCollection
 from ._menu import Menu
 
 
@@ -52,7 +53,7 @@ class MenuBarItem(Static):
     ):
         self._menu_bar = menu_bar
         self._menu = menu
-        super().__init__(content=f" {menu.title} ")
+        super().__init__(content=f" {menu.text} ")
 
     @property
     def menu(self) -> Menu:
@@ -67,7 +68,7 @@ class MenuBarItem(Static):
         self.post_message(self.Selected(self))
 
 
-class MenuBar(Widget):
+class MenuBar(Widget, ActionCollection):
     DEFAULT_CSS = """
     MenuBar {
         dock: top;
@@ -87,13 +88,15 @@ class MenuBar(Widget):
     def __init__(
         self,
     ):
-        super().__init__()
+        Widget.__init__(self)
+        ActionCollection.__init__(self)
         self._menus = []
         self._menu_opened = None
 
-    def add_menu(self, title: str) -> Menu:
-        menu = Menu(title=title)
+    def add_menu(self, title: str, *items: Action, name: str | None = None) -> Menu:
+        menu = Menu(title, *items, name=name)
         self._menus.append(menu)
+        self._add_action(menu)
         return menu
 
     def compose(self) -> ComposeResult:
@@ -116,6 +119,10 @@ class MenuBar(Widget):
         if self._menu_opened == event.menu:
             self._menu_opened = None
             self._highlight_item(None)
+
+    def _on_menu_triggered(self, event: Menu.Triggered) -> None:
+        self._menu_opened = None
+        self._highlight_item(None)
 
     def _highlight_item(self, item: MenuBarItem | None) -> None:
         for it in self._items:
