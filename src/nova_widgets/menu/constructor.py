@@ -1,23 +1,40 @@
-from collections.abc import Callable
+from ._action import Action, ActionGroup
+from ._menu import Menu
 
-from ._menu import AbstractMenuItem, Menu, MenuItem, MenuItemSeparator, MenuItemSubmenu
 
-
-def item(
-    label: str,
+def action(
+    text: str,
     *,
-    id: str | None = None,
-    action: Callable[[], None] | None = None,
+    name: str | None = None,
+    action: str | None = None,
     shortcut: str | None = None,
     icon: str | None = None,
-    disabled: bool = False,
-) -> MenuItem:
-    return MenuItem(label, id=id, action=action, shortcut=shortcut, icon=icon, disabled=disabled)
+    enabled: bool = True,
+    checkable: bool = False,
+    checked: bool = False,
+) -> Action:
+    return Action(
+        text,
+        name=name,
+        action=action,
+        shortcut=shortcut,
+        icon=icon,
+        enabled=enabled,
+        checkable=checkable,
+        checked=checked,
+    )
 
 
-def separator() -> MenuItemSeparator:
-    return MenuItemSeparator()
+def group(*actions: Action) -> tuple[Action, ...]:
+    group = ActionGroup(*actions)
+    for action in actions:
+        action.set_group(group)
+    return actions
 
 
-def submenu(title: str | None = None, items: list[AbstractMenuItem] | None = None) -> MenuItemSubmenu:
-    return MenuItemSubmenu(Menu(title, items))
+def separator() -> Action:
+    return Action("", is_separator=True)
+
+
+def menu(title: str | None = None, *actions: Action, name: str | None = None) -> Action:
+    return Menu(title, *actions, name=name)

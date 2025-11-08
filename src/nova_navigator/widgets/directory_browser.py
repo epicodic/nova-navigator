@@ -287,7 +287,6 @@ class DirectoryBrowser(ScrollView):
         Binding("home", "scroll_top", "Top", show=False),
         Binding("end", "scroll_bottom", "Bottom", show=False),
         Binding("insert", "insert_select", "Select", show=False),
-        Binding("ctrl+h", "toggle_hidden", "Show/Hide Hidden Files", show=False),
         Binding("ctrl+a", "select_all", "Select All", show=False),
         Binding("ctrl+f", "filter", "Filter", show=True),
     ]
@@ -313,13 +312,27 @@ class DirectoryBrowser(ScrollView):
             self.path = path
             super().__init__()
 
-    class ContextMenu(Message):
-        """Posted when the context menu is requested in the directory browser."""
-
-        def __init__(self, browser: DirectoryBrowser, path: VFSPath) -> None:
+    class ItemChanged(Message):
+        def __init__(self, browser: DirectoryBrowser, path: VFSPath | None) -> None:
             self.browser = browser
             """The directory browser."""
             self.path = path
+            super().__init__()
+
+    class ContextMenu(Message):
+        """Posted when the context menu is requested in the directory browser."""
+
+        def __init__(self, browser: DirectoryBrowser, path: VFSPath | None) -> None:
+            self.browser = browser
+            """The directory browser."""
+            self.path = path
+            super().__init__()
+
+    class Focus(Message):
+        """Posted when the directory browser receives focus."""
+
+        def __init__(self, browser: DirectoryBrowser) -> None:
+            self.browser = browser
             super().__init__()
 
     # private classes
@@ -433,6 +446,9 @@ class DirectoryBrowser(ScrollView):
     def on_mount(self) -> None:
         super().on_mount()
         self.mount(self._filter_widget)
+
+    def _on_focus(self, event: events.Focus) -> None:
+        self.post_message(DirectoryBrowser.Focus(self))
 
     async def _on_key(self, event: events.Key) -> None:
         self.log("KEY EVENT!!!", event)
@@ -726,6 +742,7 @@ class DirectoryBrowser(ScrollView):
             self.refresh_row(old_row)
             self.refresh_row(new_row)
             self._scroll_cursor_into_view()
+            self.post_message(DirectoryBrowser.ItemChanged(self, self.path_item_under_cursor))
 
     def watch_sort_column(self, _old: ColumnKey, _new: ColumnKey) -> None:
         self.update(self.WhatChanged.SORTING)
@@ -762,6 +779,10 @@ class DirectoryBrowser(ScrollView):
             self.action_cursor_down()
             return
 
+        self.action_toggle_selection_under_cursor()
+        self.action_cursor_down()
+
+    def action_toggle_selection_under_cursor(self) -> None:
         cursor_item = self.path_item_under_cursor
         if cursor_item in self._selected_items:
             self._selected_items.remove(cursor_item)
@@ -769,15 +790,24 @@ class DirectoryBrowser(ScrollView):
             self._selected_items.add(cursor_item)
 
         self.refresh_row(self.cursor_row)
-        self.action_cursor_down()
 
     def action_select_all(self) -> None:
         self._selected_items = {item for item in self._shown_items if not isinstance(item, UpPath)}
         self.refresh()
 
-    def action_toggle_hidden(self) -> None:
-        self.show_hidden_files = not self.show_hidden_files
-        # self.update(self.WhatChanged.FILTERING)
+    def action_select_none(self) -> None:
+        self._selected_items = set()
+        self.refresh()
+
+    def action_invert_selection(self) -> None:
+        new_selection = set()
+        for item in self._shown_items:
+            if isinstance(item, UpPath):
+                continue
+            if item not in self._selected_items:
+                new_selection.add(item)
+        self._selected_items = new_selection
+        self.refresh()
 
     def watch_show_hidden_files(self, _old: bool, _new: bool) -> None:
         self.update(self.WhatChanged.FILTERING)
@@ -786,8 +816,8 @@ class DirectoryBrowser(ScrollView):
         meta = event.style.meta
 
         if "row" not in meta or "column" not in meta:
-            # if event.button == MOUSE_BUTTON_RIGHT: # TODO: enable context menu on empty area
-            #    self.post_message(DirectoryBrowser.ContextMenu(self, None)) #
+            if event.button == MOUSE_BUTTON_RIGHT:  # TODO: enable context menu on empty area
+                self.post_message(DirectoryBrowser.ContextMenu(self, None))
             return
         row_index = meta["row"]
         column_index = meta["column"]
@@ -807,6 +837,9 @@ class DirectoryBrowser(ScrollView):
         if event.button == MOUSE_BUTTON_RIGHT:
             self.post_message(DirectoryBrowser.ContextMenu(self, self._shown_items[row_index]))
 
+        if event.ctrl:
+            self.action_toggle_selection_under_cursor()
+
         event.stop()
 
     async def _on_click(self, event: events.Click) -> None:
@@ -816,6 +849,8 @@ class DirectoryBrowser(ScrollView):
 
         if event.button != MOUSE_BUTTON_LEFT or event.chain != MOUSE_DOUBLE_CLICK:
             return
+
+        event.stop()
 
         row_index = meta["row"]
 
@@ -857,7 +892,7 @@ class DirectoryBrowser(ScrollView):
         if event.path.stats.is_directory:
             self.set_path(event.path)
 
-    async def _action_filter(self) -> None:
+    async def action_filter(self) -> None:
         self._filter_widget.focus()
 
     def on_filter_widget_input_changed(self, event: Input.Changed) -> None:

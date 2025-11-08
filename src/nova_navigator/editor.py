@@ -9,50 +9,6 @@ from textual.widgets import Footer, Static, TextArea
 
 from .vfs import VFSPath
 
-# SYNTAX_HIGHLIGHTING_ENABLED = True
-# if SYNTAX_HIGHLIGHTING_ENABLED:
-#     from tree_sitter import Language
-
-#     @dataclass
-#     class LanguageDefinition:
-#         language: Language
-#         highlight_query: str
-
-#     _LANGUAGE_CACHE: dict[str, LanguageDefinition] = {}
-
-#     def get_language_definition(language_name: str) -> LanguageDefinition | None:
-#         tree_sitter_module_name = f"tree_sitter_{language_name}"
-#         highlight_query_path = resources.files(tree_sitter_module_name) / "queries/highlights.scm"
-
-#         if not highlight_query_path.is_file():
-#             log.warning(f"No 'highlights.scm' found for language {language_name!r}.")
-#             return None
-
-#         highlight_query = highlight_query_path.read_text()
-
-#         if language_name in _LANGUAGE_CACHE:
-#             return _LANGUAGE_CACHE[language_name]
-
-#         try:
-#             module = import_module(f"tree_sitter_{language_name}")
-#         except ImportError:
-#             return None
-#         else:
-#             try:
-#                 if language_name == "xml":
-#                     # xml uses language_xml() instead of language()
-#                     # it's the only outlier amongst the languages in the `textual[syntax]` extra
-#                     language = Language(module.language_xml())
-#                 else:
-#                     language = Language(module.language())
-#             except (OSError, AttributeError):
-#                 log.warning(f"Could not load language {language_name!r}.")
-#                 return None
-#             else:
-#                 language_def = LanguageDefinition(language=language, highlight_query=highlight_query)
-#                 _LANGUAGE_CACHE[language_name] = language_def
-#                 return language_def
-
 
 class EditorFooter(Footer):
     _cursor_position: Static | None
