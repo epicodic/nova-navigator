@@ -3,9 +3,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from weakref import ref
 
-from textual import getters
-from textual.app import App
-
 IconProvider = Callable[[str], str]
 
 
@@ -139,9 +136,9 @@ class Action:
     def is_exclusive(self) -> bool:
         return self._group is not None
 
-    async def execute(self) -> None:
-        app = getters.app(App)
-        await app.run_action(self._action)
+    # async def execute(self) -> None:
+    #     app: App[Any] = getters.app(App[Any])
+    #     await app.run_action(self._action)
 
 
 class ActionCollection:

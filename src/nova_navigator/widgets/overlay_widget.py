@@ -56,7 +56,7 @@ class OverlayWidget(Widget):
     def _on_mount(self, event: events.Mount) -> None:
         self._saved_focus = self.app.focused
 
-    def _on_focus(self, event):
+    def _on_focus(self, event: events.Focus) -> None:
         # self.log("HERE", self.app.screen.focus_chain)
         # self._saved_focus = self.app.screen.focus_chain[0]
         return super()._on_focus(event)

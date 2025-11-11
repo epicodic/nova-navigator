@@ -27,16 +27,17 @@ from textual.strip import Strip
 from textual.widgets import Button, Input, Static
 from textual.widgets.data_table import ColumnKey
 
-from .. import unicode
-from ..config import GLOBAL_CONFIG
-from ..icon_set import ICONS
+from nova_widgets import unicode
+
+from ..config import conf_
+from ..icons import ico_
 from ..path_stats import PathStats
-from ..vfs import VFSPath
+from ..vfs import VPath
 from ..vfs.local import LocalFilesystem
 from .overlay_widget import OverlayWidget
 
 
-class UpPath(VFSPath):
+class UpPath(VPath):
     def __init__(self) -> None:
         pass
 
@@ -87,35 +88,34 @@ def _rjust(s: str, width: int) -> str:
     return unicode.rjust(s, width)
 
 
-def column_formatter_icon(path: VFSPath) -> str:
+def column_formatter_icon(path: VPath) -> str:
     """Convert path to display icon."""
     stats = path.stats
 
     if stats.is_directory:
-        icon = ICONS.get_icon("folder")
+        icon = ico_("folder")
     else:
-        icon = GLOBAL_CONFIG.filetypes.get_icon_for_filename(path.name, default=ICONS.get_icon("file"))
+        icon = conf_.filetypes.get_icon_for_filename(path.name, default=ico_("file"))
 
     if not stats.is_directory and not path.guess_mimetype() and stats.is_executable:
-        icon = ICONS.get_icon("executable")
+        icon = ico_("executable")
 
     if stats.is_symlink:
-        icon += "~"
+        icon_str = icon + "~"
     else:
-        icon += " "
+        icon_str = icon + " "
 
     if stats.is_symlink and stats.is_broken_symlink:
-        icon = ICONS.get_icon("broken link") + "!"
+        icon_str = ico_("broken link") + "!"
+    return icon_str
 
-    return icon
 
-
-def column_formatter_name(path: VFSPath) -> str:
+def column_formatter_name(path: VPath) -> str:
     """Convert path to display name."""
     return f"{path.name}"
 
 
-def column_formatter_size(path: VFSPath) -> str:
+def column_formatter_size(path: VPath) -> str:
     """Convert size in bytes to human-readable format."""
     stats = path.stats
     if stats.size < 0:
@@ -132,7 +132,7 @@ def column_formatter_size(path: VFSPath) -> str:
     return f"{size}P"
 
 
-def column_formatter_modified(path: VFSPath) -> str:
+def column_formatter_modified(path: VPath) -> str:
     """Convert timestamp to human-readable date."""
     stats = path.stats
     if stats.modified < 0:
@@ -154,7 +154,7 @@ def column_formatter_modified(path: VFSPath) -> str:
     return dt.strftime("%b %d  %Y")
 
 
-def column_sorter_name(path: VFSPath) -> tuple[int, str]:
+def column_sorter_name(path: VPath) -> tuple[int, str]:
     if isinstance(path, UpPath):
         return 0, path.name
 
@@ -171,7 +171,7 @@ def column_sorter_name(path: VFSPath) -> tuple[int, str]:
     return 4, path.name
 
 
-def column_sorter_size(path: VFSPath) -> tuple[int, int]:
+def column_sorter_size(path: VPath) -> tuple[int, int]:
     if isinstance(path, UpPath):
         return 0, 0
 
@@ -181,7 +181,7 @@ def column_sorter_size(path: VFSPath) -> tuple[int, int]:
     return 2, stats.size
 
 
-def column_sorter_modified(path: VFSPath) -> tuple[int, float]:
+def column_sorter_modified(path: VPath) -> tuple[int, float]:
     if isinstance(path, UpPath):
         return 0, 0.0
     stats = path.stats
@@ -192,8 +192,8 @@ def column_sorter_modified(path: VFSPath) -> tuple[int, float]:
 class Column:
     title: str
     width: int
-    formatter: Callable[[VFSPath], str]
-    sorter: Callable[[VFSPath], Any]
+    formatter: Callable[[VPath], str]
+    sorter: Callable[[VPath], Any]
 
 
 class FilterWidget(OverlayWidget, can_focus=True):
@@ -241,7 +241,7 @@ class FilterWidget(OverlayWidget, can_focus=True):
         yield Horizontal(
             Static("Filter:"),
             self.input,
-            Button(ICONS.get_icon("xmark"), id="close-button", compact=True),
+            Button(ico_("xmark"), id="close-button", compact=True),
         )
 
     def on_focus(self, event: events.Focus) -> None:
@@ -306,14 +306,14 @@ class DirectoryBrowser(ScrollView):
     class PathSelected(Message):
         """Posted when an item is selected in the directory browser."""
 
-        def __init__(self, browser: DirectoryBrowser, path: VFSPath) -> None:
+        def __init__(self, browser: DirectoryBrowser, path: VPath) -> None:
             self.browser = browser
             """The directory browser."""
             self.path = path
             super().__init__()
 
     class ItemChanged(Message):
-        def __init__(self, browser: DirectoryBrowser, path: VFSPath | None) -> None:
+        def __init__(self, browser: DirectoryBrowser, path: VPath | None) -> None:
             self.browser = browser
             """The directory browser."""
             self.path = path
@@ -322,7 +322,7 @@ class DirectoryBrowser(ScrollView):
     class ContextMenu(Message):
         """Posted when the context menu is requested in the directory browser."""
 
-        def __init__(self, browser: DirectoryBrowser, path: VFSPath | None) -> None:
+        def __init__(self, browser: DirectoryBrowser, path: VPath | None) -> None:
             self.browser = browser
             """The directory browser."""
             self.path = path
@@ -373,11 +373,11 @@ class DirectoryBrowser(ScrollView):
 
     HEADER_HEIGHT: ClassVar[int] = 1
 
-    _path: VFSPath
+    _path: VPath
 
-    _all_items: list[VFSPath]
-    _shown_items: list[VFSPath]
-    _selected_items: set[VFSPath]
+    _all_items: list[VPath]
+    _shown_items: list[VPath]
+    _selected_items: set[VPath]
 
     _empty_strip: Strip = Strip([])
     _columns: list[Column]
@@ -393,7 +393,7 @@ class DirectoryBrowser(ScrollView):
 
     def __init__(
         self,
-        path: VFSPath,
+        path: VPath,
         name: str | None = None,
         id: str | None = None,
     ) -> None:
@@ -455,22 +455,22 @@ class DirectoryBrowser(ScrollView):
         # event.stop()
 
     @property
-    def path(self) -> VFSPath:
+    def path(self) -> VPath:
         return self._path
 
     @property
-    def path_item_under_cursor(self) -> VFSPath:
+    def path_item_under_cursor(self) -> VPath:
         return self._shown_items[self.cursor_row]
 
     @property
-    def selected_path_items(self) -> list[VFSPath]:
+    def selected_path_items(self) -> list[VPath]:
         if not self._selected_items:
             if isinstance(self.path_item_under_cursor, UpPath):
                 return []
             return [self.path_item_under_cursor]
         return list(self._selected_items)
 
-    def set_path(self, path: VFSPath) -> None:
+    def set_path(self, path: VPath) -> None:
         if path == self._path:
             return
 
@@ -522,7 +522,7 @@ class DirectoryBrowser(ScrollView):
         if what_changed <= self.WhatChanged.SORTING:
             column_sorter = self._columns[self.sort_column].sorter
 
-            def sorter(item: VFSPath) -> Any:
+            def sorter(item: VPath) -> Any:
                 order, value = column_sorter(item)
                 return (order if self.sort_ascending else -order), value
 
@@ -534,7 +534,7 @@ class DirectoryBrowser(ScrollView):
                 self._shown_items += self._all_items
             else:
 
-                def filter_func(item: VFSPath) -> bool:
+                def filter_func(item: VPath) -> bool:
                     if not self.show_hidden_files and item.stats.is_hidden:
                         return False
                     if len(self._filter_widget.value) == 0:
@@ -564,10 +564,10 @@ class DirectoryBrowser(ScrollView):
 
     # Rendering
 
-    def _highlight_style(self, path: VFSPath) -> list[Style]:
+    def _highlight_style(self, path: VPath) -> list[Style]:
         styles = []
 
-        color, background_color = GLOBAL_CONFIG.filetypes.get_colors_for_filename(path.name)
+        color, background_color = conf_.filetypes.get_colors_for_filename(path.name)
         if color:
             styles.append(
                 Style(
@@ -811,6 +811,25 @@ class DirectoryBrowser(ScrollView):
 
     def watch_show_hidden_files(self, _old: bool, _new: bool) -> None:
         self.update(self.WhatChanged.FILTERING)
+
+    def _row_at_position(self, y: int) -> int | None:
+        _scroll_x, scroll_y = self.scroll_offset
+        row = y + scroll_y - self.HEADER_HEIGHT - 1  # -1 for border
+        if not self.is_valid_row_index(row):
+            return None
+        return row
+
+    async def _on_mouse_move(self, event: events.MouseMove) -> None:
+        if event.button != 1:
+            return
+        if not event.ctrl:
+            return
+
+        row = self._row_at_position(event.y)
+        if row:
+            item = self._shown_items[row]
+            self._selected_items.add(item)
+            self.refresh_row(row)
 
     async def _on_mouse_down(self, event: events.MouseDown) -> None:
         meta = event.style.meta

@@ -30,6 +30,10 @@ class DefaultButton(StrEnum):
     RETRY = auto()
 
 
+_ACCEPT_BUTTONS = {DefaultButton.OK, DefaultButton.YES}
+_DISMISS_BUTTONS = {DefaultButton.CANCEL, DefaultButton.NO}
+
+
 def _default_button(id: DefaultButton) -> Button:
     match id:
         case DefaultButton.OK:
@@ -55,6 +59,7 @@ class Dialog(ModalScreen[str]):
             border: round $accent;
             width: 50%;
             height: auto;
+            padding: 1;
         }
 
         #button_box {
@@ -72,12 +77,17 @@ class Dialog(ModalScreen[str]):
 
     """
 
-    BINDINGS: ClassVar = [Binding(key="escape", action="app.pop_screen", description="Close")]
+    BINDINGS: ClassVar = [
+        Binding(key="escape", action="dismiss_dialog", description="Close", priority=True),
+        Binding(key="enter", action="accept_dialog", description="Accept", priority=True),
+    ]
 
     _title: str = ""
     _buttons: list[Button]
     _dialog_box: Vertical | None = None
     _button_box: Horizontal | None = None
+    _button_accept: Button | None = None
+    _button_dismiss: Button | None = None
 
     def __init__(
         self,
@@ -88,10 +98,19 @@ class Dialog(ModalScreen[str]):
     ) -> None:
         super().__init__(**kwargs, id=id)
         self._title = title
-        self._buttons = [
-            (_default_button(button) if isinstance(button, DefaultButton) else button)
-            for button in (buttons or [DefaultButton.OK])
-        ]
+
+        self._buttons = []
+        for button in buttons or [DefaultButton.OK]:
+            if isinstance(button, DefaultButton):
+                button_to_add = _default_button(button)
+                if button in _ACCEPT_BUTTONS:
+                    self._button_accept = button_to_add
+                elif button in _DISMISS_BUTTONS:
+                    self._button_dismiss = button_to_add
+                self._buttons.append(button_to_add)
+            else:
+                self._buttons.append(button)
+
         self._dialog_box = None
         self._button_box = None
 
@@ -127,3 +146,11 @@ class Dialog(ModalScreen[str]):
 
     def on_button_pressed(self, event: widgets.Button.Pressed) -> None:
         self.dismiss(event.button.id)
+
+    def action_accept_dialog(self) -> None:
+        if self._button_accept:
+            self.dismiss(self._button_accept.id)
+
+    def action_dismiss_dialog(self) -> None:
+        if self._button_dismiss:
+            self.dismiss(self._button_dismiss.id)
