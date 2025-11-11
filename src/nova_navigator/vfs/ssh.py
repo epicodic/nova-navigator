@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import override
 
 import paramiko
 
-from .filesystem import Filesystem, PathStats, VFSPath
+from .filesystem import Filesystem, PathStats, VPath
 
 
 @dataclass
@@ -57,19 +58,21 @@ class SSHFilesystem(Filesystem):
         self._ssh_client = ssh_client
         self._sftp_client = ssh_client.open_sftp()
 
-    def cwd(self) -> VFSPath:
+    @override
+    def cwd(self) -> VPath:
         cwd = self._sftp_client.getcwd()
-        # TODO
         if cwd is None:
             cwd = "/"
-        return VFSPath(cwd, self)
+        return VPath(cwd, self)
 
-    def root(self) -> VFSPath:
-        return VFSPath("/", self)
+    @override
+    def root(self) -> VPath:
+        return VPath("/", self)
 
-    def home(self) -> VFSPath:
+    @override
+    def home(self) -> VPath:
         # TODO
-        return VFSPath("/home", self)
+        return VPath("/home", self)
 
     @lru_cache(maxsize=64)  # noqa: B019
     def _dir_stat(self, path: str, follow_symlinks: bool) -> dict[str, StatEntry]:
@@ -79,14 +82,17 @@ class SSHFilesystem(Filesystem):
 
         return _parse_stat_output(output)
 
-    def iterdir(self, path: VFSPath) -> list[VFSPath]:
+    @override
+    def iterdir(self, path: VPath) -> list[VPath]:
         file_list = self._dir_stat(str(path), follow_symlinks=False)
         return [path / name for name, _ in file_list.items()]
 
-    def parent(self, path: VFSPath) -> VFSPath:
-        return VFSPath(path.path.parent, self)
+    @override
+    def parent(self, path: VPath) -> VPath:
+        return VPath(path.path.parent, self)
 
-    def stat(self, path: VFSPath) -> PathStats:
+    @override
+    def stat(self, path: VPath) -> PathStats:
         if path.path.parent == path.path:
             return PathStats(is_directory=True)
 
@@ -108,6 +114,18 @@ class SSHFilesystem(Filesystem):
             is_executable=stat.permissions & 0o111 != 0,
             is_symlink=lstat.is_symlink,
         )
+
+    # @override
+    # def scheme(self) -> str | None:
+    #     return "ssh"
+
+    # @override
+    # def netloc(self) -> str | None:
+    #     transport = self._ssh_client.get_transport()
+    #     if transport is None:
+    #         return None
+    #     peername = transport.getpeername()
+    #     return f"{peername[0]}:{peername[1]}"
 
     def __eq__(self, value: object) -> bool:
         return isinstance(value, SSHFilesystem) and self._ssh_client == value._ssh_client

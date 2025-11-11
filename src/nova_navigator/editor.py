@@ -7,7 +7,7 @@ from textual.binding import Binding
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Static, TextArea
 
-from .vfs import VFSPath
+from .vfs import VPath
 
 
 class EditorFooter(Footer):
@@ -46,8 +46,8 @@ class Editor(ModalScreen[None]):
         self.footer = EditorFooter()
         yield self.footer
 
-    def open(self, path: VFSPath) -> None:
-        assert isinstance(path, VFSPath), "Only local paths are supported at the moment"
+    def open(self, path: VPath) -> None:
+        assert isinstance(path, VPath), "Only local paths are supported at the moment"
         with open(path.path) as f:
             content = f.read()
 

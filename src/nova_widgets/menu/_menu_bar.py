@@ -87,7 +87,7 @@ class MenuBar(Widget, ActionCollection):
 
     def __init__(
         self,
-    ):
+    ) -> None:
         Widget.__init__(self)
         ActionCollection.__init__(self)
         self._menus = []

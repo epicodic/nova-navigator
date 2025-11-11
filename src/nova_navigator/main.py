@@ -3,10 +3,10 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
-from collections.abc import Callable
 from enum import Enum
 from pathlib import PurePath
-from typing import Any, ClassVar, NamedTuple
+from time import sleep
+from typing import ClassVar, NamedTuple
 
 # import paramiko
 from textual import events, work
@@ -19,19 +19,18 @@ from textual.widgets import Input
 
 # from nn.widgets.menu import MenuBar, MenuHeader
 from nova_navigator import archive
-from nova_navigator.config import GLOBAL_CONFIG, get_config_file_path
+from nova_navigator.config import conf_, get_config_file_path
 from nova_navigator.dialogs import BookmarksDialog
 from nova_navigator.editor import Editor
 from nova_navigator.file_operations import copy_or_move_files_operation, delete_files_operation
-from nova_navigator.icon_set import ICONS, IconSet
+from nova_navigator.icons import ICONS, IconSet
 from nova_navigator.operation import Operation
 from nova_navigator.uri import register_common_schemes, vfspath_from_uri
 
 # from nova_navigator.vfs.archive import ArchivePath
 # from nova_navigator.vfs import ArchiveFilesystem, LocalFilesystem, SSHFilesystem, VFSPath
-from nova_navigator.vfs import ArchiveFilesystem, LocalFilesystem, VFSPath
-from nova_navigator.widgets.directory_browser import DirectoryBrowser
-from nova_navigator.widgets.side_bar import SideBar
+from nova_navigator.vfs import ArchiveFilesystem, LocalFilesystem, VPath
+from nova_navigator.widgets import DirectoryBrowser, Footer
 from nova_navigator.widgets.terminal import Terminal, shell_clear_prompt, shell_cmd_cd, shell_init_code
 from nova_widgets.menu import SYMBOL_TABLE, Action, Menu, MenuBar, set_icon_provider
 from nova_widgets.menu import constructor as mc
@@ -57,6 +56,7 @@ class MainScreen(Screen[None]):
         Binding("f8", "delete_files", "Delete"),
         Binding("ctrl+b", "show_bookmarks", "Bookmark"),
         Binding("ctrl+h", "toggle_hidden", description="Show/Hide Hidden Files", show=False),
+        Binding("ctrl+s", "suspend", "Suspend"),
     ]
 
     class _TerminalMode(Enum):
@@ -157,7 +157,6 @@ class MainScreen(Screen[None]):
 
         yield self._menu_bar
 
-        self._left_side_bar = SideBar()
         self._left_panel = DirectoryBrowser(id="pane-left", path=LocalFilesystem.singleton().cwd())
         self._last_active_panel = self._left_panel
 
@@ -168,7 +167,6 @@ class MainScreen(Screen[None]):
         # self._right_pane = DirectoryBrowser(id="pane-right", path=fs.cwd())
         self._right_panel = DirectoryBrowser(id="pane-right", path=LocalFilesystem.singleton().cwd())
         yield Horizontal(
-            self._left_side_bar,
             self._left_panel,
             self._right_panel,
         )
@@ -178,7 +176,7 @@ class MainScreen(Screen[None]):
         self._terminal.start()
 
         yield self._terminal
-        # yield Footer()
+        yield Footer()
 
     def _act(self, name: str) -> Action:
         action = self._menu_bar.find_action(name)
@@ -310,7 +308,7 @@ class MainScreen(Screen[None]):
             case self._TerminalMode.MAXIMIZED:
                 self._terminal.styles.height = self.size.height - 2
 
-    async def _set_terminal_directory(self, path: VFSPath) -> None:
+    async def _set_terminal_directory(self, path: VPath) -> None:
         # assert isinstance(path, LocalPath), "Only local paths are supported at the moment"
         if not isinstance(path.filesystem, LocalFilesystem):
             return
@@ -325,7 +323,7 @@ class MainScreen(Screen[None]):
 
     def _on_terminal_pre_cmd(self, event: Terminal.PreCmd) -> None:
         # TODO handle non-local paths
-        self._last_active_panel.set_path(VFSPath(event.cwd, LocalFilesystem.singleton()))
+        self._last_active_panel.set_path(VPath(event.cwd, LocalFilesystem.singleton()))
 
     # operations
 
@@ -359,7 +357,7 @@ class MainScreen(Screen[None]):
         self._last_active_panel.set_path(vpath)
         # self._last_active_pane.focus()
 
-    def _update_actions(self, path: VFSPath | None) -> None:
+    def _update_actions(self, path: VPath | None) -> None:
         class AKey(NamedTuple):
             is_empty: bool | None = None
             is_directory: bool | None = None
@@ -411,9 +409,9 @@ class MainScreen(Screen[None]):
                 key.matches(
                     AKey(
                         is_empty=path is None,
-                        is_directory=path and path.stats.is_directory,
-                        is_file=path and not path.stats.is_directory,
-                        is_executable=path and path.stats.is_executable and not path.stats.is_directory,
+                        is_directory=path is not None and path.stats.is_directory,
+                        is_file=path is not None and not path.stats.is_directory,
+                        is_executable=path is not None and path.stats.is_executable and not path.stats.is_directory,
                     )
                 )
             )
@@ -517,18 +515,18 @@ class MainScreen(Screen[None]):
     # region -------------------- Processing --------------------
 
     @work
-    async def _open_editor(self, path: VFSPath) -> None:
+    async def _open_editor(self, path: VPath) -> None:
         editor_screen = Editor()
         self.app.push_screen(editor_screen)
         editor_screen.open(path)
 
-    async def _open_path(self, path: VFSPath, browser: DirectoryBrowser) -> None:
+    async def _open_path(self, path: VPath, browser: DirectoryBrowser) -> None:
         if path.stats.is_directory:
             await self._set_terminal_directory(path)
             return
 
         if archive.is_supported_archive(path.path):
-            archive_path = VFSPath("/", ArchiveFilesystem(archive_parent=path.parent, archive=path))
+            archive_path = VPath("/", ArchiveFilesystem(archive_parent=path.parent, archive=path))
             browser.set_path(archive_path)
             return
 
@@ -540,13 +538,17 @@ class MainScreen(Screen[None]):
                 return
 
         # open file with xdg-open
-        open_cmd = GLOBAL_CONFIG.filetypes.get_open_command_for_file_path(path.path)
+        open_cmd = conf_.filetypes.get_open_command_for_file_path(path.path)
         self._execute_command(args=open_cmd, cwd=path.parent.path)
 
     def _execute_command(self, args: list[str], cwd: PurePath) -> None:
         with self.app.suspend():
             process = subprocess.Popen(args=args, cwd=cwd)
             process.wait()
+
+    def _action_suspend(self) -> None:
+        with self.app.suspend():
+            sleep(10)
 
 
 class NovaNavigator(App[None]):
@@ -566,7 +568,7 @@ class NovaNavigator(App[None]):
 
 def main() -> None:
     """Main function."""
-    GLOBAL_CONFIG.load_all_configs()
+    conf_.load_all_configs()
     ICONS.load_icons(get_config_file_path("icons.csv"))
     ICONS.set_variant(IconSet.Variants.NERDFONT)
     set_icon_provider(ICONS.get_icon)

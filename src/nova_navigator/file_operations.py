@@ -1,11 +1,11 @@
 from .dialogs import CopyMoveFilesDialog, DefaultButton, DeleteFilesDialog
 from .operation import Operation
-from .vfs import VFSPath
+from .vfs import VPath
 from .vfs.operations import delete_files, move_or_copy_files
 
 
 class CopyOrMoveOperation(Operation):
-    def __init__(self, source_paths: list[VFSPath], destination_path: VFSPath, move: bool = False) -> None:
+    def __init__(self, source_paths: list[VPath], destination_path: VPath, move: bool = False) -> None:
         super().__init__()
         self.source_paths = source_paths
         self.destination_path = destination_path
@@ -20,8 +20,8 @@ class CopyOrMoveOperation(Operation):
 
 
 async def copy_or_move_files_operation(
-    source_paths: list[VFSPath],
-    destination_path: VFSPath,
+    source_paths: list[VPath],
+    destination_path: VPath,
     move: bool = False,
 ) -> CopyOrMoveOperation | None:
     """Copy or move files from source paths to destination path.
@@ -32,13 +32,13 @@ async def copy_or_move_files_operation(
         move (bool, optional): If True, move files instead of copying. Defaults to False.
     """
     dialog = CopyMoveFilesDialog(
-        source_paths=[path.compact_path_str for path in source_paths],
-        destination_path=destination_path.compact_path_str,
+        source_paths=source_paths,
+        destination_path=destination_path,
         move=move,
     )
 
     result = await dialog.run()
-    if result == DefaultButton.CANCEL:
+    if result != DefaultButton.OK:
         return None
 
     return await CopyOrMoveOperation(
@@ -49,7 +49,7 @@ async def copy_or_move_files_operation(
 
 
 class DeleteOperation(Operation):
-    def __init__(self, paths: list[VFSPath]) -> None:
+    def __init__(self, paths: list[VPath]) -> None:
         super().__init__()
         self.paths = paths
 
@@ -58,7 +58,7 @@ class DeleteOperation(Operation):
 
 
 async def delete_files_operation(
-    paths: list[VFSPath],
+    paths: list[VPath],
 ) -> DeleteOperation | None:
     """Delete files at given paths.
 
@@ -70,7 +70,7 @@ async def delete_files_operation(
     )
 
     result = await dialog.run()
-    if result == DefaultButton.NO:
+    if result != DefaultButton.YES:
         return None
 
     return await DeleteOperation(

@@ -6,10 +6,10 @@ from nova_widgets import Menu, MenuBar
 from nova_widgets.menu import constructor as mc
 
 
-class ExampleApp(App):
+class ExampleApp(App[None]):
     """A minimal Textual application with a button and a counter."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self._menu = Menu(
             "Example Menu",
@@ -80,11 +80,10 @@ class ExampleApp(App):
         yield Button(label="Click Me!", id="click_button")
         yield Footer()
 
-
     async def _on_menu_triggered(self, event: Menu.Triggered) -> None:
         if event.action and event.action.action:
             await self.app.run_action(event.action.action)
-    
+
     def action_new_file(self) -> None:
         raise NotImplementedError("New file action not implemented yet.")
 

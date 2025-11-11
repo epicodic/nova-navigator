@@ -3,29 +3,29 @@ from __future__ import annotations
 import os
 from stat import S_ISDIR, S_ISLNK
 
-from .filesystem import Filesystem, PathStats, VFSPath
+from .filesystem import Filesystem, PathStats, VPath
 
 
 class LocalFilesystem(Filesystem):
-    def cwd(self) -> VFSPath:
-        return VFSPath(os.getcwd(), self)
+    def cwd(self) -> VPath:
+        return VPath(os.getcwd(), self)
 
-    def root(self) -> VFSPath:
-        return VFSPath("/", self)
+    def root(self) -> VPath:
+        return VPath("/", self)
 
-    def home(self) -> VFSPath:
-        return VFSPath(os.path.expanduser("~"), self)
+    def home(self) -> VPath:
+        return VPath(os.path.expanduser("~"), self)
 
-    def iterdir(self, path: VFSPath) -> list[VFSPath]:
+    def iterdir(self, path: VPath) -> list[VPath]:
         return [path / name for name in os.listdir(path.path)]
 
-    def path(self, path: str) -> VFSPath:
-        return VFSPath(path, self)
+    def path(self, path: str) -> VPath:
+        return VPath(path, self)
 
-    def parent(self, path: VFSPath) -> VFSPath:
-        return VFSPath(path.path.parent, self)
+    def parent(self, path: VPath) -> VPath:
+        return VPath(path.path.parent, self)
 
-    def stat(self, path: VFSPath) -> PathStats:
+    def stat(self, path: VPath) -> PathStats:
         lstat = os.stat(path, follow_symlinks=False)
 
         try:
@@ -38,7 +38,7 @@ class LocalFilesystem(Filesystem):
         if os.name != "nt":
             is_hidden = path.name.startswith(".")
         else:
-            is_hidden = stat.st_file_attributes & 0x2  # = FILE_ATTRIBUTE_HIDDEN
+            is_hidden = stat.st_file_attributes & 0x2  # type: ignore  # = FILE_ATTRIBUTE_HIDDEN
 
         return PathStats(
             size=stat.st_size,
@@ -49,6 +49,12 @@ class LocalFilesystem(Filesystem):
             is_symlink=S_ISLNK(lstat.st_mode),
             is_broken_symlink=is_broken_symlink,
         )
+
+    def scheme(self) -> str | None:
+        return None
+
+    def netloc(self) -> str | None:
+        return None
 
     _singleton: LocalFilesystem | None = None
 

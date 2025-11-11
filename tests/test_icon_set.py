@@ -1,6 +1,6 @@
 from io import StringIO
 
-from nova_navigator.icon_set import IconSet
+from nova_navigator.icons import IconSet
 
 
 def test_icon_glyphs() -> None:

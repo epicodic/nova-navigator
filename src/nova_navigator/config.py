@@ -9,11 +9,13 @@ from typing import Self
 
 import tomlkit
 
-from .icon_set import ICONS
+from nova_widgets import Icon
+
+from .icons import ICONS
 from .toml_config import Field, TomlConfig, TOMLTable
 
 __all__ = (
-    "GLOBAL_CONFIG",
+    "conf_",
     "get_config_file_path",
 )
 
@@ -137,7 +139,9 @@ class FileTypeConfig(ConfigBase):
         section = self._find_section_for_path(PurePath(filename))
         return section.color, section.background_color
 
-    def get_icon_for_filename(self, filename: str, default: str) -> str:
+    def get_icon_for_filename(self, filename: str, default: Icon | None = None) -> Icon:
+        if default is None:
+            default = Icon()
         section = self._find_section_for_path(PurePath(filename))
         if not section.icon:
             return default
@@ -200,4 +204,4 @@ def get_config_file_path(config_filename: str) -> Path:
     return _DEFAULT_CONFIG_DIR / config_filename  # config_file_path
 
 
-GLOBAL_CONFIG = GlobalConfig()
+conf_ = GlobalConfig()

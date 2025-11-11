@@ -5,6 +5,8 @@ from enum import Enum
 from pathlib import Path
 from typing import ClassVar, TextIO
 
+from nova_widgets import Icon
+
 
 def _parse_icon_glyph(glyph_str: str) -> str:
     # replace occurences of U+XXXX or \uXXXX with the corresponding unicode character
@@ -52,7 +54,9 @@ class IconSet:
     def get_variant(cls) -> Variants:
         return cls._glyph_variant
 
-    def get_icon(self, name: str | None, default: str = " ", variant: Variants | None = None) -> str:
+    def get_icon(self, name: str | None, default: Icon | None = None, variant: Variants | None = None) -> Icon:
+        if default is None:
+            default = Icon()
         if name is None:
             return default
         if variant is None:
@@ -60,10 +64,14 @@ class IconSet:
         glyphs = self._icons.get(name)
         if glyphs is None:
             return default
-        return glyphs[variant.value]
+        return Icon(glyphs[variant.value])
 
     def __iter__(self) -> Iterator[tuple[str, Glyphs]]:
         return iter(self._icons.items())
 
 
 ICONS = IconSet()
+
+
+def ico_(name: str | None, default: Icon | None = None) -> Icon:
+    return ICONS.get_icon(name, default)

@@ -2,7 +2,9 @@
 
 Based on David Brochart's pyte example:
 https://github.com/selectel/pyte/blob/master/examples/terminal_emulator.py
+
 """
+# mypy: ignore-errors
 
 from __future__ import annotations
 

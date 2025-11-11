@@ -1,5 +1,5 @@
 from .archive import ArchiveFilesystem
-from .filesystem import Filesystem, VFSPath
+from .filesystem import Filesystem, VPath
 from .local import LocalFilesystem
 from .ssh import SSHFilesystem
 
@@ -8,5 +8,5 @@ __all__ = [
     "Filesystem",
     "LocalFilesystem",
     "SSHFilesystem",
-    "VFSPath",
+    "VPath",
 ]

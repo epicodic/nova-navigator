@@ -1,4 +1,3 @@
-from collections.abc import Callable
 from enum import Enum, auto
 from typing import ClassVar, Literal
 
@@ -381,7 +380,7 @@ class Menu(Widget, Action, ActionCollection, can_focus=True):
             segments.append(Segment(" " * self.LABEL_SHORTCUT_GAP + action.shortcut, shortcut_style))
 
         if isinstance(action, Menu):
-            segments.append(Segment(" 🞂", item_style))  # noqa: RUF001
+            segments.append(Segment(" 🞂", item_style))
         else:
             segments.append(Segment("  ", item_style))
 

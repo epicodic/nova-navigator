@@ -3,8 +3,8 @@ from textual.events import Focus
 from textual.message import Message
 from textual.widgets import Tree
 
-from ..config import GLOBAL_CONFIG
-from ..icon_set import ICONS
+from ..config import conf_
+from ..icons import ICONS
 from ..widgets.overlay_widget import OverlayWidget
 
 
@@ -30,7 +30,7 @@ class BookmarksDialog(OverlayWidget, can_focus=True):
         self._tree_widget = Tree("Bookmarks")
         self._tree_widget.show_root = False
 
-        for group in GLOBAL_CONFIG.bookmarks.groups:
+        for group in conf_.bookmarks.groups:
             group_node = self._tree_widget.root.add(ICONS.get_icon(group.icon) + " " + group.name, expand=True)
             for bookmark in group.bookmarks:
                 group_node.add_leaf(ICONS.get_icon(name=bookmark.icon) + " " + bookmark.name, bookmark.path)
