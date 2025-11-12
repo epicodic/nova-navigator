@@ -20,11 +20,12 @@ from textual.widgets import Input
 # from nn.widgets.menu import MenuBar, MenuHeader
 from nova_navigator import archive
 from nova_navigator.config import conf_, get_config_file_path
-from nova_navigator.dialogs import BookmarksDialog
+from nova_navigator.dialogs import BookmarksDialog, ProcessesDialog
 from nova_navigator.editor import Editor
-from nova_navigator.file_operations import copy_or_move_files_operation, delete_files_operation
 from nova_navigator.icons import ICONS, IconSet
-from nova_navigator.operation import Operation
+from nova_navigator.operations.dummy_operation import DummyOperation
+from nova_navigator.operations.file_operations import copy_or_move_files_operation, delete_files_operation
+from nova_navigator.operations.operation import Operation
 from nova_navigator.uri import register_common_schemes, vfspath_from_uri
 
 # from nova_navigator.vfs.archive import ArchivePath
@@ -57,6 +58,8 @@ class MainScreen(Screen[None]):
         Binding("ctrl+b", "show_bookmarks", "Bookmark"),
         Binding("ctrl+h", "toggle_hidden", description="Show/Hide Hidden Files", show=False),
         Binding("ctrl+s", "suspend", "Suspend"),
+        Binding("ctrl+k", "show_processes", "Processes"),
+        Binding("ctrl+d", "start_dummy_operation", "Start Dummy Operation"),
     ]
 
     class _TerminalMode(Enum):
@@ -154,6 +157,8 @@ class MainScreen(Screen[None]):
                 mc.action("Hide Identical Files", checkable=True),
             ),
         )
+
+        self.action_processes = self._menu_bar.add_menu("Processes")
 
         yield self._menu_bar
 
@@ -327,6 +332,9 @@ class MainScreen(Screen[None]):
 
     # operations
 
+    def append_operation(self, operation: Operation) -> None:
+        self._operations.append(operation)
+
     @work
     async def action_copy_or_move_files(self, move: bool) -> None:
         source_paths = list(self._last_active_panel.selected_path_items)
@@ -340,7 +348,7 @@ class MainScreen(Screen[None]):
             move=move,
         )
         if operation is not None:
-            self._operations.append(operation)
+            self.append_operation(operation)
 
     @work
     async def action_delete_files(self) -> None:
@@ -350,7 +358,7 @@ class MainScreen(Screen[None]):
             paths=paths,
         )
         if operation is not None:
-            self._operations.append(operation)
+            self.append_operation(operation)
 
     def on_bookmarks_dialog_bookmark_selected(self, event: BookmarksDialog.BookmarkSelected) -> None:
         vpath = vfspath_from_uri(event.bookmark_path)
@@ -509,6 +517,15 @@ class MainScreen(Screen[None]):
 
     async def _action_invert_selection(self) -> None:
         self._last_active_panel.action_invert_selection()
+
+    async def _action_show_processes(self) -> None:
+        processes_dialog = ProcessesDialog(position=(4, 4), operations=self._operations)
+        await self.mount(processes_dialog)
+        processes_dialog.focus()
+
+    async def _action_start_dummy_operation(self) -> None:
+        operation = await DummyOperation().start()
+        self.append_operation(operation)
 
     # endregion
 

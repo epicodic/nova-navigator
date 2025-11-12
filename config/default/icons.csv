@@ -9,8 +9,10 @@ edit,U+f044,✏️
 save,U+f0c7,💾
 refresh,U+f021,🔄
 cut,U+f0c4,✂️
-copy,U+f0c5,  
+copy,U+f0c5,📋
 paste,U+f0ea,📋
+abort,U+f52f,🛑
+undo,U+f0e2,↩️
 
 # file types
 archive,U+f1c6,📦
