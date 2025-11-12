@@ -6,5 +6,8 @@ dist/
 wheels/
 *.egg-info
 
+# test files
+tests/stress_test/
+
 # Virtual environments
 .venv
