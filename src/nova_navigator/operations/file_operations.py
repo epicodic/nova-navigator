@@ -20,7 +20,12 @@ class CopyOrMoveOperation(Operation):
             source_paths=self.source_paths,
             destination_path=self.destination_path,
             move=self.move,
+            cancel_event=self.abort_requested_event,
+            progress_callback=self._update_progress,
         )
+
+    def _update_progress(self, completed: int, total: int) -> None:
+        self.set_progress(completed, total)
 
 
 async def copy_or_move_files_operation(

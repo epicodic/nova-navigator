@@ -1,7 +1,7 @@
-from nova_navigator.vfs.parse_uri import ParseResult, URIComponent, parse_uri
+from nova_navigator.vfs2.parse_uri import ParseResult, URIComponent, parse_uri
 
 
-def test_no_schema():
+def test_no_schema() -> None:
     result = parse_uri("/path/to/local/file.txt")
     expected = ParseResult(components=[URIComponent(scheme=None, netloc=None, path="/path/to/local/file.txt")])
     assert result == expected
@@ -11,7 +11,7 @@ def test_no_schema():
     assert result == expected
 
 
-def test_special_cases():
+def test_special_cases() -> None:
     result = parse_uri("/")
     expected = ParseResult(components=[URIComponent(scheme=None, netloc=None, path="/")])
     assert result == expected
@@ -21,7 +21,7 @@ def test_special_cases():
     assert result == expected
 
 
-def test_single_schema():
+def test_single_schema() -> None:
     result = parse_uri("file:///path/to/local/file.txt")
     expected = ParseResult(components=[URIComponent(scheme="file", netloc=None, path="/path/to/local/file.txt")])
     assert result == expected
@@ -33,14 +33,14 @@ def test_single_schema():
     assert result == expected
 
 
-def test_relative_path_with_schema():
+def test_relative_path_with_schema() -> None:
     result = parse_uri("file://rel/path/to/local/file.txt")
     # rel path is treated as netloc here
     expected = ParseResult(components=[URIComponent(scheme="file", netloc="rel", path="/path/to/local/file.txt")])
     assert result == expected
 
 
-def test_nested_schema():
+def test_nested_schema() -> None:
     result = parse_uri("ssh://user@host:22/path/to/archive.tar.gz/tar://path/file.txt")
     expected = ParseResult(
         components=[
@@ -70,7 +70,7 @@ def test_nested_schema():
     assert result == expected
 
 
-def test_invalid_uri():
+def test_invalid_uri() -> None:
     result = parse_uri("://missing/scheme/and/netloc")
     expected = ParseResult(components=[URIComponent(scheme=None, netloc=None, path="://missing/scheme/and/netloc")])
     assert result == expected
