@@ -9,7 +9,7 @@ from tests.test_utils import DATA_DIR
 def test_vpath_local_filesystem() -> None:
     local_dir = DATA_DIR / "local"
     fs = LocalFilesystem.singleton()
-    vpath = VPath(local_dir, fs)
+    vpath = fs.path(local_dir)
 
     assert vpath.name == local_dir.name
     assert vpath.stat.is_directory is True
@@ -29,7 +29,7 @@ def test_vpath_local_filesystem() -> None:
 def test_vpath_ssh_filesystem() -> None:
     local_dir = DATA_DIR / "local"
     fs = SSHFilesystem("localhost")
-    vpath = VPath(local_dir, fs)
+    vpath = fs.path(local_dir)
 
     assert vpath.name == local_dir.name
     assert vpath.stat.is_directory is True

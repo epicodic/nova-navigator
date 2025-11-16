@@ -3,9 +3,12 @@ from __future__ import annotations
 import mimetypes
 import os
 from pathlib import PurePosixPath
+from typing import TYPE_CHECKING
 
-from .filesystem import Filesystem
 from .types import Stat
+
+if TYPE_CHECKING:
+    from .filesystem import Filesystem
 
 
 class VPath:

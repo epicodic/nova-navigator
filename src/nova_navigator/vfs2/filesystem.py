@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import IO, TYPE_CHECKING, Protocol
+from pathlib import PurePath
+from typing import TYPE_CHECKING, Protocol
 
 from .types import Stat
-
-if TYPE_CHECKING:
-    from .vpath import VPath
+from .vpath import VPath
 
 
 class StreamReaderLike(Protocol):
@@ -21,6 +20,13 @@ class StreamWriterLike(Protocol):
 
 class Filesystem(ABC):
     """Base class representing a virtual file system."""
+
+    def _assert_vpath(self, path: VPath) -> None:
+        if path.filesystem != self:
+            raise ValueError(f"VPath {path} does not belong to filesystem {self}")
+
+    def path(self, p: str | PurePath) -> VPath:
+        return VPath(str(p), self)
 
     @abstractmethod
     def cwd(self) -> VPath:
@@ -53,3 +59,11 @@ class Filesystem(ABC):
     @abstractmethod
     def write(self, path: VPath) -> StreamWriterLike:
         """Return a stream writer for the given path."""
+
+    @abstractmethod
+    def remove(self, path: VPath) -> None:
+        """Remove the file at the given path."""
+
+    @abstractmethod
+    def rmdir(self, path: VPath) -> None:
+        """Remove the directory at the given path (must be empty)."""
