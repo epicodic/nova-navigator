@@ -24,7 +24,8 @@ from nova_navigator.dialogs import BookmarksDialog, ProcessesDialog
 from nova_navigator.editor import Editor
 from nova_navigator.icons import ICONS, IconSet
 from nova_navigator.operations.dummy_operation import DummyOperation
-from nova_navigator.operations.file_operations import copy_or_move_files_operation, delete_files_operation
+
+# from nova_navigator.operations.file_operations import copy_or_move_files_operation, delete_files_operation
 from nova_navigator.operations.operation import Operation
 from nova_navigator.uri import register_common_schemes, vfspath_from_uri
 
