@@ -5,7 +5,6 @@ import re
 import subprocess
 from enum import Enum
 from pathlib import PurePath
-from time import sleep
 from typing import ClassVar, NamedTuple
 
 # import paramiko
@@ -23,10 +22,8 @@ from nova_navigator.config import conf_, get_config_file_path
 from nova_navigator.dialogs import BookmarksDialog, ProcessesDialog
 from nova_navigator.editor import Editor
 from nova_navigator.icons import ICONS, IconSet
-from nova_navigator.operations.dummy_operation import DummyOperation
 
 # from nova_navigator.operations.file_operations import copy_or_move_files_operation, delete_files_operation
-from nova_navigator.operations.operation import Operation
 from nova_navigator.uri import register_common_schemes, vfspath_from_uri
 
 # from nova_navigator.vfs.archive import ArchivePath
@@ -53,12 +50,12 @@ class MainScreen(Screen[None]):
         Binding("ctrl+o", "toggle_maximized_terminal", "Maximize Terminal", priority=True),
         Binding("ctrl+l", "toggle_terminal", "Enlarge Terminal", priority=True),
         Binding("f4", "open_editor", "Edit"),
-        Binding("f5", "copy_or_move_files(False)", "Copy"),
-        Binding("f6", "copy_or_move_files(True)", "Move"),
-        Binding("f8", "delete_files", "Delete"),
+        # Binding("f5", "copy_or_move_files(False)", "Copy"),
+        # Binding("f6", "copy_or_move_files(True)", "Move"),
+        # Binding("f8", "delete_files", "Delete"),
         Binding("ctrl+b", "show_bookmarks", "Bookmark"),
         Binding("ctrl+h", "toggle_hidden", description="Show/Hide Hidden Files", show=False),
-        Binding("ctrl+s", "suspend", "Suspend"),
+        # Binding("ctrl+s", "suspend", "Suspend"),
         Binding("ctrl+k", "show_processes", "Processes"),
         Binding("ctrl+d", "start_dummy_operation", "Start Dummy Operation"),
     ]
@@ -74,7 +71,6 @@ class MainScreen(Screen[None]):
     _terminal_waits_for_enter: bool = False
     _terminal_mode: _TerminalMode
     _last_active_panel: DirectoryBrowser
-    _operations: list[Operation]
 
     _bookmark_dialog: BookmarksDialog
 
@@ -333,33 +329,30 @@ class MainScreen(Screen[None]):
 
     # operations
 
-    def append_operation(self, operation: Operation) -> None:
-        self._operations.append(operation)
+    # @work
+    # async def action_copy_or_move_files(self, move: bool) -> None:
+    #     source_paths = list(self._last_active_panel.selected_path_items)
+    #     destination_path = (
+    #         self._left_panel.path if self._last_active_panel == self._right_panel else self._right_panel.path
+    #     )
 
-    @work
-    async def action_copy_or_move_files(self, move: bool) -> None:
-        source_paths = list(self._last_active_panel.selected_path_items)
-        destination_path = (
-            self._left_panel.path if self._last_active_panel == self._right_panel else self._right_panel.path
-        )
+    #     operation = await copy_or_move_files_operation(
+    #         source_paths=source_paths,
+    #         destination_path=destination_path,
+    #         move=move,
+    #     )
+    #     if operation is not None:
+    #         self.append_operation(operation)
 
-        operation = await copy_or_move_files_operation(
-            source_paths=source_paths,
-            destination_path=destination_path,
-            move=move,
-        )
-        if operation is not None:
-            self.append_operation(operation)
+    # @work
+    # async def action_delete_files(self) -> None:
+    #     paths = list(self._last_active_panel.selected_path_items)
 
-    @work
-    async def action_delete_files(self) -> None:
-        paths = list(self._last_active_panel.selected_path_items)
-
-        operation = await delete_files_operation(
-            paths=paths,
-        )
-        if operation is not None:
-            self.append_operation(operation)
+    #     operation = await delete_files_operation(
+    #         paths=paths,
+    #     )
+    #     if operation is not None:
+    #         self.append_operation(operation)
 
     def on_bookmarks_dialog_bookmark_selected(self, event: BookmarksDialog.BookmarkSelected) -> None:
         vpath = vfspath_from_uri(event.bookmark_path)
@@ -524,10 +517,6 @@ class MainScreen(Screen[None]):
         await self.mount(processes_dialog)
         processes_dialog.focus()
 
-    async def _action_start_dummy_operation(self) -> None:
-        operation = await DummyOperation().start()
-        self.append_operation(operation)
-
     # endregion
 
     # region -------------------- Processing --------------------
@@ -564,9 +553,9 @@ class MainScreen(Screen[None]):
             process = subprocess.Popen(args=args, cwd=cwd)
             process.wait()
 
-    def _action_suspend(self) -> None:
-        with self.app.suspend():
-            sleep(10)
+    # def _action_suspend(self) -> None:
+    #     with self.app.suspend():
+    #         sleep(10)
 
 
 class NovaNavigator(App[None]):

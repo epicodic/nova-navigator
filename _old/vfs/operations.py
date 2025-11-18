@@ -3,8 +3,8 @@ import shutil
 import threading
 import time
 
-from . import LocalFilesystem, VPath
-from .file_copy import ProgressCallback, copy_files_and_directories, copyfile
+from ...src.nova_navigator.vfs import LocalFilesystem, VPath
+from ...src.nova_navigator.vfs.file_copy import ProgressCallback, copy_files_and_directories, copyfile
 
 
 def move_or_copy_files(

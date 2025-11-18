@@ -49,7 +49,7 @@ def _copytree(
                 # Special check for directory junctions, which appear as
                 # symlinks but we want to recurse.
                 lstat = srcentry.stat(follow_symlinks=False)
-                if lstat.st_reparse_tag == shutil.stat.IO_REPARSE_TAG_MOUNT_POINT:
+                if lstat.st_reparse_tag == shutil.stat.IO_REPARSE_TAG_MOUNT_POINT:  # type: ignore[attr-defined]
                     is_symlink = False
             if is_symlink:
                 linkto = os.readlink(srcname)
