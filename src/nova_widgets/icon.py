@@ -1,3 +1,5 @@
+from typing import Literal
+
 from .unicode import ljust
 
 
@@ -13,5 +15,5 @@ class Icon(str):
             text = ljust(glyph, cls.ICON_WIDTH)
         return super().__new__(cls, text)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.ICON_WIDTH
