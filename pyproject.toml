@@ -1,0 +1,155 @@
+[project]
+name = "nn"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["textual>=6.5.0", "textual-dev>=1.8.0"]
+
+[project.scripts]
+nn = "nn.main:main"
+
+[build-system]
+requires = ["uv_build"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.18.1",
+    "pre-commit>=4.3.0",
+    "pre-commit-hooks>=6.0.0",
+    "pytest>=8.4.2",
+    "ruff>=0.13.0",
+]
+
+#######################################
+# uv 
+[tool.uv]
+default-groups = ["dev"]
+package = true
+
+#######################################
+# ruff 
+[tool.ruff]
+cache-dir = ".cache/ruff"
+indent-width = 4
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["ALL"]
+
+ignore = [
+
+    #eradicate (ERA) 
+    "ERA001", # commented-out code
+
+    # flake8 
+    "DTZ", # datetimez
+    "EM",  # errmsg
+    "FIX", # fixme
+    "PTH", # use-pathlib
+    "SLF", # self
+    "T20", # print
+    "TD",  # todos
+
+    # flake8-annotations (ANN) 
+    "ANN204", # Missing return type annotation for special method `__init__
+    "ANN401", # Dynamically typed expressions (typing.Any) are disallowed"
+
+    "A002",
+    "FBT001",
+    "TC002",  # Move third-party import into a type-checking block
+
+    # flake8-commas (COM)
+    "COM812", # Missing trailing comma 
+
+    # flake8-simplify (SIM)
+    "SIM108", # Use ternary operator instead of if-else-block
+
+    # flake8-type-checking (TC)
+    "TC003", # Move standard library import into a type-checking block
+
+
+    # pep8-naming (N)
+    "N802", # function name should be lowercase
+    "N803", # argument name should be lowercase
+    "N806", # variable in function should be lowercase
+
+    # pydocstyle (D) 
+    "D100", # Missing docstring in public module
+    "D101", # Missing docstring in public class
+    "D102", # Missing docstring in public method
+    "D103", # Missing docstring in public function
+    "D104", # Missing docstring in public package
+    "D105", # Missing docstring in magic method
+    "D107", # Missing docstring in `__init__`
+
+    # pygrep-hooks (PGH) 
+    "PGH",
+
+    # pylint (PL)
+    "PLR0913", # Too many arguments in function definition
+
+    "S101", # Use of assert detected.
+    "S301", # Pickle usage
+    "S603", # Starting a process
+    "S607", #  ...
+
+    # tryceratops (TRY)
+    "TRY",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"test_*.py" = [
+    "ANN201",  # Missing return type annotation for public function
+    "D",       # ignore all pydocstyle errors
+    "INP001",  # Missing __init__.py 
+    "PLR2004", # Magic value used in comparison
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+#######################################
+# pytest
+[tool.pytest.ini_options]
+cache_dir = ".cache/pytest"
+
+#######################################
+# mypy
+[tool.mypy]
+cache_dir = ".cache/mypy"
+
+# Allowing variable re-definition is more Pythonic and can actually prevent bugs.
+allow_redefinition = true
+
+# This setting makes sure that the operand types of `==` match properly.
+strict_equality = true
+
+# Disallow unused type ignores to make sure we don't disable type checking unnecessarily.
+warn_unused_ignores = true
+
+# We want to default to type annotating our code.
+disallow_untyped_defs = true
+check_untyped_defs = true
+
+# Report suppression of generic arguments, which lead to implicit Any, i.e., turned off
+# type checking.
+disallow_any_generics = true
+
+# Reports an error whenever a function with type annotations is decorated with
+# a decorator without annotations.
+disallow_untyped_decorators = true
+
+# Detect redundant casts globally.
+warn_redundant_casts = true
+
+# Disallows unreachable code.
+warn_unreachable = true
+
+# Ignore missing imports to avoid issues with third-party libraries without type hints.
+ignore_missing_imports = true
+
+# Allow re-exporting names imported via `from module import <name>`.
+implicit_reexport = true
