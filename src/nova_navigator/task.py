@@ -52,7 +52,7 @@ def task(func: Callable[..., Any]) -> Callable[..., Task]:
     def wrapper(*args: Any, **kwargs: Any) -> Task:
         result = func(*args, **kwargs)
         return result
-        yield  # yield to make this a generator # noqa: UNREACHABLE
+        yield  # type: ignore[unreachable]
 
     return wrapper
 
@@ -177,7 +177,7 @@ class TaskScheduler:
         while True:
             self._run_ready_tasks()  # process any tasks that became ready while we were running this one
             try:
-                result = task.send(decision)  # type: ignore - type checker doesn't like None on first send()
+                result = task.send(decision)  # type: ignore[arg-type]  # None is valid for first send()
                 if isinstance(result, DecisionRequest):
                     decision = self.submit_request(task, result)
                     if decision is not None:
@@ -187,7 +187,7 @@ class TaskScheduler:
                 elif isinstance(result, Generator):
                     self._run_task(result)
                 else:
-                    break
+                    break  # type: ignore[unreachable]
             except StopIteration:
                 break
 
