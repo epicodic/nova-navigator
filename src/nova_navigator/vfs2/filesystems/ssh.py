@@ -56,10 +56,11 @@ class SSHFilesystem(Filesystem):
     _sftp_client: paramiko.SFTPClient
 
     def __init__(self, hostname: str, port: int = 22, ssh_client: paramiko.SSHClient | None = None) -> None:
-        self._ssh_client = ssh_client
-        if self._ssh_client is None:
+        if ssh_client is None:
             self._ssh_client = paramiko.SSHClient()
             self._ssh_client.load_system_host_keys()
+        else:
+            self._ssh_client = ssh_client
 
         self._ssh_client.connect(hostname, port=port)
         self._sftp_client = self._ssh_client.open_sftp()
@@ -148,4 +149,4 @@ class SSHFilesystem(Filesystem):
 
     @override
     def write(self, path: VPath) -> StreamWriterLike:
-        return self._sftp_client.open(path.path.as_posix(), "wb")
+        return self._sftp_client.open(path.path.as_posix(), "wb")  # type: ignore[return-value]

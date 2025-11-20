@@ -5,7 +5,7 @@ import re
 import subprocess
 from enum import Enum
 from pathlib import PurePath
-from typing import ClassVar, NamedTuple
+from typing import Any, ClassVar, NamedTuple
 
 # import paramiko
 from textual import events, work
@@ -19,7 +19,7 @@ from textual.widgets import Input
 # from nn.widgets.menu import MenuBar, MenuHeader
 from nova_navigator import archive
 from nova_navigator.config import conf_, get_config_file_path
-from nova_navigator.dialogs import BookmarksDialog, ProcessesDialog
+from nova_navigator.dialogs import BookmarksDialog
 from nova_navigator.editor import Editor
 from nova_navigator.icons import ICONS, IconSet
 
@@ -77,7 +77,7 @@ class MainScreen(Screen[None]):
     def __init__(self) -> None:
         super().__init__()
         self._terminal_mode = self._TerminalMode.MINIMIZED
-        self._operations = []
+        # self._operations = []
 
     def compose(self) -> ComposeResult:
         self._menu_bar = MenuBar()
@@ -512,10 +512,10 @@ class MainScreen(Screen[None]):
     async def _action_invert_selection(self) -> None:
         self._last_active_panel.action_invert_selection()
 
-    async def _action_show_processes(self) -> None:
-        processes_dialog = ProcessesDialog(position=(4, 4), operations=self._operations)
-        await self.mount(processes_dialog)
-        processes_dialog.focus()
+    # async def _action_show_processes(self) -> None:
+    #     processes_dialog = ProcessesDialog(position=(4, 4), operations=self._operations)
+    #     await self.mount(processes_dialog)
+    #     processes_dialog.focus()
 
     # endregion
 
