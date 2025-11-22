@@ -38,7 +38,7 @@ class LocalFilesystem(Filesystem):
         if os.name != "nt":
             is_hidden = path.name.startswith(".")
         else:
-            is_hidden = stat.st_file_attributes & 0x2  # type: ignore  # = FILE_ATTRIBUTE_HIDDEN
+            is_hidden = stat.st_file_attributes & 0x2  # = FILE_ATTRIBUTE_HIDDEN
 
         return PathStats(
             size=stat.st_size,
