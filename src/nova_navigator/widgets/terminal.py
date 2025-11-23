@@ -431,7 +431,7 @@ class Terminal(Widget, can_focus=True):
                 "LC_ALL": "en_US.UTF-8",
                 "HOME": str(Path.home()),
             }
-            os.execvpe(argv[0], argv, env)
+            os.execvpe(argv[0], argv, env)  # noqa: S606
             # we never reach here
             raise RuntimeError("execvpe failed")
         os.close(fd_pre_cmd_child)  # parent doesn't write to child

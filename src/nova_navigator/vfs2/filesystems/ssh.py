@@ -149,4 +149,4 @@ class SSHFilesystem(Filesystem):
 
     @override
     def write(self, path: VPath) -> StreamWriterLike:
-        return cast(StreamWriterLike, self._sftp_client.open(path.path.as_posix(), "wb"))
+        return cast("StreamWriterLike", self._sftp_client.open(path.path.as_posix(), "wb"))

@@ -1,14 +1,9 @@
-import asyncio
-import os
 import threading
-from unittest.mock import AsyncMock
 
-import pytest
-
-from nova_navigator.filemanager.tasks import _iterate_files, erase
-from nova_navigator.task import DecisionRequest, DecisionResponse, TaskScheduler, TaskStatus
+from nova_navigator.filemanager.tasks import _iterate_files
+from nova_navigator.task import TaskStatus
 from nova_navigator.vfs2.filesystems.local import LocalFilesystem
-from tests.test_utils import DATA_DIR, check_file, create_file, temporary_directory
+from tests.test_utils import DATA_DIR
 
 
 def test_iterate_files() -> None:
