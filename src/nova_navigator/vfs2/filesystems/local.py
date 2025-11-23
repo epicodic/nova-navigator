@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import os
-from io import FileIO, TextIOWrapper
-from pathlib import PurePath
+from io import FileIO
 from stat import S_ISDIR, S_ISLNK
 from typing import Any, override
 

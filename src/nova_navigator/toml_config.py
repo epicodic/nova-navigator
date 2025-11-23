@@ -114,7 +114,7 @@ class TomlConfig:
                     setattr(self, field_name, [inner_type(item) for item in value])
                 else:
                     setattr(self, field_name, inner_type(value))
-            else:  # noqa: PLR5501
+            else:
                 # try default initialization
                 if not self._init_default(toml, field_name, field_info, is_optional):
                     raise ValueError(f"Missing field '{field_name}' in TOML (class='{cls.__name__}')", toml)
