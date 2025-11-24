@@ -1,13 +1,13 @@
 [project]
-name = "nn"
+name = "nova-navigator"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["textual>=6.5.0", "textual-dev>=1.8.0"]
+dependencies = ["pyte>=0.8.2", "textual>=6.5.0", "tomlkit>=0.13.3"]
 
 [project.scripts]
-nn = "nn.main:main"
+nn = "nova_navigator.main:main"
 
 [build-system]
 requires = ["uv_build"]
@@ -19,6 +19,7 @@ dev = [
     "pre-commit>=4.3.0",
     "pre-commit-hooks>=6.0.0",
     "pytest>=8.4.2",
+    "textual-dev>=1.8.0",
     "ruff>=0.13.0",
 ]
 
@@ -58,7 +59,11 @@ ignore = [
     "ANN401", # Dynamically typed expressions (typing.Any) are disallowed"
 
     "A002",
+    "ARG002", # Unused argument
     "FBT001",
+    "FBT002",
+    "TID252",
+    "TC001",  # Move local import into a type-checking block
     "TC002",  # Move third-party import into a type-checking block
 
     # flake8-commas (COM)

@@ -1,0 +1,84 @@
+
+
+# Style:
+
+DirectoryBrowser {
+
+    background: $surface;
+    color: $foreground;
+    height: auto;
+    max-height: 100%;
+
+    &:focus {
+        background-tint: $foreground 5%;
+        
+        .cursor {
+            background: $block-cursor-background;
+            color: $block-cursor-foreground;
+            text-style: $block-cursor-text-style;
+        }
+    }
+
+    .cursor {
+        background: grey;
+    }
+    
+    .highlight-directory {
+        text-style: bold;
+    }
+    .highlight-file {
+        text-style: none;
+    }
+    .highlight-hidden {
+        text-style: dim;
+    }
+    .highlight-executable {
+        color: #88FF88;
+    }
+}
+
+
+# needs to be cleaned up
+
+QuitScreen {
+    align: center middle;
+    background: $background 0%;
+}
+
+#dialog {
+    grid-size: 2;
+    grid-gutter: 1 2;
+    grid-rows: 1fr 3;
+    padding: 0 1;
+    width: 60;
+    height: 11;
+    border: thick $background 80%;
+    background: $surface;
+}
+
+#question {
+    column-span: 2;
+    height: 1fr;
+    width: 1fr;
+    content-align: center middle;
+}
+
+Button {
+    width: 100%;
+}
+
+
+
+#pane-left {
+    border: round $accent;
+    height: 100%;
+}
+
+#pane-right {
+    border: round $accent;
+    height: 100%;
+}
+
+#command-line-container {
+    height: 1;
+}
