@@ -4,7 +4,6 @@ import subprocess
 import sys
 
 from rich.console import Console
-from rich.rule import Rule
 
 console = Console()
 
@@ -16,7 +15,7 @@ def header(msg: str, style: str) -> None:
 
 def run_step(label: str, style: str, cmd: list[str]) -> bool:
     header(label, style)
-    result = subprocess.run(cmd)
+    result = subprocess.run(cmd, check=False)
     if result.returncode == 0:
         console.print(f"  [bold green]\u2713 {label} passed[/]")
         return True
