@@ -1,0 +1,14 @@
+{
+    "recommendations": [
+        "astral-sh.ty",
+        "charliermarsh.ruff",
+        "donjayamanne.githistory",
+        "ms-python.debugpy",
+        "ms-python.python",
+        "ms-python.vscode-python-envs",
+        "textualize.textual-syntax-highlighter",
+    ],
+    "unwantedRecommendations": [
+        "ms-python.vscode-pylance"
+    ]
+}
