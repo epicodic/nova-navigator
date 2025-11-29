@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, ClassVar, Self
 
+import watchdog
+import watchdog.events
+import watchdog.observers
+import watchdog.observers.api
+from rich.color import Color
 from rich.segment import Segment
 from rich.style import Style
-from textual import events
 from textual.binding import Binding, BindingType
 from textual.geometry import Region, Size, Spacing, clamp
 from textual.message import Message
@@ -150,6 +156,9 @@ class DirectoryBrowser(ScrollView):
         Binding("pagedown", "page_down", "Page down", show=False),
         Binding("home", "scroll_top", "Top", show=False),
         Binding("end", "scroll_bottom", "Bottom", show=False),
+        Binding("insert", "insert_select", "Select", show=False),
+        Binding("ctrl+h", "toggle_hidden", "Show/Hide Hidden Files", show=False),
+        Binding("ctrl+a", "select_all", "Select All", show=False),
     ]
 
     COMPONENT_CLASSES: ClassVar[set[str]] = {
@@ -159,6 +168,7 @@ class DirectoryBrowser(ScrollView):
         "highlight-executable",
         "highlight-symlink",
         "highlight-up",
+        "highlight-selected",
     }
 
     # messages
@@ -171,6 +181,37 @@ class DirectoryBrowser(ScrollView):
             self.path = path
             super().__init__()
 
+    # private classes
+
+    class _FileSystemEventHandler(watchdog.events.FileSystemEventHandler):
+        DEBOUNCE_INTERVAL_SECONDS = 0.2
+
+        def __init__(self, browser: DirectoryBrowser) -> None:
+            self.browser = browser
+            self._loop = asyncio.get_event_loop()
+            self._timer = None
+            self._lock = threading.Lock()
+
+        async def handle(self) -> None:
+            self.browser.update()
+
+        def on_timer(self) -> None:
+            self._loop.call_soon_threadsafe(asyncio.create_task, self.handle())
+
+        def on_any_event(self, event: watchdog.events.FileSystemEvent) -> None:
+            if not isinstance(event, watchdog.events.DirModifiedEvent):
+                return  # ignore other events
+
+            with self._lock:
+                if self._timer is not None:
+                    self._timer.cancel()
+
+                self._timer = threading.Timer(
+                    self.DEBOUNCE_INTERVAL_SECONDS,
+                    self.on_timer,
+                )
+                self._timer.start()
+
     # members
 
     HEADER_HEIGHT: ClassVar[int] = 1
@@ -178,11 +219,15 @@ class DirectoryBrowser(ScrollView):
     _path: VFSPath
 
     _items: list[VFSPath]
+    _selected_items: set[VFSPath]
     _empty_strip: Strip = Strip([])
     _columns: list[Column]
     _max_line_width: int
+    # _observer: watchdog.observers.ObserverType
+    _watch: watchdog.observers.api.ObservedWatch | None
 
-    cursor_row: Reactive[int] = Reactive(10, repaint=False, always_update=True)
+    show_hidden_files: Reactive[bool] = Reactive(default=False, repaint=False, always_update=False)
+    cursor_row: Reactive[int] = Reactive(default=0, repaint=False, always_update=True)
     sort_column = var(default=0)
     sort_ascending = var(default=True)
 
@@ -196,7 +241,6 @@ class DirectoryBrowser(ScrollView):
             name=name,
             id=id,
         )
-        self._path = path or LocalPath.cwd()
 
         self._columns = [
             Column(
@@ -218,17 +262,52 @@ class DirectoryBrowser(ScrollView):
                 sorter=column_sorter_modified,
             ),
         ]
-        self.update()
+        self._path = UpPath()
+        self._observer = watchdog.observers.Observer()
+        self._observer.start()
+        self._watch = None
+        self._selected_items = set()
+        self._items = []
+        self.set_path(path or LocalPath.cwd())
 
     def on_mount(self) -> None:
         super().on_mount()
+
+    @property
+    def path(self) -> VFSPath:
+        return self._path
+
+    @property
+    def path_item_under_cursor(self) -> VFSPath:
+        return self._items[self.cursor_row]
+
+    @property
+    def selected_path_items(self) -> list[VFSPath]:
+        if not self._selected_items:
+            if isinstance(self.path_item_under_cursor, UpPath):
+                return []
+            return [self.path_item_under_cursor]
+        return list(self._selected_items)
 
     def set_path(self, path: VFSPath) -> None:
         if path == self._path:
             return
 
+        self.border_title = path.compact_path_str
         self._path = path
         self.update()
+
+        if self._watch is not None:
+            self._observer.unschedule(self._watch)
+            self._watch = None
+        if isinstance(self._path, LocalPath):
+            self.log(f"Watching path: {self._path.path}")
+            self._watch = self._observer.schedule(
+                self._FileSystemEventHandler(self),
+                self._path.path.as_posix(),
+                recursive=False,
+                event_filter=[watchdog.events.DirModifiedEvent],
+            )
 
     # Data management
 
@@ -238,12 +317,23 @@ class DirectoryBrowser(ScrollView):
         else:
             self._items = []
 
-        self._items += self._path.iterdir()
+        self._items += self._filter_paths(self._path.iterdir())
 
-        self.cursor_row = 0
+        old_selected_items = self._selected_items.copy()
+        self._selected_items = set()
+        for item in old_selected_items:
+            if item in self._items:
+                self._selected_items.add(item)
+
+        self.cursor_row = self.validate_cursor_row(self.cursor_row)
         self._max_line_width = 0
         self._update_virtual_size()
         self._sort()
+
+    def _filter_paths(self, paths: list[VFSPath]) -> list[VFSPath]:
+        if self.show_hidden_files:
+            return paths
+        return [item for item in paths if not item.stats.is_hidden]
 
     def _sort(self) -> None:
         column_sorter = self._columns[self.sort_column].sorter
@@ -281,6 +371,7 @@ class DirectoryBrowser(ScrollView):
             "highlight-hidden": stats.is_hidden,
             "highlight-executable": stats.is_executable and not stats.is_directory,
             "highlight-symlink": stats.is_symlink,
+            "highlight-selected": path in self._selected_items,
         }
 
         for style, value in hightlight_type_map.items():
@@ -309,9 +400,10 @@ class DirectoryBrowser(ScrollView):
         remaining = max(remaining, 1)
 
         style = self.rich_style
-
+        force_bgcolor: Color | None = None
         if row == self.cursor_row:
             style += self.get_component_rich_style("cursor", partial=True)
+            force_bgcolor = style.bgcolor
 
         if y == 0:
             style += Style.from_meta({"row": -1})
@@ -332,6 +424,9 @@ class DirectoryBrowser(ScrollView):
             styles = self._highlight_style(item)
             if styles:
                 style += Style.combine(styles)
+
+        if force_bgcolor:
+            style += Style(bgcolor=force_bgcolor)
 
         total_width = len(row_texts[0]) + other_width
         if total_width > self._max_line_width:
@@ -451,6 +546,33 @@ class DirectoryBrowser(ScrollView):
     def action_scroll_bottom(self) -> None:
         self.cursor_row = len(self._items) - 1
 
+    # user has selected an item with the insert key
+    def action_insert_select(self) -> None:
+        if isinstance(self.path_item_under_cursor, UpPath):
+            # can not select up path
+            self.action_cursor_down()
+            return
+
+        cursor_item = self.path_item_under_cursor
+        if cursor_item in self._selected_items:
+            self._selected_items.remove(cursor_item)
+        else:
+            self._selected_items.add(cursor_item)
+
+        self.refresh_row(self.cursor_row)
+        self.action_cursor_down()
+
+    def action_select_all(self) -> None:
+        self._selected_items = {item for item in self._items if not isinstance(item, UpPath)}
+        self.refresh()
+
+    def action_toggle_hidden(self) -> None:
+        self.show_hidden_files = not self.show_hidden_files
+        self.update()
+
+    def watch_show_hidden_files(self, _old: bool, _new: bool) -> None:
+        self.update()
+
     async def _on_mouse_down(self, event: events.MouseDown) -> None:
         meta = event.style.meta
         if "row" not in meta or "column" not in meta:
@@ -494,15 +616,16 @@ class DirectoryBrowser(ScrollView):
         self.post_message(DirectoryBrowser.PathSelected(self, path))
 
     def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
-        self.action_cursor_down()
+        self.action_page_down()
         event.stop()
         event.prevent_default()
 
     def _on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
-        self.action_cursor_up()
+        self.action_page_up()
         event.stop()
         event.prevent_default()
 
+    # user has selected the item under the cursor (e.g., pressed Enter)
     def _action_select_cursor(self) -> None:
         if not self.is_valid_row_index(self.cursor_row):
             return

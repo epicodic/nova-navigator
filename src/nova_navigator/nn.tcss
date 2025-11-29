@@ -2,6 +2,16 @@
 
 # Style:
 
+Input {
+    background: $surface;
+    border: inner $surface;
+
+    &:focus {
+        background: $foreground 15%;
+        border: inner $foreground 15%;
+    }
+}
+
 DirectoryBrowser {
 
     background: $surface;
@@ -13,14 +23,14 @@ DirectoryBrowser {
         background-tint: $foreground 5%;
         
         .cursor {
-            background: $block-cursor-background;
+            background: $accent-darken-3;
             color: $block-cursor-foreground;
             text-style: $block-cursor-text-style;
         }
     }
 
     .cursor {
-        background: grey;
+        background: $background-lighten-2;
     }
     
     .highlight-directory {
@@ -34,6 +44,10 @@ DirectoryBrowser {
     }
     .highlight-executable {
         color: #88FF88;
+    }
+    .highlight-selected {
+        color: #FFFF00;
+        background: #555522
     }
 }
 
@@ -70,13 +84,21 @@ Button {
 
 
 #pane-left {
-    border: round $accent;
+    border: round grey;
     height: 100%;
+
+    &:focus {
+        border: round $accent;
+    }
 }
 
 #pane-right {
-    border: round $accent;
+    border: round grey;
     height: 100%;
+
+    &:focus {
+        border: round $accent;
+    }
 }
 
 #command-line-container {

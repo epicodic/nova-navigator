@@ -1,5 +1,5 @@
 import os
-from pathlib import PurePath
+from pathlib import Path, PurePath
 from stat import S_ISDIR, S_ISLNK
 from typing import override
 
@@ -70,6 +70,17 @@ class LocalPath(VFSPath):
     @override
     def parent(self) -> "LocalPath":
         return LocalPath(self._path.parent)
+
+    @property
+    @override
+    def compact_path_str(self) -> str:
+        # if path is inside home directory, return relative to home
+        home = Path.home()
+        try:
+            rel_path = self._path.relative_to(home)
+            return str("~" / rel_path)
+        except ValueError:
+            return str(self._path)
 
     @property
     def path(self) -> PurePath:
