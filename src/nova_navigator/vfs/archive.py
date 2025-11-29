@@ -83,3 +83,9 @@ class ArchivePath(VFSPath):
             archive_parent=self._archive_parent,
             archive=self._archive,
         )
+
+    @property
+    @override
+    def compact_path_str(self) -> str:
+        # if path is inside home directory, return relative to home
+        return "archive:" + str(self._path)

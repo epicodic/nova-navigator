@@ -17,9 +17,7 @@ from textual.widgets import Footer, Input
 # from nn.widgets.menu import MenuBar, MenuHeader
 from nova_navigator import archive, vfs
 from nova_navigator.config import global_config
-from nova_navigator.editor import Editor
-from nova_navigator.file_operations import copy_or_move_files_operation, delete_files_operation
-from nova_navigator.operation import Operation
+from nova_navigator.file_operations import copy_or_move_files
 from nova_navigator.widgets.directory_browser import DirectoryBrowser
 from nova_navigator.widgets.terminal import Terminal, shell_clear_prompt, shell_cmd_cd, shell_init_code
 
@@ -34,14 +32,21 @@ class CommandInput(Input):
 
 
 class MainScreen(Screen[None]):
+    pass
+
+
+class NovaNavigator(App[None]):
+    """Nova Navigator App."""
+
+    CSS_PATH = "nn.tcss"
+
     BINDINGS: ClassVar = [
         Binding("^q", "request_quit", "Quit"),
-        Binding("ctrl+o", "toggle_maximized_terminal", "Maximize Terminal", priority=True),
-        Binding("ctrl+l", "toggle_terminal", "Enlarge Terminal", priority=True),
-        Binding("f4", "open_editor", "Edit"),
-        Binding("f5", "copy_or_move_files(False)", "Copy"),
-        Binding("f6", "copy_or_move_files(True)", "Move"),
-        Binding("f8", "delete_files", "Delete"),
+        # Binding("tab", "tab_pressed", "Switch Panes", show=True, priority=True),
+        Binding("shift+tab", "shift_tab_pressed", "Shift+Tab", priority=True),
+        Binding("ctrl+o", "toggle_terminal", "Toggle Terminal", priority=True),
+        Binding("ctrl+@", "focus_terminal", "Focus Terminal", priority=True),
+        Binding("f6", "move_files", "Move"),
     ]
 
     class _TerminalMode(Enum):
@@ -55,7 +60,10 @@ class MainScreen(Screen[None]):
     _terminal_waits_for_enter: bool = False
     _terminal_mode: _TerminalMode
     _last_active_pane: DirectoryBrowser
-    _operations: list[Operation]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._terminal_mode = self._TerminalMode.MINIMIZED
 
     def compose(self) -> ComposeResult:
         # yield Header()
@@ -83,17 +91,22 @@ class MainScreen(Screen[None]):
         yield self._terminal
         yield Footer()
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._terminal_mode = self._TerminalMode.MINIMIZED
-        self._operations = []
-
     async def on_mount(self) -> None:
+        self.log("Starting Nova Navigator...")
+        self._main_screen = MainScreen()
+        self.install_screen(self._main_screen, "main_screen")
+        # self.push_screen("main")
         pre_cmd = shell_init_code(self._terminal.fd_pre_cmd_child)
         await self._terminal.send(pre_cmd)
 
     def on_resize(self, event: Resize) -> None:
         self._resize_terminal()
+
+    async def action_shift_tab_pressed(self) -> None:
+        if self._terminal_mode == self._TerminalMode.MAXIMIZED:
+            return
+        event = Key("tab", character="\t")
+        await self._terminal.on_key(event)
 
     async def on_event(self, event: events.Event) -> None:
         if isinstance(event, Key):  # noqa: SIM102
@@ -102,7 +115,7 @@ class MainScreen(Screen[None]):
 
         await super().on_event(event)
 
-    async def grab_key_events(self, event: Key) -> bool:  # noqa: C901, PLR0911
+    async def grab_key_events(self, event: Key) -> bool:
         """Grab key events before they reach other widgets.
 
         Return True if the event was handled here, False to let it propagate.
@@ -111,39 +124,33 @@ class MainScreen(Screen[None]):
         if event.key == "backspace" and event.character == "\x08":
             event.key = "ctrl+h"
 
-        self.log(f"grab_key_events: {event.key}")
+        if event.key == "tab":
+            self.log(self.screen)
 
+            await self.action_tab_pressed()
+            return True
+
+        return False
+
+    async def _on_key(self, event: Key) -> None:
         if self._terminal_mode == self._TerminalMode.MAXIMIZED:
-            return False
+            return
+        if event.key == "ctrl+down":
+            path = self._last_active_pane.path_item_under_cursor
+            await self._terminal.send(f"{path.name}")
+            return
 
-        match event.key:
-            case "tab":
-                await self.action_toggle_panels()
-                return True
+        if event.key == "ctrl+shift+down":
+            path = self._last_active_pane.path_item_under_cursor
+            assert isinstance(path, vfs.LocalPath)
+            await self._terminal.send(f"{path.path.as_posix()}")
+            return
 
-            case "shift+tab":
-                if self._terminal_mode == self._TerminalMode.MAXIMIZED:
-                    return False
-                event = Key("tab", character="\t")
-                await self._terminal.on_key(event)
-                return True
-
-            case "ctrl+down":
-                path = self._last_active_pane.path_item_under_cursor
-                await self._terminal.send(f"{path.name}")
-                return True
-
-            case "ctrl+shift+down":
-                path = self._last_active_pane.path_item_under_cursor
-                assert isinstance(path, vfs.LocalPath)
-                await self._terminal.send(f"{path.path.as_posix()}")
-                return True
-
-            case "enter":
-                if self._terminal_waits_for_enter:
-                    self._terminal_waits_for_enter = False
-                    await self._terminal.on_key(event)
-                    return True
+        if event.key == "enter" and self._terminal_waits_for_enter:
+            event.stop()
+            event.prevent_default()
+            self._terminal_waits_for_enter = False
+            await self._terminal.on_key(event)
 
         KEYS_TO_MAP_TO_TERMINAL = {
             "backspace": "backspace",
@@ -158,16 +165,23 @@ class MainScreen(Screen[None]):
             mapped_key = KEYS_TO_MAP_TO_TERMINAL[event.key]
             mapped_key_event = Key(mapped_key, character=event.character)
             await self._terminal.on_key(mapped_key_event)
-            return True
+            return
 
         if event.is_printable:
             self._terminal_waits_for_enter = True
             await self._terminal.on_key(event)
-            return True
 
-        return False
+    # def action_test(self) -> None:
+    #     # self.push_screen(QuitScreen())
+    #     overlay = OverlayWidget()
+    #     self.mount(overlay)
+    #     overlay.focus()
 
-    async def action_toggle_panels(self) -> None:
+    async def action_tab_pressed(self) -> None:
+        if self._terminal_mode == self._TerminalMode.MAXIMIZED:
+            event = Key("tab", character="\t")
+            await self._terminal.on_key(event)
+            return
         if self._left_pane.has_focus:
             self._right_pane.focus()
             self._last_active_pane = self._right_pane
@@ -176,7 +190,7 @@ class MainScreen(Screen[None]):
             self._last_active_pane = self._left_pane
         await self._set_terminal_directory(self._last_active_pane.path)
 
-    def action_toggle_maximized_terminal(self) -> None:
+    def action_toggle_terminal(self) -> None:
         if self._terminal_mode == self._TerminalMode.MAXIMIZED:
             self._terminal_mode = self._TerminalMode.MINIMIZED
             self._last_active_pane.focus()
@@ -185,7 +199,7 @@ class MainScreen(Screen[None]):
             self._terminal.focus()
         self._resize_terminal()
 
-    def action_toggle_terminal(self) -> None:
+    def action_focus_terminal(self) -> None:
         if self._terminal_mode == self._TerminalMode.ENLARGED:
             self._terminal_mode = self._TerminalMode.MINIMIZED
             self._last_active_pane.focus()
@@ -231,49 +245,15 @@ class MainScreen(Screen[None]):
     # operations
 
     @work
-    async def action_copy_or_move_files(self, move: bool) -> None:
+    async def action_move_files(self) -> None:
         source_paths = list(self._last_active_pane.selected_path_items)
         destination_path = self._left_pane.path if self._last_active_pane == self._right_pane else self._right_pane.path
 
-        operation = await copy_or_move_files_operation(
+        await copy_or_move_files(
             source_paths=source_paths,
             destination_path=destination_path,
-            move=move,
+            move=True,
         )
-        if operation is not None:
-            self._operations.append(operation)
-
-    @work
-    async def action_delete_files(self) -> None:
-        paths = list(self._last_active_pane.selected_path_items)
-
-        operation = await delete_files_operation(
-            paths=paths,
-        )
-        if operation is not None:
-            self._operations.append(operation)
-
-    @work
-    async def action_open_editor(self) -> None:
-        path = self._last_active_pane.path_item_under_cursor
-        editor_screen = Editor()
-        self.app.push_screen(editor_screen)
-        editor_screen.open(path)
-
-
-class NovaNavigator(App[None]):
-    """Nova Navigator App."""
-
-    CSS_PATH = "nn.tcss"
-
-    def __init__(self) -> None:
-        super().__init__()
-
-    async def on_mount(self) -> None:
-        self.log("Starting Nova Navigator...")
-        self._main_screen = MainScreen()
-        self.install_screen(self._main_screen, "main_screen")
-        self.push_screen("main_screen")
 
 
 def main() -> None:

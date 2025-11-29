@@ -25,6 +25,11 @@ class VFSPath:
     def parent(self) -> "VFSPath":
         raise NotImplementedError
 
+    @property
+    @abstractmethod
+    def compact_path_str(self) -> str:
+        raise NotImplementedError
+
 
 class UpPath(VFSPath):
     """A class representing the parent directory path ("..")."""
@@ -48,3 +53,8 @@ class UpPath(VFSPath):
     @override
     def parent(self) -> Self:
         return self
+
+    @property
+    @abstractmethod
+    def compact_path_str(self) -> str:
+        return ".."
