@@ -1,0 +1,47 @@
+# format: name,nerdfont,unicode
+
+# filesystem
+file,U+f15b,📄
+folder,U+f07b,📁
+
+# file types
+archive,U+f1c6,📦
+audio,U+f001,🎵
+broken_link,U+f127,❌
+deb,U+e77d,📦
+executable,U+f013,⚙️
+image,U+f1c5,🌅
+link,U+f0c1,🔗
+model,U+eb01,🌐
+package,U+f03d7,📦
+pdf,U+f1c1,📚
+shell_script,U+f1183,#!
+text,U+f15c,📝
+video,U+f0fce,🎬
+
+# languages
+c,U+e649,🇨
+cpp,U+e649,🇨
+csharp,U+e648,💻
+css,U+e6b8,📝
+go,U+e627,🐹
+html,U+e60e,📝
+java,U+e738,☕
+javascript,U+e781,📝
+markdown,U+e609,📝
+php,U+e608,🐘
+python,U+e73c,🐍
+ruby,U+e739,💎
+rust,U+e7a8,🦀
+swift,U+e699,🦅
+typescript,U+e8ca,📝
+
+# symbols
+cloud,U+f0c2,☁️
+gear,U+f013,⚙️
+heart,U+f004,❤️
+rocket,U+f135,🚀
+search,U+f002,🔍
+star,U+f005,⭐
+trash,U+f1f8,🗑️
+xmark,U+f00d,❌

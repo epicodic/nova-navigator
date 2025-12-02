@@ -1,11 +1,19 @@
 import mimetypes
 import re
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import override
 
 import tomlkit
+
+from .icon_set import ICONS
+
+__all__ = (
+    "GLOBAL_CONFIG",
+    "get_config_file_path",
+)
 
 
 def _get_config_path(appname: str) -> Path:
@@ -18,6 +26,7 @@ def _get_config_path(appname: str) -> Path:
 
 
 _APP_CONFIG_DIR: Path = _get_config_path("nova_navigator")
+_DEFAULT_CONFIG_DIR: Path = Path(__file__).parent.parent.parent / "config" / "default"
 
 
 def _compile_pattern(pattern_str: str | None) -> re.Pattern[str] | None:
@@ -67,8 +76,9 @@ open="xdg-open %f"
         name: str
         mimetype: re.Pattern[str] | None
         regex: re.Pattern[str] | None
-        open_cmd: list[str]
+        open_cmd: list[str] | None
         color: str | None = None
+        icon: str | None = None
         background_color: str | None = None
 
     _sections: list[Section]
@@ -84,14 +94,13 @@ open="xdg-open %f"
         default_section = None
         for name, value in config.items():
             open_cmd = value.get("open")
-            if not open_cmd:
-                raise ValueError(f"Extension section '{name}' missing 'open' command in {self._config_file_path}'")
             section = ExtensionConfig.Section(
                 name=name,
                 mimetype=_compile_pattern(value.get("mimetype")),
                 regex=_compile_pattern(value.get("regex")),
-                open_cmd=open_cmd.split(),
+                open_cmd=open_cmd.split() if open_cmd else None,
                 color=value.get("color"),
+                icon=value.get("icon"),
                 background_color=value.get("background_color"),
             )
             self._sections.append(section)
@@ -120,11 +129,23 @@ open="xdg-open %f"
 
     def get_open_command_for_file_path(self, path: PurePath) -> list[str]:
         section = self._find_section_for_path(path)
-        return self._replace_variables(section.open_cmd, path)
+        open_cmd = section.open_cmd
+        if not section.open_cmd:
+            open_cmd = self._default_section.open_cmd
+
+        assert open_cmd is not None
+        return self._replace_variables(open_cmd, path)
 
     def get_colors_for_filename(self, filename: str) -> tuple[str | None, str | None]:
         section = self._find_section_for_path(PurePath(filename))
         return section.color, section.background_color
+
+    def get_icon_for_filename(self, filename: str, default: str) -> str:
+        section = self._find_section_for_path(PurePath(filename))
+        if not section.icon:
+            return default
+
+        return ICONS.get_icon(section.icon, default=default)
 
 
 # singletone
@@ -149,5 +170,14 @@ class GlobalConfig:
             self.__getattribute__(f"_{config_name}").write()
 
 
-global_config = GlobalConfig()
-__all__ = ("global_config",)
+def get_config_file_path(config_filename: str) -> Path:
+    config_file_path = _APP_CONFIG_DIR / f"{config_filename}"
+    if not config_file_path.exists():
+        shutil.copy(
+            _DEFAULT_CONFIG_DIR / config_filename,
+            config_file_path,
+        )
+    return config_file_path
+
+
+GLOBAL_CONFIG = GlobalConfig()

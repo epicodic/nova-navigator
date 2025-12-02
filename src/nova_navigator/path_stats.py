@@ -11,3 +11,4 @@ class PathStats:
     is_directory: bool = False
     is_executable: bool = False
     is_symlink: bool = False
+    is_broken_symlink: bool = False

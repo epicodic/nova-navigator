@@ -3,13 +3,13 @@ from typing import Self
 
 
 class Operation:
-    _task: asyncio.Task | None
+    _task: asyncio.Task[None] | None
 
     def __init__(self) -> None:
         self._task = None
 
     @property
-    def task(self) -> asyncio.Task | None:
+    def task(self) -> asyncio.Task[None] | None:
         return self._task
 
     def get_undo_operation(self) -> "Operation | None":

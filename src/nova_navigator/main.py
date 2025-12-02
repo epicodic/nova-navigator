@@ -1,26 +1,35 @@
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 from enum import Enum
 from typing import ClassVar
 
-from textual import events, work
+# import paramiko
+from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.events import Key, Resize
 from textual.logging import TextualHandler
 from textual.screen import Screen
-from textual.widgets import Footer, Input
+from textual.widgets import Footer, Input, Tree
 
 # from nn.widgets.menu import MenuBar, MenuHeader
-from nova_navigator import archive, vfs
-from nova_navigator.config import global_config
+from nova_navigator import archive
+from nova_navigator.config import GLOBAL_CONFIG, get_config_file_path
 from nova_navigator.editor import Editor
 from nova_navigator.file_operations import copy_or_move_files_operation, delete_files_operation
+from nova_navigator.icon_set import ICONS, IconSet
 from nova_navigator.operation import Operation
+
+# from nova_navigator.vfs.archive import ArchivePath
+# from nova_navigator.vfs import ArchiveFilesystem, LocalFilesystem, SSHFilesystem, VFSPath
+from nova_navigator.vfs import ArchiveFilesystem, LocalFilesystem, VFSPath
 from nova_navigator.widgets.directory_browser import DirectoryBrowser
+from nova_navigator.widgets.overlay_widget import OverlayWidget
+from nova_navigator.widgets.side_bar import SideBar
 from nova_navigator.widgets.terminal import Terminal, shell_clear_prompt, shell_cmd_cd, shell_init_code
 
 logging.basicConfig(
@@ -33,6 +42,35 @@ class CommandInput(Input):
     pass
 
 
+class BookmarksDialog(OverlayWidget):
+    """Bookmarks dialog overlay widget."""
+
+    DEFAULT_CSS = """
+        BookmarksDialog {
+            width: 40;
+            height: 20;
+        }
+    """
+    _tree_widget: Tree[VFSPath]
+
+    def __init__(self, position: tuple[int, int]) -> None:
+        super().__init__("Bookmarks", position)
+        self._tree_widget = Tree("Bookmarks")
+        self._tree_widget.show_root = False
+
+        computer = self._tree_widget.root.add("🖥️ Computer", expand=True)
+        computer.add_leaf("🏠 Home")
+        computer.add_leaf("📄 Documents")
+        computer.add_leaf("🔽 Downloads")
+        computer.add_leaf("📂 Filesystem Root")
+
+        bookmarks = self._tree_widget.root.add("⭐ Bookmarks", expand=True)
+        bookmarks.add_leaf("media")
+
+    def compose(self) -> ComposeResult:
+        yield self._tree_widget
+
+
 class MainScreen(Screen[None]):
     BINDINGS: ClassVar = [
         Binding("^q", "request_quit", "Quit"),
@@ -42,6 +80,7 @@ class MainScreen(Screen[None]):
         Binding("f5", "copy_or_move_files(False)", "Copy"),
         Binding("f6", "copy_or_move_files(True)", "Move"),
         Binding("f8", "delete_files", "Delete"),
+        Binding("ctrl+b", "bookmark", "Bookmark"),
     ]
 
     class _TerminalMode(Enum):
@@ -57,6 +96,8 @@ class MainScreen(Screen[None]):
     _last_active_pane: DirectoryBrowser
     _operations: list[Operation]
 
+    _bookmark_dialog: BookmarksDialog
+
     def compose(self) -> ComposeResult:
         # yield Header()
 
@@ -68,10 +109,18 @@ class MainScreen(Screen[None]):
         #     MenuHeader(menu_id="right", name="Right"),
         # )
 
-        self._left_pane = DirectoryBrowser(id="pane-left", path=vfs.LocalPath.cwd())
+        self._left_side_bar = SideBar()
+        self._left_pane = DirectoryBrowser(id="pane-left", path=LocalFilesystem.singleton().cwd())
         self._last_active_pane = self._left_pane
-        self._right_pane = DirectoryBrowser(id="pane-right", path=vfs.LocalPath.cwd())
+
+        # client = paramiko.SSHClient()
+        # client.load_system_host_keys()
+        # client.connect("127.0.0.1")
+        # fs = SSHFilesystem(client)
+        # self._right_pane = DirectoryBrowser(id="pane-right", path=fs.cwd())
+        self._right_pane = DirectoryBrowser(id="pane-right", path=LocalFilesystem.singleton().cwd())
         yield Horizontal(
+            self._left_side_bar,
             self._left_pane,
             self._right_pane,
         )
@@ -95,26 +144,25 @@ class MainScreen(Screen[None]):
     def on_resize(self, event: Resize) -> None:
         self._resize_terminal()
 
-    async def on_event(self, event: events.Event) -> None:
-        if isinstance(event, Key):  # noqa: SIM102
-            if await self.grab_key_events(event):
-                return  # event was handled
+    # async def on_event(self, event: events.Event) -> None:
+    #     if isinstance(event, Key):
+    #         if await self.grab_key_events(event):
+    #             return  # event was handled
 
-        await super().on_event(event)
+    #     await super().on_event(event)
+    async def _on_key(self, event: Key) -> None:
+        self.log(f"MainScreen _on_key: {event.key}")
+        if await self._handle_key(event):
+            # if the event was handled, stop its propagation
+            event.stop()
+            return
 
-    async def grab_key_events(self, event: Key) -> bool:  # noqa: C901, PLR0911
-        """Grab key events before they reach other widgets.
-
-        Return True if the event was handled here, False to let it propagate.
-        """
-        # recover Ctrl+H (the "real" backspace has character \x7f)
-        if event.key == "backspace" and event.character == "\x08":
-            event.key = "ctrl+h"
-
-        self.log(f"grab_key_events: {event.key}")
-
+    async def _handle_key(self, event: Key) -> bool:
         if self._terminal_mode == self._TerminalMode.MAXIMIZED:
             return False
+
+        if not self._left_pane.has_focus and not self._right_pane.has_focus:
+            return False  # special handling only when a pane has focus
 
         match event.key:
             case "tab":
@@ -122,11 +170,14 @@ class MainScreen(Screen[None]):
                 return True
 
             case "shift+tab":
-                if self._terminal_mode == self._TerminalMode.MAXIMIZED:
-                    return False
-                event = Key("tab", character="\t")
-                await self._terminal.on_key(event)
+                await self._terminal.on_key(Key("tab", character="\t"))
                 return True
+
+            case "enter":
+                if self._terminal_waits_for_enter:
+                    self._terminal_waits_for_enter = False
+                    await self._terminal.on_key(event)
+                    return True
 
             case "ctrl+down":
                 path = self._last_active_pane.path_item_under_cursor
@@ -135,15 +186,8 @@ class MainScreen(Screen[None]):
 
             case "ctrl+shift+down":
                 path = self._last_active_pane.path_item_under_cursor
-                assert isinstance(path, vfs.LocalPath)
-                await self._terminal.send(f"{path.path.as_posix()}")
+                await self._terminal.send(f"{path}")
                 return True
-
-            case "enter":
-                if self._terminal_waits_for_enter:
-                    self._terminal_waits_for_enter = False
-                    await self._terminal.on_key(event)
-                    return True
 
         KEYS_TO_MAP_TO_TERMINAL = {
             "backspace": "backspace",
@@ -167,8 +211,22 @@ class MainScreen(Screen[None]):
 
         return False
 
+    async def grab_key_events(self, event: Key) -> bool:
+        """Grab key events before they reach other widgets.
+
+        Return True if the event was handled here, False to let it propagate.
+        """
+        # recover Ctrl+H (the "real" backspace has character \x7f)
+        if event.key == "backspace" and event.character == "\x08":
+            event.key = "ctrl+h"
+
+        self.log(f"grab_key_events: {event.key}")
+
+        return False
+
     async def action_toggle_panels(self) -> None:
-        if self._left_pane.has_focus:
+        self.log("Toggling panels")
+        if self._last_active_pane == self._left_pane:
             self._right_pane.focus()
             self._last_active_pane = self._right_pane
         else:
@@ -204,8 +262,10 @@ class MainScreen(Screen[None]):
             case self._TerminalMode.MAXIMIZED:
                 self._terminal.styles.height = self.size.height - 2
 
-    async def _set_terminal_directory(self, path: vfs.VFSPath) -> None:
-        assert isinstance(path, vfs.LocalPath), "Only local paths are supported at the moment"
+    async def _set_terminal_directory(self, path: VFSPath) -> None:
+        # assert isinstance(path, LocalPath), "Only local paths are supported at the moment"
+        if not isinstance(path.filesystem, LocalFilesystem):
+            return
         await self._terminal.send(shell_clear_prompt() + " " + shell_cmd_cd(path.path) + "\n")
 
     async def _on_directory_browser_path_selected(self, event: DirectoryBrowser.PathSelected) -> None:
@@ -215,18 +275,26 @@ class MainScreen(Screen[None]):
 
         # handle archives
         path = event.path
-        assert isinstance(path, vfs.LocalPath)
+
         if archive.is_supported_archive(path.path):
-            archive_path = vfs.ArchivePath("/", archive_parent=path.parent, archive=path)
+            archive_path = VFSPath("/", ArchiveFilesystem(archive_parent=path.parent, archive=path))
             event.browser.set_path(archive_path)
             return
 
+        if path.stats.is_executable:
+            mimetype = path.guess_mimetype()
+            # if mimetype matches ".*/x-.*", run it directly
+            if mimetype is None or re.match(r".*/x-.*$", mimetype) is not None:
+                subprocess.Popen(args=[path.path], cwd=path.parent.path)
+                return
+
         # open file with xdg-open
-        open_cmd = global_config.extensions.get_open_command_for_file_path(path.path)
-        subprocess.Popen(open_cmd)
+        open_cmd = GLOBAL_CONFIG.extensions.get_open_command_for_file_path(path.path)
+        subprocess.Popen(args=open_cmd, cwd=path.parent.path)
 
     def _on_terminal_pre_cmd(self, event: Terminal.PreCmd) -> None:
-        self._last_active_pane.set_path(vfs.LocalPath(event.cwd))
+        # TODO handle non-local paths
+        self._last_active_pane.set_path(VFSPath(event.cwd, LocalFilesystem.singleton()))
 
     # operations
 
@@ -260,6 +328,11 @@ class MainScreen(Screen[None]):
         self.app.push_screen(editor_screen)
         editor_screen.open(path)
 
+    async def action_bookmark(self) -> None:
+        self._bookmark_dialog = BookmarksDialog(position=(2, 2))
+        await self.mount(self._bookmark_dialog)
+        self._bookmark_dialog.focus()
+
 
 class NovaNavigator(App[None]):
     """Nova Navigator App."""
@@ -278,7 +351,10 @@ class NovaNavigator(App[None]):
 
 def main() -> None:
     """Main function."""
-    global_config.load_all_configs()
+    GLOBAL_CONFIG.load_all_configs()
+    ICONS.load_icons(get_config_file_path("icons.csv"))
+    ICONS.set_variant(IconSet.Variants.NERDFONT)
+
     NovaNavigator().run()
     # global_config.write_all_configs()
 

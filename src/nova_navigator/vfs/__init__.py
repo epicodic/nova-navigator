@@ -1,10 +1,12 @@
-from .archive import ArchivePath
-from .local import LocalPath
-from .path import UpPath, VFSPath
+from .archive import ArchiveFilesystem
+from .filesystem import Filesystem, VFSPath
+from .local import LocalFilesystem
+from .ssh import SSHFilesystem
 
 __all__ = [
-    "ArchivePath",
-    "LocalPath",
-    "UpPath",
+    "ArchiveFilesystem",
+    "Filesystem",
+    "LocalFilesystem",
+    "SSHFilesystem",
     "VFSPath",
 ]

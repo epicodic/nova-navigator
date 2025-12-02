@@ -19,12 +19,14 @@ import signal
 import struct
 import termios
 from asyncio import Task
+from collections.abc import Generator
 from pathlib import Path, PurePath
+from typing import Any
 
 import pyte
 from pyte.screens import Char
 from rich.color import ColorParseError
-from rich.console import Console, ConsoleRenderable
+from rich.console import Console, ConsoleOptions, ConsoleRenderable
 from rich.style import Style
 from rich.text import Text
 from textual import events, log
@@ -36,7 +38,7 @@ from textual.widget import Widget
 class TerminalPyteScreen(pyte.Screen):
     """Overrides the pyte.Screen class to be used with TERM=linux."""
 
-    def set_margins(self, *args, **kwargs) -> None:
+    def set_margins(self, *args: Any, **kwargs: Any) -> None:
         kwargs.pop("private", None)
         return super().set_margins(*args, **kwargs)
 
@@ -44,12 +46,12 @@ class TerminalPyteScreen(pyte.Screen):
 class TerminalDisplay(ConsoleRenderable):
     """Rich display for the terminal."""
 
-    def __init__(self, lines, cursor_x: int, cursor_y: int):
+    def __init__(self, lines: list[Text], cursor_x: int, cursor_y: int):
         self.lines = lines
         self.cursor_x = cursor_x
         self.cursor_y = cursor_y
 
-    def __rich_console__(self, _console: Console, _options):
+    def __rich_console__(self, _console: Console, _options: ConsoleOptions) -> Generator[Text]:
         for y, line in enumerate(self.lines):
             if y == self.cursor_y:
                 line.stylize("reverse", self.cursor_x, self.cursor_x + 1)
@@ -153,8 +155,6 @@ class Terminal(Widget, can_focus=True):
             self.cwd = cwd
             super().__init__()
 
-    textual_colors: dict | None
-
     def __init__(
         self,
         command: str,
@@ -172,9 +172,9 @@ class Terminal(Widget, can_focus=True):
         self.mouse_tracking = False
 
         # variables used when starting the emulator: self.start()
-        self.send_queue: asyncio.Queue = None
-        self.recv_queue: asyncio.Queue = None
-        self.recv_task_t: Task = None
+        self.send_queue: asyncio.Queue[list[object]] = None
+        self.recv_queue: asyncio.Queue[list[object]] = None
+        self.recv_task_t: Task[None] = None
 
         self._display = self.initial_display()
         self._screen = TerminalPyteScreen(self.ncol, self.nrow)
@@ -455,7 +455,7 @@ class Terminal(Widget, can_focus=True):
                 # OPTIMIZE: here a screen refresh could be needed. some chars are
                 #   left in the buffer when scrolling
                 log.warning("decode error:", error)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 # this exception tell's us to end the emulator:
                 # throwed when exiting the command
                 loop.remove_reader(self.p_out)
@@ -466,7 +466,7 @@ class Terminal(Widget, can_focus=True):
                 self.recv_queue.put_nowait(["pre_cmd", self.p_out_pre_cmd.read(65536).decode()])
             except UnicodeDecodeError:
                 pass
-            except Exception:
+            except Exception:  # noqa: BLE001
                 loop.remove_reader(self.p_out_pre_cmd)
 
         loop.add_reader(self.p_out, on_output)
