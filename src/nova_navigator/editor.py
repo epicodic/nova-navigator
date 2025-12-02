@@ -1,61 +1,57 @@
-from dataclasses import dataclass
-from importlib import import_module, resources
+# from dataclasses import dataclass
+# from importlib import import_module, resources
 from typing import ClassVar
 
-from textual import log
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import ModalScreen
-from textual.widget import Widget
 from textual.widgets import Footer, Static, TextArea
-from textual.widgets._footer import FooterKey
-from tree_sitter import Language
-from tree_sitter_language_pack import get_language
 
-from .vfs import LocalPath, VFSPath
+from .vfs import VFSPath
 
+# SYNTAX_HIGHLIGHTING_ENABLED = True
+# if SYNTAX_HIGHLIGHTING_ENABLED:
+#     from tree_sitter import Language
 
-@dataclass
-class LanguageDefinition:
-    language: Language
-    highlight_query: str
+#     @dataclass
+#     class LanguageDefinition:
+#         language: Language
+#         highlight_query: str
 
+#     _LANGUAGE_CACHE: dict[str, LanguageDefinition] = {}
 
-_LANGUAGE_CACHE: dict[str, LanguageDefinition] = {}
+#     def get_language_definition(language_name: str) -> LanguageDefinition | None:
+#         tree_sitter_module_name = f"tree_sitter_{language_name}"
+#         highlight_query_path = resources.files(tree_sitter_module_name) / "queries/highlights.scm"
 
+#         if not highlight_query_path.is_file():
+#             log.warning(f"No 'highlights.scm' found for language {language_name!r}.")
+#             return None
 
-def get_language_definition(language_name: str) -> LanguageDefinition | None:
-    tree_sitter_module_name = f"tree_sitter_{language_name}"
-    highlight_query_path = resources.files(tree_sitter_module_name) / "queries/highlights.scm"
+#         highlight_query = highlight_query_path.read_text()
 
-    if not highlight_query_path.is_file():
-        log.warning(f"No 'highlights.scm' found for language {language_name!r}.")
-        return None
+#         if language_name in _LANGUAGE_CACHE:
+#             return _LANGUAGE_CACHE[language_name]
 
-    highlight_query = highlight_query_path.read_text()
-
-    if language_name in _LANGUAGE_CACHE:
-        return _LANGUAGE_CACHE[language_name]
-
-    try:
-        module = import_module(f"tree_sitter_{language_name}")
-    except ImportError:
-        return None
-    else:
-        try:
-            if language_name == "xml":
-                # xml uses language_xml() instead of language()
-                # it's the only outlier amongst the languages in the `textual[syntax]` extra
-                language = Language(module.language_xml())
-            else:
-                language = Language(module.language())
-        except (OSError, AttributeError):
-            log.warning(f"Could not load language {language_name!r}.")
-            return None
-        else:
-            language_def = LanguageDefinition(language=language, highlight_query=highlight_query)
-            _LANGUAGE_CACHE[language_name] = language_def
-            return language_def
+#         try:
+#             module = import_module(f"tree_sitter_{language_name}")
+#         except ImportError:
+#             return None
+#         else:
+#             try:
+#                 if language_name == "xml":
+#                     # xml uses language_xml() instead of language()
+#                     # it's the only outlier amongst the languages in the `textual[syntax]` extra
+#                     language = Language(module.language_xml())
+#                 else:
+#                     language = Language(module.language())
+#             except (OSError, AttributeError):
+#                 log.warning(f"Could not load language {language_name!r}.")
+#                 return None
+#             else:
+#                 language_def = LanguageDefinition(language=language, highlight_query=highlight_query)
+#                 _LANGUAGE_CACHE[language_name] = language_def
+#                 return language_def
 
 
 class EditorFooter(Footer):
@@ -95,7 +91,7 @@ class Editor(ModalScreen[None]):
         yield self.footer
 
     def open(self, path: VFSPath) -> None:
-        assert isinstance(path, LocalPath), "Only local paths are supported at the moment"
+        assert isinstance(path, VFSPath), "Only local paths are supported at the moment"
         with open(path.path) as f:
             content = f.read()
 
@@ -109,13 +105,13 @@ class Editor(ModalScreen[None]):
             ".java": "java",
             ".c": "c",
             ".h": "c",
-            ".cpp": "cpp",
-            ".cxx": "cpp",
-            ".cc": "cpp",
-            ".c++": "cpp",
-            ".hpp": "cpp",
-            ".h++": "cpp",
-            ".hxx": "cpp",
+            # ".cpp": "cpp",
+            # ".cxx": "cpp",
+            # ".cc": "cpp",
+            # ".c++": "cpp",
+            # ".hpp": "cpp",
+            # ".h++": "cpp",
+            # ".hxx": "cpp",
             ".html": "html",
             ".css": "css",
             ".tcss": "css",
@@ -132,13 +128,14 @@ class Editor(ModalScreen[None]):
         }
 
         language = LANGUAGE_MAP.get(file_suffix)
-        if language:
-            language_def = get_language_definition(language)
+        # if SYNTAX_HIGHLIGHTING_ENABLED and language:
+        #     language_def = get_language_definition(language)
 
-            if language_def:
-                self.text_area.register_language(language, language_def.language, language_def.highlight_query)
-                self.text_area.language = language
+        #     if language_def:
+        #         self.text_area.register_language(language, language_def.language, language_def.highlight_query)
+        #         self.text_area.language = language
 
+        self.text_area.language = language
         self.title = f"Editing: {path.name}"
 
     def on_text_area_selection_changed(self, event: TextArea.SelectionChanged) -> None:

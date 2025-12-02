@@ -1,8 +1,7 @@
 import os
 import shutil
 
-from .local import LocalPath
-from .path import VFSPath
+from . import LocalFilesystem, VFSPath
 
 
 def move_or_copy_files(
@@ -11,8 +10,8 @@ def move_or_copy_files(
     move: bool = False,
 ) -> None:
     for source_path in source_paths:
-        assert isinstance(destination_path, LocalPath)
-        assert isinstance(source_path, LocalPath)
+        assert isinstance(destination_path.filesystem, LocalFilesystem)
+        assert isinstance(source_path.filesystem, LocalFilesystem)
 
         dest_file_path = destination_path.path / source_path.name
         if move:
@@ -27,7 +26,7 @@ def delete_files(
     paths: list[VFSPath],
 ) -> None:
     for path in paths:
-        assert isinstance(path, LocalPath)
+        assert isinstance(path.filesystem, LocalFilesystem)
         path_str = path.path.as_posix()
         if not os.path.exists(path_str) and not os.path.islink(path_str):
             return  # Nothing to delete

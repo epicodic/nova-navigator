@@ -7,11 +7,12 @@ requires-python = ">=3.12"
 dependencies = [
     "pyte>=0.8.2",
     "textual[syntax]>=6.5.0",
+    "textual>=6.5.0",
     "tomlkit>=0.13.3",
-    "tree-sitter-c>=0.24.1",
-    "tree-sitter-cpp>=0.23.4",
-    "tree-sitter-language-pack>=0.13.0",
+    #"tree-sitter-c>=0.24.1",
+    #"tree-sitter-cpp>=0.23.4",
     "watchdog>=6.0.0",
+    "paramiko>=4.0.0",
 ]
 
 [project.scripts]
@@ -29,6 +30,7 @@ dev = [
     "pytest>=8.4.2",
     "ruff>=0.13.0",
     "textual-dev>=1.8.0",
+    "types-paramiko>=4.0.0.20250822",
 ]
 
 #######################################
@@ -47,6 +49,8 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["ALL"]
+
+mccabe.max-complexity = 15
 
 ignore = [
 
@@ -96,6 +100,7 @@ ignore = [
     "D103", # Missing docstring in public function
     "D104", # Missing docstring in public package
     "D105", # Missing docstring in magic method
+    "D106", # Missing docstring in public nested class
     "D107", # Missing docstring in `__init__`
 
     # pygrep-hooks (PGH) 
@@ -103,6 +108,7 @@ ignore = [
 
     # pylint (PL)
     "PLR0913", # Too many arguments in function definition
+    "PLR0911", # Too many return statements
 
     "S101", # Use of assert detected.
     "S301", # Pickle usage

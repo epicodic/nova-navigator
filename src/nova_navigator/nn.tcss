@@ -2,15 +2,15 @@
 
 # Style:
 
-Input {
-    background: $surface;
-    border: inner $surface;
+# Input {
+#     background: $surface;
+#     border: inner $surface;
 
-    &:focus {
-        background: $foreground 15%;
-        border: inner $foreground 15%;
-    }
-}
+#     &:focus {
+#         background: $foreground 15%;
+#         border: inner $foreground 15%;
+#     }
+# }
 
 DirectoryBrowser {
 
@@ -49,8 +49,26 @@ DirectoryBrowser {
         color: #FFFF00;
         background: #555522
     }
+    .highlight-broken-symlink {
+        color: #FF8888;
+    }
 }
 
+
+FilterWidget {
+    Static {
+        background: $error-darken-2;
+    }
+
+    Input {
+        background: $error;
+        padding-left: 1;
+    }
+    Button {
+        background: $error-darken-2;
+    }
+
+}
 
 # needs to be cleaned up
 
