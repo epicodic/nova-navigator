@@ -4,12 +4,13 @@ import pytest
 
 from nova_navigator.filemanager.tasks import _iterate_files
 from nova_navigator.task import TaskCancelled, TaskStatus
+from nova_navigator.vfs2 import VPath
 from tests.mock_filesystem import MockFilesystem
 
 from .common import make_status
 
 
-def paths_str(result: list) -> set[str]:
+def paths_str(result: list[VPath]) -> set[str]:
     return {str(p.path) for p in result}
 
 
