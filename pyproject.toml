@@ -109,6 +109,7 @@ ignore = [
     # pylint (PL)
     "PLR0913", # Too many arguments in function definition
     "PLR0911", # Too many return statements
+    "PLR0912", # Too many branches
 
     "S101", # Use of assert detected.
     "S301", # Pickle usage

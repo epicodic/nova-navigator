@@ -810,7 +810,6 @@ dependencies = [
     { name = "pyte" },
     { name = "textual", extra = ["syntax"] },
     { name = "tomlkit" },
-    { name = "types-paramiko" },
     { name = "watchdog" },
 ]
 
@@ -822,6 +821,7 @@ dev = [
     { name = "pytest" },
     { name = "ruff" },
     { name = "textual-dev" },
+    { name = "types-paramiko" },
 ]
 
 [package.metadata]
@@ -831,7 +831,6 @@ requires-dist = [
     { name = "textual", specifier = ">=6.5.0" },
     { name = "textual", extras = ["syntax"], specifier = ">=6.5.0" },
     { name = "tomlkit", specifier = ">=0.13.3" },
-    { name = "types-paramiko", specifier = ">=4.0.0.20250822" },
     { name = "watchdog", specifier = ">=6.0.0" },
 ]
 
@@ -843,6 +842,7 @@ dev = [
     { name = "pytest", specifier = ">=8.4.2" },
     { name = "ruff", specifier = ">=0.13.0" },
     { name = "textual-dev", specifier = ">=1.8.0" },
+    { name = "types-paramiko", specifier = ">=4.0.0.20250822" },
 ]
 
 [[package]]

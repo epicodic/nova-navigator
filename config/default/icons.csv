@@ -7,7 +7,7 @@ folder,U+f07b,📁
 # file types
 archive,U+f1c6,📦
 audio,U+f001,🎵
-broken_link,U+f127,❌
+broken link,U+f033a,❌
 deb,U+e77d,📦
 executable,U+f013,⚙️
 image,U+f1c5,🌅
@@ -45,3 +45,10 @@ search,U+f002,🔍
 star,U+f005,⭐
 trash,U+f1f8,🗑️
 xmark,U+f00d,❌
+house,U+f015,🏠
+computer,U+f108,💻
+download,U+f019,⬇️
+open_folder,U+f07c,📂
+disc,U+ede9,💿
+bookmark,U+f02e,🔖
+remote,U+f08b9,🖧

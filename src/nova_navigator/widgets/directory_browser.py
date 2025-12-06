@@ -93,7 +93,7 @@ def column_formatter_icon(path: VFSPath) -> str:
     if stats.is_directory:
         icon = ICONS.get_icon("folder")
     else:
-        icon = GLOBAL_CONFIG.extensions.get_icon_for_filename(path.name, default=ICONS.get_icon("file"))
+        icon = GLOBAL_CONFIG.filetypes.get_icon_for_filename(path.name, default=ICONS.get_icon("file"))
 
     if not stats.is_directory and not path.guess_mimetype() and stats.is_executable:
         icon = ICONS.get_icon("executable")
@@ -229,7 +229,9 @@ class FilterWidget(PopupWidget, can_focus=True):
     input: Input
 
     def __init__(self, title: str, position: tuple[int, int], browser: DirectoryBrowser) -> None:
-        super().__init__(title, position)
+        super().__init__(
+            title, position, close_on_escape=False, close_on_blur=False, close_action=self.CloseAction.NONE
+        )
         self.browser = browser
         self.input = Input(placeholder="Type to filter ...", compact=True)
         self.display = False
@@ -242,7 +244,7 @@ class FilterWidget(PopupWidget, can_focus=True):
         )
 
     def on_focus(self, event: events.Focus) -> None:
-        self.display = True
+        self.show()
         self.input.focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -260,7 +262,7 @@ class FilterWidget(PopupWidget, can_focus=True):
 
     def action_dismiss(self) -> None:
         self.input.value = ""
-        self.display = False
+        self.hide()
         self.parent_widget.focus()
 
     @property
@@ -539,7 +541,7 @@ class DirectoryBrowser(ScrollView):
     def _highlight_style(self, path: VFSPath) -> list[Style]:
         styles = []
 
-        color, background_color = GLOBAL_CONFIG.extensions.get_colors_for_filename(path.name)
+        color, background_color = GLOBAL_CONFIG.filetypes.get_colors_for_filename(path.name)
         if color:
             styles.append(
                 Style(
@@ -844,5 +846,4 @@ class DirectoryBrowser(ScrollView):
         self._filter_widget.focus()
 
     def on_filter_widget_input_changed(self, event: Input.Changed) -> None:
-        self.log(f"Filter changed: {event.value}")
         self.update(self.WhatChanged.FILTERING)
