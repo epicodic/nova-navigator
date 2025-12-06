@@ -11,7 +11,7 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
-from textual.events import Key, Resize
+from textual.events import Focus, Key, Resize
 from textual.logging import TextualHandler
 from textual.screen import Screen
 from textual.widgets import Footer, Input, Tree
@@ -28,7 +28,7 @@ from nova_navigator.operation import Operation
 # from nova_navigator.vfs import ArchiveFilesystem, LocalFilesystem, SSHFilesystem, VFSPath
 from nova_navigator.vfs import ArchiveFilesystem, LocalFilesystem, VFSPath
 from nova_navigator.widgets.directory_browser import DirectoryBrowser
-from nova_navigator.widgets.overlay_widget import OverlayWidget
+from nova_navigator.widgets.popup_widget import PopupWidget
 from nova_navigator.widgets.side_bar import SideBar
 from nova_navigator.widgets.terminal import Terminal, shell_clear_prompt, shell_cmd_cd, shell_init_code
 
@@ -42,7 +42,7 @@ class CommandInput(Input):
     pass
 
 
-class BookmarksDialog(OverlayWidget):
+class BookmarksDialog(PopupWidget, can_focus=True):
     """Bookmarks dialog overlay widget."""
 
     DEFAULT_CSS = """
@@ -54,21 +54,21 @@ class BookmarksDialog(OverlayWidget):
     _tree_widget: Tree[VFSPath]
 
     def __init__(self, position: tuple[int, int]) -> None:
-        super().__init__("Bookmarks", position)
+        super().__init__("Bookmarks", position, close_action=PopupWidget.CloseAction.REMOVE)
         self._tree_widget = Tree("Bookmarks")
         self._tree_widget.show_root = False
 
-        computer = self._tree_widget.root.add("🖥️ Computer", expand=True)
-        computer.add_leaf("🏠 Home")
-        computer.add_leaf("📄 Documents")
-        computer.add_leaf("🔽 Downloads")
-        computer.add_leaf("📂 Filesystem Root")
-
-        bookmarks = self._tree_widget.root.add("⭐ Bookmarks", expand=True)
-        bookmarks.add_leaf("media")
+        for group in GLOBAL_CONFIG.bookmarks.groups:
+            group_node = self._tree_widget.root.add(ICONS.get_icon(group.icon) + " " + group.name, expand=True)
+            for bookmark in group.bookmarks:
+                group_node.add_leaf(ICONS.get_icon(name=bookmark.icon) + " " + bookmark.name)
 
     def compose(self) -> ComposeResult:
         yield self._tree_widget
+
+    def on_focus(self, event: Focus) -> None:
+        self.show()
+        self._tree_widget.focus()
 
 
 class MainScreen(Screen[None]):
@@ -289,7 +289,7 @@ class MainScreen(Screen[None]):
                 return
 
         # open file with xdg-open
-        open_cmd = GLOBAL_CONFIG.extensions.get_open_command_for_file_path(path.path)
+        open_cmd = GLOBAL_CONFIG.filetypes.get_open_command_for_file_path(path.path)
         subprocess.Popen(args=open_cmd, cwd=path.parent.path)
 
     def _on_terminal_pre_cmd(self, event: Terminal.PreCmd) -> None:

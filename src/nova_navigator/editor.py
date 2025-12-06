@@ -84,7 +84,7 @@ class Editor(ModalScreen[None]):
     BINDINGS: ClassVar = [Binding(key="escape", action="app.pop_screen", description="Close", priority=True)]
 
     def compose(self) -> ComposeResult:
-        self.text_area = TextArea("", id="editor", show_line_numbers=True, tab_behavior="indent")
+        self.text_area = TextArea("", id="editor", show_line_numbers=True, tab_behavior="indent", soft_wrap=False)
         # self.cursor_position = Static("[1, 1]", id="cursor-position")
         yield self.text_area
         self.footer = EditorFooter()

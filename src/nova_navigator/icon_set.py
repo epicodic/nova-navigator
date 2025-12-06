@@ -37,7 +37,7 @@ class IconSet:
         reader = csv.reader(filter(lambda row: len(row.strip()) > 0 and row[0] != "#", f), delimiter=",", quotechar='"')
         icons = {
             row[0]: (
-                _parse_icon_glyph(row[1]),
+                _parse_icon_glyph(row[1]) + " ",  # nerdfont glyphs have size of 2 but take only 1 character
                 _parse_icon_glyph(row[2]),
             )
             for row in reader
@@ -52,7 +52,9 @@ class IconSet:
     def get_variant(cls) -> Variants:
         return cls._glyph_variant
 
-    def get_icon(self, name: str, default: str = " ", variant: Variants | None = None) -> str:
+    def get_icon(self, name: str | None, default: str = " ", variant: Variants | None = None) -> str:
+        if name is None:
+            return default
         if variant is None:
             variant = IconSet._glyph_variant
         glyphs = self._icons.get(name)

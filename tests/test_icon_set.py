@@ -3,7 +3,7 @@ from io import StringIO
 from nova_navigator.icon_set import IconSet
 
 
-def test_icon_glyphs():
+def test_icon_glyphs() -> None:
     CSV_DATA = """
     # name,nerdfont,unicode
 
