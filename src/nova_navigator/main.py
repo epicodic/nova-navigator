@@ -11,26 +11,28 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
-from textual.events import Focus, Key, Resize
+from textual.events import Key, Resize
 from textual.logging import TextualHandler
 from textual.screen import Screen
-from textual.widgets import Footer, Input, Tree
+from textual.widgets import Footer, Input
 
 # from nn.widgets.menu import MenuBar, MenuHeader
 from nova_navigator import archive
 from nova_navigator.config import GLOBAL_CONFIG, get_config_file_path
+from nova_navigator.dialogs import BookmarksDialog
 from nova_navigator.editor import Editor
 from nova_navigator.file_operations import copy_or_move_files_operation, delete_files_operation
 from nova_navigator.icon_set import ICONS, IconSet
 from nova_navigator.operation import Operation
+from nova_navigator.uri import register_common_schemes, vfspath_from_uri
 
 # from nova_navigator.vfs.archive import ArchivePath
 # from nova_navigator.vfs import ArchiveFilesystem, LocalFilesystem, SSHFilesystem, VFSPath
 from nova_navigator.vfs import ArchiveFilesystem, LocalFilesystem, VFSPath
 from nova_navigator.widgets.directory_browser import DirectoryBrowser
-from nova_navigator.widgets.popup_widget import PopupWidget
 from nova_navigator.widgets.side_bar import SideBar
 from nova_navigator.widgets.terminal import Terminal, shell_clear_prompt, shell_cmd_cd, shell_init_code
+from nova_widgets.menu import Menu
 
 logging.basicConfig(
     level="INFO",
@@ -40,35 +42,6 @@ logging.basicConfig(
 
 class CommandInput(Input):
     pass
-
-
-class BookmarksDialog(PopupWidget, can_focus=True):
-    """Bookmarks dialog overlay widget."""
-
-    DEFAULT_CSS = """
-        BookmarksDialog {
-            width: 40;
-            height: 20;
-        }
-    """
-    _tree_widget: Tree[VFSPath]
-
-    def __init__(self, position: tuple[int, int]) -> None:
-        super().__init__("Bookmarks", position, close_action=PopupWidget.CloseAction.REMOVE)
-        self._tree_widget = Tree("Bookmarks")
-        self._tree_widget.show_root = False
-
-        for group in GLOBAL_CONFIG.bookmarks.groups:
-            group_node = self._tree_widget.root.add(ICONS.get_icon(group.icon) + " " + group.name, expand=True)
-            for bookmark in group.bookmarks:
-                group_node.add_leaf(ICONS.get_icon(name=bookmark.icon) + " " + bookmark.name)
-
-    def compose(self) -> ComposeResult:
-        yield self._tree_widget
-
-    def on_focus(self, event: Focus) -> None:
-        self.show()
-        self._tree_widget.focus()
 
 
 class MainScreen(Screen[None]):
@@ -333,6 +306,27 @@ class MainScreen(Screen[None]):
         await self.mount(self._bookmark_dialog)
         self._bookmark_dialog.focus()
 
+    def on_bookmarks_dialog_bookmark_selected(self, event: BookmarksDialog.BookmarkSelected) -> None:
+        vpath = vfspath_from_uri(event.bookmark_path)
+        self._last_active_pane.set_path(vpath)
+        # self._last_active_pane.focus()
+
+    @work
+    async def on_directory_browser_context_menu(self, event: DirectoryBrowser.ContextMenu) -> None:
+        menu = Menu()
+        menu.add_item("Open")
+        menu.add_separator()
+        menu.add_item("Cut", icon=ICONS.get_icon("cut"), shortcut="Ctrl+X")
+        menu.add_item("Copy", icon=ICONS.get_icon("copy"), shortcut="Ctrl+C")
+        menu.add_separator()
+        menu.add_item("Move to trash", icon=ICONS.get_icon("trash"))
+        menu.add_item("Delete", icon=ICONS.get_icon("delete"), shortcut="F8")
+        menu.add_separator()
+        menu.add_item("Bookmark", icon=ICONS.get_icon("bookmark"))
+
+        res = await menu.exec()
+        self.log(f"Context menu selection: {res}")
+
 
 class NovaNavigator(App[None]):
     """Nova Navigator App."""
@@ -354,6 +348,8 @@ def main() -> None:
     GLOBAL_CONFIG.load_all_configs()
     ICONS.load_icons(get_config_file_path("icons.csv"))
     ICONS.set_variant(IconSet.Variants.NERDFONT)
+
+    register_common_schemes()
 
     NovaNavigator().run()
     # global_config.write_all_configs()

@@ -2,7 +2,6 @@
 
 import mimetypes
 import re
-import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePath
@@ -193,12 +192,12 @@ class GlobalConfig:
 
 def get_config_file_path(config_filename: str) -> Path:
     config_file_path = _APP_CONFIG_DIR / f"{config_filename}"
-    if not config_file_path.exists():
-        shutil.copy(
-            _DEFAULT_CONFIG_DIR / config_filename,
-            config_file_path,
-        )
-    return config_file_path
+    # if not config_file_path.exists():
+    #    shutil.copy(
+    #        _DEFAULT_CONFIG_DIR / config_filename,
+    #        config_file_path,
+    #    )
+    return _DEFAULT_CONFIG_DIR / config_filename  # config_file_path
 
 
 GLOBAL_CONFIG = GlobalConfig()

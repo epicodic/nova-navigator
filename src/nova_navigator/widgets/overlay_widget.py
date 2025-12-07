@@ -6,11 +6,11 @@ from textual.binding import Binding, BindingType
 from textual.widget import Widget
 
 
-class PopupWidget(Widget):
+class OverlayWidget(Widget):
     """Custom widget for the overlay."""
 
     DEFAULT_CSS = """
-    PopupWidget {
+    OverlayWidget {
         layer: above;
         position: absolute;
         offset: 0 0;
@@ -23,7 +23,7 @@ class PopupWidget(Widget):
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("escape", "close_popup", "Close Popup", show=False),
+        Binding("q", "close_popup", "Close Popup", show=False),
     ]
 
     class CloseAction(Enum):
@@ -34,6 +34,7 @@ class PopupWidget(Widget):
     _close_action: CloseAction
     _close_on_escape: bool
     _close_on_blur: bool
+    _saved_focus: Widget | None
 
     def __init__(
         self,
@@ -50,9 +51,15 @@ class PopupWidget(Widget):
         self._close_action = close_action
         self._close_on_escape = close_on_escape
         self._close_on_blur = close_on_blur
+        self._saved_focus = None
 
     def _on_mount(self, event: events.Mount) -> None:
-        pass
+        self._saved_focus = self.app.focused
+
+    def _on_focus(self, event):
+        # self.log("HERE", self.app.screen.focus_chain)
+        # self._saved_focus = self.app.screen.focus_chain[0]
+        return super()._on_focus(event)
 
     @property
     def parent_widget(self) -> Widget:
@@ -66,6 +73,10 @@ class PopupWidget(Widget):
         self.display = False
 
     def close(self) -> None:
+        print("CLOSE", self.app.screen.focus_chain)
+        if self._saved_focus:
+            self._saved_focus.focus()
+
         if self._close_action == self.CloseAction.HIDE:
             self.hide()
         elif self._close_action == self.CloseAction.REMOVE:
@@ -84,5 +95,6 @@ class PopupWidget(Widget):
         self._check_action_on_blur()
 
     def _check_action_on_blur(self) -> None:
-        if not self.has_focus and not self.has_focus_within:
-            self.close()
+        # if not self.has_focus and not self.has_focus_within:
+        #    self.close()
+        pass
