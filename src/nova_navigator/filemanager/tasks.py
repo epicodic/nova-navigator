@@ -21,25 +21,6 @@ def _iterate_files(status: TaskStatus, path: VPath) -> Generator[VPath, None, No
         yield path
 
 
-def erase(status: TaskStatus, paths: list[VPath]) -> Task:
-    status.set_progress(0, len(paths))
-    for path in paths:
-        status.check_cancelled()
-
-        if path.stat.is_directory and len(path.iterdir()) > 0:
-            decision = yield DecisionRequest(
-                "Directory '{path}' is not empty. Delete it recursively?",
-                path=path.path,
-            )
-            if decision.is_no:
-                continue
-
-        path.filesystem.remove(path)
-        status.update_progress(inc_completed=1)
-
-    status.set_completed()
-
-
 OverwritePolicy = Literal["overwrite", "skip", "ask"]
 
 
@@ -89,3 +70,20 @@ def copy_file(status: TaskStatus, src_path: VPath, dst_path: VPath, options: Fil
             reader.close()
         if writer:
             writer.close()
+
+
+def copy_files(
+    status: TaskStatus, src_paths: list[VPath], dst_path: VPath, options: FileCopyOptions | None = None
+) -> Task:
+    status.update_progress(inc_total=len(src_paths))
+    for src_path in src_paths:
+        status.check_cancelled()
+        if src_path.stat.is_directory:
+            dst_dir = dst_path / src_path.name
+            for file_path in _iterate_files(status, src_path):
+                rel = file_path.path.relative_to(src_path.path)
+                dst_file = dst_dir / rel
+                yield from copy_file(status, file_path, dst_file, options)
+        else:
+            yield from copy_file(status, src_path, dst_path / src_path.name, options)
+        status.update_progress(inc_completed=1)
