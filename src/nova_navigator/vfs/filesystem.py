@@ -7,8 +7,6 @@ from pathlib import PurePath
 
 from ..path_stats import PathStats
 
-# from .path import VFSPath
-
 
 class Filesystem:
     @abstractmethod

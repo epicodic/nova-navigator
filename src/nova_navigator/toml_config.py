@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from types import UnionType
-from typing import Any, get_args, get_origin, overload
+from typing import Any, TypeVar, get_args, get_origin, overload
 
 import tomlkit
 import tomlkit.items
@@ -15,12 +15,15 @@ class FieldInfo:
     exclude: bool = False
 
 
+T = TypeVar("T")
+
+
 @overload
 def Field(*, default_factory: Any = None, exclude: bool = False) -> Any: ...
 
 
 @overload
-def Field[T](*, default: T, default_factory: Any = None, exclude: bool = False) -> T: ...
+def Field(*, default: T, default_factory: Any = None, exclude: bool = False) -> T: ...
 
 
 def Field(*, default: Any = None, default_factory: Any = None, exclude: bool = False) -> Any:

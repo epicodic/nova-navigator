@@ -19,6 +19,9 @@ class LocalFilesystem(Filesystem):
     def iterdir(self, path: VFSPath) -> list[VFSPath]:
         return [path / name for name in os.listdir(path.path)]
 
+    def path(self, path: str) -> VFSPath:
+        return VFSPath(path, self)
+
     def parent(self, path: VFSPath) -> VFSPath:
         return VFSPath(path.path.parent, self)
 

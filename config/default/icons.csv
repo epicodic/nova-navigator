@@ -4,6 +4,15 @@
 file,U+f15b,📄
 folder,U+f07b,📁
 
+# actions
+edit,U+f044,✏️
+save,U+f0c7,💾
+refresh,U+f021,🔄
+cut,U+f0c4,✂️
+copy,U+f0c5,  
+paste,U+f0ea,📋
+delete,U+f05e8,❌
+
 # file types
 archive,U+f1c6,📦
 audio,U+f001,🎵
@@ -52,3 +61,5 @@ open_folder,U+f07c,📂
 disc,U+ede9,💿
 bookmark,U+f02e,🔖
 remote,U+f08b9,🖧
+plus,U+f067,➕
+minus,U+f068,➖

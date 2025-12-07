@@ -33,7 +33,7 @@ from ..icon_set import ICONS
 from ..path_stats import PathStats
 from ..vfs import VFSPath
 from ..vfs.local import LocalFilesystem
-from ..widgets.popup_widget import PopupWidget
+from .overlay_widget import OverlayWidget
 
 
 class UpPath(VFSPath):
@@ -69,6 +69,7 @@ class UpPath(VFSPath):
 UP_PATH = UpPath()
 
 MOUSE_BUTTON_LEFT = 1
+MOUSE_BUTTON_RIGHT = 3
 MOUSE_DOUBLE_CLICK = 2
 
 DECIMAL_MAGNITUDE: int = 1000
@@ -195,7 +196,7 @@ class Column:
     sorter: Callable[[VFSPath], Any]
 
 
-class FilterWidget(PopupWidget, can_focus=True):
+class FilterWidget(OverlayWidget, can_focus=True):
     """Widget for finding files in the directory browser."""
 
     DEFAULT_CSS = """
@@ -305,6 +306,15 @@ class DirectoryBrowser(ScrollView):
     # messages
     class PathSelected(Message):
         """Posted when an item is selected in the directory browser."""
+
+        def __init__(self, browser: DirectoryBrowser, path: VFSPath) -> None:
+            self.browser = browser
+            """The directory browser."""
+            self.path = path
+            super().__init__()
+
+    class ContextMenu(Message):
+        """Posted when the context menu is requested in the directory browser."""
 
         def __init__(self, browser: DirectoryBrowser, path: VFSPath) -> None:
             self.browser = browser
@@ -775,7 +785,6 @@ class DirectoryBrowser(ScrollView):
     async def _on_mouse_down(self, event: events.MouseDown) -> None:
         meta = event.style.meta
 
-        self.log(event, meta)
         if "row" not in meta or "column" not in meta:
             return
         row_index = meta["row"]
@@ -792,6 +801,10 @@ class DirectoryBrowser(ScrollView):
 
         self.cursor_row = row_index
         self._scroll_cursor_into_view(animate=True)
+
+        if event.button == MOUSE_BUTTON_RIGHT:
+            self.post_message(DirectoryBrowser.ContextMenu(self, self._shown_items[row_index]))
+
         event.stop()
 
     async def _on_click(self, event: events.Click) -> None:
