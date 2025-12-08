@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
 
 from rich.segment import Segment
+from rich.style import Style
 from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
@@ -10,8 +11,6 @@ from textual.geometry import Offset
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.strip import Strip
-from rich.style import Style
-
 from textual.widget import Widget
 
 BorderStyle = Literal["round", "solid", "heavy"]
@@ -40,34 +39,113 @@ BOX_CHARS: dict[
 }
 
 
-@dataclass
-class MenuItem:
-    label: str
-    id: str | None = None
-    action: Callable[[], None] | None = None
-    icon: str | None = None
-    shortcut: str | None = None
-    disabled: bool = False
-    separator: bool = False
+class AbstractMenuItem:
+    @property
+    def disabled(self) -> bool:
+        return True
+
+
+class AbstractSelectableMenuItem(AbstractMenuItem):
+    _icon: str | None
+    _disabled: bool
+
+    def __init__(self, *, icon: str | None = None, disabled: bool = False) -> None:
+        self._icon = icon
+        self._disabled = disabled
+
+    @property
+    def label(self) -> str:
+        raise NotImplementedError
+
+    @property
+    def disabled(self) -> bool:
+        return self._disabled
+
+    @property
+    def icon(self) -> str | None:
+        return self._icon
+
+
+class MenuItem(AbstractSelectableMenuItem):
+    _label: str
+    _id: str | None
+    _action: Callable[[], None] | None
+    _shortcut: str | None
+
+    def __init__(
+        self,
+        label: str,
+        *,
+        id: str | None = None,
+        action: Callable[[], None] | None = None,
+        shortcut: str | None = None,
+        icon: str | None = None,
+        disabled: bool = False,
+    ) -> None:
+        super().__init__(icon=icon, disabled=disabled)
+        self._label = label
+        self._id = id
+        self._action = action
+        self._shortcut = shortcut
+
+    @property
+    def label(self) -> str:
+        return self._label
+
+    @property
+    def id(self) -> str | None:
+        return self._id
+
+    @property
+    def action(self) -> Callable[[], None] | None:
+        return self._action
+
+    @property
+    def shortcut(self) -> str | None:
+        return self._shortcut
+
+
+class MenuItemSubmenu(AbstractSelectableMenuItem):
+    _menu: "Menu"
+
+    def __init__(self, menu: "Menu", *, icon: str | None = None, disabled: bool = False) -> None:
+        super().__init__(icon=icon, disabled=disabled)
+        self._menu = menu
+
+    @property
+    def label(self) -> str:
+        assert self._menu.title
+        return self._menu.title
+
+    @property
+    def menu(self) -> "Menu":
+        return self._menu
+
+
+class MenuItemSeparator(AbstractMenuItem):
+    pass
 
 
 class MenuWidget(Widget, can_focus=True):
     DEFAULT_CSS = """
     MenuWidget {
+        overlay: screen;
         position: absolute;
+        layer: above;
         offset: 0 0;
         height: 0;
         width: 0;
-        
+        background: $primary;
+
         .highlight {
             background: $accent;
             color: $text;
         }
-        
+
         .disabled {
             color: $text-disabled;
         }
-        
+
         .shortcut {
             color: $text-muted;
         }
@@ -82,43 +160,63 @@ class MenuWidget(Widget, can_focus=True):
         Binding("enter", "select_cursor", "Select", show=False),
         Binding("up", "cursor_up", "Cursor up", show=False),
         Binding("down", "cursor_down", "Cursor down", show=False),
+        Binding(key="escape", action="dismiss", description="Close"),
     ]
-    
+
     LABEL_SHORTCUT_GAP = 3
-    
-    class Selected(events.Event):
-        def __init__(self, item: MenuItem, index: int) -> None:
+
+    class Dismissed(events.Event):
+        widget: "MenuWidget"
+        item: MenuItem | None
+
+        def __init__(self, widget: "MenuWidget", item: MenuItem | None) -> None:
+            self.widget = widget
             self.item = item
-            self.index = index
             super().__init__()
 
     _border_style: BorderStyle
-    _items: list[MenuItem]
+    _items: list[AbstractMenuItem]
     _has_icons: bool
     _item_width: int
     highlighted = reactive[int | None](None, init=False)
 
-    def __init__(self, items: list[MenuItem], **kwargs: Any) -> None:
+    def __init__(self, items: list[AbstractMenuItem], **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._border_style: BorderStyle = "solid"
         self._items = items
-        self._has_icons = any(item.icon is not None for item in items)
-        
+        self._has_icons = any(item.icon is not None for item in items if isinstance(item, MenuItem))
+
         self._item_width = 0
         for item in items:
-            if item.separator:
-                continue
-            if item.shortcut is not None:
-                self._item_width = max(self._item_width, len(item.label) + len(item.shortcut) + self.LABEL_SHORTCUT_GAP)
-            else:
+            if isinstance(item, MenuItem):
+                if item.shortcut is not None:
+                    self._item_width = max(
+                        self._item_width, len(item.label) + len(item.shortcut) + self.LABEL_SHORTCUT_GAP
+                    )
+                else:
+                    self._item_width = max(self._item_width, len(item.label))
+            elif isinstance(item, MenuItemSubmenu):
                 self._item_width = max(self._item_width, len(item.label))
-        
+
         width = self._item_width
         if self._has_icons:
-            width += 3 # space for icon and a gap
-            
-        self.styles.width = width + 4 # padding
+            width += 3  # space for icon and a gap
+
+        self.styles.width = width + 4  # padding
         self.styles.height = len(self._items) + 2
+
+    def show(self, position: Offset | None = None, parent: Widget | None = None) -> MenuItem | None:
+        self.offset = position or self.app.mouse_position
+
+        if parent:
+            parent.mount(self)
+        else:
+            self.app.mount(self)
+        self.focus()
+
+    def dismiss(self, item: MenuItem | None = None) -> None:
+        self.remove()
+        self.post_message(self.Dismissed(self, item))
 
     def render_line(self, y: int) -> Strip:
         if y < 0 or y > len(self._items) + 2:
@@ -140,10 +238,12 @@ class MenuWidget(Widget, can_focus=True):
 
         index = y - 1
         item = self._items[index]
-        if item.separator:
+        if isinstance(item, MenuItemSeparator):
             left, mid, right = box_chars[2]
             line = left + mid * (self.size.width - 2) + right
             return Strip([Segment(line, style)])
+
+        assert isinstance(item, (AbstractSelectableMenuItem))
 
         item_style = style
         if item.disabled:
@@ -155,41 +255,45 @@ class MenuWidget(Widget, can_focus=True):
         segments: list[Segment] = []
         # left border
         segments.append(Segment(left, style))
-        
+
         fill_size = self._item_width - len(item.label)
-        if item.shortcut:
-            fill_size -= len(item.shortcut) + self.LABEL_SHORTCUT_GAP 
-        
+        if isinstance(item, MenuItem) and item.shortcut:
+            fill_size -= len(item.shortcut) + self.LABEL_SHORTCUT_GAP
+
         item_text = item.label + " " * fill_size
-        
+
         segments.append(Segment(" ", item_style))
-        
+
         if self._has_icons:
             icon_text = ""
             if item.icon:
                 icon_text = item.icon
             segments.append(Segment(icon_text.ljust(3), item_style))
-        
+
         segments.append(Segment(item_text, item_style))
-        
-        if item.shortcut:
+
+        if isinstance(item, MenuItem) and item.shortcut:
             if not item.disabled:
                 shortcut_style = self.get_component_rich_style("shortcut")
                 shortcut_style += Style(bgcolor=item_style.bgcolor)
             else:
                 shortcut_style = item_style
-            segments.append(Segment( " " * self.LABEL_SHORTCUT_GAP + item.shortcut, shortcut_style))
-            
-        segments.append(Segment(" ", item_style))
+            segments.append(Segment(" " * self.LABEL_SHORTCUT_GAP + item.shortcut, shortcut_style))
+
+        if isinstance(item, MenuItemSubmenu):
+            segments.append(Segment("❯", item_style))  # noqa: RUF001
+        else:
+            segments.append(Segment(" ", item_style))
+
         # right border
         segments.append(Segment(right, style))
-        
+
         return Strip(segments)
 
     def watch_highlighted(self, old_index: int | None, new_index: int | None) -> None:
         self.refresh()
 
-    def _next_highlighted(self, old_index: int | None, direction: int) -> None:
+    def _next_highlighted(self, old_index: int | None, direction: int) -> int | None:
         if old_index is None:
             if direction > 0:
                 new_index = 0
@@ -198,7 +302,7 @@ class MenuWidget(Widget, can_focus=True):
         else:
             new_index = (old_index + direction) % len(self._items)
         checked = 0
-        while self._items[new_index].disabled or self._items[new_index].separator:
+        while self._items[new_index].disabled:
             new_index = (new_index + direction) % len(self._items)
             checked += 1
             if checked >= len(self._items):  # all items are disabled or separators
@@ -212,7 +316,7 @@ class MenuWidget(Widget, can_focus=True):
         self.highlighted = self._next_highlighted(self.highlighted, 1)
 
     @on(events.MouseMove)
-    def on_mouse_move(self, event: events.MouseMove) -> None:
+    def _on_mouse_move(self, event: events.MouseMove) -> None:
         index = event.y - 1
         if 0 <= index < len(self._items):
             new_highlighted = index
@@ -231,10 +335,31 @@ class MenuWidget(Widget, can_focus=True):
         self._handle_section()
 
     def _handle_section(self) -> None:
-        if self.highlighted is not None:
-            item = self._items[self.highlighted]
-            if not item.disabled and not item.separator:
-                self.post_message(self.Selected(item, self.highlighted))
+        if self.highlighted is None:
+            return
+
+        item = self._items[self.highlighted]
+        if item.disabled:
+            return
+
+        if isinstance(item, MenuItem):
+            self.dismiss(item)
+            return
+
+        if isinstance(item, MenuItemSubmenu):
+            submenu_widget = MenuWidget(items=item.menu._items)
+            submenu_widget.show(
+                position=Offset(self.region.right, self.region.top_right.y),
+                parent=self,
+            )
+
+    def _on_blur(self, event: events.Blur) -> None:
+        super()._on_blur(event)
+        if not self.has_focus and not self.has_focus_within:
+            self.dismiss(None)
+
+    def action_dismiss(self) -> None:
+        self.dismiss(None)
 
 
 class MenuScreen(ModalScreen[MenuItem]):
@@ -242,60 +367,53 @@ class MenuScreen(ModalScreen[MenuItem]):
     MenuScreen {
         align: center middle;
         background: $background 0%;
-        MenuWidget {
-            background: $primary;
-        }
     }
     """
 
-    BINDINGS: ClassVar = [Binding(key="escape", action="dismiss", description="Close")]
-
-    _items: list[MenuItem]
-    _position: tuple[int, int]
-    _list_view: MenuWidget
+    _menu_widget: MenuWidget
 
     def __init__(
         self,
-        items: list[MenuItem],
-        **kwargs: Any,
+        menu_widget: MenuWidget,
     ) -> None:
-        super().__init__(**kwargs)
-        self._items = items
+        super().__init__()
+        self._menu_widget = menu_widget
 
     async def run(
         self,
         position: Offset | None = None,
     ) -> MenuItem | None:
-        self._position = position or self.app.mouse_position
-        self.focus()
+        self._menu_widget.offset = position or self.app.mouse_position
         return await self.app.push_screen_wait(screen=self)
 
     def compose(self) -> ComposeResult:
-        max_width = max(len(item.label) for item in self._items)
+        yield self._menu_widget
 
-        self._list_view = MenuWidget(self._items)
-        self._list_view.offset = self._position
-        yield self._list_view
-
-    def _action_dismiss(self) -> None:
-        self.dismiss()
-
-    def _on_mouse_down(self, event):
-        # check if the click is outside the ListView
-        if not self._list_view.region.contains(event.screen_x, event.screen_y):
-            self._action_dismiss()
-
-        return super()._on_mouse_down(event)
-
-    def on_menu_widget_selected(self, event: MenuWidget.Selected) -> None:
+    def on_menu_widget_dismissed(self, event: MenuWidget.Dismissed) -> None:
         self.dismiss(event.item)
+
+    async def _on_mouse_down(self, event: events.MouseDown) -> None:
+        # check if the click is outside the ListView
+        if not self._menu_widget.region.contains(event.screen_x, event.screen_y):
+            self._menu_widget.dismiss(None)
+
+        await super()._on_mouse_down(event)
 
 
 class Menu:
-    _items: list[MenuItem]
+    _title: str | None
+    _items: list[AbstractMenuItem]
 
-    def __init__(self, items: list[MenuItem] | None = None) -> None:
+    def __init__(self, title: str | None = None, items: list[AbstractMenuItem] | None = None) -> None:
+        self._title = title
         self._items = items or []
+
+    def set_title(self, title: str) -> None:
+        self._title = title
+
+    @property
+    def title(self) -> str | None:
+        return self._title
 
     def add_item(
         self,
@@ -306,11 +424,38 @@ class Menu:
         icon: str | None = None,
         shortcut: str | None = None,
         disabled: bool = False,
-    ) -> None:
-        self._items.append(MenuItem(label=label, id=id, action=action, icon=icon, shortcut=shortcut, disabled=disabled))
-    def add_separator(self) -> None:
-        self._items.append(MenuItem(label="", separator=True))
+    ) -> MenuItem:
+        item = MenuItem(
+            label=label,
+            id=id,
+            action=action,
+            icon=icon,
+            shortcut=shortcut,
+            disabled=disabled,
+        )
+        self._items.append(item)
+        return item
 
+    def add_menu(
+        self,
+        title: str,
+        *,
+        icon: str | None = None,
+        disabled: bool = False,
+    ) -> "Menu":
+        menu = Menu(title)
+        self._items.append(MenuItemSubmenu(menu, icon=icon, disabled=disabled))
+        return menu
+
+    def add_separator(self) -> None:
+        self._items.append(MenuItemSeparator())
+
+    def show(self, position: Offset | None = None, parent: Widget | None = None) -> MenuWidget:
+        widget = MenuWidget(items=self._items)
+        widget.show(position, parent)
+        return widget
+
+    # exclusive/modal execution of the menu
     async def exec(self, position: Offset | None = None) -> MenuItem | None:
-        widget = MenuScreen(items=self._items)
-        return await widget.run(position)
+        menu_screen = MenuScreen(menu_widget=MenuWidget(items=self._items))
+        return await menu_screen.run(position)
