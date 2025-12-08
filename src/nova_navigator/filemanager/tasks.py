@@ -26,10 +26,21 @@ OverwritePolicy = Literal["overwrite", "skip", "ask"]
 
 @dataclass
 class FileCopyOptions:
+    """Options that control the behaviour of file copy operations."""
+
     overwrite: OverwritePolicy = "ask"
 
 
 def copy_file(status: TaskStatus, src_path: VPath, dst_path: VPath, options: FileCopyOptions | None = None) -> Task:
+    """Task that copies a single file from *src_path* to *dst_path*.
+
+    Reads the source in :data:`CHUNK_SIZE` chunks and writes them to the
+    destination, updating step-level progress as bytes are transferred.  When
+    the destination already exists the action taken depends on
+    ``options.overwrite``: ``"overwrite"`` replaces it unconditionally,
+    ``"skip"`` leaves it untouched, and ``"ask"`` yields a
+    :class:`~nova_navigator.task.DecisionRequest` to prompt the user.
+    """
     if options is None:
         options = FileCopyOptions()
 
@@ -75,6 +86,16 @@ def copy_file(status: TaskStatus, src_path: VPath, dst_path: VPath, options: Fil
 def copy_files(
     status: TaskStatus, src_paths: list[VPath], dst_path: VPath, options: FileCopyOptions | None = None
 ) -> Task:
+    """Task that copies each path in *src_paths* into *dst_path*.
+
+    Plain files are placed directly inside *dst_path* under their original
+    name.  Directories are copied recursively: all leaf files discovered by
+    :func:`_iterate_files` are mirrored under ``dst_path / src_dir_name``,
+    preserving the relative sub-directory structure.  Overall progress is
+    incremented by one for each element of *src_paths* regardless of whether
+    it is a file or directory.  *options* is forwarded to every
+    :func:`copy_file` call.
+    """
     status.update_progress(inc_total=len(src_paths))
     for src_path in src_paths:
         status.check_cancelled()

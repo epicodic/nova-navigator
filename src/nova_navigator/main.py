@@ -34,6 +34,8 @@ from nova_navigator.widgets.terminal import Terminal, shell_clear_prompt, shell_
 from nova_widgets.menu import SYMBOL_TABLE, Action, Menu, MenuBar, set_icon_provider
 from nova_widgets.menu import constructor as mc
 
+from .filemanager.jobs import copy_or_move_files_job
+
 logging.basicConfig(
     level="INFO",
     handlers=[TextualHandler()],
@@ -50,7 +52,7 @@ class MainScreen(Screen[None]):
         Binding("ctrl+o", "toggle_maximized_terminal", "Maximize Terminal", priority=True),
         Binding("ctrl+l", "toggle_terminal", "Enlarge Terminal", priority=True),
         Binding("f4", "open_editor", "Edit"),
-        # Binding("f5", "copy_or_move_files(False)", "Copy"),
+        Binding("f5", "copy_or_move_files(False)", "Copy"),
         # Binding("f6", "copy_or_move_files(True)", "Move"),
         # Binding("f8", "delete_files", "Delete"),
         Binding("ctrl+b", "show_bookmarks", "Bookmark"),
@@ -185,8 +187,11 @@ class MainScreen(Screen[None]):
         assert action is not None, f"Action '{name}' not found"
         return action
 
-    def other_panel(self, panel: DirectoryBrowser) -> DirectoryBrowser:
-        if panel == self._left_panel:
+    def active_panel(self) -> DirectoryBrowser:
+        return self._last_active_panel
+
+    def other_panel(self) -> DirectoryBrowser:
+        if self._last_active_panel == self._left_panel:
             return self._right_panel
         return self._left_panel
 
@@ -241,12 +246,12 @@ class MainScreen(Screen[None]):
                     return True
 
             case "ctrl+down":
-                path = self._last_active_panel.path_item_under_cursor
+                path = self.active_panel().path_item_under_cursor
                 await self._terminal.send(f"{path.name}")
                 return True
 
             case "ctrl+shift+down":
-                path = self._last_active_panel.path_item_under_cursor
+                path = self.active_panel().path_item_under_cursor
                 await self._terminal.send(f"{path}")
                 return True
 
@@ -285,7 +290,7 @@ class MainScreen(Screen[None]):
     def action_toggle_maximized_terminal(self) -> None:
         if self._terminal_mode == self._TerminalMode.MAXIMIZED:
             self._terminal_mode = self._TerminalMode.MINIMIZED
-            self._last_active_panel.focus()
+            self.active_panel().focus()
         else:
             self._terminal_mode = self._TerminalMode.MAXIMIZED
             self._terminal.focus()
@@ -294,10 +299,10 @@ class MainScreen(Screen[None]):
     def action_toggle_terminal(self) -> None:
         if self._terminal_mode == self._TerminalMode.ENLARGED:
             self._terminal_mode = self._TerminalMode.MINIMIZED
-            self._last_active_panel.focus()
+            self.active_panel().focus()
         else:
             self._terminal_mode = self._TerminalMode.ENLARGED
-            self._last_active_panel.focus()
+            self.active_panel().focus()
         self._resize_terminal()
 
     def _resize_terminal(self) -> None:
@@ -325,28 +330,26 @@ class MainScreen(Screen[None]):
 
     def _on_terminal_pre_cmd(self, event: Terminal.PreCmd) -> None:
         # TODO handle non-local paths
-        self._last_active_panel.set_path(VPath(event.cwd, LocalFilesystem.singleton()))
+        self.active_panel().set_path(VPath(event.cwd, LocalFilesystem.singleton()))
 
     # operations
 
-    # @work
-    # async def action_copy_or_move_files(self, move: bool) -> None:
-    #     source_paths = list(self._last_active_panel.selected_path_items)
-    #     destination_path = (
-    #         self._left_panel.path if self._last_active_panel == self._right_panel else self._right_panel.path
-    #     )
+    @work
+    async def action_copy_or_move_files(self, move: bool) -> None:
+        source_paths = list(self.active_panel().selected_path_items)
+        destination_path = self.other_panel().path
 
-    #     operation = await copy_or_move_files_operation(
-    #         source_paths=source_paths,
-    #         destination_path=destination_path,
-    #         move=move,
-    #     )
-    #     if operation is not None:
-    #         self.append_operation(operation)
+        # operation = await copy_or_move_files_job(
+        #     src_paths=source_paths,
+        #     dst_path=destination_path,
+        #     move=move,
+        # )
+        # if operation is not None:
+        #     self.append_operation(operation)
 
     # @work
     # async def action_delete_files(self) -> None:
-    #     paths = list(self._last_active_panel.selected_path_items)
+    #     paths = list(self.active_panel().selected_path_items)
 
     #     operation = await delete_files_operation(
     #         paths=paths,
@@ -356,7 +359,7 @@ class MainScreen(Screen[None]):
 
     def on_bookmarks_dialog_bookmark_selected(self, event: BookmarksDialog.BookmarkSelected) -> None:
         vpath = vfspath_from_uri(event.bookmark_path)
-        self._last_active_panel.set_path(vpath)
+        self.active_panel().set_path(vpath)
         # self._last_active_pane.focus()
 
     def _update_actions(self, path: VPath | None) -> None:
@@ -480,17 +483,16 @@ class MainScreen(Screen[None]):
         self._right_panel.show_hidden_files = a.checked
 
     async def _action_open_editor(self) -> None:
-        path = self._last_active_panel.path_item_under_cursor
+        path = self.active_panel().path_item_under_cursor
         self._open_editor(path)
 
     async def _action_open_path(self) -> None:
-        path = self._last_active_panel.path_item_under_cursor
-        await self._open_path(path, self._last_active_panel)
+        path = self.active_panel().path_item_under_cursor
+        await self._open_path(path, self.active_panel())
 
     async def _action_open_in_other_panel(self) -> None:
-        path = self._last_active_panel.path_item_under_cursor
-        other_panel = self.other_panel(self._last_active_panel)
-        other_panel.set_path(path)
+        path = self.active_panel().path_item_under_cursor
+        self.other_panel().set_path(path)
 
     async def _action_show_bookmarks(self) -> None:
         self._bookmark_dialog = BookmarksDialog(position=(2, 2))
@@ -498,19 +500,19 @@ class MainScreen(Screen[None]):
         self._bookmark_dialog.focus()
 
     async def _action_filter(self) -> None:
-        await self._last_active_panel.action_filter()
+        await self.active_panel().action_filter()
 
     async def _action_toggle_selection_under_cursor(self) -> None:
-        self._last_active_panel.action_toggle_selection_under_cursor()
+        self.active_panel().action_toggle_selection_under_cursor()
 
     async def _action_select_all(self) -> None:
-        self._last_active_panel.action_select_all()
+        self.active_panel().action_select_all()
 
     async def _action_select_none(self) -> None:
-        self._last_active_panel.action_select_none()
+        self.active_panel().action_select_none()
 
     async def _action_invert_selection(self) -> None:
-        self._last_active_panel.action_invert_selection()
+        self.active_panel().action_invert_selection()
 
     # async def _action_show_processes(self) -> None:
     #     processes_dialog = ProcessesDialog(position=(4, 4), operations=self._operations)

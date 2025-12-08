@@ -32,7 +32,7 @@ class VPath:
         return self._filesystem
 
     def iterdir(self) -> list[VPath]:
-        """Return an iterator of the files and directories in the directory."""
+        """Return the list of immediate children of this directory."""
         return self._filesystem.iterdir(self)
 
     @property
@@ -44,7 +44,7 @@ class VPath:
 
     @property
     def stat_or_none(self) -> Stat | None:
-        """Return the stat associated with this path, or None if it cannot be retrieved."""
+        """Return the stat for this path, or ``None`` if the path does not exist."""
         try:
             self._ensure_stat()
             return self._stat
@@ -74,10 +74,12 @@ class VPath:
             return str(self._path)
 
     def guess_mimetype(self) -> str | None:
+        """Return the MIME type guessed from the filename, or ``None`` if unknown."""
         mimetype, _ = mimetypes.guess_type(self._path.as_posix())
         return mimetype
 
     def joinpath(self, *other: os.PathLike[str] | str) -> VPath:
+        """Return a new :class:`VPath` by appending path segments to this path."""
         return VPath(self._path.joinpath(*other), self._filesystem)
 
     def __str__(self) -> str:
@@ -87,6 +89,7 @@ class VPath:
         return f"{self.__class__.__name__}({self.path.as_posix()!r}, {self._filesystem!r})"
 
     def __truediv__(self, other: str | os.PathLike[str]) -> VPath:
+        """Return a new :class:`VPath` by appending *other* using the ``/`` operator."""
         return self.joinpath(other)
 
     def __eq__(self, other: object) -> bool:
