@@ -320,7 +320,7 @@ class MainScreen(Screen[None]):
         menu.add_item("Copy", icon=ICONS.get_icon("copy"), shortcut="Ctrl+C")
         menu.add_separator()
         menu.add_item("Move to trash", icon=ICONS.get_icon("trash"))
-        menu.add_item("Delete", icon=ICONS.get_icon("delete"), shortcut="F8")
+        menu.add_item("Delete", icon=ICONS.get_icon("xmark"), shortcut="F8")
         menu.add_separator()
         menu.add_item("Bookmark", icon=ICONS.get_icon("bookmark"))
 

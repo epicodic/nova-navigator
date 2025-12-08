@@ -786,6 +786,8 @@ class DirectoryBrowser(ScrollView):
         meta = event.style.meta
 
         if "row" not in meta or "column" not in meta:
+            # if event.button == MOUSE_BUTTON_RIGHT: # TODO: enable context menu on empty area
+            #    self.post_message(DirectoryBrowser.ContextMenu(self, None)) #
             return
         row_index = meta["row"]
         column_index = meta["column"]
