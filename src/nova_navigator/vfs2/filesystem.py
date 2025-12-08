@@ -9,23 +9,35 @@ from .vpath import VPath
 
 
 class StreamReaderLike(Protocol):
+    """Protocol for objects that can read binary data in fixed-size chunks."""
+
     def read(self, size: int) -> bytes: ...
     def close(self) -> None: ...
 
 
 class StreamWriterLike(Protocol):
+    """Protocol for objects that can write binary data."""
+
     def write(self, data: bytes) -> int: ...
     def close(self) -> None: ...
 
 
 class Filesystem(ABC):
-    """Base class representing a virtual file system."""
+    """Abstract base class for virtual filesystem implementations.
+
+    Subclasses provide access to local disks, remote SSH hosts, archives, and
+    other storage backends through a uniform path-oriented interface.  All path
+    arguments must be :class:`~nova_navigator.vfs2.vpath.VPath` instances that
+    belong to *this* filesystem instance; :meth:`_assert_vpath` enforces this
+    invariant.
+    """
 
     def _assert_vpath(self, path: VPath) -> None:
         if path.filesystem != self:
             raise ValueError(f"VPath {path} does not belong to filesystem {self}")
 
     def path(self, p: str | PurePath) -> VPath:
+        """Create a :class:`~nova_navigator.vfs2.vpath.VPath` bound to this filesystem."""
         return VPath(str(p), self)
 
     @abstractmethod

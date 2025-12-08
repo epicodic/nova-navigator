@@ -10,6 +10,13 @@ from tomlkit.items import Table as TOMLTable
 
 @dataclass
 class FieldInfo:
+    """Metadata attached to a :class:`TomlConfig` field declaration.
+
+    Produced by :func:`Field` and consumed by :meth:`TomlConfig.__init__` to
+    determine the default value strategy and whether the field should be read
+    from TOML at all (*exclude=True* means use the default only).
+    """
+
     default: Any = None
     default_factory: Any = None
     exclude: bool = False
@@ -24,6 +31,14 @@ def Field[T](*, default: T, default_factory: Any = None, exclude: bool = False) 
 
 
 def Field(*, default: Any = None, default_factory: Any = None, exclude: bool = False) -> Any:
+    """Declare a :class:`TomlConfig` field with an optional default value or factory.
+
+    Use as a class-level annotation value::
+
+        class MyConfig(TomlConfig):
+            timeout: int = Field(default=30)
+            label: str | None = Field(default=None)
+    """
     return FieldInfo(default, default_factory, exclude)
 
 
@@ -63,6 +78,15 @@ def _get_optional_type(annotation_type: Any) -> Any:
 
 
 class TomlConfig:
+    """Base class for dataclass-like configuration objects backed by a TOML table.
+
+    Subclasses declare typed class-level annotations (optionally with
+    :func:`Field` defaults).  :meth:`__init__` reads each annotated field from
+    the supplied *toml* table, performing basic type coercion and list/Optional
+    unwrapping automatically.  Fields marked ``exclude=True`` are skipped and
+    initialised from their default instead.
+    """
+
     def __init__(self, toml: TOMLTable | TOMLDocument, **kwargs: Any) -> None:
         cls = self.__class__
 

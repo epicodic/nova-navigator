@@ -7,7 +7,7 @@ from nova_navigator.filemanager.tasks import CHUNK_SIZE, FileCopyOptions, copy_f
 from nova_navigator.task import DecisionResponse, TaskCancelled, TaskStatus
 from tests.mock_filesystem import MockFilesystem
 
-from .common import make_status, run_task
+from .common import make_status, read_all, run_task
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -26,9 +26,7 @@ def test_copy_file_simple() -> None:
     run_task(copy_file(make_status(), src, dst))
 
     assert dst_fs.path("/home/user/file.txt").stat.size == len(content)
-    reader = dst_fs.read(dst)
-    assert reader.read(len(content)) == content
-    reader.close()
+    assert read_all(dst_fs, "/home/user/file.txt") == content
     assert src_fs.readers[0].close_count == 1
     assert dst_fs.writers[0].close_count == 1
 
@@ -45,9 +43,7 @@ def test_copy_file_overwrite_skip() -> None:
 
     assert len(dst_fs.writers) == 0
     assert src_fs.readers[0].close_count == 1
-    reader = dst_fs.read(dst)
-    assert reader.read(1024) == b"original"
-    reader.close()
+    assert read_all(dst_fs, "/home/user/file.txt") == b"original"
 
 
 def test_copy_file_overwrite_force() -> None:
@@ -62,9 +58,7 @@ def test_copy_file_overwrite_force() -> None:
 
     assert src_fs.readers[0].close_count == 1
     assert dst_fs.writers[0].close_count == 1
-    reader = dst_fs.read(dst)
-    assert reader.read(1024) == b"new content"
-    reader.close()
+    assert read_all(dst_fs, "/home/user/file.txt") == b"new content"
 
 
 def test_copy_file_ask_yes() -> None:
@@ -83,9 +77,7 @@ def test_copy_file_ask_yes() -> None:
     assert len(requests) == 1
     assert src_fs.readers[0].close_count == 1
     assert dst_fs.writers[0].close_count == 1
-    reader = dst_fs.read(dst)
-    assert reader.read(1024) == b"replacement"
-    reader.close()
+    assert read_all(dst_fs, "/home/user/file.txt") == b"replacement"
 
 
 def test_copy_file_ask_no() -> None:
@@ -104,9 +96,7 @@ def test_copy_file_ask_no() -> None:
     assert len(requests) == 1
     assert len(dst_fs.writers) == 0
     assert src_fs.readers[0].close_count == 1
-    reader = dst_fs.read(dst)
-    assert reader.read(1024) == b"original"
-    reader.close()
+    assert read_all(dst_fs, "/home/user/file.txt") == b"original"
 
 
 def test_copy_file_reader_closed_on_error() -> None:
@@ -140,9 +130,7 @@ def test_copy_file_same_fs() -> None:
 
     assert fs.readers[0].close_count == 1
     assert fs.writers[0].close_count == 1
-    reader = fs.read(dst)
-    assert reader.read(len(content)) == content
-    reader.close()
+    assert read_all(fs, "/home/user/dst/copy.txt") == content
 
 
 def test_copy_file_large() -> None:
@@ -158,9 +146,7 @@ def test_copy_file_large() -> None:
 
     assert src_fs.readers[0].close_count == 1
     assert dst_fs.writers[0].close_count == 1
-    reader = dst_fs.read(dst)
-    assert reader.read(len(content) + 1) == content
-    reader.close()
+    assert read_all(dst_fs, "/home/user/big.bin") == content
 
 
 def test_copy_file_empty_src() -> None:
@@ -219,13 +205,6 @@ def test_copy_file_write_error_closes_streams() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _read_all(fs: MockFilesystem, path: str) -> bytes:
-    reader = fs.read(fs.path(path))
-    data = reader.read(1024 * 1024)
-    reader.close()
-    return data
-
-
 def test_copy_paths_single_file() -> None:
     """A single file is copied into the destination directory under its original name."""
     src_fs = MockFilesystem({"/src/hello.txt": b"hello"})
@@ -233,7 +212,7 @@ def test_copy_paths_single_file() -> None:
 
     run_task(copy_files(make_status(), [src_fs.path("/src/hello.txt")], dst_fs.path("/home/user")))
 
-    assert _read_all(dst_fs, "/home/user/hello.txt") == b"hello"
+    assert read_all(dst_fs, "/home/user/hello.txt") == b"hello"
 
 
 def test_copy_paths_multiple_files() -> None:
@@ -250,9 +229,9 @@ def test_copy_paths_multiple_files() -> None:
     srcs = [src_fs.path(p) for p in ("/src/a.txt", "/src/b.txt", "/src/c.txt")]
     run_task(copy_files(make_status(), srcs, dst_fs.path("/home/user")))
 
-    assert _read_all(dst_fs, "/home/user/a.txt") == b"aaa"
-    assert _read_all(dst_fs, "/home/user/b.txt") == b"bbb"
-    assert _read_all(dst_fs, "/home/user/c.txt") == b"ccc"
+    assert read_all(dst_fs, "/home/user/a.txt") == b"aaa"
+    assert read_all(dst_fs, "/home/user/b.txt") == b"bbb"
+    assert read_all(dst_fs, "/home/user/c.txt") == b"ccc"
 
 
 def test_copy_paths_flat_directory() -> None:
@@ -269,8 +248,8 @@ def test_copy_paths_flat_directory() -> None:
 
     run_task(copy_files(make_status(), [src_fs.path("/src/mydir")], dst_fs.path("/dst")))
 
-    assert _read_all(dst_fs, "/dst/mydir/a.txt") == b"a"
-    assert _read_all(dst_fs, "/dst/mydir/b.txt") == b"b"
+    assert read_all(dst_fs, "/dst/mydir/a.txt") == b"a"
+    assert read_all(dst_fs, "/dst/mydir/b.txt") == b"b"
 
 
 def test_copy_paths_deep_hierarchy() -> None:
@@ -287,9 +266,9 @@ def test_copy_paths_deep_hierarchy() -> None:
 
     run_task(copy_files(make_status(), [src_fs.path("/src/root")], dst_fs.path("/dst")))
 
-    assert _read_all(dst_fs, "/dst/root/top.txt") == b"top"
-    assert _read_all(dst_fs, "/dst/root/sub/mid.txt") == b"mid"
-    assert _read_all(dst_fs, "/dst/root/sub/deep/bottom.txt") == b"bottom"
+    assert read_all(dst_fs, "/dst/root/top.txt") == b"top"
+    assert read_all(dst_fs, "/dst/root/sub/mid.txt") == b"mid"
+    assert read_all(dst_fs, "/dst/root/sub/deep/bottom.txt") == b"bottom"
 
 
 def test_copy_paths_mixed_files_and_dirs() -> None:
@@ -306,8 +285,8 @@ def test_copy_paths_mixed_files_and_dirs() -> None:
     srcs = [src_fs.path("/src/standalone.txt"), src_fs.path("/src/dir")]
     run_task(copy_files(make_status(), srcs, dst_fs.path("/dst")))
 
-    assert _read_all(dst_fs, "/dst/standalone.txt") == b"standalone"
-    assert _read_all(dst_fs, "/dst/dir/nested.txt") == b"nested"
+    assert read_all(dst_fs, "/dst/standalone.txt") == b"standalone"
+    assert read_all(dst_fs, "/dst/dir/nested.txt") == b"nested"
 
 
 def test_copy_paths_overwrite_skip() -> None:
@@ -330,8 +309,8 @@ def test_copy_paths_overwrite_skip() -> None:
 
     assert requests == []
     assert len(dst_fs.writers) == 0
-    assert _read_all(dst_fs, "/dst/a.txt") == b"original-a"
-    assert _read_all(dst_fs, "/dst/b.txt") == b"original-b"
+    assert read_all(dst_fs, "/dst/a.txt") == b"original-a"
+    assert read_all(dst_fs, "/dst/b.txt") == b"original-b"
 
 
 def test_copy_paths_overwrite_force() -> None:
@@ -353,8 +332,8 @@ def test_copy_paths_overwrite_force() -> None:
     requests = run_task(copy_files(make_status(), srcs, dst_fs.path("/dst"), FileCopyOptions(overwrite="overwrite")))
 
     assert requests == []
-    assert _read_all(dst_fs, "/dst/a.txt") == b"new-a"
-    assert _read_all(dst_fs, "/dst/b.txt") == b"new-b"
+    assert read_all(dst_fs, "/dst/a.txt") == b"new-a"
+    assert read_all(dst_fs, "/dst/b.txt") == b"new-b"
 
 
 def test_copy_paths_overwrite_ask_yes() -> None:
@@ -368,7 +347,7 @@ def test_copy_paths_overwrite_ask_yes() -> None:
     )
 
     assert len(requests) == 1
-    assert _read_all(dst_fs, "/dst/file.txt") == b"new"
+    assert read_all(dst_fs, "/dst/file.txt") == b"new"
 
 
 def test_copy_paths_overwrite_ask_no() -> None:
@@ -383,7 +362,7 @@ def test_copy_paths_overwrite_ask_no() -> None:
 
     assert len(requests) == 1
     assert len(dst_fs.writers) == 0
-    assert _read_all(dst_fs, "/dst/file.txt") == b"original"
+    assert read_all(dst_fs, "/dst/file.txt") == b"original"
 
 
 def test_copy_paths_overwrite_ask_per_file() -> None:
@@ -409,8 +388,8 @@ def test_copy_paths_overwrite_ask_per_file() -> None:
     )
 
     assert len(requests) == 2
-    assert _read_all(dst_fs, "/dst/a.txt") == b"new-a"
-    assert _read_all(dst_fs, "/dst/b.txt") == b"old-b"
+    assert read_all(dst_fs, "/dst/a.txt") == b"new-a"
+    assert read_all(dst_fs, "/dst/b.txt") == b"old-b"
 
 
 def test_copy_paths_overwrite_yes_to_all() -> None:
@@ -443,9 +422,9 @@ def test_copy_paths_overwrite_yes_to_all() -> None:
     # Three separate conflicts → three separate DecisionRequests (run_task drives
     # them all; de-duplication happens in TaskScheduler, not in the Task itself)
     assert len(requests) == 3
-    assert _read_all(dst_fs, "/dst/a.txt") == b"new-a"
-    assert _read_all(dst_fs, "/dst/b.txt") == b"new-b"
-    assert _read_all(dst_fs, "/dst/c.txt") == b"new-c"
+    assert read_all(dst_fs, "/dst/a.txt") == b"new-a"
+    assert read_all(dst_fs, "/dst/b.txt") == b"new-b"
+    assert read_all(dst_fs, "/dst/c.txt") == b"new-c"
 
 
 def test_copy_paths_no_conflict_no_prompt() -> None:
@@ -462,8 +441,8 @@ def test_copy_paths_no_conflict_no_prompt() -> None:
     requests = run_task(copy_files(make_status(), srcs, dst_fs.path("/home/user")))
 
     assert requests == []
-    assert _read_all(dst_fs, "/home/user/x.txt") == b"x"
-    assert _read_all(dst_fs, "/home/user/y.txt") == b"y"
+    assert read_all(dst_fs, "/home/user/x.txt") == b"x"
+    assert read_all(dst_fs, "/home/user/y.txt") == b"y"
 
 
 def test_copy_paths_progress_tracks_src_paths() -> None:

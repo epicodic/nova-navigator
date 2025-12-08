@@ -14,6 +14,13 @@ from .base.thread_safe_list import ThreadSafeList
 
 @dataclass(init=False)
 class DecisionRequest:
+    """A request for a user decision, yielded by a task.
+
+    The *message* is a format string that may reference *kwargs* for display;
+    it also serves as the deduplication key inside :class:`TaskScheduler` so
+    that ``YES_TO_ALL`` / ``NO_TO_ALL`` responses suppress identical prompts.
+    """
+
     message: str
     kwargs: dict[str, Any]
 
@@ -23,6 +30,8 @@ class DecisionRequest:
 
 
 class DecisionResponse(Enum):
+    """The user's response to a :class:`DecisionRequest`."""
+
     YES = auto()
     YES_TO_ALL = auto()
     NO = auto()
@@ -45,6 +54,12 @@ Task = Generator["DecisionRequest | Task", DecisionResponse, None]
 
 
 def task(func: Callable[..., Any]) -> Callable[..., Task]:
+    """Decorator that normalises a plain function into a :data:`Task`.
+
+    If *func* is already a generator function it is returned unchanged.
+    Otherwise a thin wrapper is added so callers can treat it uniformly as a
+    generator regardless of whether it ever yields.
+    """
     if inspect.isgeneratorfunction(func):
         return func
 
@@ -59,6 +74,13 @@ def task(func: Callable[..., Any]) -> Callable[..., Task]:
 
 @dataclass
 class Progress:
+    """A snapshot of a task's overall and per-step progress counters.
+
+    *completed* / *total* track the number of high-level items processed
+    (e.g. files); *step_completed* / *step_total* track finer-grained progress
+    within the current item (e.g. bytes transferred).
+    """
+
     completed: int = 0
     total: int = 0
     step_total: int = 0
@@ -70,6 +92,14 @@ class TaskCancelled(Exception):
 
 
 class TaskStatus:
+    """Thread-safe task state holder shared between a worker thread and the GUI.
+
+    Worker code calls :meth:`update_progress`, :meth:`set_step_progress`, etc.
+    to report progress; each call invokes the *progress_callback* so the GUI
+    can refresh.  :meth:`check_cancelled` raises :exc:`TaskCancelled` when the
+    cancel event has been set.
+    """
+
     ProgressUpdateCallback = Callable[["TaskStatus"], None]
 
     _cancel_event: threading.Event
@@ -98,40 +128,64 @@ class TaskStatus:
         return self._progress_callback
 
     def check_cancelled(self) -> None:
+        """Raise :exc:`TaskCancelled` if the cancel event has been set."""
         if self._cancel_event.is_set():
             raise TaskCancelled
 
     def update_progress(self, inc_completed: int = 0, inc_total: int = 0) -> None:
+        """Increment the overall completed and/or total counters by the given deltas."""
         self._progress.total += inc_total
         self._progress.completed += inc_completed
         self._progress_callback(self)
 
     def set_progress(self, completed: int, total: int) -> None:
+        """Set the overall completed and total counters to absolute values."""
         self._progress.completed = completed
         self._progress.total = total
         self._progress_callback(self)
 
     def set_completed(self) -> None:
+        """Mark the task as fully complete by setting completed equal to total."""
         self.set_progress(self._progress.total, self._progress.total)
 
     def update_step_progress(self, inc_completed: int = 0, inc_total: int = 0) -> None:
+        """Increment the per-step completed and/or total counters by the given deltas."""
         self._progress.step_total += inc_total
         self._progress.step_completed += inc_completed
         self._progress_callback(self)
 
     def set_step_progress(self, completed: int, total: int) -> None:
+        """Set the per-step completed and total counters to absolute values."""
         self._progress.step_completed = completed
         self._progress.step_total = total
         self._progress_callback(self)
 
     def set_step_completed(self) -> None:
+        """Mark the current step as fully complete."""
         self.set_step_progress(self._progress.step_total, self._progress.step_total)
+
+    def is_complete(self) -> bool:
+        """Return ``True`` if the task is fully complete (completed >= total)."""
+        return (
+            self._progress.completed >= self._progress.total
+            and self._progress.step_completed >= self._progress.step_total
+        )
 
 
 GuiRequestCallback = Callable[[DecisionRequest, asyncio.Future[DecisionResponse]], Awaitable[None]]
 
 
 class TaskScheduler:
+    r"""Runs :data:`Task`\\ s in a thread and routes :class:`DecisionRequest`\\ s to the GUI.
+
+    Tasks yield either a :class:`DecisionRequest` (pause for user input) or a
+    nested :data:`Task` (sub-task to run inline).  When a request is yielded
+    the scheduler suspends the task, notifies the GUI via *gui_request_callback*,
+    and resumes the task with the :class:`DecisionResponse` once the user
+    replies.  ``YES_TO_ALL`` / ``NO_TO_ALL`` responses are cached and applied
+    automatically to subsequent identical requests.
+    """
+
     _waiting_tasks_with_requests: ThreadSafeList[tuple[Task, DecisionRequest]]
     _ready_tasks_with_responses: ThreadSafeList[tuple[Task, DecisionResponse]]
     _notify_task: concurrent.futures.Future[None] | None
@@ -149,12 +203,16 @@ class TaskScheduler:
         self._decisions_for_all = {}
 
     @staticmethod
-    async def execute(gui_request_callback: GuiRequestCallback, tasks: list[Task]) -> None:
+    async def execute(gui_request_callback: GuiRequestCallback, tasks: list[Task]) -> "TaskScheduler":
+        """Create a scheduler and run *tasks* in a worker thread, awaiting completion."""
         loop = asyncio.get_running_loop()
         scheduler = TaskScheduler(gui_request_callback=gui_request_callback, event_loop=loop)
         await asyncio.create_task(asyncio.to_thread(scheduler.run_tasks, tasks))
+        return scheduler
 
     def run_tasks(self, tasks: list[Task]) -> None:
+        """Run a list of tasks sequentially, blocking until all have finished."""
+
         def task_spawner() -> Task:
             for task in tasks:  # noqa: UP028
                 yield task
@@ -162,14 +220,13 @@ class TaskScheduler:
         self.run_task(task_spawner())
 
     def run_task(self, task: Task) -> None:
+        """Run a single task to completion, processing any pending ready-tasks along the way."""
         self._run_task(task)
 
         # keep running until all pending tasks are done
         while len(self._waiting_tasks_with_requests) > 0 or len(self._ready_tasks_with_responses) > 0:
             self._run_ready_tasks()
             time.sleep(0.1)  # avoid busy waiting
-
-        print("All tasks completed.")
 
     def _run_task(self, task: Task, decision: DecisionResponse | None = None) -> None:
         # decision is only allowed to be not None if the task is waiting for a response
@@ -197,6 +254,7 @@ class TaskScheduler:
             self._run_task(task, response)
 
     def submit_request(self, task: Task, request: DecisionRequest) -> DecisionResponse | None:
+        """Submit a decision request, returning a cached response immediately or ``None`` if queued."""
         # check if there is a global answer for this request already -> then respond immediately
         if request.message in self._decisions_for_all:
             return self._decisions_for_all[request.message]
@@ -213,7 +271,6 @@ class TaskScheduler:
     async def _notify_gui_task(self) -> None:
         while len(self._waiting_tasks_with_requests) > 0:
             task, request = self._waiting_tasks_with_requests.peek_front()
-            print(f"Notifying GUI for request: {request.message} with args {request.kwargs}")
             future: asyncio.Future[DecisionResponse] = asyncio.get_event_loop().create_future()
             await self._gui_request_callback(request, future)
             await future

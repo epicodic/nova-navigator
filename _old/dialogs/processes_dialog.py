@@ -1,13 +1,12 @@
 from dataclasses import dataclass
 
+from nova_navigator.operations.operation import Operation
 from textual import events
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.content import Content
 from textual.message import Message
 from textual.widgets import Button, Label, ListItem, ListView, ProgressBar
-
-from nova_navigator.operations.operation import Operation
 
 from ..config import conf_
 from ..icons import ico_
@@ -65,9 +64,7 @@ class ProcessesDialog(OverlayWidget, can_focus=True):
             return op_item
 
         progress_bar = ProgressBar(total=100.0)
-        # undo_icon = "u"  # Content(ico_("undo"), cell_length=1)
         abort_icon = "x"  # Content("x", cell_length=1)
-        # undo_button = Button(undo_icon, compact=True)
         abort_button = Button(abort_icon, compact=True)
         item = ListItem(
             Vertical(
