@@ -7,7 +7,7 @@ from textual.geometry import Offset
 from textual.widget import Widget
 from textual.widgets import Static
 
-from .menu import Menu, MenuWidget
+from .menu import Menu
 
 
 class MenuBarItem(Static):
@@ -84,7 +84,7 @@ class MenuBar(Widget):
 
     _menus: list[Menu]
     _items: list[MenuBarItem]
-    _menu_opened: MenuWidget | None
+    _menu_opened: Menu | None
 
     def __init__(
         self,
@@ -114,8 +114,8 @@ class MenuBar(Widget):
         else:
             self._menu_opened.dismiss()
 
-    def _on_menu_widget_dismissed(self, event: MenuWidget.Dismissed) -> None:
-        if self._menu_opened == event.widget:
+    def _on_menu_dismissed(self, event: Menu.Dismissed) -> None:
+        if self._menu_opened == event.menu:
             self._menu_opened = None
             self._highlight_item(None)
 
@@ -128,4 +128,5 @@ class MenuBar(Widget):
     @work
     async def _invoke_menu(self, item: MenuBarItem) -> None:
         self._highlight_item(item)
-        self._menu_opened = item.menu.show(item.region.bottom_left, self)
+        item.menu.show(item.region.bottom_left, self)
+        self._menu_opened = item.menu
