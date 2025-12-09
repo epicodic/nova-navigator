@@ -1,13 +1,11 @@
-from rich.text import Text
 from textual import events, work
-from textual.app import ComposeResult, RenderResult
+from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.events import Enter, MouseDown
-from textual.geometry import Offset
 from textual.widget import Widget
 from textual.widgets import Static
 
-from .menu import Menu
+from ._menu import Menu
 
 
 class MenuBarItem(Static):
