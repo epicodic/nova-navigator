@@ -3,6 +3,7 @@ from textual.app import App
 from textual.widgets import Button, Footer, Header
 
 from nova_widgets import Menu, MenuBar
+from nova_widgets.menu import constructor as mc
 
 
 class ExampleApp(App):
@@ -10,17 +11,30 @@ class ExampleApp(App):
 
     def __init__(self):
         super().__init__()
-        self._menu = Menu()
-        self._menu.add_item("Option 1", icon="o", shortcut="F1")
-        self._menu.add_item("Option 2", shortcut="F2", disabled=True)
-        self._menu.add_item("Option 3", shortcut="F3")
-        self._menu.add_separator()
-        submenu = self._menu.add_menu("Submenu")
-        submenu.add_item("Sub-option 1", shortcut="F4")
-        submenu.add_item("Sub-option 2", shortcut="F5")
-
-        self._menu.add_separator()
-        self._menu.add_item("Exit", icon="x", shortcut="Ctrl+Q")
+        self._menu = Menu(
+            items=[
+                mc.item("Option 1", icon="o", shortcut="F1"),
+                mc.item("Option 2", shortcut="F2", disabled=True),
+                mc.item("Option 3", shortcut="F3"),
+                mc.separator(),
+                mc.submenu(
+                    "Submenu",
+                    items=[
+                        mc.item("Sub-option 1", shortcut="F4"),
+                        mc.item("Sub-option 2", shortcut="F5"),
+                        mc.submenu(
+                            "Sub-submenu",
+                            items=[
+                                mc.item("Sub-sub-option 1", shortcut="F6"),
+                                mc.item("Sub-sub-option 2", shortcut="F7"),
+                            ],
+                        ),
+                    ],
+                ),
+                mc.separator(),
+                mc.item("Exit", icon="x", shortcut="Ctrl+Q"),
+            ]
+        )
 
     def compose(self):
         menu_bar = MenuBar()
