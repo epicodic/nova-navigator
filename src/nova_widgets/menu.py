@@ -160,6 +160,8 @@ class Menu(Widget, can_focus=True):
         Binding("enter", "select_cursor", "Select", show=False),
         Binding("up", "cursor_up", "Cursor up", show=False),
         Binding("down", "cursor_down", "Cursor down", show=False),
+        Binding(key="left", action="cursor_left", description="Cursor left", show=False),
+        Binding(key="right", action="cursor_right", description="Cursor right", show=False),
         Binding(key="escape", action="dismiss", description="Close"),
     ]
 
@@ -176,18 +178,22 @@ class Menu(Widget, can_focus=True):
             
     # Menu
 
+    _parent: Widget | None
     _title: str | None
     _items: list[AbstractMenuItem]
     _has_icons: bool
     _item_width: int
     _border_style: BorderStyle
+    _opened_submenu: "Menu | None"
     highlighted = reactive[int | None](None, init=False)
 
     def __init__(self, title: str | None = None, items: list[AbstractMenuItem] | None = None, **kwargs : Any) -> None:
         super().__init__(**kwargs)
+        self._parent = None
         self._title = title
         self._items = items or []
         self._border_style: BorderStyle = "solid"
+        self._opened_submenu = None
         self._refresh_items()
         
     #####
@@ -240,12 +246,15 @@ class Menu(Widget, can_focus=True):
         self.offset = position or self.app.mouse_position
         if parent:
             parent.mount(self)
+            self._parent = parent
         else:
             self.app.mount(self)
+            self._parent = None
         self.focus()
 
     # exclusive/modal execution of the menu
     async def exec(self, position: Offset | None = None) -> MenuItem | None:
+        self._parent = None
         menu_screen = MenuScreen(self)
         return await menu_screen.run(position)
         
@@ -356,6 +365,12 @@ class Menu(Widget, can_focus=True):
 
     def watch_highlighted(self, old_index: int | None, new_index: int | None) -> None:
         self.refresh()
+        
+        if old_index != new_index:
+            if self._opened_submenu:
+                self._opened_submenu.dismiss(None)
+                self._opened_submenu = None
+            
 
     def _next_highlighted(self, old_index: int | None, direction: int) -> int | None:
         if old_index is None:
@@ -378,6 +393,21 @@ class Menu(Widget, can_focus=True):
 
     def action_cursor_down(self) -> None:
         self.highlighted = self._next_highlighted(self.highlighted, 1)
+        
+    def action_cursor_left(self) -> None:
+        if self._parent and isinstance(self._parent, Menu):
+            self.dismiss(None)
+        
+    def action_cursor_right(self) -> None:
+        if self.highlighted is None:
+            return
+
+        item = self._items[self.highlighted]
+        if item.disabled:
+            return
+
+        if isinstance(item, MenuItemSubmenu):
+            self._open_submenu(item.menu, self.highlighted)
 
     @on(events.MouseMove)
     def _on_mouse_move(self, event: events.MouseMove) -> None:
@@ -389,9 +419,9 @@ class Menu(Widget, can_focus=True):
             if new_highlighted != self.highlighted:
                 self.highlighted = new_highlighted
 
-    @on(events.Leave)
-    def on_mouse_leave(self, event: events.Leave) -> None:
-        self.highlighted = None
+    #@on(events.Leave)
+    #def on_mouse_leave(self, event: events.Leave) -> None:
+    #    self.highlighted = None
 
     def action_select_cursor(self) -> None:
         self._handle_section()
@@ -413,10 +443,14 @@ class Menu(Widget, can_focus=True):
             return
 
         if isinstance(item, MenuItemSubmenu):
-            item.menu.show(
-                position=Offset(self.region.width, self.highlighted),
-                parent=self,
-            )
+            self._open_submenu(item.menu, self.highlighted)
+            
+    def _open_submenu(self, menu:"Menu", y:int) -> None:
+        menu.show(
+            position=Offset(self.region.width, y),
+            parent=self,
+        )
+        self._opened_submenu = menu
 
     def _on_blur(self, event: events.Blur) -> None:
         super()._on_blur(event)
