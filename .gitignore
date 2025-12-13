@@ -11,3 +11,6 @@ tests/stress_test/
 
 # Virtual environments
 .venv
+
+# Git worktrees
+.worktrees/
