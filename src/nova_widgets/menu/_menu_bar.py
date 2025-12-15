@@ -5,6 +5,7 @@ from textual.events import Enter, MouseDown
 from textual.widget import Widget
 from textual.widgets import Static
 
+from ._action import Action
 from ._menu import Menu
 
 
@@ -52,7 +53,7 @@ class MenuBarItem(Static):
     ):
         self._menu_bar = menu_bar
         self._menu = menu
-        super().__init__(content=f" {menu.title} ")
+        super().__init__(content=f" {menu.text} ")
 
     @property
     def menu(self) -> Menu:
@@ -91,8 +92,8 @@ class MenuBar(Widget):
         self._menus = []
         self._menu_opened = None
 
-    def add_menu(self, title: str) -> Menu:
-        menu = Menu(title=title)
+    def add_menu(self, title: str, *items: Action) -> Menu:
+        menu = Menu(title, *items)
         self._menus.append(menu)
         return menu
 
@@ -116,6 +117,10 @@ class MenuBar(Widget):
         if self._menu_opened == event.menu:
             self._menu_opened = None
             self._highlight_item(None)
+
+    def _on_menu_triggered(self, event: Menu.Triggered) -> None:
+        self._menu_opened = None
+        self._highlight_item(None)
 
     def _highlight_item(self, item: MenuBarItem | None) -> None:
         for it in self._items:
