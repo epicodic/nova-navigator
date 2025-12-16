@@ -43,6 +43,7 @@ class Action:
     _checked: bool
     _enabled: bool
     _icon: str | None
+    _name: str | None
     _is_separator: bool
     _shortcut: str | None
     _text: str
@@ -51,6 +52,8 @@ class Action:
     def __init__(
         self,
         text: str | None = None,
+        *,
+        name: str | None = None,
         icon: str | None = None,
         enabled: bool = True,
         shortcut: str | None = None,
@@ -62,6 +65,7 @@ class Action:
         self._icon = ICON_PROVIDER(icon) if icon is not None else None
         self._enabled = enabled
         self._text = text or ""
+        self._name = name or action
         self._shortcut = shortcut
         self._checkable = checkable
         self._checked = checked
@@ -78,6 +82,10 @@ class Action:
 
     def set_enabled(self, enabled: bool) -> None:
         self._enabled = enabled
+
+    @property
+    def name(self) -> str | None:
+        return self._name
 
     @property
     def icon(self) -> str | None:
@@ -134,3 +142,29 @@ class Action:
     async def execute(self) -> None:
         app = getters.app(App)
         await app.run_action(self._action)
+
+
+class ActionCollection:
+    _actions: list[Action]
+
+    def __init__(self) -> None:
+        self._actions = []
+
+    def _add_action(self, action: Action) -> None:
+        self._actions.append(action)
+
+    @property
+    def actions(self) -> list[Action]:
+        return self._actions
+
+    def find_action(self, path: str | list[str]) -> Action | None:
+        parts = path.split(".") if isinstance(path, str) else path
+        assert len(parts) > 0
+
+        for action in self._actions:
+            if action.name == parts[0]:
+                if len(parts) == 1:
+                    return action
+                if isinstance(action, ActionCollection):
+                    return action.find_action(parts[1:])
+        return None

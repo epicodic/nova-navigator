@@ -5,7 +5,7 @@ from textual.events import Enter, MouseDown
 from textual.widget import Widget
 from textual.widgets import Static
 
-from ._action import Action
+from ._action import Action, ActionCollection
 from ._menu import Menu
 
 
@@ -68,7 +68,7 @@ class MenuBarItem(Static):
         self.post_message(self.Selected(self))
 
 
-class MenuBar(Widget):
+class MenuBar(Widget, ActionCollection):
     DEFAULT_CSS = """
     MenuBar {
         dock: top;
@@ -88,13 +88,15 @@ class MenuBar(Widget):
     def __init__(
         self,
     ):
-        super().__init__()
+        Widget.__init__(self)
+        ActionCollection.__init__(self)
         self._menus = []
         self._menu_opened = None
 
-    def add_menu(self, title: str, *items: Action) -> Menu:
-        menu = Menu(title, *items)
+    def add_menu(self, title: str, *items: Action, name: str | None = None) -> Menu:
+        menu = Menu(title, *items, name=name)
         self._menus.append(menu)
+        self._add_action(menu)
         return menu
 
     def compose(self) -> ComposeResult:

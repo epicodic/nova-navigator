@@ -13,7 +13,7 @@ from textual.strip import Strip
 from textual.timer import Timer, TimerCallback
 from textual.widget import Widget
 
-from ._action import Action
+from ._action import Action, ActionCollection
 from ._symbol_table import SYMBOL_TABLE
 
 BorderStyle = Literal["round", "solid", "heavy"]
@@ -42,7 +42,7 @@ BOX_CHARS: dict[
 }
 
 
-class Menu(Widget, Action, can_focus=True):
+class Menu(Widget, Action, ActionCollection, can_focus=True):
     DEFAULT_CSS = """
     Menu {
         overlay: screen;
@@ -119,7 +119,6 @@ class Menu(Widget, Action, can_focus=True):
 
     # region --------------------------- Members ------------------------------
     _parent: Widget | None
-    _actions: list[Action]
     _has_icons: bool
     _item_width: int
     _border_style: BorderStyle
@@ -129,9 +128,9 @@ class Menu(Widget, Action, can_focus=True):
 
     # endregion
     # region ----------------------- Public Methods ---------------------------
-    def __init__(self, text: str | None = None, *actions: Action) -> None:
+    def __init__(self, text: str | None = None, *actions: Action, name: str | None = None) -> None:
         Widget.__init__(self)
-        Action.__init__(self, text=text)
+        Action.__init__(self, text=text, name=name)
 
         self._parent = None
         self._actions = list(actions)
@@ -149,7 +148,7 @@ class Menu(Widget, Action, can_focus=True):
         self,
         text: str,
         *,
-        callable: Callable[[], None] | None = None,
+        name: str | None = None,
         action: str | None = None,
         icon: str | None = None,
         shortcut: str | None = None,
@@ -157,9 +156,9 @@ class Menu(Widget, Action, can_focus=True):
         checkable: bool = False,
         checked: bool = False,
     ) -> Action:
-        action = Action(
+        a = Action(
             text=text,
-            callable=callable,
+            name=name,
             action=action,
             icon=icon,
             shortcut=shortcut,
@@ -167,9 +166,9 @@ class Menu(Widget, Action, can_focus=True):
             checkable=checkable,
             checked=checked,
         )
-        self._actions.append(action)
+        self._add_action(a)
         self._refresh_items()
-        return action
+        return a
 
     def add_menu(
         self,

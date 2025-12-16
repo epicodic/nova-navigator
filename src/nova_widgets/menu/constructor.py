@@ -1,4 +1,3 @@
-
 from ._action import Action, ActionGroup
 from ._menu import Menu
 
@@ -6,6 +5,7 @@ from ._menu import Menu
 def action(
     text: str,
     *,
+    name: str | None = None,
     action: str | None = None,
     shortcut: str | None = None,
     icon: str | None = None,
@@ -15,6 +15,7 @@ def action(
 ) -> Action:
     return Action(
         text,
+        name=name,
         action=action,
         shortcut=shortcut,
         icon=icon,
@@ -35,5 +36,5 @@ def separator() -> Action:
     return Action("", is_separator=True)
 
 
-def menu(title: str | None = None, *actions: Action) -> Action:
-    return Menu(title, *actions)
+def menu(title: str | None = None, *actions: Action, name: str | None = None) -> Action:
+    return Menu(title, *actions, name=name)
