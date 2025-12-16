@@ -73,29 +73,14 @@ class MainScreen(Screen[None]):
     _operations: list[Operation]
 
     _bookmark_dialog: BookmarksDialog
-    _actions: dict[str, Action]
 
     def __init__(self) -> None:
         super().__init__()
         self._terminal_mode = self._TerminalMode.MINIMIZED
         self._operations = []
-        self._actions = {}
-
-    def _get_action(self, id: str) -> Action:
-        return self._actions[id]
 
     def compose(self) -> ComposeResult:
         self._menu_bar = MenuBar()
-
-        def action(id: str, text: str, **kwargs: Any) -> Action:
-            a = mc.action(text, **kwargs)
-            self._actions[id] = a
-            return a
-
-        def menu(id: str, text: str, *args: Any, **kwargs: Any) -> Action:
-            m = mc.menu(text, *args, **kwargs)
-            self._actions[id] = m
-            return m
 
         self._menu_bar.add_menu(
             "Ⓝ ",
@@ -106,47 +91,54 @@ class MainScreen(Screen[None]):
             mc.action("Quit", shortcut="Ctrl+Q", action="quit"),
         )
 
-        self._menu_bar.add_menu(
-            "File",
-            menu(
-                "file.new",
+        self._menu_bar.add_menu("File", name="file").add(
+            mc.menu(
                 "New",
-                action("file.new.directory", "Directory", icon="folder", shortcut="F7"),
-                action("file.new.file", "File", icon="text"),
+                mc.action("Directory", icon="folder", shortcut="F7", name="directory"),
+                mc.action("File", icon="text", name="file"),
+                name="new",
             ),
             mc.separator(),
-            action("file.open", "Open", shortcut="Enter", action="open_path"),
-            action("file.open_in_other_panel", "Open in Other Panel", action="open_in_other_panel"),
-            action("file.edit", "Edit", shortcut="F4", action="open_editor"),
+            mc.action("Open", shortcut="Enter", action="open_path", name="open"),
+            mc.action("Open in Other Panel", action="open_in_other_panel", name="open_in_other_panel"),
+            mc.action("Edit", shortcut="F4", action="open_editor", name="edit"),
             mc.separator(),
-            action("file.copy", "Copy", shortcut="Ctrl+C"),
-            action("file.cut", "Cut", shortcut="Ctrl+X"),
-            action("file.copy_names", "Copy Names"),
-            action("file.paste", "Paste"),
+            mc.action("Copy", shortcut="Ctrl+C", name="copy"),
+            mc.action("Cut", shortcut="Ctrl+X", name="cut"),
+            mc.action("Copy Names", name="copy_names"),
+            mc.action("Paste", name="paste"),
             mc.separator(),
-            action("file.delete", "Delete", shortcut="F8"),
-            action("file.rename", "Rename"),
+            mc.action("Delete", shortcut="F8", name="delete"),
+            mc.action("Rename", name="rename"),
             mc.separator(),
-            action("file.filter", "Filter", shortcut="Ctrl+F", action="filter"),
+            mc.action("Filter", shortcut="Ctrl+F", action="filter", name="filter"),
         )
 
-        self._menu_bar.add_menu(
-            "Selection",
-            action("selection.select_all", "Select All", shortcut="Ctrl+A"),
-            action("selection.none", "Select None"),
-            action("selection.invert", "Invert Selection"),
+        self._menu_bar.add_menu("Selection", name="selection").add(
+            mc.action("Select All", shortcut="Ctrl+A", action="select_all"),
+            mc.action("Select None", shortcut="Ctrl+S,N", action="select_none"),
+            mc.action("Invert Selection", shortcut="Ctrl+S,I", action="invert_selection"),
+            mc.separator(),
+            mc.action(
+                "Toggle Selection",
+                name="toggle_selection",
+                action="toggle_selection_under_cursor",
+                shortcut="Ctrl+Click/Ins",
+            ),
+            mc.separator(),
+            mc.action("Select By Pattern...", name="select_by_pattern"),
         )
 
-        self._menu_bar.add_menu("View").add(
-            action("view.refresh", "Refresh"),
+        self._menu_bar.add_menu("View", name="view").add(
+            mc.action("Refresh", name="refresh"),
             mc.separator(),
-            action(
-                "view.show_hidden_files",
+            mc.action(
                 "Show Hidden Files",
                 checkable=True,
                 checked=False,
                 shortcut="Ctrl+H",
                 action="show_hidden_files",
+                name="show_hidden_files",
             ),
             mc.separator(),
             mc.action("Synchronized Browsing", checkable=True),
@@ -187,6 +179,11 @@ class MainScreen(Screen[None]):
 
         yield self._terminal
         # yield Footer()
+
+    def _act(self, name: str) -> Action:
+        action = self._menu_bar.find_action(name)
+        assert action is not None, f"Action '{name}' not found"
+        return action
 
     def other_panel(self, panel: DirectoryBrowser) -> DirectoryBrowser:
         if panel == self._left_panel:
@@ -408,8 +405,8 @@ class MainScreen(Screen[None]):
             (AKey(is_directory=True, is_file=True), "file.rename"),
         ]
 
-        for key, action_id in actions:
-            a = self._get_action(action_id)
+        for key, action_name in actions:
+            a = self._act(action_name)
             a.set_enabled(
                 key.matches(
                     AKey(
@@ -446,8 +443,8 @@ class MainScreen(Screen[None]):
 
         menu = Menu()
         last_group = None
-        for action_id, group in items:
-            a = self._get_action(action_id)
+        for action_name, group in items:
+            a = self._act(action_name)
             if not a.enabled:
                 continue
 
@@ -473,12 +470,12 @@ class MainScreen(Screen[None]):
             await self._run_action(event.action)
 
     def _action_toggle_hidden(self) -> None:
-        a = self._get_action("view.show_hidden_files")
+        a = self._act("view.show_hidden_files")
         a.set_checked(not a.checked)
         self._action_show_hidden_files()
 
     def _action_show_hidden_files(self) -> None:
-        a = self._get_action("view.show_hidden_files")
+        a = self._act("view.show_hidden_files")
         self._left_panel.show_hidden_files = a.checked
         self._right_panel.show_hidden_files = a.checked
 
@@ -502,6 +499,18 @@ class MainScreen(Screen[None]):
 
     async def _action_filter(self) -> None:
         await self._last_active_panel.action_filter()
+
+    async def _action_toggle_selection_under_cursor(self) -> None:
+        self._last_active_panel.action_toggle_selection_under_cursor()
+
+    async def _action_select_all(self) -> None:
+        self._last_active_panel.action_select_all()
+
+    async def _action_select_none(self) -> None:
+        self._last_active_panel.action_select_none()
+
+    async def _action_invert_selection(self) -> None:
+        self._last_active_panel.action_invert_selection()
 
     # endregion
 

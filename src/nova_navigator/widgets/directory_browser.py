@@ -779,6 +779,10 @@ class DirectoryBrowser(ScrollView):
             self.action_cursor_down()
             return
 
+        self.action_toggle_selection_under_cursor()
+        self.action_cursor_down()
+
+    def action_toggle_selection_under_cursor(self) -> None:
         cursor_item = self.path_item_under_cursor
         if cursor_item in self._selected_items:
             self._selected_items.remove(cursor_item)
@@ -786,14 +790,24 @@ class DirectoryBrowser(ScrollView):
             self._selected_items.add(cursor_item)
 
         self.refresh_row(self.cursor_row)
-        self.action_cursor_down()
 
     def action_select_all(self) -> None:
         self._selected_items = {item for item in self._shown_items if not isinstance(item, UpPath)}
         self.refresh()
 
-    # def action_toggle_hidden(self) -> None:
-    #    self.show_hidden_files = not self.show_hidden_files
+    def action_select_none(self) -> None:
+        self._selected_items = set()
+        self.refresh()
+
+    def action_invert_selection(self) -> None:
+        new_selection = set()
+        for item in self._shown_items:
+            if isinstance(item, UpPath):
+                continue
+            if item not in self._selected_items:
+                new_selection.add(item)
+        self._selected_items = new_selection
+        self.refresh()
 
     def watch_show_hidden_files(self, _old: bool, _new: bool) -> None:
         self.update(self.WhatChanged.FILTERING)
@@ -823,17 +837,20 @@ class DirectoryBrowser(ScrollView):
         if event.button == MOUSE_BUTTON_RIGHT:
             self.post_message(DirectoryBrowser.ContextMenu(self, self._shown_items[row_index]))
 
+        if event.ctrl:
+            self.action_toggle_selection_under_cursor()
+
         event.stop()
 
     async def _on_click(self, event: events.Click) -> None:
-        self.log("CLICK EVENT!!!", event)
-
         meta = event.style.meta
         if "row" not in meta:
             return
 
         if event.button != MOUSE_BUTTON_LEFT or event.chain != MOUSE_DOUBLE_CLICK:
             return
+
+        event.stop()
 
         row_index = meta["row"]
 
