@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 from ..archive import Archive, open_archive
-from .filesystem import Filesystem, PathStats, VFSPath
+from .filesystem import Filesystem, PathStats, VPath
 from .local import LocalFilesystem
 
 
 class ArchiveFilesystem(Filesystem):
     # the parent path where the archive is located in
-    _archive_parent: VFSPath
+    _archive_parent: VPath
 
     _archive: Archive
 
-    def __init__(self, archive_parent: VFSPath, archive: Archive | VFSPath) -> None:
+    def __init__(self, archive_parent: VPath, archive: Archive | VPath) -> None:
         self._archive_parent = archive_parent
 
         if isinstance(archive, Archive):
@@ -21,29 +21,29 @@ class ArchiveFilesystem(Filesystem):
             assert isinstance(archive.filesystem, LocalFilesystem)
             self._archive = open_archive(archive.path, mode="r")
 
-    def cwd(self) -> VFSPath:
+    def cwd(self) -> VPath:
         return self.root()
 
-    def root(self) -> VFSPath:
-        return VFSPath("/", self)
+    def root(self) -> VPath:
+        return VPath("/", self)
 
-    def home(self) -> VFSPath:
+    def home(self) -> VPath:
         return self.root()
 
-    def iterdir(self, path: VFSPath) -> list[VFSPath]:
-        path_list: list[VFSPath] = []
+    def iterdir(self, path: VPath) -> list[VPath]:
+        path_list: list[VPath] = []
         for entry in self._archive.listdir(path.path):
-            a = VFSPath(path.path / entry, self)
+            a = VPath(path.path / entry, self)
             path_list.append(a)
         return path_list
 
-    def parent(self, path: VFSPath) -> VFSPath:
+    def parent(self, path: VPath) -> VPath:
         if path.path.parent == path.path:
             return self._archive_parent
 
-        return VFSPath(path.path.parent, self)
+        return VPath(path.path.parent, self)
 
-    def stat(self, path: VFSPath) -> PathStats:
+    def stat(self, path: VPath) -> PathStats:
         return self._archive.stats(path.path)
 
     def __eq__(self, value: object) -> bool:
