@@ -1,15 +1,36 @@
+from textual import events
 from textual.widgets import Input, Static
 
+from nova_navigator.vfs.filesystem import VPath
+
+from ..widgets import NoSelectListView
 from .dialog import ComposeResult, DefaultButton, Dialog
 
 
 class CopyMoveFilesDialog(Dialog):
-    AUTO_FOCUS = "Button"
+    AUTO_FOCUS = "Input"
+    MAX_DISPLAYED_FILES = 10
+
+    DEFAULT_CSS = """
+    CopyMoveFilesDialog {
+        NoSelectListView {
+            height: auto;
+            max-height: 7;
+            background: $surface;
+            border: inner $surface;
+        }
+
+        #destination {
+            border: inner $surface;
+            background: $surface;
+           }
+    }
+    """
 
     def __init__(
         self,
-        source_paths: list[str],
-        destination_path: str,
+        source_paths: list[VPath],
+        destination_path: VPath,
         move: bool,
         id: str | None = None,
     ) -> None:
@@ -20,10 +41,30 @@ class CopyMoveFilesDialog(Dialog):
 
     def compose_content(self) -> ComposeResult:
         move_or_copy = "Move" if self.move else "Copy"
-        file = self.source_paths[0] if len(self.source_paths) == 1 else f"{len(self.source_paths)} files"
-        yield Static(f"{move_or_copy} {file}")
-        yield Static("to:")
-        yield Input(f"{self.destination_path}")
+
+        # file = self.source_paths[0] if len(self.source_paths) == 1 else f"{len(self.source_paths)} files"
+        self._source_files = NoSelectListView()
+        yield Static(f"{move_or_copy} {len(self.source_paths)} files:")  # Spacer
+        yield self._source_files
+
+        yield Static("")  # Spacer
+        yield Static("To:")
+        yield Static(f"{self.destination_path.compact_path_str}", id="destination")
+
+        if len(self.source_paths) == 1:
+            yield Static("")  # Spacer
+            yield Static("Filename:")
+            yield Input(value=self.source_paths[0].name, placeholder="Enter filename")
+
+    def _on_mount(self, _event: events.Mount) -> None:
+        for path in self.source_paths[0 : self.MAX_DISPLAYED_FILES]:
+            self._source_files.append(NoSelectListView.ListItem(Static(path.name)))
+        if len(self.source_paths) > self.MAX_DISPLAYED_FILES:
+            self._source_files.append(
+                NoSelectListView.ListItem(
+                    Static(f"... and {len(self.source_paths) - self.MAX_DISPLAYED_FILES} more files")
+                )
+            )
 
 
 class DeleteFilesDialog(Dialog):
