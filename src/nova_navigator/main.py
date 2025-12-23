@@ -28,7 +28,8 @@ from nova_navigator.uri import register_common_schemes, vfspath_from_uri
 
 # from nova_navigator.vfs.archive import ArchivePath
 # from nova_navigator.vfs import ArchiveFilesystem, LocalFilesystem, SSHFilesystem, VFSPath
-from nova_navigator.vfs import ArchiveFilesystem, LocalFilesystem, VPath
+from nova_navigator.vfs import ArchiveFilesystem
+from nova_navigator.vfs2 import LocalFilesystem, VPath
 from nova_navigator.widgets import DirectoryBrowser, Footer
 from nova_navigator.widgets.terminal import Terminal, shell_clear_prompt, shell_cmd_cd, shell_init_code
 from nova_widgets.menu import SYMBOL_TABLE, Action, Menu, MenuBar, set_icon_provider
@@ -414,9 +415,9 @@ class MainScreen(Screen[None]):
                 key.matches(
                     AKey(
                         is_empty=path is None,
-                        is_directory=path is not None and path.stats.is_directory,
-                        is_file=path is not None and not path.stats.is_directory,
-                        is_executable=path is not None and path.stats.is_executable and not path.stats.is_directory,
+                        is_directory=path is not None and path.stat.is_directory,
+                        is_file=path is not None and not path.stat.is_directory,
+                        is_executable=path is not None and path.stat.is_executable and not path.stat.is_directory,
                     )
                 )
             )
@@ -530,7 +531,7 @@ class MainScreen(Screen[None]):
         editor_screen.open(path)
 
     async def _open_path(self, path: VPath, browser: DirectoryBrowser) -> None:
-        if path.stats.is_directory:
+        if path.stat.is_directory:
             await self._set_terminal_directory(path)
             return
 
@@ -539,7 +540,7 @@ class MainScreen(Screen[None]):
             browser.set_path(archive_path)
             return
 
-        if path.stats.is_executable:
+        if path.stat.is_executable:
             mimetype = path.guess_mimetype()
             # if mimetype matches ".*/x-.*", run it directly
             if mimetype is None or re.match(r".*/x-.*$", mimetype) is not None:
