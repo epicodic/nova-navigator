@@ -31,9 +31,9 @@ from nova_widgets import unicode
 
 from ..config import conf_
 from ..icons import ico_
-from ..path_stats import PathStats
-from ..vfs import VPath
-from ..vfs.local import LocalFilesystem
+from ..vfs2 import VPath
+from ..vfs2.filesystems.local import LocalFilesystem
+from ..vfs2.types import Stat
 from .overlay_widget import OverlayWidget
 
 
@@ -54,8 +54,8 @@ class UpPath(VPath):
         return self
 
     @property
-    def stats(self) -> PathStats:
-        return PathStats(is_directory=True)
+    def stat(self) -> Stat:
+        return Stat(is_directory=True)
 
     def __str__(self) -> str:
         return ".."
@@ -90,22 +90,22 @@ def _rjust(s: str, width: int) -> str:
 
 def column_formatter_icon(path: VPath) -> str:
     """Convert path to display icon."""
-    stats = path.stats
+    stat = path.stat
 
-    if stats.is_directory:
+    if stat.is_directory:
         icon = ico_("folder")
     else:
         icon = conf_.filetypes.get_icon_for_filename(path.name, default=ico_("file"))
 
-    if not stats.is_directory and not path.guess_mimetype() and stats.is_executable:
+    if not stat.is_directory and not path.guess_mimetype() and stat.is_executable:
         icon = ico_("executable")
 
-    if stats.is_symlink:
+    if stat.is_symlink:
         icon_str = icon + "~"
     else:
         icon_str = icon + " "
 
-    if stats.is_symlink and stats.is_broken_symlink:
+    if stat.is_symlink and stat.is_broken_symlink:
         icon_str = ico_("broken link") + "!"
     return icon_str
 
@@ -117,14 +117,14 @@ def column_formatter_name(path: VPath) -> str:
 
 def column_formatter_size(path: VPath) -> str:
     """Convert size in bytes to human-readable format."""
-    stats = path.stats
-    if stats.size < 0:
+    stat = path.stat
+    if stat.size < 0:
         return ""
 
-    if stats.is_directory:
+    if stat.is_directory:
         return "-"
 
-    size = stats.size
+    size = stat.size
     for unit in ["", "K", "M", "G", "T"]:
         if size < DECIMAL_MAGNITUDE:
             return f"{size}{unit}"
@@ -134,11 +134,11 @@ def column_formatter_size(path: VPath) -> str:
 
 def column_formatter_modified(path: VPath) -> str:
     """Convert timestamp to human-readable date."""
-    stats = path.stats
-    if stats.modified < 0:
+    stat = path.stat
+    if stat.modified < 0:
         return ""
 
-    dt = datetime.fromtimestamp(stats.modified)
+    dt = datetime.fromtimestamp(stat.modified)
 
     # format as follows:
     # - if date is today, show "today HH:MM"
@@ -158,14 +158,14 @@ def column_sorter_name(path: VPath) -> tuple[int, str]:
     if isinstance(path, UpPath):
         return 0, path.name
 
-    stats = path.stats
-    if stats.is_directory and stats.is_hidden:
+    stat = path.stat
+    if stat.is_directory and stat.is_hidden:
         return 1, path.name
 
-    if stats.is_directory and not stats.is_hidden:
+    if stat.is_directory and not stat.is_hidden:
         return 2, path.name
 
-    if stats.is_hidden:
+    if stat.is_hidden:
         return 3, path.name
 
     return 4, path.name
@@ -175,17 +175,17 @@ def column_sorter_size(path: VPath) -> tuple[int, int]:
     if isinstance(path, UpPath):
         return 0, 0
 
-    stats = path.stats
-    if stats.is_directory:
-        return 1, stats.size
-    return 2, stats.size
+    stat = path.stat
+    if stat.is_directory:
+        return 1, stat.size
+    return 2, stat.size
 
 
 def column_sorter_modified(path: VPath) -> tuple[int, float]:
     if isinstance(path, UpPath):
         return 0, 0.0
-    stats = path.stats
-    return 1, stats.modified
+    stat = path.stat
+    return 1, stat.modified
 
 
 @dataclass
@@ -535,7 +535,7 @@ class DirectoryBrowser(ScrollView):
             else:
 
                 def filter_func(item: VPath) -> bool:
-                    if not self.show_hidden_files and item.stats.is_hidden:
+                    if not self.show_hidden_files and item.stat.is_hidden:
                         return False
                     if len(self._filter_widget.value) == 0:
                         return True
@@ -582,13 +582,13 @@ class DirectoryBrowser(ScrollView):
                 )
             )
 
-        stats = path.stats
+        stat = path.stat
         hightlight_type_map: dict[str, bool] = {
-            "highlight-directory": stats.is_directory,
-            "highlight-hidden": stats.is_hidden,
-            "highlight-executable": stats.is_executable and not stats.is_directory,
-            "highlight-symlink": stats.is_symlink,
-            "highlight-broken-symlink": stats.is_symlink and stats.is_broken_symlink,
+            "highlight-directory": stat.is_directory,
+            "highlight-hidden": stat.is_hidden,
+            "highlight-executable": stat.is_executable and not stat.is_directory,
+            "highlight-symlink": stat.is_symlink,
+            "highlight-broken-symlink": stat.is_symlink and stat.is_broken_symlink,
             "highlight-selected": path in self._selected_items,
         }
 
@@ -908,7 +908,7 @@ class DirectoryBrowser(ScrollView):
         self.post_message(DirectoryBrowser.PathSelected(self, path))
 
     def _on_directory_browser_path_selected(self, event: PathSelected) -> None:
-        if event.path.stats.is_directory:
+        if event.path.stat.is_directory:
             self.set_path(event.path)
 
     async def action_filter(self) -> None:
