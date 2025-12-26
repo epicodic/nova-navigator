@@ -91,6 +91,7 @@ ignore = [
     "N802", # function name should be lowercase
     "N803", # argument name should be lowercase
     "N806", # variable in function should be lowercase
+    "N818", # Error suffix of exceptions
 
     # pydocstyle (D) 
     "D100", # Missing docstring in public module

@@ -1,7 +1,7 @@
-from .dialogs import CopyMoveFilesDialog, DefaultButton, DeleteFilesDialog
+from ..dialogs import CopyMoveFilesDialog, DefaultButton, DeleteFilesDialog
+from ..vfs import VPath
+from ..vfs.operations import delete_files, move_or_copy_files
 from .operation import Operation
-from .vfs import VPath
-from .vfs.operations import delete_files, move_or_copy_files
 
 
 class CopyOrMoveOperation(Operation):
@@ -11,7 +11,11 @@ class CopyOrMoveOperation(Operation):
         self.destination_path = destination_path
         self.move = move
 
-    def _runner(self) -> None:
+    @property
+    def title(self) -> str:
+        return ("Move Files to" if self.move else "Copy Files to") + f" {self.destination_path.compact_path_str}"
+
+    def process(self) -> None:
         move_or_copy_files(
             source_paths=self.source_paths,
             destination_path=self.destination_path,
@@ -53,7 +57,11 @@ class DeleteOperation(Operation):
         super().__init__()
         self.paths = paths
 
-    def _runner(self) -> None:
+    @property
+    def title(self) -> str:
+        return "Delete Files"
+
+    def process(self) -> None:
         delete_files(self.paths)
 
 
