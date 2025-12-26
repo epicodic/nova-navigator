@@ -95,6 +95,5 @@ class OverlayWidget(Widget):
         self._check_action_on_blur()
 
     def _check_action_on_blur(self) -> None:
-        # if not self.has_focus and not self.has_focus_within:
-        #    self.close()
-        pass
+        if not self.has_focus and not self.has_focus_within:
+            self.close()
