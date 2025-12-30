@@ -2,7 +2,8 @@ import os
 from collections.abc import Callable
 from urllib.parse import urlparse
 
-from .vfs2 import LocalFilesystem, VPath
+from .vfs2 import VPath
+from .vfs2.filesystems import LocalFilesystem
 
 SchemeHandler = Callable[[str], VPath]
 

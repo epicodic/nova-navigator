@@ -25,10 +25,11 @@ from nova_navigator.icons import ICONS, IconSet
 
 # from nova_navigator.operations.file_operations import copy_or_move_files_operation, delete_files_operation
 from nova_navigator.uri import register_common_schemes, vfspath_from_uri
+from nova_navigator.vfs2 import VPath
 
 # from nova_navigator.vfs.archive import ArchivePath
 # from nova_navigator.vfs2 import ArchiveFilesystem, LocalFilesystem, SSHFilesystem, VFSPath
-from nova_navigator.vfs2 import ArchiveFilesystem, LocalFilesystem, VPath
+from nova_navigator.vfs2.filesystems import ArchiveFilesystem, LocalFilesystem
 from nova_navigator.widgets import DirectoryBrowser, Footer
 from nova_navigator.widgets.terminal import Terminal, shell_clear_prompt, shell_cmd_cd, shell_init_code
 from nova_widgets.menu import SYMBOL_TABLE, Action, Menu, MenuBar, set_icon_provider
