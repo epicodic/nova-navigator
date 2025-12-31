@@ -228,3 +228,11 @@ class MockFilesystem(Filesystem):
         if children:
             raise OSError(f"Directory not empty: '{posix}'")
         del self._nodes[posix]
+
+    @override
+    def mkdir(self, path: VPath) -> None:
+        posix = self._to_posix(path)
+        self._dir_node(posix.parent)  # raises if parent doesn't exist or isn't a directory
+        if posix in self._nodes:
+            raise FileExistsError(f"File exists: '{posix}'")
+        self._nodes[posix] = _DirNode()

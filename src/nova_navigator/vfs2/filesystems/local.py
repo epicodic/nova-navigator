@@ -126,3 +126,8 @@ class LocalFilesystem(Filesystem):
     def rmdir(self, path: VPath) -> None:
         self._assert_vpath(path)
         os.rmdir(path.path)
+
+    @override
+    def mkdir(self, path: VPath) -> None:
+        self._assert_vpath(path)
+        os.mkdir(path.path)

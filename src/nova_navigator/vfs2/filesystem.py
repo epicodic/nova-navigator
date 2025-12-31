@@ -79,3 +79,7 @@ class Filesystem(ABC):
     @abstractmethod
     def rmdir(self, path: VPath) -> None:
         """Remove the directory at the given path (must be empty)."""
+
+    @abstractmethod
+    def mkdir(self, path: VPath) -> None:
+        """Create a new directory at the given path."""
