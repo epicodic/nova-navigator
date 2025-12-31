@@ -155,3 +155,8 @@ class SSHFilesystem(Filesystem):
     @override
     def write(self, path: VPath) -> StreamWriterLike:
         return cast("StreamWriterLike", self._sftp_client.open(path.path.as_posix(), "wb"))
+
+    @override
+    def mkdir(self, path: VPath) -> None:
+        self._assert_vpath(path)
+        self._sftp_client.mkdir(path.path.as_posix())
