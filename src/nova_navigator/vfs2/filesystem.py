@@ -82,4 +82,8 @@ class Filesystem(ABC):
 
     @abstractmethod
     def mkdir(self, path: VPath) -> None:
-        """Create a new directory at the given path."""
+        """Create a directory at the given path.
+
+        If the directory already exists, FileExistsError is raised.
+        If a parent directory in the path does not exist, FileNotFoundError is raised.
+        """
