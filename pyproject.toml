@@ -11,6 +11,8 @@ dependencies = [
     "watchdog>=6.0.0",
     "paramiko>=4.0.0",
     "pygments>=2.19.2",
+    "azure-storage-blob>=12.27.1",
+    "azure-identity>=1.25.1",
 ]
 
 [project.scripts]
@@ -106,10 +108,13 @@ ignore = [
     # pygrep-hooks (PGH) 
     "PGH",
 
+    "RET505", # Unnecessary else after return
+
     # pylint (PL)
     "PLR0913", # Too many arguments in function definition
     "PLR0911", # Too many return statements
     "PLR0912", # Too many branches
+    "PLR5501",
 
     "S101", # Use of assert detected.
     "S301", # Pickle usage
@@ -134,6 +139,7 @@ convention = "google"
 #######################################
 # pytest
 [tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
 cache_dir = ".cache/pytest"
 
 #######################################
