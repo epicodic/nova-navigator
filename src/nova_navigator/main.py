@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import subprocess
@@ -22,13 +23,11 @@ from nova_navigator.config import conf_, get_config_file_path
 from nova_navigator.dialogs import BookmarksDialog
 from nova_navigator.editor import Editor
 from nova_navigator.icons import ICONS, IconSet
+from nova_navigator.task import DecisionRequest, DecisionResponse
 
 # from nova_navigator.operations.file_operations import copy_or_move_files_operation, delete_files_operation
 from nova_navigator.uri import register_common_schemes, vfspath_from_uri
 from nova_navigator.vfs2 import VPath
-
-# from nova_navigator.vfs.archive import ArchivePath
-# from nova_navigator.vfs2 import ArchiveFilesystem, LocalFilesystem, SSHFilesystem, VFSPath
 from nova_navigator.vfs2.filesystems import ArchiveFilesystem, LocalFilesystem
 from nova_navigator.widgets import DirectoryBrowser, Footer
 from nova_navigator.widgets.terminal import Terminal, shell_clear_prompt, shell_cmd_cd, shell_init_code
@@ -333,12 +332,27 @@ class MainScreen(Screen[None]):
         # TODO handle non-local paths
         self.active_panel().set_path(VPath(event.cwd, LocalFilesystem.singleton()))
 
-    # operations
+    # jobs and tasks
+
+    async def request_callback(
+        self,
+        request: DecisionRequest,
+        future: asyncio.Future[DecisionResponse],
+    ) -> None:
+        print(f"GUI received request: '{request.message}' with args {request.kwargs}")
 
     @work
     async def action_copy_or_move_files(self, move: bool) -> None:
         source_paths = list(self.active_panel().selected_path_items)
         destination_path = self.other_panel().path
+
+        job = await copy_or_move_files_job(
+            src_paths=source_paths,
+            dst_path=destination_path,
+            move=move,
+        )
+        if job is not None:
+            await job.start(self.request_callback)
 
         # operation = await copy_or_move_files_job(
         #     src_paths=source_paths,
