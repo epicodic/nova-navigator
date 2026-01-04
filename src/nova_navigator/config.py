@@ -115,7 +115,7 @@ class FileTypeConfig(ConfigBase):
         cmd = [c.replace("%f", str(path)) for c in cmd]
         # %d : current directory
         cmd = [c.replace("%d", str(path.parent)) for c in cmd]
-        return cmd  # noqa: RET504
+        return cmd
 
     def _find_section_for_path(self, path: PurePath) -> "Section":
         mimetype = mimetypes.guess_type(path.as_posix())[0]

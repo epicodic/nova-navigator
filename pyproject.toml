@@ -112,6 +112,7 @@ ignore = [
     # pygrep-hooks (PGH) 
     "PGH",
 
+    "RET504", # Unnecessary assignment 
     "RET505", # Unnecessary else after return
 
     # pylint (PL)

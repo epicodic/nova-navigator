@@ -4,7 +4,7 @@ from pathlib import PurePosixPath
 import pytest
 
 from nova_navigator.filemanager.tasks import CHUNK_SIZE, FileCopyOptions, copy_file, copy_files
-from nova_navigator.task import DecisionResponse, TaskCancelled, TaskStatus
+from nova_navigator.task import Decision, TaskCancelled, TaskStatus
 from tests.mock_filesystem import MockFilesystem
 
 from .common import make_status, read_all, run_task
@@ -71,7 +71,7 @@ def test_copy_file_ask_yes() -> None:
 
     requests = run_task(
         copy_file(make_status(), src, dst, FileCopyOptions(overwrite="ask")),
-        [DecisionResponse.YES],
+        [Decision.YES],
     )
 
     assert len(requests) == 1
@@ -90,7 +90,7 @@ def test_copy_file_ask_no() -> None:
 
     requests = run_task(
         copy_file(make_status(), src, dst, FileCopyOptions(overwrite="ask")),
-        [DecisionResponse.NO],
+        [Decision.NO],
     )
 
     assert len(requests) == 1
@@ -343,7 +343,7 @@ def test_copy_paths_overwrite_ask_yes() -> None:
 
     requests = run_task(
         copy_files(make_status(), [src_fs.path("/src/file.txt")], dst_fs.path("/dst")),
-        [DecisionResponse.YES],
+        [Decision.YES],
     )
 
     assert len(requests) == 1
@@ -357,7 +357,7 @@ def test_copy_paths_overwrite_ask_no() -> None:
 
     requests = run_task(
         copy_files(make_status(), [src_fs.path("/src/file.txt")], dst_fs.path("/dst")),
-        [DecisionResponse.NO],
+        [Decision.NO],
     )
 
     assert len(requests) == 1
@@ -384,7 +384,7 @@ def test_copy_paths_overwrite_ask_per_file() -> None:
     # YES for a.txt, NO for b.txt
     requests = run_task(
         copy_files(make_status(), srcs, dst_fs.path("/dst")),
-        [DecisionResponse.YES, DecisionResponse.NO],
+        [Decision.YES, Decision.NO],
     )
 
     assert len(requests) == 2
@@ -410,13 +410,13 @@ def test_copy_paths_overwrite_yes_to_all() -> None:
     )
 
     srcs = [src_fs.path(p) for p in ("/src/a.txt", "/src/b.txt", "/src/c.txt")]
-    # run_task drives the generator: YES_TO_ALL on first prompt; the scheduler
+    # run_task drives the generator: ALL on first prompt; the scheduler
     # suppresses subsequent same-message prompts (tested via TaskScheduler in
     # integration), so here we verify that only one DecisionRequest is yielded
-    # when the caller supplies YES_TO_ALL for the first conflict.
+    # when the caller supplies ALL for the first conflict.
     requests = run_task(
         copy_files(make_status(), srcs, dst_fs.path("/dst")),
-        [DecisionResponse.YES_TO_ALL, DecisionResponse.YES_TO_ALL, DecisionResponse.YES_TO_ALL],
+        [Decision.ALL, Decision.ALL, Decision.ALL],
     )
 
     # Three separate conflicts → three separate DecisionRequests (run_task drives

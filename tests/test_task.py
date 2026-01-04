@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from nova_navigator.task import DecisionRequest, DecisionResponse, Task, TaskScheduler, task
+from nova_navigator.task import Decision, DecisionRequest, Task, TaskScheduler, task
 
 actual_task_order: list[int] = []
 
@@ -11,8 +11,15 @@ actual_task_order: list[int] = []
 @task
 def task1(id: int, input: str, all: bool = False) -> Task:
     if input[0:3] == "ask":
-        response = yield DecisionRequest(input, id=id, input=input, all=all)
-        if response.is_no:
+        response = yield DecisionRequest(
+            input,
+            {Decision.YES, Decision.NO, Decision.ALL},
+            input,
+            id=id,
+            input=input,
+            all=all,
+        )
+        if response.is_negative:
             return
 
     print(f"Task 1 ({id}): running...")
@@ -49,23 +56,23 @@ async def test_task_scheduler_basic() -> None:
 
     async def gui_callback(
         request: DecisionRequest,
-        future: asyncio.Future[DecisionResponse],
+        future: asyncio.Future[Decision],
     ) -> None:
         print(f"GUI received request: '{request.message}' with args {request.kwargs}")
         # Simulate user interaction delay
         if request.message == "ask1":
             await asyncio.sleep(0.1)
-            result = DecisionResponse.YES_TO_ALL if request.kwargs.get("all") else DecisionResponse.YES
+            result = Decision.ALL if request.kwargs.get("all") else Decision.YES
             print(f"GUI responding {result} to '{request.message}'")
             future.set_result(result)
         if request.message == "ask2":
             await asyncio.sleep(0.1)
             print(f"GUI responding NO to '{request.message}'")
-            future.set_result(DecisionResponse.NO)
+            future.set_result(Decision.NO)
         if request.message == "ask3":
             await asyncio.sleep(0.1)
             print(f"GUI responding YES to '{request.message}'")
-            future.set_result(DecisionResponse.YES)
+            future.set_result(Decision.YES)
 
     await TaskScheduler.execute(gui_request_callback=gui_callback, tasks=tasks)
 
@@ -96,11 +103,11 @@ async def test_task_scheduler_task_spawn() -> None:
 
     async def gui_callback(
         request: DecisionRequest,
-        future: asyncio.Future[DecisionResponse],
+        future: asyncio.Future[Decision],
     ) -> None:
         print(f"GUI received request: '{request.message}' with args {request.kwargs}")
         await asyncio.sleep(0.1)
-        future.set_result(DecisionResponse.YES)
+        future.set_result(Decision.YES)
 
     await TaskScheduler.execute(gui_request_callback=gui_callback, tasks=tasks)
     assert actual_task_order == expected_task_order

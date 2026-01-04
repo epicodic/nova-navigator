@@ -1,25 +1,13 @@
 import contextlib
-from collections.abc import Generator
 from dataclasses import dataclass
 from typing import Literal
 
+from nova_navigator.decision import Decision
 from nova_navigator.task import DecisionRequest, Task, TaskStatus
 
 from ..vfs2 import VPath
 
 CHUNK_SIZE = 64 * 1024  # 64 KB
-
-
-def _iterate_dirs_and_files(status: TaskStatus, path: VPath) -> Generator[VPath, None, None]:
-    yield path
-
-    if path.stat.is_directory:
-        paths = path.iterdir()
-        status.update_progress(inc_total=len(paths))
-        for child in paths:
-            status.check_cancelled()
-            yield from _iterate_dirs_and_files(status, child)
-            status.update_progress(inc_completed=1)
 
 
 OverwritePolicy = Literal["overwrite", "skip", "ask"]
@@ -59,8 +47,13 @@ def copy_file(status: TaskStatus, src_path: VPath, dst_path: VPath, options: Fil
                     status.set_completed()
                     return
                 elif options.overwrite == "ask":
-                    decision = yield DecisionRequest("File '{dst}' already exists. Overwrite?", dst=dst_path.path)
-                    if decision.is_no:
+                    decision = yield DecisionRequest(
+                        "Overwrite",
+                        expected_decisions={Decision.YES, Decision.NO, Decision.ALL, Decision.NONE},
+                        message=f"File '{dst_path.path}' already exists. Overwrite?",
+                        dst=dst_path.path,
+                    )
+                    if decision.is_negative:
                         status.set_completed()
                         return
 
@@ -85,34 +78,33 @@ def copy_file(status: TaskStatus, src_path: VPath, dst_path: VPath, options: Fil
 
 
 def copy_files(
-    status: TaskStatus, src_paths: list[VPath], dst_path: VPath, options: FileCopyOptions | None = None
+    status: TaskStatus, src_paths: list[VPath], destination: VPath, options: FileCopyOptions | None = None
 ) -> Task:
-    """Task that copies each path in *src_paths* into *dst_path*.
+    """Task that copies each path in *src_paths* into *destination*.
 
-    Plain files are placed directly inside *dst_path* under their original
-    name.  Directories are copied recursively: all leaf files discovered by
-    :func:`_iterate_files` are mirrored under ``dst_path / src_dir_name``,
-    preserving the relative sub-directory structure.  Overall progress is
-    incremented by one for each element of *src_paths* regardless of whether
+    Plain files are placed directly inside *destination* under their original
+    name.  Directories are copied recursively, preserving the relative sub-directory structure.
+    Overall progress is incremented by one for each element of *src_paths* regardless of whether
     it is a file or directory.  *options* is forwarded to every
     :func:`copy_file` call.
     """
-    dst_filesystem = dst_path.filesystem
+    dst_filesystem = destination.filesystem
     status.update_progress(inc_total=len(src_paths))
     for src_path in src_paths:
         status.check_cancelled()
         if src_path.stat.is_directory:
-            dst_dir = dst_path / src_path.name
+            dst_path = destination / src_path.name
 
-            for p in _iterate_dirs_and_files(status, src_path):
-                rel = p.path.relative_to(src_path.path)
-                dst_path = dst_dir / rel
-
-                if p.stat.is_directory:
-                    with contextlib.suppress(FileExistsError):
-                        dst_filesystem.mkdir(dst_path)
-                else:
-                    yield from copy_file(status, p, dst_path, options)
+            for src_root, _src_dirs, src_files in src_path.walk():
+                status.check_cancelled()
+                dst_root = dst_path / src_root.path.relative_to(src_path.path)
+                with contextlib.suppress(FileExistsError):
+                    dst_filesystem.mkdir(dst_root)
+                status.update_progress(inc_total=len(src_files))
+                for f in src_files:
+                    status.check_cancelled()
+                    yield from copy_file(status, f, dst_root / f.name, options)
+                    status.update_progress(inc_completed=1)
         else:
-            yield from copy_file(status, src_path, dst_path / src_path.name, options)
+            yield from copy_file(status, src_path, destination / src_path.name, options)
         status.update_progress(inc_completed=1)

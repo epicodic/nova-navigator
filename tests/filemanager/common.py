@@ -1,6 +1,6 @@
 import threading
 
-from nova_navigator.task import DecisionRequest, DecisionResponse, Task, TaskStatus
+from nova_navigator.task import Decision, DecisionRequest, Task, TaskStatus
 from tests.mock_filesystem import MockFilesystem
 
 
@@ -31,7 +31,7 @@ def read_all(fs: MockFilesystem, path: str) -> bytes:
     return data
 
 
-def run_task(task: Task, decisions: list[DecisionResponse] | None = None) -> list[DecisionRequest]:
+def run_task(task: Task, decisions: list[Decision] | None = None) -> list[DecisionRequest]:
     """Drive a Task to completion, supplying decisions as needed.
 
     Returns the list of DecisionRequests that were yielded.

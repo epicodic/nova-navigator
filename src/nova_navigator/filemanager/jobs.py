@@ -23,7 +23,7 @@ async def copy_or_move_files_job(src_paths: list[VPath], dst_path: VPath, move: 
     )
 
     result = await dialog.run()
-    if result != DefaultButton.OK:
+    if result != "OK":
         return None
 
-    return Job("Copy Files", copy_files, src_paths=src_paths, dst_path=dst_path)
+    return Job("Copy Files", copy_files, src_paths, dst_path)

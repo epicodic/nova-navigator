@@ -5,9 +5,10 @@ import threading
 import time
 from collections.abc import Awaitable, Callable, Generator
 from dataclasses import dataclass
-from enum import Enum, auto
 from functools import wraps
 from typing import Any
+
+from nova_navigator.decision import Decision
 
 from .base.thread_safe_list import ThreadSafeList
 
@@ -16,41 +17,24 @@ from .base.thread_safe_list import ThreadSafeList
 class DecisionRequest:
     """A request for a user decision, yielded by a task.
 
-    The *message* is a format string that may reference *kwargs* for display;
-    it also serves as the deduplication key inside :class:`TaskScheduler` so
-    that ``YES_TO_ALL`` / ``NO_TO_ALL`` responses suppress identical prompts.
+    The *message* is a format string that may reference *kwargs* for display.
+    The *title* also serves as the deduplication key inside :class:`TaskScheduler` so
+    that ``ALL`` / ``NO`` responses suppress identical prompts.
     """
 
+    title: str
+    expected_decisions: set[Decision]
     message: str
     kwargs: dict[str, Any]
 
-    def __init__(self, message: str, **kwargs: Any) -> None:
+    def __init__(self, title: str, expected_decisions: set[Decision], message: str, **kwargs: Any) -> None:
+        self.title = title
+        self.expected_decisions = expected_decisions
         self.message = message
         self.kwargs = kwargs
 
 
-class DecisionResponse(Enum):
-    """The user's response to a :class:`DecisionRequest`."""
-
-    YES = auto()
-    YES_TO_ALL = auto()
-    NO = auto()
-    NO_TO_ALL = auto()
-
-    @property
-    def is_yes(self) -> bool:
-        return self in {DecisionResponse.YES, DecisionResponse.YES_TO_ALL}
-
-    @property
-    def is_no(self) -> bool:
-        return self in {DecisionResponse.NO, DecisionResponse.NO_TO_ALL}
-
-    @property
-    def is_to_all(self) -> bool:
-        return self in {DecisionResponse.YES_TO_ALL, DecisionResponse.NO_TO_ALL}
-
-
-Task = Generator["DecisionRequest | Task", DecisionResponse, None]
+Task = Generator["DecisionRequest | Task", Decision, None]
 
 
 def task(func: Callable[..., Any]) -> Callable[..., Task]:
@@ -172,7 +156,7 @@ class TaskStatus:
         )
 
 
-GuiRequestCallback = Callable[[DecisionRequest, asyncio.Future[DecisionResponse]], Awaitable[None]]
+GuiRequestCallback = Callable[[DecisionRequest, asyncio.Future[Decision]], Awaitable[None]]
 
 
 class TaskScheduler:
@@ -181,18 +165,18 @@ class TaskScheduler:
     Tasks yield either a :class:`DecisionRequest` (pause for user input) or a
     nested :data:`Task` (sub-task to run inline).  When a request is yielded
     the scheduler suspends the task, notifies the GUI via *gui_request_callback*,
-    and resumes the task with the :class:`DecisionResponse` once the user
+    and resumes the task with the :class:`Decision` once the user
     replies.  ``YES_TO_ALL`` / ``NO_TO_ALL`` responses are cached and applied
     automatically to subsequent identical requests.
     """
 
     _waiting_tasks_with_requests: ThreadSafeList[tuple[Task, DecisionRequest]]
-    _ready_tasks_with_responses: ThreadSafeList[tuple[Task, DecisionResponse]]
+    _ready_tasks_with_responses: ThreadSafeList[tuple[Task, Decision]]
     _notify_task: concurrent.futures.Future[None] | None
     _gui_request_callback: GuiRequestCallback
     _event_loop: asyncio.AbstractEventLoop
 
-    _decisions_for_all: dict[str, DecisionResponse]
+    _decisions_for_all: dict[str, Decision]
 
     def __init__(self, gui_request_callback: GuiRequestCallback, event_loop: asyncio.AbstractEventLoop) -> None:
         self._waiting_tasks_with_requests = ThreadSafeList()
@@ -228,7 +212,7 @@ class TaskScheduler:
             self._run_ready_tasks()
             time.sleep(0.1)  # avoid busy waiting
 
-    def _run_task(self, task: Task, decision: DecisionResponse | None = None) -> None:
+    def _run_task(self, task: Task, decision: Decision | None = None) -> None:
         # decision is only allowed to be not None if the task is waiting for a response
         # otherwise, we we get an exception during the first send()
         while True:
@@ -253,7 +237,7 @@ class TaskScheduler:
             task, response = self._ready_tasks_with_responses.pop_front()
             self._run_task(task, response)
 
-    def submit_request(self, task: Task, request: DecisionRequest) -> DecisionResponse | None:
+    def submit_request(self, task: Task, request: DecisionRequest) -> Decision | None:
         """Submit a decision request, returning a cached response immediately or ``None`` if queued."""
         # check if there is a global answer for this request already -> then respond immediately
         if request.message in self._decisions_for_all:
@@ -271,7 +255,7 @@ class TaskScheduler:
     async def _notify_gui_task(self) -> None:
         while len(self._waiting_tasks_with_requests) > 0:
             task, request = self._waiting_tasks_with_requests.peek_front()
-            future: asyncio.Future[DecisionResponse] = asyncio.get_event_loop().create_future()
+            future: asyncio.Future[Decision] = asyncio.get_event_loop().create_future()
             await self._gui_request_callback(request, future)
             await future
             response = future.result()
@@ -281,7 +265,7 @@ class TaskScheduler:
             if response.is_to_all:
                 self._answer_all(request, response)
 
-    def _answer_all(self, answered_request: DecisionRequest, response: DecisionResponse) -> None:
+    def _answer_all(self, answered_request: DecisionRequest, response: Decision) -> None:
         if not response.is_to_all:
             return
 
