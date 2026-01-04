@@ -1,0 +1,61 @@
+[
+    {
+        "name": "Big Left",
+        "padding": 0,
+        "zones": [
+            {
+                "x": 0,
+                "y": 0,
+                "height": 100,
+                "width": 66
+            },
+            {
+                "x": 66,
+                "y": 0,
+                "height": 100,
+                "width": 34
+            }
+        ]
+    },
+    {
+        "name": "Two Screens",
+        "padding": 0,
+        "zones": [
+            {
+                "x": 0,
+                "y": 0,
+                "height": 100,
+                "width": 50
+            },
+            {
+                "x": 50,
+                "y": 0,
+                "height": 100,
+                "width": 50
+            }
+        ]
+    },
+    {
+        "name": "Equal",
+        "zones": [
+            {
+                "x": 0,
+                "y": 0,
+                "height": 100,
+                "width": 33
+            },
+            {
+                "x": 33,
+                "y": 0,
+                "height": 100,
+                "width": 34
+            },
+            {
+                "x": 67,
+                "y": 0,
+                "height": 100,
+                "width": 33
+            }
+        ]
+    }
+]

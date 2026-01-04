@@ -21,9 +21,10 @@ from textual.widgets import Input
 from nova_navigator import archive
 from nova_navigator.config import conf_, get_config_file_path
 from nova_navigator.dialogs import BookmarksDialog
+from nova_navigator.dialogs.decision_dialog import DecisionDialog
 from nova_navigator.editor import Editor
 from nova_navigator.icons import ICONS, IconSet
-from nova_navigator.task import DecisionRequest, DecisionResponse
+from nova_navigator.task import Decision, DecisionRequest
 
 # from nova_navigator.operations.file_operations import copy_or_move_files_operation, delete_files_operation
 from nova_navigator.uri import register_common_schemes, vfspath_from_uri
@@ -337,9 +338,11 @@ class MainScreen(Screen[None]):
     async def request_callback(
         self,
         request: DecisionRequest,
-        future: asyncio.Future[DecisionResponse],
+        future: asyncio.Future[Decision],
     ) -> None:
-        print(f"GUI received request: '{request.message}' with args {request.kwargs}")
+        dialog = DecisionDialog(request.message)
+        result = await dialog.run()
+        future.set_result(result)
 
     @work
     async def action_copy_or_move_files(self, move: bool) -> None:

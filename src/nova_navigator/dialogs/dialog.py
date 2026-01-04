@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from enum import StrEnum, auto
 from typing import Any, ClassVar
 
 from textual import widgets
@@ -12,6 +11,8 @@ from textual.containers import (
 from textual.screen import ModalScreen
 from textual.widgets.button import ButtonVariant
 
+from ..decision import Decision
+
 
 @dataclass
 class Button:
@@ -20,34 +21,11 @@ class Button:
     variant: ButtonVariant = "default"
 
 
-class DefaultButton(StrEnum):
-    """Default button IDs."""
-
-    OK = auto()
-    CANCEL = auto()
-    YES = auto()
-    NO = auto()
-    RETRY = auto()
+DefaultButton = Decision
 
 
-_ACCEPT_BUTTONS = {DefaultButton.OK, DefaultButton.YES}
-_DISMISS_BUTTONS = {DefaultButton.CANCEL, DefaultButton.NO}
-
-
-def _default_button(id: DefaultButton) -> Button:
-    match id:
-        case DefaultButton.OK:
-            return Button("Ok", DefaultButton.OK, "primary")
-        case DefaultButton.CANCEL:
-            return Button("Cancel", DefaultButton.CANCEL, "error")
-        case DefaultButton.YES:
-            return Button("Yes", DefaultButton.YES, "success")
-        case DefaultButton.NO:
-            return Button("No", DefaultButton.NO, "error")
-        case DefaultButton.RETRY:
-            return Button("Retry", DefaultButton.RETRY, "warning")
-        case _:
-            raise ValueError("Unrecognized DefaultButton ID")
+def _default_button(button: DefaultButton) -> Button:
+    return Button(label=button.tr, id=button.name, variant="primary" if button.is_positive else "error")
 
 
 class Dialog(ModalScreen[str]):
@@ -103,9 +81,9 @@ class Dialog(ModalScreen[str]):
         for button in buttons or [DefaultButton.OK]:
             if isinstance(button, DefaultButton):
                 button_to_add = _default_button(button)
-                if button in _ACCEPT_BUTTONS:
+                if button.is_positive:
                     self._button_accept = button_to_add
-                elif button in _DISMISS_BUTTONS:
+                elif button.is_negative:
                     self._button_dismiss = button_to_add
                 self._buttons.append(button_to_add)
             else:
