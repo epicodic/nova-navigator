@@ -1,9 +1,9 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from nova_navigator.vfs2.types import Stat
+from nova_navigator.task import DecisionRequest, Task, TaskStatus
 
-from . import InteractionContext, VPath
+from . import VPath
 
 CHUNK_SIZE = 64 * 1024  # 64 KB
 
@@ -16,9 +16,7 @@ class FileCopyOptions:
     overwrite: OverwritePolicy = "ask"
 
 
-def copy_file(
-    ctx: InteractionContext, src_path: VPath, dst_path: VPath, options: FileCopyOptions | None = None
-) -> None:
+def copy_file(status: TaskStatus, src_path: VPath, dst_path: VPath, options: FileCopyOptions | None = None) -> Task:
     if options is None:
         options = FileCopyOptions()
 
@@ -31,25 +29,29 @@ def copy_file(
         if options.overwrite != "overwrite":
             dst_stat = dst_path.stat_or_none
             if dst_stat is not None:
+                # destination file exists
                 if options.overwrite == "skip":
-                    ctx.set_completed()
+                    status.set_completed()
                     return
                 elif options.overwrite == "ask":
-                    raise FileExistsError(f"Destination file {dst_path} already exists.")
+                    decision = yield DecisionRequest("File '{dst}' already exists. Overwrite?", {"dst": dst_path.path})
+                    if decision.is_no:
+                        status.set_completed()
+                        return
 
         writer = dst_path.filesystem.write(dst_path)
 
-        ctx.set_progress(0, src_stat.size)
+        status.set_step_progress(0, src_stat.size)
 
         while True:
-            ctx.check_cancelled()
+            status.check_cancelled()
             chunk = reader.read(CHUNK_SIZE)
             if not chunk:
                 break
             writer.write(chunk)
-            ctx.update_progress(inc_completed=len(chunk))
+            status.update_step_progress(inc_completed=len(chunk))
 
-        ctx.set_completed()
+        status.set_step_completed()
     finally:
         if reader:
             reader.close()
