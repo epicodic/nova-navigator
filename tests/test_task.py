@@ -9,15 +9,12 @@ actual_task_order: list[int] = []
 
 
 @task
-def task1(id: int, input: str, all: bool = False) -> Task:
+def task1(id: int, input: str, expected_decisions: list[Decision] | None = None) -> Task:
     if input[0:3] == "ask":
         response = yield DecisionRequest(
             input,
-            {Decision.YES, Decision.NO, Decision.ALL},
+            expected_decisions or [Decision.YES, Decision.NO],
             input,
-            id=id,
-            input=input,
-            all=all,
         )
         if response.is_negative:
             return
@@ -43,7 +40,7 @@ async def test_task_scheduler_basic() -> None:
     tasks = [
         task1(1, "ask1"),
         task1(2, "no_ask"),
-        task1(3, "ask1", all=True),
+        task1(3, "ask1", [Decision.YES, Decision.NO, Decision.ALL, Decision.NONE]),
         task1(4, "no_ask"),
         task1(5, "ask2"),
         task1(6, "no_ask"),
@@ -58,11 +55,11 @@ async def test_task_scheduler_basic() -> None:
         request: DecisionRequest,
         future: asyncio.Future[Decision],
     ) -> None:
-        print(f"GUI received request: '{request.message}' with args {request.kwargs}")
+        print(f"GUI received request: '{request.message}'")
         # Simulate user interaction delay
         if request.message == "ask1":
             await asyncio.sleep(0.1)
-            result = Decision.ALL if request.kwargs.get("all") else Decision.YES
+            result = Decision.ALL if Decision.ALL in request.expected_decisions else Decision.YES
             print(f"GUI responding {result} to '{request.message}'")
             future.set_result(result)
         if request.message == "ask2":
@@ -105,7 +102,7 @@ async def test_task_scheduler_task_spawn() -> None:
         request: DecisionRequest,
         future: asyncio.Future[Decision],
     ) -> None:
-        print(f"GUI received request: '{request.message}' with args {request.kwargs}")
+        print(f"GUI received request: '{request.message}'")
         await asyncio.sleep(0.1)
         future.set_result(Decision.YES)
 
