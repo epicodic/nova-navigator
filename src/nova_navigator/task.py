@@ -1,16 +1,18 @@
 import asyncio
 import concurrent.futures
+import inspect
 import threading
 import time
 from collections.abc import Awaitable, Callable, Generator
 from dataclasses import dataclass
 from enum import Enum, auto
+from functools import wraps
 from typing import Any
 
 from .base.thread_safe_list import ThreadSafeList
 
 
-# @dataclass(init=False)
+@dataclass(init=False)
 class DecisionRequest:
     message: str
     kwargs: dict[str, Any]
@@ -40,6 +42,18 @@ class DecisionResponse(Enum):
 
 
 Task = Generator["DecisionRequest | Task", DecisionResponse, None]
+
+
+def task(func : Callable[..., Any]) -> Callable[..., Task]:
+    if inspect.isgeneratorfunction(func):
+        return func
+
+    @wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Task:
+        result = func(*args, **kwargs)
+        return result
+        yield # yield to make this a generator
+    return wrapper
 
 
 @dataclass
@@ -133,6 +147,12 @@ class TaskScheduler:
         self._event_loop = event_loop
         self._decisions_for_all = {}
 
+    @staticmethod
+    async def execute(gui_request_callback: GuiRequestCallback, tasks: list[Task]) -> None:
+        loop = asyncio.get_running_loop()
+        scheduler = TaskScheduler(gui_request_callback=gui_request_callback, event_loop=loop)
+        await asyncio.create_task(asyncio.to_thread(scheduler.run_tasks, tasks))
+
     def run_tasks(self, tasks: list[Task]) -> None:
         def task_spawner() -> Task:
             for task in tasks:  # noqa: UP028
@@ -199,6 +219,9 @@ class TaskScheduler:
             response = future.result()
             self._ready_tasks_with_responses.append((task, response))
             self._waiting_tasks_with_requests.pop_front()
+
+            if response.is_to_all:
+                self._answer_all(request, response)
 
     def _answer_all(self, answered_request: DecisionRequest, response: DecisionResponse) -> None:
         if not response.is_to_all:
