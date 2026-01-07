@@ -1,9 +1,9 @@
-from nova_navigator.dialogs import DefaultButton
+from nova_navigator.dialogs import DeleteFilesDialog
 from nova_navigator.vfs2 import VPath
 
 from ..dialogs.files_dialog import CopyMoveFilesDialog
 from ..job import Job
-from .tasks import copy_files
+from .tasks import copy_files, erase_files
 
 
 async def copy_or_move_files_job(src_paths: list[VPath], dst_path: VPath, move: bool = False) -> Job | None:
@@ -27,3 +27,13 @@ async def copy_or_move_files_job(src_paths: list[VPath], dst_path: VPath, move: 
         return None
 
     return Job("Copy Files", copy_files, src_paths, dst_path)
+
+
+async def delete_files_job(paths: list[VPath]) -> Job | None:
+    """Create a Job that erases the specified files."""
+    dialog = DeleteFilesDialog(paths=paths)
+    result = await dialog.run()
+    if result != "YES":
+        return None
+
+    return Job("Erase Files", erase_files, paths)

@@ -1,3 +1,4 @@
+import logging
 from typing import Any, ClassVar
 
 from textual import widgets
@@ -8,6 +9,8 @@ from textual.screen import ModalScreen
 
 from ..decision import Decision
 from ..task import DecisionRequest
+
+_logger = logging.getLogger(__name__)
 
 
 class DecisionDialog(ModalScreen[Decision]):
@@ -27,10 +30,14 @@ class DecisionDialog(ModalScreen[Decision]):
             height: auto;
             align-horizontal: center;
         }
+        #button_box_to_all {
+            height: auto;
+            align-horizontal: center;
+        }
 
         Button {
             width: auto;
-            max-width: 20;
+            max-width: 15;
             margin: 0 2;
         }
 
@@ -49,16 +56,25 @@ class DecisionDialog(ModalScreen[Decision]):
 
     def compose(self) -> ComposeResult:
         buttons = []
+        to_all_buttons = []
         for expected_decision in self._request.expected_decisions:
             text = expected_decision.tr
+            _logger.warning(text)
             variant = "success" if expected_decision.is_positive else "error"
             btn = widgets.Button(text, id=expected_decision.name, variant=variant, flat=True)
-            buttons.append(btn)
+            if expected_decision.is_to_all:
+                to_all_buttons.append(btn)
+            else:
+                buttons.append(btn)
 
-        button_box = Horizontal(*buttons, id="button_box")
+        button_boxes = []
+        if buttons:
+            button_boxes.append(Horizontal(*buttons, id="button_box"))
+        if to_all_buttons:
+            button_boxes.append(Horizontal(*to_all_buttons, id="button_box_to_all"))
         dialog_box = Vertical(
             widgets.Label(self._request.message),
-            button_box,
+            *button_boxes,
             id="dialog_box",
         )
         dialog_box.border_title = self._request.title

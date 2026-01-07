@@ -72,7 +72,7 @@ class DeleteFilesDialog(Dialog):
 
     def __init__(
         self,
-        paths: list[str],
+        paths: list[VPath],
         id: str | None = None,
     ) -> None:
         self.paths = paths

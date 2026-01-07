@@ -9,6 +9,16 @@
             "console": "externalTerminal",
             "args": "",
             "justMyCode": false,
+        },
+        {
+            "name": "Attach (post-mortem)",
+            "type": "debugpy",
+            "request": "attach",
+            "connect": {
+                "host": "localhost",
+                "port": 5678
+            },
+            "justMyCode": true
         }
     ]
 }

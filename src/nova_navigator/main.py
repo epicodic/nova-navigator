@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 import subprocess
+import sys
 from enum import Enum
 from pathlib import PurePath
 from typing import ClassVar, NamedTuple
@@ -18,11 +19,12 @@ from textual.screen import Screen
 from textual.widgets import Input
 
 # from nn.widgets.menu import MenuBar, MenuHeader
-from nova_navigator import archive
+from nova_navigator import archive, debug
 from nova_navigator.config import conf_, get_config_file_path
 from nova_navigator.dialogs import BookmarksDialog
 from nova_navigator.dialogs.decision_dialog import DecisionDialog
 from nova_navigator.editor import Editor
+from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
 from nova_navigator.icons import ICONS, IconSet
 from nova_navigator.task import Decision, DecisionRequest
 
@@ -35,12 +37,12 @@ from nova_navigator.widgets.terminal import Terminal, shell_clear_prompt, shell_
 from nova_widgets.menu import SYMBOL_TABLE, Action, Menu, MenuBar, set_icon_provider
 from nova_widgets.menu import constructor as mc
 
-from .filemanager.jobs import copy_or_move_files_job
-
 logging.basicConfig(
     level="INFO",
     handlers=[TextualHandler()],
 )
+
+_logger = logging.getLogger("nova_navigator.main")
 
 
 class CommandInput(Input):
@@ -55,7 +57,7 @@ class MainScreen(Screen[None]):
         Binding("f4", "open_editor", "Edit"),
         Binding("f5", "copy_or_move_files(False)", "Copy"),
         # Binding("f6", "copy_or_move_files(True)", "Move"),
-        # Binding("f8", "delete_files", "Delete"),
+        Binding("f8", "delete_files", "Delete"),
         Binding("ctrl+b", "show_bookmarks", "Bookmark"),
         Binding("ctrl+h", "toggle_hidden", description="Show/Hide Hidden Files", show=False),
         # Binding("ctrl+s", "suspend", "Suspend"),
@@ -340,7 +342,8 @@ class MainScreen(Screen[None]):
         request: DecisionRequest,
         future: asyncio.Future[Decision],
     ) -> None:
-        dialog = DecisionDialog(request.message)
+        _logger.warning(request.expected_decisions)
+        dialog = DecisionDialog(request)
         result = await dialog.run()
         future.set_result(result)
 
@@ -357,23 +360,15 @@ class MainScreen(Screen[None]):
         if job is not None:
             await job.start(self.request_callback)
 
-        # operation = await copy_or_move_files_job(
-        #     src_paths=source_paths,
-        #     dst_path=destination_path,
-        #     move=move,
-        # )
-        # if operation is not None:
-        #     self.append_operation(operation)
+    @work
+    async def action_delete_files(self) -> None:
+        paths = list(self.active_panel().selected_path_items)
 
-    # @work
-    # async def action_delete_files(self) -> None:
-    #     paths = list(self.active_panel().selected_path_items)
-
-    #     operation = await delete_files_operation(
-    #         paths=paths,
-    #     )
-    #     if operation is not None:
-    #         self.append_operation(operation)
+        job = await delete_files_job(
+            paths=paths,
+        )
+        if job is not None:
+            await job.start(self.request_callback)
 
     def on_bookmarks_dialog_bookmark_selected(self, event: BookmarksDialog.BookmarkSelected) -> None:
         vpath = vfspath_from_uri(event.bookmark_path)
@@ -586,7 +581,16 @@ class NovaNavigator(App[None]):
     def __init__(self) -> None:
         super().__init__()
 
+    def _handle_exception(self, error: Exception) -> None:
+        # debug.exception_handler(type(error), error, error.__traceback__)
+        sys.settrace(debug.trace_handler)
+        raise error
+        # TODO show a user-friendly error dialog here
+        #       ideally with an option to open the debugger if debugpy is installed
+
     async def on_mount(self) -> None:
+        debug.install_debug_handler()
+
         self.log("Starting Nova Navigator...")
         self._main_screen = MainScreen()
         self.install_screen(self._main_screen, "main_screen")
