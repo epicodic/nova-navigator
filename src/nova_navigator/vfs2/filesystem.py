@@ -41,6 +41,10 @@ class Filesystem(ABC):
         return VPath(str(p), self)
 
     @abstractmethod
+    def is_same_device(self, path1: VPath, path2: VPath) -> bool:
+        """Return True if *path1* and *path2* are on the same device (filesystem)."""
+
+    @abstractmethod
     def cwd(self) -> VPath:
         """Return the current working directory path."""
 
@@ -75,6 +79,10 @@ class Filesystem(ABC):
     @abstractmethod
     def remove(self, path: VPath) -> None:
         """Remove the file at the given path."""
+
+    @abstractmethod
+    def rename(self, src_path: VPath, dst_path: VPath) -> None:
+        """Rename the file at *src_path* to *dst_path*."""
 
     @abstractmethod
     def rmdir(self, path: VPath) -> None:

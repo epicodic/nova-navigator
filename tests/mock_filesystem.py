@@ -195,6 +195,11 @@ class MockFilesystem(Filesystem):
         return VPath(posix.parent, self)
 
     @override
+    def is_same_device(self, path1: VPath, path2: VPath) -> bool:
+        self._assert_vpath(path1)
+        return path1.filesystem == path2.filesystem
+
+    @override
     def read(self, path: VPath) -> _Reader:
         posix = self._to_posix(path)
         node = self._file_node(posix)
@@ -219,6 +224,45 @@ class MockFilesystem(Filesystem):
         posix = self._to_posix(path)
         self._file_node(posix)  # raises if directory or missing
         del self._nodes[posix]
+
+    @override
+    def rename(self, src_path: VPath, dst_path: VPath) -> None:
+        src_posix = self._to_posix(src_path)
+        dst_posix = self._to_posix(dst_path)
+
+        # Verify source exists
+        src_node = self._node(src_posix)
+
+        # Verify destination parent exists and is a directory
+        self._dir_node(dst_posix.parent)
+
+        # If destination exists raise a FileExistsError
+        if dst_posix in self._nodes:
+            raise FileExistsError(f"File exists: '{dst_posix}'")
+
+        # Move the node
+        self._nodes[dst_posix] = src_node
+        del self._nodes[src_posix]
+
+        # If renaming a directory, update all child paths
+        if isinstance(src_node, _DirNode):
+            children_to_move = [
+                (p, n) for p, n in self._nodes.items() if p != dst_posix and self._is_descendant(p, src_posix)
+            ]
+            for old_path, node in children_to_move:
+                # Calculate new path by replacing src prefix with dst
+                relative = old_path.relative_to(src_posix)
+                new_path = dst_posix / relative
+                self._nodes[new_path] = node
+                del self._nodes[old_path]
+
+    def _is_descendant(self, path: PurePosixPath, ancestor: PurePosixPath) -> bool:
+        """Check if *path* is a descendant of *ancestor*."""
+        try:
+            path.relative_to(ancestor)
+            return True
+        except ValueError:
+            return False
 
     @override
     def rmdir(self, path: VPath) -> None:

@@ -347,3 +347,150 @@ def test_read_errors_only_affect_specified_path() -> None:
     reader = fs.read(fs.path("/good.txt"))
     assert reader.read(1024) == b"good"
     reader.close()
+
+
+# ---------------------------------------------------------------------------
+# rename()
+# ---------------------------------------------------------------------------
+
+
+def test_rename_file_in_same_directory() -> None:
+    fs = MockFilesystem({"/home/user/old.txt": b"content"})
+    fs.rename(fs.path("/home/user/old.txt"), fs.path("/home/user/new.txt"))
+
+    # Old path should not exist
+    with pytest.raises(FileNotFoundError):
+        fs.path("/home/user/old.txt").stat  # noqa: B018
+
+    # New path should have the content
+    reader = fs.read(fs.path("/home/user/new.txt"))
+    assert reader.read(1024) == b"content"
+    reader.close()
+
+
+def test_rename_file_to_different_directory() -> None:
+    fs = MockFilesystem(
+        {
+            "/home/user/file.txt": b"data",
+            "/home/other": None,
+        }
+    )
+    fs.rename(fs.path("/home/user/file.txt"), fs.path("/home/other/moved.txt"))
+
+    # Old path should not exist
+    with pytest.raises(FileNotFoundError):
+        fs.path("/home/user/file.txt").stat  # noqa: B018
+
+    # New path should exist with content
+    reader = fs.read(fs.path("/home/other/moved.txt"))
+    assert reader.read(1024) == b"data"
+    reader.close()
+
+
+def test_rename_empty_directory() -> None:
+    fs = MockFilesystem({"/home/user/olddir": None})
+    fs.rename(fs.path("/home/user/olddir"), fs.path("/home/user/newdir"))
+
+    # Old path should not exist
+    with pytest.raises(FileNotFoundError):
+        fs.path("/home/user/olddir").stat  # noqa: B018
+
+    # New path should exist as directory
+    assert fs.path("/home/user/newdir").stat.is_directory
+
+
+def test_rename_directory_with_contents() -> None:
+    fs = MockFilesystem(
+        {
+            "/home/user/olddir/file1.txt": b"one",
+            "/home/user/olddir/subdir/file2.txt": b"two",
+        }
+    )
+    fs.rename(fs.path("/home/user/olddir"), fs.path("/home/user/newdir"))
+
+    # Old paths should not exist
+    with pytest.raises(FileNotFoundError):
+        fs.path("/home/user/olddir").stat  # noqa: B018
+    with pytest.raises(FileNotFoundError):
+        fs.path("/home/user/olddir/file1.txt").stat  # noqa: B018
+
+    # New paths should exist with content
+    assert fs.path("/home/user/newdir").stat.is_directory
+    reader1 = fs.read(fs.path("/home/user/newdir/file1.txt"))
+    assert reader1.read(1024) == b"one"
+    reader1.close()
+
+    reader2 = fs.read(fs.path("/home/user/newdir/subdir/file2.txt"))
+    assert reader2.read(1024) == b"two"
+    reader2.close()
+
+
+def test_rename_overwrites_existing_file() -> None:
+    """Rename raises FileExistsError if destination exists."""
+    fs = MockFilesystem(
+        {
+            "/home/user/src.txt": b"source",
+            "/home/user/dst.txt": b"destination",
+        }
+    )
+    with pytest.raises(FileExistsError, match="File exists"):
+        fs.rename(fs.path("/home/user/src.txt"), fs.path("/home/user/dst.txt"))
+
+
+def test_rename_overwrites_existing_directory() -> None:
+    """Rename raises FileExistsError if destination directory exists."""
+    fs = MockFilesystem(
+        {
+            "/home/user/src.txt": b"content",
+            "/home/user/dstdir": None,
+        }
+    )
+    with pytest.raises(FileExistsError, match="File exists"):
+        fs.rename(fs.path("/home/user/src.txt"), fs.path("/home/user/dstdir"))
+
+
+def test_rename_missing_source_raises() -> None:
+    fs = MockFilesystem()
+    with pytest.raises(FileNotFoundError):
+        fs.rename(fs.path("/home/user/missing.txt"), fs.path("/home/user/new.txt"))
+
+
+def test_rename_missing_destination_parent_raises() -> None:
+    fs = MockFilesystem({"/home/user/file.txt": b"x"})
+    with pytest.raises((FileNotFoundError, NotADirectoryError)):
+        fs.rename(fs.path("/home/user/file.txt"), fs.path("/no/such/dir/file.txt"))
+
+
+def test_rename_preserves_file_content() -> None:
+    fs = MockFilesystem({"/home/user/test.txt": b"important data"})
+    fs.rename(fs.path("/home/user/test.txt"), fs.path("/home/user/renamed.txt"))
+
+    reader = fs.read(fs.path("/home/user/renamed.txt"))
+    assert reader.read(1024) == b"important data"
+    reader.close()
+
+
+def test_rename_directory_updates_all_descendants() -> None:
+    fs = MockFilesystem(
+        {
+            "/a/b/c/d/file.txt": b"deep",
+            "/a/b/other.txt": b"shallow",
+            "/x": None,  # Create parent directory for destination
+        }
+    )
+    fs.rename(fs.path("/a/b"), fs.path("/x/y"))
+
+    # Old paths should not exist
+    with pytest.raises(FileNotFoundError):
+        fs.path("/a/b").stat  # noqa: B018
+    with pytest.raises(FileNotFoundError):
+        fs.path("/a/b/c/d/file.txt").stat  # noqa: B018
+
+    # New paths should exist
+    reader1 = fs.read(fs.path("/x/y/c/d/file.txt"))
+    assert reader1.read(1024) == b"deep"
+    reader1.close()
+
+    reader2 = fs.read(fs.path("/x/y/other.txt"))
+    assert reader2.read(1024) == b"shallow"
+    reader2.close()
