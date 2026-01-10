@@ -30,14 +30,15 @@ class TarArchive(Archive):
     @override
     def listdir(self, path: PurePath) -> list[PurePath]:
         normalized_path = path.as_posix().lstrip("/")
+        prefix = normalized_path + "/" if normalized_path else ""
 
         contents = set()
         for member in self._members:
             member_path = member.name
-            if not member_path.startswith(normalized_path):
+            if not member_path.startswith(prefix):
                 continue
 
-            relative_path = member_path[len(normalized_path) :].lstrip("/")
+            relative_path = member_path[len(prefix) :]
             parts = relative_path.split("/", 1)
             if parts[0]:
                 contents.add(parts[0])

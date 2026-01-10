@@ -2,11 +2,11 @@ import threading
 from pathlib import PurePosixPath
 
 import pytest
+from tests.mock_filesystem import MockFilesystem
 
 from nova_navigator.decision import Decision
 from nova_navigator.filemanager.tasks import CHUNK_SIZE, FileCopyOptions, copy_file, copy_files
 from nova_navigator.scheduler import TaskCancelled, TaskStatus
-from tests.mock_filesystem import MockFilesystem
 
 from .common import make_status, read_all, run_task
 
@@ -206,12 +206,57 @@ async def test_copy_file_write_error_closes_streams() -> None:
     assert dst_fs.writers[0].close_count == 1
 
 
+<<<<<<< HEAD
+# ---------------------------------------------------------------------------
+# copy_paths tests
+# ---------------------------------------------------------------------------
+
+# 1. copy single file to new location and different name
+# 2. copy single file to new directory
+# 3. copy flat directory (only files, no subdirs)
+# 4. copy deep directory hierarchy (multiple levels of nested subdirs)
+# 5. copy mix of files and directories in same operation
+# 6. overwrite policy: skip, overwrite, ask (with YES, NO, ALL, NONE)
+# 7. progress tracking: overall progress should track number of src_paths completed
+# 8. cancellation: TaskCancelled should be raised if cancel event is set mid-copy
+# 9. error handling: OSError during read/write should propagate and still close streams
+
+
+# 1.
+def test_copy_paths_single_file() -> None:
+    """A single file is copied into the destination directory under its original name."""
+||||||| bd69bf9
+# ---------------------------------------------------------------------------
+# copy_paths tests
+# ---------------------------------------------------------------------------
+
+
+def test_copy_paths_single_file() -> None:
+    """A single file is copied into the destination directory under its original name."""
+=======
 @pytest.mark.asyncio
 async def test_copy_paths_single_file() -> None:
     """A single file copied to a non-directory destination uses destination as target path."""
+>>>>>>> feature/asyncio-scheduler
     src_fs = MockFilesystem({"/src/hello.txt": b"hello"})
     dst_fs = MockFilesystem()
 
+<<<<<<< HEAD
+    run_task(copy_files(make_status(), [src_fs.path("/src/hello.txt")], dst_fs.path("/home/user/other.txt")))
+
+    assert read_all(dst_fs, "/home/user/other.txt") == b"hello"
+
+
+# 2.
+def test_copy_paths_single_to_dir() -> None:
+    """A single file is copied into the destination directory under its original name."""
+    src_fs = MockFilesystem({"/src/hello.txt": b"hello"})
+    dst_fs = MockFilesystem()
+
+    run_task(copy_files(make_status(), [src_fs.path("/src/hello.txt")], dst_fs.path("/home/user")))
+||||||| bd69bf9
+    run_task(copy_files(make_status(), [src_fs.path("/src/hello.txt")], dst_fs.path("/home/user")))
+=======
     await run_task(lambda ctx: copy_files(ctx, [src_fs.path("/src/hello.txt")], dst_fs.path("/home/user/other.txt")))
 
     assert read_all(dst_fs, "/home/user/other.txt") == b"hello"
@@ -224,6 +269,7 @@ async def test_copy_paths_single_to_dir() -> None:
     dst_fs = MockFilesystem()
 
     await run_task(lambda ctx: copy_files(ctx, [src_fs.path("/src/hello.txt")], dst_fs.path("/home/user")))
+>>>>>>> feature/asyncio-scheduler
 
     assert read_all(dst_fs, "/home/user/hello.txt") == b"hello"
 
@@ -242,8 +288,15 @@ async def test_copy_paths_multiple_files() -> None:
     assert read_all(dst_fs, "/home/user/c.txt") == b"ccc"
 
 
+<<<<<<< HEAD
+# 3.
+def test_copy_paths_flat_directory() -> None:
+||||||| bd69bf9
+def test_copy_paths_flat_directory() -> None:
+=======
 @pytest.mark.asyncio
 async def test_copy_paths_flat_directory() -> None:
+>>>>>>> feature/asyncio-scheduler
     """A directory whose contents are all flat files is copied recursively."""
     src_fs = MockFilesystem({"/src/mydir/a.txt": b"a", "/src/mydir/b.txt": b"b"})
     dst_fs = MockFilesystem()
@@ -255,8 +308,15 @@ async def test_copy_paths_flat_directory() -> None:
     assert read_all(dst_fs, "/dst/mydir/b.txt") == b"b"
 
 
+<<<<<<< HEAD
+# 4.
+def test_copy_paths_deep_hierarchy() -> None:
+||||||| bd69bf9
+def test_copy_paths_deep_hierarchy() -> None:
+=======
 @pytest.mark.asyncio
 async def test_copy_paths_deep_hierarchy() -> None:
+>>>>>>> feature/asyncio-scheduler
     """Nested subdirectory trees are copied with their full relative structure preserved."""
     src_fs = MockFilesystem(
         {
@@ -275,8 +335,15 @@ async def test_copy_paths_deep_hierarchy() -> None:
     assert read_all(dst_fs, "/dst/root/sub/deep/bottom.txt") == b"bottom"
 
 
+<<<<<<< HEAD
+# 5.
+def test_copy_paths_mixed_files_and_dirs() -> None:
+||||||| bd69bf9
+def test_copy_paths_mixed_files_and_dirs() -> None:
+=======
 @pytest.mark.asyncio
 async def test_copy_paths_mixed_files_and_dirs() -> None:
+>>>>>>> feature/asyncio-scheduler
     """A mix of plain files and directories in src_paths are all handled correctly."""
     src_fs = MockFilesystem({"/src/standalone.txt": b"standalone", "/src/dir/nested.txt": b"nested"})
     dst_fs = MockFilesystem()
@@ -289,8 +356,15 @@ async def test_copy_paths_mixed_files_and_dirs() -> None:
     assert read_all(dst_fs, "/dst/dir/nested.txt") == b"nested"
 
 
+<<<<<<< HEAD
+# 6. (skip)
+def test_copy_paths_overwrite_skip() -> None:
+||||||| bd69bf9
+def test_copy_paths_overwrite_skip() -> None:
+=======
 @pytest.mark.asyncio
 async def test_copy_paths_overwrite_skip() -> None:
+>>>>>>> feature/asyncio-scheduler
     """skip policy silently leaves every existing destination file unchanged."""
     src_fs = MockFilesystem({"/src/a.txt": b"new-a", "/src/b.txt": b"new-b"})
     dst_fs = MockFilesystem({"/dst/a.txt": b"original-a", "/dst/b.txt": b"original-b"})
@@ -304,8 +378,15 @@ async def test_copy_paths_overwrite_skip() -> None:
     assert read_all(dst_fs, "/dst/b.txt") == b"original-b"
 
 
+<<<<<<< HEAD
+# 6. (overwrite)
+def test_copy_paths_overwrite_force() -> None:
+||||||| bd69bf9
+def test_copy_paths_overwrite_force() -> None:
+=======
 @pytest.mark.asyncio
 async def test_copy_paths_overwrite_force() -> None:
+>>>>>>> feature/asyncio-scheduler
     """overwrite policy replaces existing destination files without prompting."""
     src_fs = MockFilesystem({"/src/a.txt": b"new-a", "/src/b.txt": b"new-b"})
     dst_fs = MockFilesystem({"/dst/a.txt": b"old-a", "/dst/b.txt": b"old-b"})
@@ -320,8 +401,15 @@ async def test_copy_paths_overwrite_force() -> None:
     assert read_all(dst_fs, "/dst/b.txt") == b"new-b"
 
 
+<<<<<<< HEAD
+# 6. (ask with YES)
+def test_copy_paths_overwrite_ask_yes() -> None:
+||||||| bd69bf9
+def test_copy_paths_overwrite_ask_yes() -> None:
+=======
 @pytest.mark.asyncio
 async def test_copy_paths_overwrite_ask_yes() -> None:
+>>>>>>> feature/asyncio-scheduler
     """ask policy prompts once per conflicting file; YES overwrites it."""
     src_fs = MockFilesystem({"/src/file.txt": b"new"})
     dst_fs = MockFilesystem({"/dst/file.txt": b"old"})
@@ -335,8 +423,15 @@ async def test_copy_paths_overwrite_ask_yes() -> None:
     assert read_all(dst_fs, "/dst/file.txt") == b"new"
 
 
+<<<<<<< HEAD
+# 6. (ask with NO)
+def test_copy_paths_overwrite_ask_no() -> None:
+||||||| bd69bf9
+def test_copy_paths_overwrite_ask_no() -> None:
+=======
 @pytest.mark.asyncio
 async def test_copy_paths_overwrite_ask_no() -> None:
+>>>>>>> feature/asyncio-scheduler
     """ask policy prompts once per conflicting file; NO leaves destination unchanged."""
     src_fs = MockFilesystem({"/src/file.txt": b"new"})
     dst_fs = MockFilesystem({"/dst/file.txt": b"original"})
@@ -351,8 +446,15 @@ async def test_copy_paths_overwrite_ask_no() -> None:
     assert read_all(dst_fs, "/dst/file.txt") == b"original"
 
 
+<<<<<<< HEAD
+# 6. (ask per file)
+def test_copy_paths_overwrite_ask_per_file() -> None:
+||||||| bd69bf9
+def test_copy_paths_overwrite_ask_per_file() -> None:
+=======
 @pytest.mark.asyncio
 async def test_copy_paths_overwrite_ask_per_file() -> None:
+>>>>>>> feature/asyncio-scheduler
     """ask policy prompts independently for each conflicting file."""
     src_fs = MockFilesystem({"/src/a.txt": b"new-a", "/src/b.txt": b"new-b"})
     dst_fs = MockFilesystem({"/dst/a.txt": b"old-a", "/dst/b.txt": b"old-b"})
@@ -368,11 +470,48 @@ async def test_copy_paths_overwrite_ask_per_file() -> None:
     assert read_all(dst_fs, "/dst/b.txt") == b"old-b"
 
 
+<<<<<<< HEAD
+# 6. (ALL)
+def test_copy_paths_overwrite_yes_to_all() -> None:
+    """YES_TO_ALL resolves all subsequent conflicts without further prompts."""
+    src_fs = MockFilesystem(
+        {
+            "/src/a.txt": b"new-a",
+            "/src/b.txt": b"new-b",
+            "/src/c.txt": b"new-c",
+        }
+    )
+    dst_fs = MockFilesystem(
+        {
+            "/dst/a.txt": b"old-a",
+            "/dst/b.txt": b"old-b",
+            "/dst/c.txt": b"old-c",
+        }
+    )
+||||||| bd69bf9
+def test_copy_paths_overwrite_yes_to_all() -> None:
+    """YES_TO_ALL resolves all subsequent conflicts without further prompts."""
+    src_fs = MockFilesystem(
+        {
+            "/src/a.txt": b"new-a",
+            "/src/b.txt": b"new-b",
+            "/src/c.txt": b"new-c",
+        }
+    )
+    dst_fs = MockFilesystem(
+        {
+            "/dst/a.txt": b"old-a",
+            "/dst/b.txt": b"old-b",
+            "/dst/c.txt": b"old-c",
+        }
+    )
+=======
 @pytest.mark.asyncio
 async def test_copy_paths_overwrite_yes_to_all() -> None:
     """YES_TO_ALL on the first conflict suppresses all subsequent prompts for the same title."""
     src_fs = MockFilesystem({"/src/a.txt": b"new-a", "/src/b.txt": b"new-b", "/src/c.txt": b"new-c"})
     dst_fs = MockFilesystem({"/dst/a.txt": b"old-a", "/dst/b.txt": b"old-b", "/dst/c.txt": b"old-c"})
+>>>>>>> feature/asyncio-scheduler
 
     srcs = [src_fs.path(p) for p in ("/src/a.txt", "/src/b.txt", "/src/c.txt")]
     # Scheduler caches ALL after the first prompt; sub-tasks 2 and 3 get the cached response.
@@ -387,6 +526,58 @@ async def test_copy_paths_overwrite_yes_to_all() -> None:
     assert read_all(dst_fs, "/dst/c.txt") == b"new-c"
 
 
+<<<<<<< HEAD
+# 6. (NONE)
+def test_copy_paths_overwrite_no_to_all() -> None:
+    """NONE (No to All) skips all remaining conflicts without further prompts."""
+    src_fs = MockFilesystem(
+        {
+            "/src/a.txt": b"new-a",
+            "/src/b.txt": b"new-b",
+            "/src/c.txt": b"new-c",
+        }
+    )
+    dst_fs = MockFilesystem(
+        {
+            "/dst/a.txt": b"old-a",
+            "/dst/b.txt": b"old-b",
+            "/dst/c.txt": b"old-c",
+        }
+    )
+
+    srcs = [src_fs.path(p) for p in ("/src/a.txt", "/src/b.txt", "/src/c.txt")]
+    # NONE on all prompts - all files should remain unchanged
+    requests = run_task(
+        copy_files(make_status(), srcs, dst_fs.path("/dst")),
+        [Decision.NONE, Decision.NONE, Decision.NONE],
+    )
+
+    # Three separate conflicts → three separate DecisionRequests (run_task drives
+    # them all; de-duplication happens in TaskScheduler, not in the Task itself)
+    assert len(requests) == 3
+    # All destination files should remain unchanged (no writes)
+    assert len(dst_fs.writers) == 0
+    assert read_all(dst_fs, "/dst/a.txt") == b"old-a"
+    assert read_all(dst_fs, "/dst/b.txt") == b"old-b"
+    assert read_all(dst_fs, "/dst/c.txt") == b"old-c"
+
+
+def test_copy_paths_no_conflict_no_prompt() -> None:
+    """When destination files do not exist, no DecisionRequests are yielded."""
+    src_fs = MockFilesystem(
+        {
+            "/src/x.txt": b"x",
+            "/src/y.txt": b"y",
+        }
+||||||| bd69bf9
+def test_copy_paths_no_conflict_no_prompt() -> None:
+    """When destination files do not exist, no DecisionRequests are yielded."""
+    src_fs = MockFilesystem(
+        {
+            "/src/x.txt": b"x",
+            "/src/y.txt": b"y",
+        }
+=======
 @pytest.mark.asyncio
 async def test_copy_paths_overwrite_no_to_all() -> None:
     """NONE on the first conflict suppresses all subsequent prompts; all files left unchanged."""
@@ -397,6 +588,7 @@ async def test_copy_paths_overwrite_no_to_all() -> None:
     requests = await run_task(
         lambda ctx: copy_files(ctx, srcs, dst_fs.path("/dst")),
         [Decision.NONE],
+>>>>>>> feature/asyncio-scheduler
     )
 
     assert len(requests) == 1
@@ -420,9 +612,18 @@ async def test_copy_paths_no_conflict_no_prompt() -> None:
     assert read_all(dst_fs, "/home/user/y.txt") == b"y"
 
 
+<<<<<<< HEAD
+# 7.
+def test_copy_paths_progress_tracks_src_paths() -> None:
+    """Overall progress completed equals len(src_paths) when done; total is set upfront."""
+||||||| bd69bf9
+def test_copy_paths_progress_tracks_src_paths() -> None:
+    """Overall progress completed equals len(src_paths) when done; total is set upfront."""
+=======
 @pytest.mark.asyncio
 async def test_copy_paths_progress_tracks_src_paths() -> None:
     """Overall progress total equals len(src_paths) upfront; completed reaches that total."""
+>>>>>>> feature/asyncio-scheduler
     events: list[tuple[int, int]] = []
 
     def cb(s: TaskStatus) -> None:
@@ -444,9 +645,18 @@ async def test_copy_paths_progress_tracks_src_paths() -> None:
     assert max(completeds) == 3
 
 
+<<<<<<< HEAD
+# 8.
+def test_copy_paths_cancelled_mid_list() -> None:
+    """TaskCancelled is raised when the cancel event fires between source paths."""
+||||||| bd69bf9
+def test_copy_paths_cancelled_mid_list() -> None:
+    """TaskCancelled is raised when the cancel event fires between source paths."""
+=======
 @pytest.mark.asyncio
 async def test_copy_paths_cancelled_mid_list() -> None:
     """TaskCancelled is raised when the cancel event fires during the copy."""
+>>>>>>> feature/asyncio-scheduler
     src_fs = MockFilesystem({"/src/a.txt": b"a", "/src/b.txt": b"b"})
     dst_fs = MockFilesystem()
 
@@ -455,6 +665,35 @@ async def test_copy_paths_cancelled_mid_list() -> None:
     status = make_status(cancel_event=cancel)
 
     with pytest.raises(TaskCancelled):
+<<<<<<< HEAD
+        run_task(copy_files(status, [src_fs.path("/src/a.txt"), src_fs.path("/src/b.txt")], dst_fs.path("/home/user")))
+
+
+# 9.
+def test_copy_paths_error_during_directory_copy() -> None:
+    """OSError during recursive directory copy propagates correctly."""
+    src_fs = MockFilesystem(
+        {
+            "/src/mydir/file1.txt": b"content1",
+            "/src/mydir/file2.txt": b"content2",
+        }
+    )
+    dst_fs = MockFilesystem(
+        write_errors={"/home/user/mydir/file2.txt": OSError("disk full")},
+    )
+    dst_fs._mkdir_p(PurePosixPath("/home/user/mydir"))
+
+    with pytest.raises(OSError, match="disk full"):
+        run_task(copy_files(make_status(), [src_fs.path("/src/mydir")], dst_fs.path("/home/user")))
+
+    # Verify that file1.txt was copied successfully before the error
+    assert read_all(dst_fs, "/home/user/mydir/file1.txt") == b"content1"
+    # Verify streams were closed even after error
+    assert all(r.close_count >= 1 for r in src_fs.readers)
+    assert all(w.close_count >= 1 for w in dst_fs.writers)
+||||||| bd69bf9
+        run_task(copy_files(status, [src_fs.path("/src/a.txt"), src_fs.path("/src/b.txt")], dst_fs.path("/home/user")))
+=======
         await run_task(
             lambda ctx: copy_files(
                 ctx, [src_fs.path("/src/a.txt"), src_fs.path("/src/b.txt")], dst_fs.path("/home/user")
@@ -474,3 +713,4 @@ async def test_copy_paths_error_during_directory_copy() -> None:
 
     with pytest.raises(OSError, match="disk full"):
         await run_task(lambda ctx: copy_files(ctx, [src_fs.path("/src/mydir")], dst_fs.path("/home/user")))
+>>>>>>> feature/asyncio-scheduler

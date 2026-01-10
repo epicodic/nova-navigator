@@ -21,12 +21,13 @@ from textual.widgets import Input
 # from nn.widgets.menu import MenuBar, MenuHeader
 from nova_navigator import archive, debug
 from nova_navigator.config import conf_, get_config_file_path
+from nova_navigator.decision import Decision
 from nova_navigator.dialogs import BookmarksDialog
 from nova_navigator.dialogs.decision_dialog import DecisionDialog
 from nova_navigator.editor import Editor
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
 from nova_navigator.icons import ICONS, IconSet
-from nova_navigator.task import Decision, DecisionRequest
+from nova_navigator.scheduler import DecisionRequest
 
 # from nova_navigator.operations.file_operations import copy_or_move_files_operation, delete_files_operation
 from nova_navigator.uri import register_common_schemes, vfspath_from_uri
