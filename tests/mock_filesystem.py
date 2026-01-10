@@ -211,6 +211,8 @@ class MockFilesystem(Filesystem):
     @override
     def write(self, path: VPath) -> _Writer:
         posix = self._to_posix(path)
+        if posix in self._nodes and isinstance(self._nodes[posix], _DirNode):
+            raise IsADirectoryError(f"Is a directory: '{posix}'")
         self._dir_node(posix.parent)  # ensure parent directory exists
         node = _FileNode(content=bytearray())
         self._nodes[posix] = node

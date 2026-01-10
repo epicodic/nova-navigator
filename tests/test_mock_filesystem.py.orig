@@ -495,6 +495,9 @@ def test_rename_directory_updates_all_descendants() -> None:
     reader2 = fs.read(fs.path("/x/y/other.txt"))
     assert reader2.read(1024) == b"shallow"
     reader2.close()
+<<<<<<< HEAD
+||||||| bd69bf9
+=======
 
 
 # ---------------------------------------------------------------------------
@@ -596,3 +599,4 @@ def test_is_same_device_different_filesystem() -> None:
     fs1 = MockFilesystem({"/a.txt": b"x"})
     fs2 = MockFilesystem({"/a.txt": b"x"})
     assert not fs1.is_same_device(fs1.path("/a.txt"), fs2.path("/a.txt"))
+>>>>>>> feature/asyncio-scheduler

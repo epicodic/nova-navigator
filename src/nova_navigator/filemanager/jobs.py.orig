@@ -2,7 +2,14 @@ from nova_navigator.dialogs import DeleteFilesDialog
 from nova_navigator.vfs2 import VPath
 
 from ..dialogs.files_dialog import CopyMoveFilesDialog
+<<<<<<< HEAD
+from ..job import Job
+||||||| bd69bf9
+from ..job import Job
+from .tasks import copy_files
+=======
 from ..scheduler import Job
+>>>>>>> feature/asyncio-scheduler
 from .tasks import copy_files, erase_files
 
 
