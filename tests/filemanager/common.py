@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable
 
 from nova_navigator.decision import Decision
 from nova_navigator.scheduler import AsyncTaskScheduler, DecisionRequest, TaskContext, TaskStatus
-from tests.mock_filesystem import MockFilesystem
+from tests._utils.mock_filesystem import MockFilesystem
 
 
 def make_status(

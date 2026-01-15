@@ -6,6 +6,11 @@ dist/
 wheels/
 *.egg-info
 
+# just for local development
+docs/agents/
+.agents
+todo.md
+
 # test files
 tests/stress_test/
 
@@ -15,5 +20,3 @@ tests/stress_test/
 # Git worktrees
 .worktrees/
 
-docs/agents/
-.agents

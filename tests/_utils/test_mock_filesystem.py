@@ -2,7 +2,7 @@
 
 import pytest
 
-from tests.mock_filesystem import MockFilesystem
+from .mock_filesystem import MockFilesystem
 
 # ---------------------------------------------------------------------------
 # Construction

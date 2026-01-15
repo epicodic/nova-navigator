@@ -3,9 +3,7 @@ import shutil
 import tempfile
 from collections.abc import Generator
 from contextlib import contextmanager
-from pathlib import Path, PurePath
-
-DATA_DIR = Path(__file__).parent / "_data"
+from pathlib import PurePath
 
 
 def create_file(path: PurePath, content: str) -> None:
