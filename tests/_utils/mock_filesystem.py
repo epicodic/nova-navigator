@@ -7,9 +7,9 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import override
 
-from nova_navigator.vfs2.filesystem import Filesystem
-from nova_navigator.vfs2.types import Stat
-from nova_navigator.vfs2.vpath import VPath
+from nova_navigator.vfs.filesystem import Filesystem
+from nova_navigator.vfs.types import Stat
+from nova_navigator.vfs.vpath import VPath
 
 
 @dataclass

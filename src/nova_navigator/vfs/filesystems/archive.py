@@ -12,7 +12,7 @@ class ArchiveFilesystem(Filesystem):
     """Read-only filesystem backed by a tar or zip archive.
 
     Pass either a pre-opened :class:`~nova_navigator.archive.Archive` or a
-    :class:`~nova_navigator.vfs2.vpath.VPath` pointing to an archive file on
+    :class:`~nova_navigator.vfs.vpath.VPath` pointing to an archive file on
     the local filesystem.  *archive_parent* is the :class:`VPath` returned by
     :meth:`parent` when the caller asks for the parent of the archive root —
     i.e. the directory that contains the archive file itself.

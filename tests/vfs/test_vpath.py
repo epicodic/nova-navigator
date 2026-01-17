@@ -1,4 +1,4 @@
-from nova_navigator.vfs2.filesystems import LocalFilesystem
+from nova_navigator.vfs.filesystems import LocalFilesystem
 from tests._utils.data import DATA_DIR
 from tests._utils.mock_filesystem import MockFilesystem
 

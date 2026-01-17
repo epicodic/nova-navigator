@@ -1,4 +1,4 @@
-from nova_navigator.vfs2.parse_uri import ParseResult, URIComponent, parse_uri
+from nova_navigator.vfs.parse_uri import ParseResult, URIComponent, parse_uri
 
 
 def test_no_schema() -> None:

@@ -1,5 +1,5 @@
 from nova_navigator.dialogs import DeleteFilesDialog
-from nova_navigator.vfs2 import VPath
+from nova_navigator.vfs import VPath
 
 from ..dialogs.files_dialog import CopyMoveFilesDialog
 from ..scheduler import Job

@@ -31,8 +31,8 @@ from nova_navigator.scheduler import DecisionRequest
 
 # from nova_navigator.operations.file_operations import copy_or_move_files_operation, delete_files_operation
 from nova_navigator.uri import register_common_schemes, vfspath_from_uri
-from nova_navigator.vfs2 import VPath
-from nova_navigator.vfs2.filesystems import ArchiveFilesystem, LocalFilesystem
+from nova_navigator.vfs import VPath
+from nova_navigator.vfs.filesystems import ArchiveFilesystem, LocalFilesystem
 from nova_navigator.widgets import DirectoryBrowser, Footer
 from nova_navigator.widgets.terminal import Terminal, shell_clear_prompt, shell_cmd_cd, shell_init_code
 from nova_widgets.menu import SYMBOL_TABLE, Action, Menu, MenuBar, set_icon_provider

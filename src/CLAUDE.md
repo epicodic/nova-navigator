@@ -50,24 +50,21 @@ The codebase lives under `src/` and contains two packages:
 
 **Entry point:** `nova_navigator/main.py` - defines `NovaNavigator(App)` and `MainScreen(Screen)`. `MainScreen` composes two `DirectoryBrowser` panels side-by-side with a terminal emulator and footer. Keyboard bindings are defined there.
 
-**VFS2 (current):** `nova_navigator/vfs2/` - the active virtual filesystem abstraction:
+**VFS:** `nova_navigator/vfs/` - the virtual filesystem abstraction:
 - `filesystem.py` - `Filesystem` ABC; subclasses implement `cwd()`, `root()`, `home()`, `iterdir()`, `stat()`, `parent()`, `read()`, `write()`, `remove()`, `rmdir()`
 - `vpath.py` - `VPath`: a path + filesystem reference pair; stat is lazily cached; supports `/` operator for path joining
 - `types.py` - `Stat` dataclass (size, modified, is_hidden, is_directory, is_executable, is_symlink, is_broken_symlink)
-- `interaction_context.py` - `InteractionContext` for progress/cancellation/decisions during long operations
 - `parse_uri.py` - URI parsing supporting nested schemes (e.g. `ssh://host/archive.tar.gz/tar://file.txt`)
 - `filesystems/local.py` - `LocalFilesystem` singleton
 - `filesystems/ssh.py` - `SSHFilesystem` via paramiko
 - `filesystems/azure.py` - Azure blob stub (incomplete)
-
-**Legacy VFS:** `nova_navigator/vfs/` - older VFS implementation still partially used by the app; being replaced by `vfs2/`.
 
 **Task system:** `nova_navigator/task.py` - defines a coroutine-like generator protocol for long-running operations that may need user decisions:
 - `Task = Generator[DecisionRequest | Task, DecisionResponse, None]`
 - `TaskScheduler` runs tasks in a thread and bridges decision requests to the GUI via async callbacks
 - Tasks `yield DecisionRequest(...)` to pause and ask the user; the scheduler resumes them with a `DecisionResponse`
 
-**Operations:** `nova_navigator/operations/` - file operations (copy, move, delete) implemented as `Operation` subclasses. `Operation.process()` runs in a thread via `asyncio.to_thread`. `filemanager/tasks.py` contains generator-based task implementations (`copy_file`, `erase`) built on top of `vfs2`.
+**Operations:** `nova_navigator/operations/` - file operations (copy, move, delete) implemented as `Operation` subclasses. `Operation.process()` runs in a thread via `asyncio.to_thread`. `filemanager/tasks.py` contains generator-based task implementations (`copy_file`, `erase`) built on top of `vfs`.
 
 **UI widgets:** `nova_navigator/widgets/`
 - `directory_browser.py` - main dual-pane file browser widget
