@@ -6,8 +6,8 @@ from typing import Literal
 from nova_navigator.decision import Decision
 from nova_navigator.scheduler import TaskContext
 
-from ..vfs2 import VPath
-from ..vfs2.filesystem import Filesystem
+from ..vfs import VPath
+from ..vfs.filesystem import Filesystem
 
 CHUNK_SIZE = 64 * 1024  # 64 KB
 

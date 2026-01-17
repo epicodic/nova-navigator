@@ -2,7 +2,7 @@ from abc import abstractmethod
 from pathlib import PurePath
 from typing import Literal
 
-from ..vfs2.types import Stat
+from ..vfs.types import Stat
 
 
 class Archive:

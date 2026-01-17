@@ -27,7 +27,7 @@ class Filesystem(ABC):
 
     Subclasses provide access to local disks, remote SSH hosts, archives, and
     other storage backends through a uniform path-oriented interface.  All path
-    arguments must be :class:`~nova_navigator.vfs2.vpath.VPath` instances that
+    arguments must be :class:`~nova_navigator.vfs.vpath.VPath` instances that
     belong to *this* filesystem instance; :meth:`_assert_vpath` enforces this
     invariant.
     """
@@ -37,7 +37,7 @@ class Filesystem(ABC):
             raise ValueError(f"VPath {path} does not belong to filesystem {self}")
 
     def path(self, p: str | PurePath) -> VPath:
-        """Create a :class:`~nova_navigator.vfs2.vpath.VPath` bound to this filesystem."""
+        """Create a :class:`~nova_navigator.vfs.vpath.VPath` bound to this filesystem."""
         return VPath(str(p), self)
 
     @abstractmethod
