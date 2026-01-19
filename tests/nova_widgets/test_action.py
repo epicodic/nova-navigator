@@ -1,0 +1,155 @@
+import pytest
+
+from nova_widgets.menu._action import Action, ActionCollection, ActionGroup
+
+
+def test_action_default_enabled() -> None:
+    a = Action("Open")
+    assert a.enabled is True
+
+
+def test_action_default_not_checkable() -> None:
+    a = Action("Open")
+    assert a.checkable is False
+
+
+def test_action_default_not_checked() -> None:
+    a = Action("Open")
+    assert a.checked is False
+
+
+def test_action_default_not_separator() -> None:
+    a = Action("Open")
+    assert a.is_separator is False
+
+
+def test_action_default_no_group() -> None:
+    a = Action("Open")
+    assert a.group is None
+
+
+def test_action_default_no_name() -> None:
+    a = Action("Open")
+    assert a.name is None
+
+
+def test_action_default_no_shortcut() -> None:
+    a = Action("Open")
+    assert a.shortcut is None
+
+
+def test_action_default_no_icon() -> None:
+    a = Action("Open")
+    assert a.icon is None
+
+
+def test_action_set_enabled_false() -> None:
+    a = Action("Open")
+    a.set_enabled(False)
+    assert a.enabled is False
+
+
+def test_action_set_enabled_true_after_false() -> None:
+    a = Action("Open")
+    a.set_enabled(False)
+    a.set_enabled(True)
+    assert a.enabled is True
+
+
+def test_action_set_checked_on_checkable_action() -> None:
+    a = Action("Bold", checkable=True)
+    a.set_checked(True)
+    assert a.checked is True
+
+
+def test_action_set_checked_false_on_checkable_action() -> None:
+    a = Action("Bold", checkable=True, checked=True)
+    a.set_checked(False)
+    assert a.checked is False
+
+
+def test_action_checked_false_when_not_checkable() -> None:
+    # checked=True in constructor has no effect when checkable=False
+    a = Action("Bold", checkable=False, checked=True)
+    assert a.checked is False
+
+
+def test_action_set_checked_raises_when_not_checkable() -> None:
+    a = Action("Open")
+    with pytest.raises(AssertionError):
+        a.set_checked(True)
+
+
+def test_action_separator_has_no_text_required() -> None:
+    a = Action(is_separator=True)
+    assert a.is_separator is True
+    assert a.text == ""
+
+
+def test_action_name_falls_back_to_action_string() -> None:
+    a = Action("New", action="app.new_file")
+    assert a.name == "app.new_file"
+
+
+def test_action_explicit_name_overrides_action_string() -> None:
+    a = Action("New", name="new", action="app.new_file")
+    assert a.name == "new"
+
+
+def test_action_group_checking_one_unchecks_other() -> None:
+    a1 = Action("Option A", checkable=True)
+    a2 = Action("Option B", checkable=True)
+    group = ActionGroup(a1, a2)
+    a1.set_group(group)
+    a2.set_group(group)
+
+    a1.set_checked(True)
+    assert a1.checked is True
+    assert a2.checked is False
+
+    a2.set_checked(True)
+    assert a2.checked is True
+    assert a1.checked is False
+
+
+def test_action_group_current_returns_checked_action() -> None:
+    a1 = Action("Option A", checkable=True)
+    a2 = Action("Option B", checkable=True)
+    group = ActionGroup(a1, a2)
+    a1.set_group(group)
+    a2.set_group(group)
+
+    a1.set_checked(True)
+    assert group.current() is a1
+
+    a2.set_checked(True)
+    assert group.current() is a2
+
+
+def test_action_group_current_none_before_any_check() -> None:
+    a1 = Action("Option A", checkable=True)
+    group = ActionGroup(a1)
+    a1.set_group(group)
+    assert group.current() is None
+
+
+def test_action_collection_find_action_by_name() -> None:
+    coll = ActionCollection()
+    a = Action("Open", name="open")
+    coll._add_action(a)
+    assert coll.find_action("open") is a
+
+
+def test_action_collection_find_action_returns_none_when_missing() -> None:
+    coll = ActionCollection()
+    coll._add_action(Action("Open", name="open"))
+    assert coll.find_action("missing") is None
+
+
+def test_action_collection_actions_property_returns_all() -> None:
+    coll = ActionCollection()
+    a1 = Action("Open", name="open")
+    a2 = Action("Save", name="save")
+    coll._add_action(a1)
+    coll._add_action(a2)
+    assert coll.actions == [a1, a2]

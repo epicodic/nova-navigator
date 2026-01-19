@@ -23,9 +23,9 @@ It supports a virtual file system (VFS) abstraction for local, SSH, and archive 
 
 ## Setup
 
-```sh
-source activate.sh        # activate venv and set PYTHONPYCACHEPREFIX, PYTHONSAFEPATH
-```
+No setup step is required before running commands.
+All commands use `uv run ...` which automatically uses the venv.
+Do NOT run `source activate.sh` before commands — it is unnecessary.
 
 The venv is at `.venv/` (managed by `uv`). The project uses `uv` for dependency management.
 
