@@ -114,6 +114,24 @@ class Menu(Widget, Action, ActionCollection, can_focus=True):
             self.dismiss_parents = dismiss_parents
             super().__init__()
 
+    class NavigateLeft(events.Event):
+        """Posted when left is pressed in a top-level menu (parent is not a Menu)."""
+
+        menu: "Menu"
+
+        def __init__(self, menu: "Menu") -> None:
+            self.menu = menu
+            super().__init__()
+
+    class NavigateRight(events.Event):
+        """Posted when right is pressed in a top-level menu with no submenu to enter."""
+
+        menu: "Menu"
+
+        def __init__(self, menu: "Menu") -> None:
+            self.menu = menu
+            super().__init__()
+
     # endregion
 
     # region --------------------------- Members ------------------------------
@@ -246,16 +264,16 @@ class Menu(Widget, Action, ActionCollection, can_focus=True):
     def _action_cursor_left(self) -> None:
         if self._parent and isinstance(self._parent, Menu):
             self.dismiss()
+        else:
+            self.post_message(self.NavigateLeft(self))
 
     def _action_cursor_right(self) -> None:
-        if self._highlighted is None:
-            return
-        action = self._actions[self._highlighted]
-        if not action.enabled:
-            return
-
-        if isinstance(action, Menu):
-            self._open_submenu(action, self._highlighted)
+        if self._highlighted is not None:
+            action = self._actions[self._highlighted]
+            if action.enabled and isinstance(action, Menu):
+                self._open_submenu(action, self._highlighted)
+                return
+        self.post_message(self.NavigateRight(self))
 
     def _action_select(self) -> None:
         if self._highlighted is None:

@@ -171,5 +171,75 @@ For implementing long-running async operations: see `docs/tasks.md` for the task
 | `config/default/` | Default TOML config files (bookmarks, filetypes, icons) |
 | `tests/` | Test suite (pytest) |
 
+---
+
+## Writing GUI Tests
+
+Textual widgets are tested using `App.run_test()`, which returns an async context manager yielding a `Pilot`.
+Tests live under `tests/nova_widgets/` and use `pytest-asyncio` with `@pytest.mark.asyncio`.
+
+### Minimal test app
+
+Wrap the widget under test in a minimal `App`:
+
+```python
+from textual.app import App, ComposeResult
+
+class MyTestApp(App[None]):
+    def __init__(self, widget: MyWidget) -> None:
+        super().__init__()
+        self._widget = widget
+
+    def compose(self) -> ComposeResult:
+        yield self._widget
+```
+
+### Interacting with the widget
+
+```python
+@pytest.mark.asyncio
+async def test_something() -> None:
+    app = MyTestApp(widget)
+    async with app.run_test() as pilot:
+        await pilot.pause()              # let the app settle after mount
+
+        await pilot.press("down")        # send a key
+        await pilot.hover(widget, offset=(2, 1))  # move mouse to row 1
+        await pilot.click(widget, offset=(2, 1))  # click at that position
+        await pilot.pause(delay=0.1)     # wait for async reactions
+
+        assert widget.some_state == expected
+```
+
+Key rules:
+- Always `await pilot.pause()` after mounting before inspecting state.
+- `pilot.click()` does **not** fire a `MouseMove` first — call `pilot.hover()` before `pilot.click()` when the widget reacts to hover (e.g. to set a highlight).
+- Use `app.query(WidgetClass)` to find widgets in the DOM.
+- Prefer `pilot.click(widget_instance)` over manually posting messages.
+
+### Inspecting the DOM
+
+```python
+items = list(app.query(MenuBarItem))   # all instances of a type
+first = app.query(MenuBarItem).first() # first match
+active = [w for w in app.query(MenuBarItem) if w.has_class("-active")]
+```
+
+### Visualising a test
+
+Pass `headless=False` to render the app live in the terminal while the test runs:
+
+```python
+async with app.run_test(headless=False) as pilot:
+    await pilot.pause(delay=1.0)  # slow down to observe
+```
+
+Run a single test with output visible:
+
+```sh
+uv run pytest tests/nova_widgets/test_menu.py::test_mouse_click_triggers_hovered_item -s
+```
+
+
 
 

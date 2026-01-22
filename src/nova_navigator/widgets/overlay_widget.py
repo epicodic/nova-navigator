@@ -11,7 +11,7 @@ class OverlayWidget(Widget):
 
     DEFAULT_CSS = """
     OverlayWidget {
-        layer: above;
+        overlay: screen;
         position: absolute;
         offset: 0 0;
         width: auto;

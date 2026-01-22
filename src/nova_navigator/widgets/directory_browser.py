@@ -259,12 +259,12 @@ class FilterWidget(OverlayWidget, can_focus=True):
         if not self.value:
             self.action_dismiss()
             return
-        self.parent_widget.focus()
+        self.browser.focus()
 
     def action_dismiss(self) -> None:
         self.input.value = ""
         self.hide()
-        self.parent_widget.focus()
+        self.browser.focus()
 
     @property
     def value(self) -> str:
@@ -445,7 +445,7 @@ class DirectoryBrowser(ScrollView):
 
     def on_mount(self) -> None:
         super().on_mount()
-        self.mount(self._filter_widget)
+        self.screen.mount(self._filter_widget)
 
     def _on_focus(self, event: events.Focus) -> None:
         self.post_message(DirectoryBrowser.Focus(self))
@@ -912,6 +912,9 @@ class DirectoryBrowser(ScrollView):
             self.set_path(event.path)
 
     async def action_filter(self) -> None:
+        # Position the filter at the top of this browser on screen.
+        self._filter_widget.offset = (self.region.x + 2, self.region.y)
+
         self._filter_widget.focus()
 
     def on_filter_widget_input_changed(self, event: Input.Changed) -> None:
