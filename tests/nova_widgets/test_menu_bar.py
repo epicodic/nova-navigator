@@ -54,10 +54,70 @@ async def test_menu_bar_click_opens_menu() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
 
-        # Simulate the mouse-down that triggers menu opening
+        # Click the item to trigger menu opening
         item = app.query(MenuBarItem).first()
-        item.post_message(MenuBarItem.Selected(item))
+        await pilot.click(item)
         await pilot.pause(delay=0.1)
 
         # The File menu should now be mounted as a child of the MenuBar
         assert len(app.query(Menu)) >= 1
+
+
+def _active_item(app: App[None]) -> MenuBarItem | None:
+    """Return the currently active (highlighted) MenuBarItem, or None."""
+    active = [item for item in app.query(MenuBarItem) if item.has_class("-active")]
+    return active[0] if active else None
+
+
+@pytest.mark.asyncio
+async def test_menu_bar_right_arrow_while_menu_open_moves_to_next_item() -> None:
+    bar = MenuBar()
+    bar.add_menu("File")
+    bar.add_menu("Edit")
+    bar.add_menu("Help")
+
+    app = MenuBarTestApp(bar)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        # Open "File"
+        items = list(app.query(MenuBarItem))
+        await pilot.click(items[0])
+        await pilot.pause(delay=0.1)
+        active_file = _active_item(app)
+        assert active_file is not None
+        assert active_file.menu.text == "File"
+
+        # Press right → "Edit" should become the active open menu
+        await pilot.press("right")
+        await pilot.pause(delay=0.1)
+        active_after = _active_item(app)
+        assert active_after is not None
+        assert active_after.menu.text == "Edit"
+
+
+@pytest.mark.asyncio
+async def test_menu_bar_left_arrow_while_menu_open_moves_to_previous_item() -> None:
+    bar = MenuBar()
+    bar.add_menu("File")
+    bar.add_menu("Edit")
+    bar.add_menu("Help")
+
+    app = MenuBarTestApp(bar)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        # Open "Edit" (the middle item)
+        items = list(app.query(MenuBarItem))
+        await pilot.click(items[1])
+        await pilot.pause(delay=0.1)
+        active_edit = _active_item(app)
+        assert active_edit is not None
+        assert active_edit.menu.text == "Edit"
+
+        # Press left → "File" should become the active open menu
+        await pilot.press("left")
+        await pilot.pause(delay=0.1)
+        active_after = _active_item(app)
+        assert active_after is not None
+        assert active_after.menu.text == "File"

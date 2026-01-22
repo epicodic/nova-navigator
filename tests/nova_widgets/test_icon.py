@@ -23,10 +23,10 @@ def test_icon_ascii_char_len_is_2() -> None:
 
 
 def test_icon_wide_glyph_no_extra_padding() -> None:
-    # CJK character "中" occupies 2 terminal columns — no padding should be added
-    icon = Icon("中")
+    # icon occupies 2 terminal columns — no padding should be added
+    icon = Icon("⭐")
     assert len(icon) == 2
-    assert "中" in str(icon)
+    assert "⭐" in str(icon)
 
 
 def test_icon_is_str_subclass() -> None:

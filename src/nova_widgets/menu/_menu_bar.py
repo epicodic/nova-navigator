@@ -124,6 +124,23 @@ class MenuBar(Widget, ActionCollection):
         self._menu_opened = None
         self._highlight_item(None)
 
+    def _on_menu_navigate_left(self, event: Menu.NavigateLeft) -> None:
+        self._navigate(event.menu, -1)
+
+    def _on_menu_navigate_right(self, event: Menu.NavigateRight) -> None:
+        self._navigate(event.menu, 1)
+
+    def _navigate(self, current_menu: Menu, direction: int) -> None:
+        if not self._items:
+            return
+        try:
+            current_index = next(i for i, item in enumerate(self._items) if item.menu is current_menu)
+        except StopIteration:
+            return
+        next_index = (current_index + direction) % len(self._items)
+        current_menu.dismiss()
+        self._invoke_menu(self._items[next_index])
+
     def _highlight_item(self, item: MenuBarItem | None) -> None:
         for it in self._items:
             it.remove_class("-active")
