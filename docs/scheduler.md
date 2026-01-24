@@ -1,27 +1,69 @@
-# Task Scheduler Framework
+# Scheduler Framework
 
-Nova Navigator provides an async task scheduler that runs long-running operations in worker threads while maintaining the ability to request user decisions through the GUI.
+Nova Navigator provides an async scheduler that runs long-running operations as **jobs** in worker threads while maintaining the ability to request user decisions through the GUI.
 This document describes the framework, its API, and how to implement new tasks.
 
 ## Overview
 
-The task scheduler enables:
+The scheduler enables:
 
 - **Long-running operations** to run asynchronously without blocking the GUI
 - **Progress tracking** with two-level granularity (overall items and per-item steps)
 - **User decisions** requested mid-operation (e.g., "File exists, overwrite?")
-- **Cancellation** handling when the user terminates a task
+- **Cancellation** handling when the user terminates a job
 - **Concurrency** within tasks using asyncio
 
 The framework uses an isolated event loop in a worker thread.
 This prevents long-running I/O operations from stalling the Textual GUI event loop.
+
+## Jobs, Tasks, and Subtasks
+
+### Jobs
+
+A **job** (`Job`) is the top-level unit of work presented to the user.
+Each job has a title, tracks its own progress, and can be cancelled independently.
+Multiple jobs can run **in parallel** — each is executed in its own worker thread with an isolated asyncio event loop.
+
+A job wraps a single async **task function** and runs it to completion (or until cancelled).
+Jobs are visible in the Processes dialog, where the user can monitor progress and cancel individual jobs.
+
+### Tasks
+
+A **task** is an async function with the signature `async def my_task(ctx: TaskContext) -> None`.
+Within a job, the task function is the entry point and its steps execute **sequentially** by default.
+The `TaskContext` (`ctx`) gives the task access to progress reporting, cancellation checks, user decisions, and the ability to spawn subtasks.
+
+### Subtasks
+
+A task can spawn **subtasks** via `ctx.subtask()`.
+Subtasks are concurrent asyncio coroutines running inside the same worker thread event loop.
+They allow multiple items (e.g., files) to be processed in parallel within a single job.
+
+```
+Scheduler
+├── Job A  ──────────────────────────────── worker thread 1
+│   └── task_fn(ctx)
+│       ├── step 1 (sequential)
+│       ├── step 2 (sequential)
+│       └── subtask group (concurrent within thread)
+│           ├── process_item(ctx, "file1.txt")
+│           ├── process_item(ctx, "file2.txt")
+│           └── process_item(ctx, "file3.txt")
+│
+└── Job B  ──────────────────────────────── worker thread 2
+    └── task_fn(ctx)
+        └── ...
+```
+
+The key reason to use subtasks is user decisions: if one subtask blocks on `ctx.request_decision()`, other subtasks in the same job continue making progress.
+Without subtasks, any user prompt would stall the entire job.
 
 ## Architecture
 
 ### Event Loop Isolation
 
 The GUI runs on the main thread with its own asyncio event loop (managed by Textual).
-When a task is executed:
+When a job is executed:
 
 1. A new worker thread is spawned
 2. A fresh asyncio event loop is created in the worker thread
@@ -37,6 +79,30 @@ When multiple concurrent subtasks call `request_decision()` simultaneously, they
 `ALL`/`NONE`/`SKIP_ALL` responses are cached by title and applied automatically to subsequent identical requests, bypassing the lock and dialog entirely.
 
 ## Core Components
+
+### `Job`
+
+The high-level unit of work shown in the Processes dialog.
+
+```python
+job = Job("Copy files", copy_files_task, src_paths, dst_dir)
+await job.start(gui_request_callback)
+```
+
+**Constructor:** `Job(title, task_fn, *args, **kwargs)` — the extra arguments are forwarded to `task_fn` after `ctx`.
+
+**States:** `INITIALIZED → RUNNING → COMPLETED | CANCELED`
+
+**Key methods:**
+
+- `async start(gui_request_callback) -> None` — begin execution
+- `cancel() -> None` — signal cancellation (the task sees this via `check_cancelled()`)
+
+**Properties:**
+
+- `title: str`
+- `state: Job.State`
+- `progress: Progress`
 
 ### `Decision`
 
@@ -112,7 +178,7 @@ Passed as the first argument to every async task function.
 **Methods:**
 
 - `async request_decision(title, expected_decisions, message) -> Decision` — pause and ask the user
-- `async subtask(coro: Coroutine[Any, Any, R]) -> asyncio.Task[R]` — spawn a concurrent task and yield control so it can begin
+- `async subtask(coro: Coroutine[Any, Any, R]) -> asyncio.Task[R]` — spawn a concurrent subtask and yield control so it can begin
 
 ### `GuiRequestCallback`
 
@@ -250,7 +316,9 @@ async def long_operation(ctx: TaskContext) -> None:
 
 ## Reference
 
-- **Framework:** `nova_navigator/task.py`
+- **`Job`:** `nova_navigator/scheduler/job.py`
+- **`AsyncTaskScheduler`:** `nova_navigator/scheduler/scheduler.py`
+- **`TaskContext`, `TaskStatus`:** `nova_navigator/scheduler/context.py`
 - **Task implementations:** `nova_navigator/filemanager/tasks.py`
 - **Decision enum:** `nova_navigator/decision.py`
 - **Architecture guide:** See `AGENTS.md` for the broader threading model and async architecture
