@@ -85,7 +85,7 @@ async def copy_file(
             writer.close()
 
 
-async def _copy_file_with_progress(
+async def _copy_file_step(
     ctx: TaskContext,
     src: VPath,
     dst: VPath,
@@ -95,7 +95,7 @@ async def _copy_file_with_progress(
     ctx.status.update_progress(inc_completed=1)
 
 
-async def _copy_dir_recursive(
+async def _copy_dir(
     ctx: TaskContext,
     src_path: VPath,
     dst_path: VPath,
@@ -117,7 +117,7 @@ async def _copy_dir_recursive(
     ctx.status.update_progress(inc_completed=1)
 
 
-async def copy_files(
+async def copy_paths(
     ctx: TaskContext,
     src_paths: list[VPath],
     destination: VPath,
@@ -149,15 +149,76 @@ async def copy_files(
         ctx.status.check_cancelled()
         dst_path = destination / src_path.name
         if src_path.stat.is_directory:
-            t = await ctx.subtask(_copy_dir_recursive(ctx, src_path, dst_path, dst_filesystem, options))
+            t = await ctx.subtask(_copy_dir(ctx, src_path, dst_path, dst_filesystem, options))
         else:
-            t = await ctx.subtask(_copy_file_with_progress(ctx, src_path, dst_path, options))
+            t = await ctx.subtask(_copy_file_step(ctx, src_path, dst_path, options))
         subtasks.append(t)
 
     await asyncio.gather(*subtasks)
 
 
-async def move_files(
+async def _move_path(
+    ctx: TaskContext,
+    src_path: VPath,
+    dst_path: VPath,
+    options: FileCopyOptions,
+) -> None:
+    """Move a single *src_path* to or into *dst_path*.
+
+    If *dst_path* is an existing directory the source is placed inside it under
+    its original name; otherwise it is used as the exact destination.
+    Same-device moves use an atomic rename after clearing any existing
+    destination. Cross-device moves copy the content then remove the source.
+    Increments the overall completed counter by one when done (including skip).
+    """
+    ctx.status.check_cancelled()
+
+    dst_stat = dst_path.stat_or_none
+    actual_dst = dst_path / src_path.name if (dst_stat is not None and dst_stat.is_directory) else dst_path
+
+    same_device = src_path.filesystem.is_same_device(src_path, actual_dst)
+
+    if same_device:
+        actual_dst_stat = actual_dst.stat_or_none
+        if actual_dst_stat is not None:
+            if options.overwrite == "skip":
+                ctx.status.update_progress(inc_completed=1)
+                return
+            if options.overwrite == "ask":
+                decision = await ctx.request_decision(
+                    "Overwrite",
+                    expected_decisions=[Decision.YES, Decision.NO, Decision.ALL, Decision.NONE],
+                    message=f"'{actual_dst.path}' already exists. Overwrite?",
+                )
+                if decision.is_negative:
+                    ctx.status.update_progress(inc_completed=1)
+                    return
+            if actual_dst_stat.is_directory:
+                await erase_paths(ctx, [actual_dst], EraseFilesOptions(ask_before_erase=False))
+            else:
+                actual_dst.filesystem.remove(actual_dst)
+        src_path.filesystem.rename(src_path, actual_dst)
+    else:
+        if src_path.stat.is_directory:
+            with contextlib.suppress(FileExistsError):
+                actual_dst.filesystem.mkdir(actual_dst)
+            for src_root, _src_dirs, src_files in src_path.walk():
+                ctx.status.check_cancelled()
+                dst_root = actual_dst / src_root.path.relative_to(src_path.path)
+                with contextlib.suppress(FileExistsError):
+                    actual_dst.filesystem.mkdir(dst_root)
+                for f in src_files:
+                    ctx.status.check_cancelled()
+                    await copy_file(ctx, f, dst_root / f.name, options)
+            await erase_paths(ctx, [src_path], EraseFilesOptions(ask_before_erase=False))
+        else:
+            await copy_file(ctx, src_path, actual_dst, options)
+            src_path.filesystem.remove(src_path)
+
+    ctx.status.update_progress(inc_completed=1)
+
+
+async def move_paths(
     ctx: TaskContext,
     src_paths: list[VPath],
     dst_path: VPath,
@@ -166,83 +227,68 @@ async def move_files(
     """Move each path in *src_paths* into *dst_path*.
 
     Same-device moves use rename (atomic). Cross-device moves copy then remove.
+    Each path is processed as a concurrent subtask so that a user decision
+    blocking one item does not stall the others.
     """
     if options is None:
         options = FileCopyOptions()
 
     ctx.status.update_progress(inc_total=len(src_paths))
-
+    subtasks: list[asyncio.Task[None]] = []
     for src_path in src_paths:
         ctx.status.check_cancelled()
-
-        dst_stat = dst_path.stat_or_none
-        actual_dst = dst_path / src_path.name if (dst_stat is not None and dst_stat.is_directory) else dst_path
-
-        same_device = src_path.filesystem.is_same_device(src_path, actual_dst)
-
-        if same_device:
-            actual_dst_stat = actual_dst.stat_or_none
-            if actual_dst_stat is not None:
-                if options.overwrite == "skip":
-                    ctx.status.update_progress(inc_completed=1)
-                    continue
-                if options.overwrite == "ask":
-                    decision = await ctx.request_decision(
-                        "Overwrite",
-                        expected_decisions=[Decision.YES, Decision.NO, Decision.ALL, Decision.NONE],
-                        message=f"'{actual_dst.path}' already exists. Overwrite?",
-                    )
-                    if decision.is_negative:
-                        ctx.status.update_progress(inc_completed=1)
-                        continue
-                if actual_dst_stat.is_directory:
-                    await erase_files(ctx, [actual_dst], EraseFilesOptions(ask_before_erase=False))
-                else:
-                    actual_dst.filesystem.remove(actual_dst)
-            src_path.filesystem.rename(src_path, actual_dst)
-        else:
-            if src_path.stat.is_directory:
-                with contextlib.suppress(FileExistsError):
-                    actual_dst.filesystem.mkdir(actual_dst)
-                for src_root, _src_dirs, src_files in src_path.walk():
-                    ctx.status.check_cancelled()
-                    dst_root = actual_dst / src_root.path.relative_to(src_path.path)
-                    with contextlib.suppress(FileExistsError):
-                        actual_dst.filesystem.mkdir(dst_root)
-                    for f in src_files:
-                        ctx.status.check_cancelled()
-                        await copy_file(ctx, f, dst_root / f.name, options)
-                await erase_files(ctx, [src_path], EraseFilesOptions(ask_before_erase=False))
-            else:
-                await copy_file(ctx, src_path, actual_dst, options)
-                src_path.filesystem.remove(src_path)
-
-        ctx.status.update_progress(inc_completed=1)
+        t = await ctx.subtask(_move_path(ctx, src_path, dst_path, options))
+        subtasks.append(t)
+    await asyncio.gather(*subtasks)
 
 
-async def erase_files(
+async def _erase_path(
+    ctx: TaskContext,
+    path: VPath,
+    options: EraseFilesOptions,
+) -> None:
+    """Erase a single *path*, prompting the user if it is a non-empty directory.
+
+    Files are removed directly. Directories are erased recursively via
+    :func:`erase_files`; if non-empty and *options.ask_before_erase* is set,
+    the user is asked to confirm before deletion proceeds. Increments the
+    overall completed counter by one when done (including when skipped).
+    """
+    ctx.status.check_cancelled()
+    if path.stat.is_directory:
+        if len(path.iterdir()) > 0 and options.ask_before_erase:
+            decision = await ctx.request_decision(
+                "Delete non-empty directory",
+                expected_decisions=[Decision.YES, Decision.NO, Decision.ALL, Decision.NONE],
+                message=f"Directory '{path.path}' is not empty. Delete it recursively?",
+            )
+            if decision.is_negative:
+                ctx.status.update_progress(inc_completed=1)
+                return
+        await erase_paths(ctx, list(path.iterdir()), EraseFilesOptions(ask_before_erase=False))
+        path.filesystem.rmdir(path)
+    else:
+        path.filesystem.remove(path)
+    ctx.status.update_progress(inc_completed=1)
+
+
+async def erase_paths(
     ctx: TaskContext,
     paths: list[VPath],
     options: EraseFilesOptions | None = None,
 ) -> None:
-    """Erase each path in *paths*; directories are removed recursively."""
+    """Erase each path in *paths*; directories are removed recursively.
+
+    Each path is processed as a concurrent subtask so that a user decision
+    blocking one item does not stall the others.
+    """
     if options is None:
         options = EraseFilesOptions()
 
     ctx.status.update_progress(inc_total=len(paths))
+    subtasks: list[asyncio.Task[None]] = []
     for path in paths:
         ctx.status.check_cancelled()
-        if path.stat.is_directory:
-            if len(path.iterdir()) > 0 and options.ask_before_erase:
-                decision = await ctx.request_decision(
-                    "Delete non-empty directory",
-                    expected_decisions=[Decision.YES, Decision.NO, Decision.ALL, Decision.NONE],
-                    message=f"Directory '{path.path}' is not empty. Delete it recursively?",
-                )
-                if decision.is_negative:
-                    continue
-            await ctx.subtask(erase_files(ctx, list(path.iterdir()), EraseFilesOptions(ask_before_erase=False)))
-            path.filesystem.rmdir(path)
-        else:
-            path.filesystem.remove(path)
-        ctx.status.update_progress(inc_completed=1)
+        t = await ctx.subtask(_erase_path(ctx, path, options))
+        subtasks.append(t)
+    await asyncio.gather(*subtasks)
