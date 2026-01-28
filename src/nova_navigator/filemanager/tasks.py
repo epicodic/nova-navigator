@@ -117,7 +117,7 @@ async def _copy_dir(
     ctx.status.update_progress(inc_completed=1)
 
 
-async def copy_paths(
+async def copy_files(
     ctx: TaskContext,
     src_paths: list[VPath],
     destination: VPath,
@@ -194,7 +194,7 @@ async def _move_path(
                     ctx.status.update_progress(inc_completed=1)
                     return
             if actual_dst_stat.is_directory:
-                await erase_paths(ctx, [actual_dst], EraseFilesOptions(ask_before_erase=False))
+                await erase_files(ctx, [actual_dst], EraseFilesOptions(ask_before_erase=False))
             else:
                 actual_dst.filesystem.remove(actual_dst)
         src_path.filesystem.rename(src_path, actual_dst)
@@ -210,7 +210,7 @@ async def _move_path(
                 for f in src_files:
                     ctx.status.check_cancelled()
                     await copy_file(ctx, f, dst_root / f.name, options)
-            await erase_paths(ctx, [src_path], EraseFilesOptions(ask_before_erase=False))
+            await erase_files(ctx, [src_path], EraseFilesOptions(ask_before_erase=False))
         else:
             await copy_file(ctx, src_path, actual_dst, options)
             src_path.filesystem.remove(src_path)
@@ -218,7 +218,7 @@ async def _move_path(
     ctx.status.update_progress(inc_completed=1)
 
 
-async def move_paths(
+async def move_files(
     ctx: TaskContext,
     src_paths: list[VPath],
     dst_path: VPath,
@@ -265,14 +265,14 @@ async def _erase_path(
             if decision.is_negative:
                 ctx.status.update_progress(inc_completed=1)
                 return
-        await erase_paths(ctx, list(path.iterdir()), EraseFilesOptions(ask_before_erase=False))
+        await erase_files(ctx, list(path.iterdir()), EraseFilesOptions(ask_before_erase=False))
         path.filesystem.rmdir(path)
     else:
         path.filesystem.remove(path)
     ctx.status.update_progress(inc_completed=1)
 
 
-async def erase_paths(
+async def erase_files(
     ctx: TaskContext,
     paths: list[VPath],
     options: EraseFilesOptions | None = None,

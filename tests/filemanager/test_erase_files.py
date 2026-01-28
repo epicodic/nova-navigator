@@ -4,7 +4,7 @@ from pathlib import PurePosixPath
 import pytest
 
 from nova_navigator.decision import Decision
-from nova_navigator.filemanager.tasks import EraseFilesOptions, erase_paths
+from nova_navigator.filemanager.tasks import EraseFilesOptions, erase_files
 from nova_navigator.scheduler import TaskCancelled
 from tests._utils.mock_filesystem import MockFilesystem
 
@@ -16,7 +16,7 @@ async def test_erase_single_file() -> None:
     """A single file is removed from the filesystem."""
     fs = MockFilesystem({"/home/user/file.txt": b"data"})
 
-    await run_task(lambda ctx: erase_paths(ctx, [fs.path("/home/user/file.txt")]))
+    await run_task(lambda ctx: erase_files(ctx, [fs.path("/home/user/file.txt")]))
 
     assert PurePosixPath("/home/user/file.txt") not in fs._nodes
 
@@ -27,7 +27,7 @@ async def test_erase_multiple_files() -> None:
     fs = MockFilesystem({"/home/user/a.txt": b"a", "/home/user/b.txt": b"b", "/home/user/c.txt": b"c"})
 
     paths = [fs.path(p) for p in ("/home/user/a.txt", "/home/user/b.txt", "/home/user/c.txt")]
-    await run_task(lambda ctx: erase_paths(ctx, paths))
+    await run_task(lambda ctx: erase_files(ctx, paths))
 
     for p in ("/home/user/a.txt", "/home/user/b.txt", "/home/user/c.txt"):
         assert PurePosixPath(p) not in fs._nodes
@@ -38,7 +38,7 @@ async def test_erase_empty_directory() -> None:
     """An empty directory is removed without prompting the user."""
     fs = MockFilesystem({"/home/user/emptydir": None})
 
-    requests = await run_task(lambda ctx: erase_paths(ctx, [fs.path("/home/user/emptydir")]))
+    requests = await run_task(lambda ctx: erase_files(ctx, [fs.path("/home/user/emptydir")]))
 
     assert len(requests) == 0
     assert PurePosixPath("/home/user/emptydir") not in fs._nodes
@@ -50,7 +50,7 @@ async def test_erase_non_empty_directory_ask_yes() -> None:
     fs = MockFilesystem({"/home/user/dir/file.txt": b"data"})
 
     requests = await run_task(
-        lambda ctx: erase_paths(ctx, [fs.path("/home/user/dir")]),
+        lambda ctx: erase_files(ctx, [fs.path("/home/user/dir")]),
         [Decision.YES],
     )
 
@@ -65,7 +65,7 @@ async def test_erase_non_empty_directory_ask_no() -> None:
     fs = MockFilesystem({"/home/user/dir/file.txt": b"data"})
 
     requests = await run_task(
-        lambda ctx: erase_paths(ctx, [fs.path("/home/user/dir")]),
+        lambda ctx: erase_files(ctx, [fs.path("/home/user/dir")]),
         [Decision.NO],
     )
 
@@ -86,7 +86,7 @@ async def test_erase_multiple_non_empty_dirs_ask_all() -> None:
 
     paths = [fs.path("/home/user/dir1"), fs.path("/home/user/dir2")]
     requests = await run_task(
-        lambda ctx: erase_paths(ctx, paths),
+        lambda ctx: erase_files(ctx, paths),
         [Decision.ALL],
     )
 
@@ -108,7 +108,7 @@ async def test_erase_multiple_non_empty_dirs_ask_none() -> None:
 
     paths = [fs.path("/home/user/dir1"), fs.path("/home/user/dir2")]
     requests = await run_task(
-        lambda ctx: erase_paths(ctx, paths),
+        lambda ctx: erase_files(ctx, paths),
         [Decision.NONE],
     )
 
@@ -130,7 +130,7 @@ async def test_erase_recursive_nested_directory() -> None:
     )
 
     await run_task(
-        lambda ctx: erase_paths(ctx, [fs.path("/home/user/root")], EraseFilesOptions(ask_before_erase=False))
+        lambda ctx: erase_files(ctx, [fs.path("/home/user/root")], EraseFilesOptions(ask_before_erase=False))
     )
 
     for p in (
@@ -150,7 +150,7 @@ async def test_erase_ask_before_erase_false_skips_prompt() -> None:
     fs = MockFilesystem({"/home/user/dir/file.txt": b"data"})
 
     requests = await run_task(
-        lambda ctx: erase_paths(ctx, [fs.path("/home/user/dir")], EraseFilesOptions(ask_before_erase=False))
+        lambda ctx: erase_files(ctx, [fs.path("/home/user/dir")], EraseFilesOptions(ask_before_erase=False))
     )
 
     assert len(requests) == 0
@@ -169,7 +169,7 @@ async def test_erase_mixed_files_and_dirs() -> None:
 
     paths = [fs.path("/home/user/file.txt"), fs.path("/home/user/dir")]
     requests = await run_task(
-        lambda ctx: erase_paths(ctx, paths),
+        lambda ctx: erase_files(ctx, paths),
         [Decision.YES],
     )
 
@@ -190,7 +190,7 @@ async def test_erase_cancelled() -> None:
 
     with pytest.raises(TaskCancelled):
         await run_task(
-            lambda ctx: erase_paths(ctx, [fs.path("/home/user/file.txt")]),
+            lambda ctx: erase_files(ctx, [fs.path("/home/user/file.txt")]),
             status=status,
         )
 
@@ -202,7 +202,7 @@ async def test_erase_progress_tracking() -> None:
 
     status = make_status()
     paths = [fs.path(p) for p in ("/home/user/a.txt", "/home/user/b.txt", "/home/user/c.txt")]
-    await run_task(lambda ctx: erase_paths(ctx, paths), status=status)
+    await run_task(lambda ctx: erase_files(ctx, paths), status=status)
 
     assert status.progress.total == 3
     assert status.progress.completed == 3
@@ -215,7 +215,7 @@ async def test_erase_skipped_dir_not_counted_in_completed() -> None:
 
     status = make_status()
     await run_task(
-        lambda ctx: erase_paths(ctx, [fs.path("/home/user/dir")]),
+        lambda ctx: erase_files(ctx, [fs.path("/home/user/dir")]),
         [Decision.NO],
         status=status,
     )
