@@ -3,7 +3,7 @@ from nova_navigator.vfs import VPath
 
 from ..dialogs.files_dialog import CopyMoveFilesDialog
 from ..scheduler import Job
-from .tasks import copy_paths, erase_paths
+from .tasks import copy_files, erase_files
 
 
 async def copy_or_move_files_job(src_paths: list[VPath], dst_path: VPath, move: bool = False) -> Job | None:
@@ -26,7 +26,7 @@ async def copy_or_move_files_job(src_paths: list[VPath], dst_path: VPath, move: 
     if result != "OK":
         return None
 
-    return Job("Copy Files", copy_paths, src_paths, dst_path)
+    return Job("Copy Files", copy_files, src_paths, dst_path)
 
 
 async def delete_files_job(paths: list[VPath]) -> Job | None:
@@ -36,4 +36,4 @@ async def delete_files_job(paths: list[VPath]) -> Job | None:
     if result != "YES":
         return None
 
-    return Job("Erase Files", erase_paths, paths)
+    return Job("Erase Files", erase_files, paths)
