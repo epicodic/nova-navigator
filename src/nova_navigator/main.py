@@ -57,7 +57,7 @@ class MainScreen(Screen[None]):
         Binding("ctrl+l", "toggle_terminal", "Enlarge Terminal", priority=True),
         Binding("f4", "open_editor", "Edit"),
         Binding("f5", "copy_or_move_files(False)", "Copy"),
-        # Binding("f6", "copy_or_move_files(True)", "Move"),
+        Binding("f6", "copy_or_move_files(True)", "Move"),
         Binding("f8", "delete_files", "Delete"),
         Binding("ctrl+b", "show_bookmarks", "Bookmark"),
         Binding("ctrl+h", "toggle_hidden", description="Show/Hide Hidden Files", show=False),
