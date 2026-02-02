@@ -282,3 +282,7 @@ class MockFilesystem(Filesystem):
         if posix in self._nodes:
             raise FileExistsError(f"File exists: '{posix}'")
         self._nodes[posix] = _DirNode()
+
+    def exists(self, path: str) -> bool:
+        """Return True if *path* exists in this filesystem."""
+        return PurePosixPath(path) in self._nodes
