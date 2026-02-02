@@ -1,5 +1,4 @@
 import threading
-from pathlib import PurePosixPath
 
 import pytest
 
@@ -22,7 +21,7 @@ async def test_move_single_file_to_new_path() -> None:
 
     await run_task(lambda ctx: move_files(ctx, [fs.path("/src/file.txt")], fs.path("/home/user/renamed.txt")))
 
-    assert PurePosixPath("/src/file.txt") not in fs._nodes
+    assert not fs.exists("/src/file.txt")
     assert read_all(fs, "/home/user/renamed.txt") == b"hello"
 
 
@@ -33,7 +32,7 @@ async def test_move_single_file_into_directory() -> None:
 
     await run_task(lambda ctx: move_files(ctx, [fs.path("/src/file.txt")], fs.path("/home/user")))
 
-    assert PurePosixPath("/src/file.txt") not in fs._nodes
+    assert not fs.exists("/src/file.txt")
     assert read_all(fs, "/home/user/file.txt") == b"data"
 
 
@@ -46,7 +45,7 @@ async def test_move_multiple_files_into_directory() -> None:
     await run_task(lambda ctx: move_files(ctx, srcs, fs.path("/home/user")))
 
     for p in ("/src/a.txt", "/src/b.txt"):
-        assert PurePosixPath(p) not in fs._nodes
+        assert not fs.exists(p)
     assert read_all(fs, "/home/user/a.txt") == b"a"
     assert read_all(fs, "/home/user/b.txt") == b"b"
 
@@ -63,7 +62,7 @@ async def test_move_overwrite_skip() -> None:
     )
 
     assert len(requests) == 0
-    assert PurePosixPath("/src/file.txt") in fs._nodes
+    assert fs.exists("/src/file.txt")
     assert read_all(fs, "/home/user/file.txt") == b"original"
 
 
@@ -80,7 +79,7 @@ async def test_move_overwrite_ask_yes() -> None:
     )
 
     assert len(requests) == 1
-    assert PurePosixPath("/src/file.txt") not in fs._nodes
+    assert not fs.exists("/src/file.txt")
     assert read_all(fs, "/home/user/file.txt") == b"new"
 
 
@@ -97,7 +96,7 @@ async def test_move_overwrite_ask_no() -> None:
     )
 
     assert len(requests) == 1
-    assert PurePosixPath("/src/file.txt") in fs._nodes
+    assert fs.exists("/src/file.txt")
     assert read_all(fs, "/home/user/file.txt") == b"original"
 
 
@@ -120,8 +119,8 @@ async def test_move_overwrite_ask_all() -> None:
     )
 
     assert len(requests) == 1
-    assert PurePosixPath("/src/a.txt") not in fs._nodes
-    assert PurePosixPath("/src/b.txt") not in fs._nodes
+    assert not fs.exists("/src/a.txt")
+    assert not fs.exists("/src/b.txt")
     assert read_all(fs, "/home/user/a.txt") == b"new-a"
     assert read_all(fs, "/home/user/b.txt") == b"new-b"
 
@@ -146,7 +145,7 @@ async def test_move_overwrite_ask_none() -> None:
 
     assert len(requests) == 1
     for p in ("/src/a.txt", "/src/b.txt"):
-        assert PurePosixPath(p) in fs._nodes
+        assert fs.exists(p)
     assert read_all(fs, "/home/user/a.txt") == b"old-a"
     assert read_all(fs, "/home/user/b.txt") == b"old-b"
 
@@ -163,8 +162,8 @@ async def test_move_overwrite_existing_directory() -> None:
         )
     )
 
-    assert PurePosixPath("/src/dir") not in fs._nodes
-    assert PurePosixPath("/home/user/dir") in fs._nodes
+    assert not fs.exists("/src/dir")
+    assert fs.exists("/home/user/dir")
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +179,7 @@ async def test_move_cross_device_single_file() -> None:
 
     await run_task(lambda ctx: move_files(ctx, [src_fs.path("/src/file.txt")], dst_fs.path("/home/user")))
 
-    assert PurePosixPath("/src/file.txt") not in src_fs._nodes
+    assert not src_fs.exists("/src/file.txt")
     assert read_all(dst_fs, "/home/user/file.txt") == b"cross-device"
 
 
@@ -194,9 +193,43 @@ async def test_move_cross_device_multiple_files() -> None:
     await run_task(lambda ctx: move_files(ctx, srcs, dst_fs.path("/home/user")))
 
     for p in ("/src/a.txt", "/src/b.txt"):
-        assert PurePosixPath(p) not in src_fs._nodes
+        assert not src_fs.exists(p)
     assert read_all(dst_fs, "/home/user/a.txt") == b"aaa"
     assert read_all(dst_fs, "/home/user/b.txt") == b"bbb"
+
+
+@pytest.mark.asyncio
+async def test_move_cross_device_skip_does_not_delete_source() -> None:
+    """BUG-1: cross-device move with skip policy must not delete source when destination exists."""
+    src_fs = MockFilesystem({"/src/file.txt": b"new"})
+    dst_fs = MockFilesystem({"/home/user/file.txt": b"original"})
+
+    await run_task(
+        lambda ctx: move_files(
+            ctx, [src_fs.path("/src/file.txt")], dst_fs.path("/home/user"), FileCopyOptions(overwrite="skip")
+        )
+    )
+
+    assert src_fs.exists("/src/file.txt")
+    assert read_all(dst_fs, "/home/user/file.txt") == b"original"
+
+
+@pytest.mark.asyncio
+async def test_move_cross_device_ask_no_does_not_delete_source() -> None:
+    """BUG-1: cross-device move with ask+NO must not delete source when destination exists."""
+    src_fs = MockFilesystem({"/src/file.txt": b"new"})
+    dst_fs = MockFilesystem({"/home/user/file.txt": b"original"})
+
+    requests = await run_task(
+        lambda ctx: move_files(
+            ctx, [src_fs.path("/src/file.txt")], dst_fs.path("/home/user"), FileCopyOptions(overwrite="ask")
+        ),
+        [Decision.NO],
+    )
+
+    assert len(requests) == 1
+    assert src_fs.exists("/src/file.txt")
+    assert read_all(dst_fs, "/home/user/file.txt") == b"original"
 
 
 @pytest.mark.asyncio
@@ -212,7 +245,7 @@ async def test_move_cross_device_directory() -> None:
 
     await run_task(lambda ctx: move_files(ctx, [src_fs.path("/src/mydir")], dst_fs.path("/home/user")))
 
-    assert PurePosixPath("/src/mydir") not in src_fs._nodes
+    assert not src_fs.exists("/src/mydir")
     assert read_all(dst_fs, "/home/user/mydir/top.txt") == b"top"
     assert read_all(dst_fs, "/home/user/mydir/sub/mid.txt") == b"mid"
 
