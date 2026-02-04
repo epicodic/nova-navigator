@@ -474,3 +474,133 @@ async def test_copy_paths_error_during_directory_copy() -> None:
 
     with pytest.raises(OSError, match="disk full"):
         await run_task(lambda ctx: copy_files(ctx, [src_fs.path("/src/mydir")], dst_fs.path("/home/user")))
+
+
+@pytest.mark.asyncio
+async def test_copy_paths_single_directory_to_nonexistent_destination() -> None:
+    """BUG-3: single directory source with non-existent destination must not crash.
+
+    When exactly one source is a directory and the destination path does not yet
+    exist, copy_files previously called copy_file on the directory, which
+    raised IsADirectoryError.  The correct behaviour mirrors the single-file
+    shortcut: the destination path becomes the new directory, with the source
+    tree's contents placed directly under it.
+    """
+    src_fs = MockFilesystem(
+        {
+            "/src/mydir/top.txt": b"top",
+            "/src/mydir/sub/nested.txt": b"nested",
+        }
+    )
+    dst_fs = MockFilesystem()  # /home/user exists; /home/user/mycopy does not
+
+    await run_task(lambda ctx: copy_files(ctx, [src_fs.path("/src/mydir")], dst_fs.path("/home/user/mycopy")))
+
+    assert read_all(dst_fs, "/home/user/mycopy/top.txt") == b"top"
+    assert read_all(dst_fs, "/home/user/mycopy/sub/nested.txt") == b"nested"
+
+
+@pytest.mark.asyncio
+async def test_copy_paths_directory_progress_completed_equals_total() -> None:
+    """BUG-4: completed must equal total after copying a directory source.
+
+    _copy_dir inflates total by the number of files in each walk() level but
+    only increments completed by 1 at the very end, leaving progress stuck at
+    1/N.  After copy_files finishes, the final progress snapshot must have
+    completed == total.
+    """
+    events: list[tuple[int, int]] = []
+
+    def cb(s: TaskStatus) -> None:
+        events.append((s.progress.completed, s.progress.total))
+
+    status = TaskStatus(cancel_event=threading.Event(), progress_callback=cb)
+    src_fs = MockFilesystem(
+        {
+            "/src/mydir/a.txt": b"a",
+            "/src/mydir/b.txt": b"b",
+            "/src/mydir/c.txt": b"c",
+        }
+    )
+    dst_fs = MockFilesystem()
+    dst_fs._mkdir_p(PurePosixPath("/dst/mydir"))
+
+    await run_task(
+        lambda ctx: copy_files(ctx, [src_fs.path("/src/mydir")], dst_fs.path("/dst")),
+        status=status,
+    )
+
+    final_completed, final_total = events[-1]
+    assert final_completed == final_total, f"Progress stuck: completed={final_completed}, total={final_total}"
+
+
+@pytest.mark.asyncio
+async def test_copy_paths_skip_does_not_overflow_progress() -> None:
+    """BUG-5: completed must never exceed total when a copy is skipped.
+
+    copy_file calls ctx.status.set_completed() on skip, which is an absolute
+    setter that sets completed=total.  copy_files then increments completed by
+    1 more, leaving completed > total.  After copy_files finishes, the final
+    progress snapshot must have completed <= total.
+    """
+    events: list[tuple[int, int]] = []
+
+    def cb(s: TaskStatus) -> None:
+        events.append((s.progress.completed, s.progress.total))
+
+    status = TaskStatus(cancel_event=threading.Event(), progress_callback=cb)
+    src_fs = MockFilesystem({"/src/file.txt": b"new"})
+    dst_fs = MockFilesystem({"/dst/file.txt": b"original"})
+
+    await run_task(
+        lambda ctx: copy_files(
+            ctx, [src_fs.path("/src/file.txt")], dst_fs.path("/dst"), FileCopyOptions(overwrite="skip")
+        ),
+        status=status,
+    )
+
+    for completed, total in events:
+        assert completed <= total, f"completed={completed} exceeded total={total}"
+
+
+@pytest.mark.asyncio
+async def test_copy_file_partial_destination_removed_on_write_error() -> None:
+    """BUG-6: partial destination file must be removed after a write error.
+
+    When copy_file raises mid-copy due to a write error, the partially-written
+    destination file currently remains on disk.  After the exception propagates,
+    the destination path must not exist.
+    """
+    src_fs = MockFilesystem({"/src/file.txt": b"data"})
+    dst_fs = MockFilesystem(write_errors={"/home/user/file.txt": OSError("disk full")})
+
+    src = src_fs.path("/src/file.txt")
+    dst = dst_fs.path("/home/user/file.txt")
+
+    with pytest.raises(OSError, match="disk full"):
+        await run_task(lambda ctx: copy_file(ctx, src, dst))
+
+    assert not dst_fs.exists("/home/user/file.txt"), "partial destination file was not cleaned up"
+
+
+@pytest.mark.asyncio
+async def test_copy_file_partial_destination_removed_on_read_error() -> None:
+    """BUG-6: partial destination file must be removed after a read error.
+
+    When copy_file raises mid-copy due to a read error, the partially-written
+    destination file currently remains on disk.  After the exception propagates,
+    the destination path must not exist.
+    """
+    src_fs = MockFilesystem(
+        {"/src/file.txt": b"x" * 100},
+        read_errors={"/src/file.txt": OSError("disk error")},
+    )
+    dst_fs = MockFilesystem()
+
+    src = src_fs.path("/src/file.txt")
+    dst = dst_fs.path("/home/user/file.txt")
+
+    with pytest.raises(OSError, match="disk error"):
+        await run_task(lambda ctx: copy_file(ctx, src, dst))
+
+    assert not dst_fs.exists("/home/user/file.txt"), "partial destination file was not cleaned up"
