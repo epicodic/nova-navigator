@@ -250,6 +250,181 @@ async def test_move_cross_device_directory() -> None:
     assert read_all(dst_fs, "/home/user/mydir/sub/mid.txt") == b"mid"
 
 
+@pytest.mark.asyncio
+async def test_move_cross_device_directory_skip_does_not_erase_source() -> None:
+    """BUG-2: cross-device dir move with skip policy must not erase source when a file was skipped."""
+    src_fs = MockFilesystem({"/src/mydir/file.txt": b"new"})
+    dst_fs = MockFilesystem({"/home/user/mydir/file.txt": b"original"})
+
+    await run_task(
+        lambda ctx: move_files(
+            ctx, [src_fs.path("/src/mydir")], dst_fs.path("/home/user"), FileCopyOptions(overwrite="skip")
+        )
+    )
+
+    assert src_fs.exists("/src/mydir/file.txt")
+    assert read_all(dst_fs, "/home/user/mydir/file.txt") == b"original"
+
+
+@pytest.mark.asyncio
+async def test_move_cross_device_directory_ask_no_does_not_erase_source() -> None:
+    """BUG-2: cross-device dir move with ask+NO must not erase source when a file was skipped."""
+    src_fs = MockFilesystem({"/src/mydir/file.txt": b"new"})
+    dst_fs = MockFilesystem({"/home/user/mydir/file.txt": b"original"})
+
+    requests = await run_task(
+        lambda ctx: move_files(
+            ctx, [src_fs.path("/src/mydir")], dst_fs.path("/home/user"), FileCopyOptions(overwrite="ask")
+        ),
+        [Decision.NO],
+    )
+
+    assert len(requests) == 1
+    assert src_fs.exists("/src/mydir/file.txt")
+    assert read_all(dst_fs, "/home/user/mydir/file.txt") == b"original"
+
+
+@pytest.mark.asyncio
+async def test_move_cross_device_mixed_skip() -> None:
+    """Cross-device move of multiple dirs (including nested) where some files are skipped.
+
+    src:
+      A/{a1.txt, a2.txt}
+      B/{b1.txt, b2.txt}
+      C/sub1/{c11.txt, c12.txt}, C/sub2/{c21.txt, c22.txt}
+    dst:
+      B/b1.txt, C/sub2/c21.txt  (already exist)
+
+    Expected after skip move:
+      src: B/b1.txt, C/sub2/c21.txt survive (skipped);
+           B and C/sub2 and C dirs survive as ancestors of skipped files
+      dst: A fully present, B/b2.txt added, C/sub1 fully present,
+           C/sub2/c21.txt unchanged, C/sub2/c22.txt added
+    """
+    src_fs = MockFilesystem(
+        {
+            "/src/A/a1.txt": b"a1",
+            "/src/A/a2.txt": b"a2",
+            "/src/B/b1.txt": b"b1-new",
+            "/src/B/b2.txt": b"b2",
+            "/src/C/sub1/c11.txt": b"c11",
+            "/src/C/sub1/c12.txt": b"c12",
+            "/src/C/sub2/c21.txt": b"c21-new",
+            "/src/C/sub2/c22.txt": b"c22",
+        }
+    )
+    dst_fs = MockFilesystem(
+        {
+            "/home/user/B/b1.txt": b"b1-original",
+            "/home/user/C/sub2/c21.txt": b"c21-original",
+        }
+    )
+
+    srcs = [src_fs.path("/src/A"), src_fs.path("/src/B"), src_fs.path("/src/C")]
+    await run_task(lambda ctx: move_files(ctx, srcs, dst_fs.path("/home/user"), FileCopyOptions(overwrite="skip")))
+
+    # A was fully moved
+    assert not src_fs.exists("/src/A/a1.txt")
+    assert not src_fs.exists("/src/A/a2.txt")
+    assert not src_fs.exists("/src/A")
+    assert read_all(dst_fs, "/home/user/A/a1.txt") == b"a1"
+    assert read_all(dst_fs, "/home/user/A/a2.txt") == b"a2"
+
+    # b1.txt was skipped: source survives, destination unchanged
+    assert src_fs.exists("/src/B/b1.txt")
+    assert read_all(dst_fs, "/home/user/B/b1.txt") == b"b1-original"
+    # b2.txt had no conflict: moved successfully
+    assert not src_fs.exists("/src/B/b2.txt")
+    assert read_all(dst_fs, "/home/user/B/b2.txt") == b"b2"
+    # /src/B survives because b1.txt was not moved
+    assert src_fs.exists("/src/B")
+
+    # C/sub1 was fully moved
+    assert not src_fs.exists("/src/C/sub1/c11.txt")
+    assert not src_fs.exists("/src/C/sub1/c12.txt")
+    assert not src_fs.exists("/src/C/sub1")
+    assert read_all(dst_fs, "/home/user/C/sub1/c11.txt") == b"c11"
+    assert read_all(dst_fs, "/home/user/C/sub1/c12.txt") == b"c12"
+
+    # c21.txt was skipped: source survives, destination unchanged
+    assert src_fs.exists("/src/C/sub2/c21.txt")
+    assert read_all(dst_fs, "/home/user/C/sub2/c21.txt") == b"c21-original"
+    # c22.txt had no conflict: moved successfully
+    assert not src_fs.exists("/src/C/sub2/c22.txt")
+    assert read_all(dst_fs, "/home/user/C/sub2/c22.txt") == b"c22"
+    # /src/C/sub2 and /src/C survive because c21.txt was not moved
+    assert src_fs.exists("/src/C/sub2")
+    assert src_fs.exists("/src/C")
+
+
+@pytest.mark.asyncio
+async def test_move_same_device_mixed_skip() -> None:
+    """Same-device (rename) move of A, B, C where some files conflict.
+
+    Per-file skip granularity is expected: individual files are skipped when
+    their destination exists, but non-conflicting files in the same directory
+    are still moved.
+
+    src:
+      A/{a1.txt, a2.txt}
+      B/{b1.txt, b2.txt}
+      C/sub1/{c11.txt, c12.txt}, C/sub2/{c21.txt, c22.txt}
+    dst:
+      B/b1.txt, C/sub2/c21.txt  (already exist)
+
+    Expected after skip move (same as cross-device):
+      src: B/b1.txt and C/sub2/c21.txt survive; their ancestor dirs survive
+      dst: A fully present, B/b2.txt added, C/sub1 fully present,
+           C/sub2/c21.txt unchanged, C/sub2/c22.txt added
+    """
+    fs = MockFilesystem(
+        {
+            "/src/A/a1.txt": b"a1",
+            "/src/A/a2.txt": b"a2",
+            "/src/B/b1.txt": b"b1-new",
+            "/src/B/b2.txt": b"b2",
+            "/src/C/sub1/c11.txt": b"c11",
+            "/src/C/sub1/c12.txt": b"c12",
+            "/src/C/sub2/c21.txt": b"c21-new",
+            "/src/C/sub2/c22.txt": b"c22",
+            "/home/user/B/b1.txt": b"b1-original",
+            "/home/user/C/sub2/c21.txt": b"c21-original",
+        }
+    )
+
+    srcs = [fs.path("/src/A"), fs.path("/src/B"), fs.path("/src/C")]
+    await run_task(lambda ctx: move_files(ctx, srcs, fs.path("/home/user"), FileCopyOptions(overwrite="skip")))
+
+    # A had no conflict: fully moved
+    assert not fs.exists("/src/A")
+    assert read_all(fs, "/home/user/A/a1.txt") == b"a1"
+    assert read_all(fs, "/home/user/A/a2.txt") == b"a2"
+
+    # b1.txt was skipped: source survives, destination unchanged
+    assert fs.exists("/src/B/b1.txt")
+    assert read_all(fs, "/home/user/B/b1.txt") == b"b1-original"
+    # b2.txt had no conflict: moved successfully
+    assert not fs.exists("/src/B/b2.txt")
+    assert read_all(fs, "/home/user/B/b2.txt") == b"b2"
+    # /src/B survives because b1.txt was not moved
+    assert fs.exists("/src/B")
+
+    # C/sub1 was fully moved
+    assert not fs.exists("/src/C/sub1")
+    assert read_all(fs, "/home/user/C/sub1/c11.txt") == b"c11"
+    assert read_all(fs, "/home/user/C/sub1/c12.txt") == b"c12"
+
+    # c21.txt was skipped: source survives, destination unchanged
+    assert fs.exists("/src/C/sub2/c21.txt")
+    assert read_all(fs, "/home/user/C/sub2/c21.txt") == b"c21-original"
+    # c22.txt had no conflict: moved successfully
+    assert not fs.exists("/src/C/sub2/c22.txt")
+    assert read_all(fs, "/home/user/C/sub2/c22.txt") == b"c22"
+    # /src/C/sub2 and /src/C survive because c21.txt was not moved
+    assert fs.exists("/src/C/sub2")
+    assert fs.exists("/src/C")
+
+
 # ---------------------------------------------------------------------------
 # Progress tracking and cancellation
 # ---------------------------------------------------------------------------
