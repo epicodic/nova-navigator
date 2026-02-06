@@ -19,7 +19,7 @@ from textual.screen import Screen
 from textual.widgets import Input
 
 # from nn.widgets.menu import MenuBar, MenuHeader
-from nova_navigator import archive, debug
+from nova_navigator import archive, debug_analytics
 from nova_navigator.config import conf_, get_config_file_path
 from nova_navigator.decision import Decision
 from nova_navigator.dialogs import BookmarksDialog
@@ -583,14 +583,14 @@ class NovaNavigator(App[None]):
         super().__init__()
 
     def _handle_exception(self, error: Exception) -> None:
-        # debug.exception_handler(type(error), error, error.__traceback__)
-        sys.settrace(debug.trace_handler)
+        sys.settrace(debug_analytics.trace_handler)
+        debug_analytics.write_crash(error)
         raise error
         # TODO show a user-friendly error dialog here
         #       ideally with an option to open the debugger if debugpy is installed
 
     async def on_mount(self) -> None:
-        debug.install_debug_handler()
+        debug_analytics.install()
 
         self.log("Starting Nova Navigator...")
         self._main_screen = MainScreen()
