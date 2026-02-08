@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from rich.console import Console
+from rich.logging import RichHandler
 from rich.rule import Rule
 from rich.text import Text
 
@@ -219,10 +220,22 @@ def install() -> None:
     _log_dir = Path.home() / ".cache" / "nova-navigator" / "debug-analytics" / str(os.getpid())
     _log_dir.mkdir(parents=True, exist_ok=True)
 
-    # File logging alongside TextualHandler
-    handler = logging.FileHandler(_log_dir / "app.log", encoding="utf-8")
+    # File logging alongside TextualHandler — Rich-styled with colours
+    _log_path = _log_dir / "app.log"
+    file_console = Console(
+        file=_log_path.open("w", encoding="utf-8"),
+        force_terminal=True,
+        width=120,
+        highlight=True,
+    )
+    handler = RichHandler(
+        console=file_console,
+        rich_tracebacks=True,
+        show_path=True,
+        markup=True,
+        log_time_format="[%X]",
+    )
     handler.setLevel(logging.DEBUG)
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     logging.getLogger().addHandler(handler)
     logging.getLogger().setLevel(logging.DEBUG)
 

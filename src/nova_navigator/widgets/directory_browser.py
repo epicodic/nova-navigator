@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -35,6 +36,9 @@ from ..vfs import VPath
 from ..vfs.filesystems.local import LocalFilesystem
 from ..vfs.types import Stat
 from .overlay_widget import OverlayWidget
+
+# silence watchdog logging to avoid spamming logs with file system events
+logging.getLogger("watchdog").setLevel(logging.WARNING)
 
 
 class UpPath(VPath):
