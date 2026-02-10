@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fcntl
+import logging
 import os
 import pty
 import re
@@ -28,10 +29,13 @@ from rich.console import Console, ConsoleOptions, ConsoleRenderable
 from rich.console import RenderResult as RichRenderResult
 from rich.style import Style
 from rich.text import Text
-from textual import events, log
-from textual.app import RenderResult
+from textual import events
+from textual.app import RenderResult, log
 from textual.message import Message
 from textual.widget import Widget
+
+_logger = logging.getLogger(__name__)
+
 
 __all__ = [
     "Terminal",
@@ -170,14 +174,23 @@ class Terminal(Widget, can_focus=True):
             self.cwd = cwd
             super().__init__()
 
+    class Closed(Message):
+        """Posted when the underlying shell process exits and ``keep_alive`` is False."""
+
+        def __init__(self, terminal_widget: Terminal) -> None:
+            self.terminal_widget = terminal_widget
+            super().__init__()
+
     def __init__(
         self,
         command: str,
         name: str | None = None,
         id: str | None = None,
         classes: str | None = None,
+        keep_alive: bool = False,
     ) -> None:
         self.command = command
+        self.keep_alive = keep_alive
         self._started = False
         self.ncol = 80
         self.nrow = 24
@@ -349,7 +362,12 @@ class Terminal(Widget, can_focus=True):
                 if stdout_fed:
                     self._schedule_rebuild()
                 if disconnected:
-                    self.stop()
+                    _logger.info("Terminal disconnected")
+                    if self.keep_alive:
+                        self.respawn()
+                    else:
+                        self.post_message(Terminal.Closed(self))
+                        self.stop()
         except asyncio.CancelledError:
             pass
 
@@ -468,6 +486,47 @@ class Terminal(Widget, can_focus=True):
     # ------------------------------------------------------------------
     # Internal: PTY setup
     # ------------------------------------------------------------------
+
+    def respawn(self) -> None:
+        """Tear down the current PTY and start a fresh shell, keeping ``recv_task_t`` alive.
+
+        Can be called from a ``Terminal.Closed`` handler to restart the terminal on demand.
+        """
+        assert self._loop is not None
+
+        # Cancel the send loop — a new one will be started below.
+        if self._run_task is not None:
+            self._run_task.cancel()
+            self._run_task = None
+
+        # Remove readers for the old FDs.
+        with contextlib.suppress(Exception):
+            self._loop.remove_reader(self._p_out)
+        with contextlib.suppress(Exception):
+            self._loop.remove_reader(self._p_out_pre_cmd)
+
+        # Terminate the old shell process.
+        with contextlib.suppress(OSError):
+            os.kill(self.pid, signal.SIGTERM)
+        with contextlib.suppress(OSError):
+            os.waitpid(self.pid, os.WNOHANG)
+
+        # Close old file objects.
+        with contextlib.suppress(OSError):
+            self._p_out.close()
+        with contextlib.suppress(OSError):
+            self._p_out_pre_cmd.close()
+
+        # Reset the pyte screen.
+        self._screen = TerminalPyteScreen(self.ncol, self.nrow)
+        self._stream = pyte.Stream(self._screen)
+
+        # Open a fresh PTY and restart the send loop.
+        self.fd, self.fd_pre_cmd, self.fd_pre_cmd_child = self.open_terminal(command=self.command)
+        self._p_out = os.fdopen(self.fd, "w+b", 0)
+        self._p_out_pre_cmd = os.fdopen(self.fd_pre_cmd, "w+b", 0)
+        self.send_queue = asyncio.Queue()
+        self._run_task = asyncio.create_task(self._run())
 
     def open_terminal(self, command: str) -> tuple[int, int, int]:
         """Fork a PTY and exec *command*.
