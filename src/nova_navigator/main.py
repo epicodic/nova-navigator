@@ -199,10 +199,6 @@ class MainScreen(Screen[None]):
             return self._right_panel
         return self._left_panel
 
-    async def on_mount(self) -> None:
-        pre_cmd = self._terminal.get_shell_init_code()
-        await self._terminal.send(pre_cmd)
-
     def on_resize(self, event: events.Resize) -> None:
         self._resize_terminal()
 
