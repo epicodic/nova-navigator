@@ -211,14 +211,6 @@ class Terminal(Widget, can_focus=True):
         super().__init__(name=name, id=id, classes=classes)
 
     # ------------------------------------------------------------------
-    # Public interface used by MainScreen
-    # ------------------------------------------------------------------
-
-    def get_shell_init_code(self) -> str:
-        """Return zsh init code wiring the precmd hook to this terminal's pre-cmd pipe fd."""
-        return shell_init_code(self.fd_pre_cmd_child)
-
-    # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
@@ -276,6 +268,9 @@ class Terminal(Widget, can_focus=True):
     # ------------------------------------------------------------------
     # Event handlers
     # ------------------------------------------------------------------
+
+    async def on_mount(self) -> None:
+        await self.send(shell_init_code(self.fd_pre_cmd_child))
 
     async def on_key(self, event: events.Key) -> None:
         if not self._started:
@@ -527,6 +522,7 @@ class Terminal(Widget, can_focus=True):
         self._p_out_pre_cmd = os.fdopen(self.fd_pre_cmd, "w+b", 0)
         self.send_queue = asyncio.Queue()
         self._run_task = asyncio.create_task(self._run())
+        self.send_queue.put_nowait(["stdin", shell_init_code(self.fd_pre_cmd_child)])
 
     def open_terminal(self, command: str) -> tuple[int, int, int]:
         """Fork a PTY and exec *command*.
