@@ -43,8 +43,7 @@ It is a focusable `textual.Widget` and owns:
 | `_run_task` | `Task[None] \| None` | PTY I/O pump — writes stdin, processes size changes |
 | `recv_task_t` | `Task[None] \| None` | Processes `recv_queue` entries and updates the display |
 | `_loop` | `asyncio.AbstractEventLoop \| None` | Event loop reference stored by `_run()` so `stop()` can call `remove_reader` synchronously |
-| `_rebuild_handle` | `TimerHandle \| None` | Pending `call_later` handle for the next display rebuild; `None` when no rebuild is scheduled |
-
+| `_rebuild_handle` | `TimerHandle \| None` | Pending `call_later` handle for the next display rebuild; `None` when no rebuild is scheduled || `_draining` | `bool` | When `True`, pyte processes PTY output but display rebuilds are suppressed until the next `pre_cmd` event |
 ### Helper functions (module level)
 
 | Function | Purpose |
@@ -144,8 +143,8 @@ Awaits messages from `recv_queue`, drains up to `_RECV_DRAIN_LIMIT` already-queu
 | Message | Action |
 |---------|--------|
 | `["setup", {}]` | Sends initial `set_size` to PTY |
-| `["pre_cmd", cwd]` | Posts `Terminal.PreCmd` Textual message |
-| `["stdout", text]` | Calls `_feed_stdout` (DECSET scan + pyte feed); schedules a deferred display rebuild via `_schedule_rebuild` |
+| `["pre_cmd", cwd]` | If `_draining` is `True`: resets the pyte screen and clears `_draining`. Then posts `Terminal.PreCmd` Textual message |
+| `["stdout", text]` | Calls `_feed_stdout` (DECSET scan + pyte feed); if `_draining` is `False`, schedules a deferred display rebuild via `_schedule_rebuild` |
 | `["disconnect", _]` | Calls `stop()` |
 
 ---
@@ -184,6 +183,58 @@ The stored lines in `_display` are never mutated.
 
 ---
 
+## Silent Send and the Draining Mechanism
+
+Some commands must be sent to the shell without their echo appearing in the terminal display.
+The primary use case is the shell init code (`shell_init_code`) that is injected at startup and after `respawn`.
+
+### Why termios ECHO suppression does not work
+
+Clearing the PTY `ECHO` flag via `termios.tcsetattr` is ineffective for interactive zsh.
+When zsh runs in interactive mode it uses its own line editor (`zle`) in raw mode.
+`zle` manages echo internally, ignoring the PTY line discipline's `ECHO` flag.
+
+### Inspiration: Midnight Commander
+
+MC's `feed_subshell(QUIETLY, ...)` reads and **discards** all PTY output until the shell prompt reappears.
+MC can do this because it owns the whole screen (ncurses) and controls what gets rendered.
+The same approach is applied here at the application layer.
+
+### The draining state
+
+`Terminal._draining: bool` controls whether PTY output is forwarded to the display.
+
+```
+Normal mode (_draining=False)
+  stdout → pyte feed → _schedule_rebuild → display updated
+
+Draining mode (_draining=True)
+  stdout → pyte feed  (screen state updated, but display NOT rebuilt)
+  ...more stdout...
+  pre_cmd fires → screen.reset() → _draining=False → display rebuilt from blank
+```
+
+The `pre_cmd` pipe is the reliable "shell is back at prompt" signal — exactly as MC uses its `subshell_pipe`.
+
+### `send_silent(data: str) -> None`
+
+Public method on `Terminal`.
+Sets `_draining = True`, then enqueues `["stdin", data]` on the send queue as normal.
+The data reaches the shell as regular input; the echo and any output it produces are swallowed by the draining logic.
+Once the shell's `precmd` hook fires, the screen is reset and the display rebuilds cleanly.
+
+### `_spawn_pty` bootstrap
+
+`_spawn_pty` is a sync method so it cannot call `await send_silent()`.
+It replicates the two lines of `send_silent` inline:
+```python
+self._draining = True
+self.send_queue.put_nowait(["stdin", shell_init_code(self.fd_pre_cmd_child)])
+```
+This ensures startup and respawn both suppress the init code echo without duplication of logic.
+
+---
+
 ## CWD Tracking Mechanism
 
 ```
@@ -205,16 +256,19 @@ writes cwd to fd N (pre-cmd pipe)       recv_queue ← ["pre_cmd", cwd_string]
                                          updates active panel path
 ```
 
-1. On `on_mount`, `MainScreen` calls `terminal.get_shell_init_code()`, which delegates to `shell_init_code(self.fd_pre_cmd_child)` to generate:
+1. `_spawn_pty` sets `_draining = True` and enqueues the init code as `["stdin", shell_init_code(self.fd_pre_cmd_child)]`.
+   This generates:
    ```zsh
-   _nn_precmd() { pwd>&N }; precmd_functions+=(_nn_precmd)
+    _nn_precmd() { pwd>&N }; precmd_functions+=(_nn_precmd)
    ```
    where `N` is the numeric file descriptor number of the write end of the pre-cmd pipe (open in the child process).
-2. This code is sent to the shell via `Terminal.send()`.
-3. After each zsh command, the hook fires, writes the current directory to fd `N`.
+   The leading space keeps it out of zsh history (`HISTCONTROL=ignorespace`).
+2. zsh echoes the init code to its PTY output; the draining flag suppresses the display rebuild.
+3. After the init code runs, zsh fires `precmd`, which writes the cwd to fd `N`.
 4. The event loop reader `on_pre_cmd` fires and routes the cwd through `recv_queue` to `recv()`.
-5. `recv()` posts `Terminal.PreCmd(terminal_widget, cwd)`.
-6. `MainScreen._on_terminal_pre_cmd` calls `active_panel().set_path(VPath(event.cwd, LocalFilesystem))` to synchronize the file browser panel.
+5. `recv()` sees `_draining=True` on the `pre_cmd` message, resets the pyte screen, and clears `_draining`.
+6. `recv()` posts `Terminal.PreCmd(terminal_widget, cwd)`.
+7. `MainScreen._on_terminal_pre_cmd` calls `active_panel().set_path(VPath(event.cwd, LocalFilesystem))` to synchronize the file browser panel.
 
 ---
 

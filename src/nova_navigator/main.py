@@ -319,7 +319,7 @@ class MainScreen(Screen[None]):
         # assert isinstance(path, LocalPath), "Only local paths are supported at the moment"
         if not isinstance(path.filesystem, LocalFilesystem):
             return
-        await self._terminal.send(shell_clear_prompt() + " " + shell_cmd_cd(path.path) + "\n")
+        await self._terminal.send(shell_clear_prompt() + " " + shell_cmd_cd(path.path) + "\n", mode="silent")
 
     async def _on_directory_browser_path_selected(self, event: DirectoryBrowser.PathSelected) -> None:
         vpath = event.path
