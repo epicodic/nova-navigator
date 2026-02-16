@@ -974,3 +974,81 @@ async def test_cursor_reverse_span_not_stored_in_raw_display_lines() -> None:
             assert len(reverse_spans) == 0
         finally:
             await _stop_recv_only(terminal)
+
+
+# ---------------------------------------------------------------------------
+# send_silent
+# ---------------------------------------------------------------------------
+
+
+def test_send_is_callable() -> None:
+    terminal = Terminal("/usr/bin/zsh", id="t_silent_callable", keep_alive=False)
+    assert callable(terminal.send)
+
+
+@pytest.mark.asyncio
+async def test_draining_suppresses_display_rebuild_until_pre_cmd() -> None:
+    """While _draining is True, stdout does not update the display.
+    When pre_cmd fires, the pyte screen is reset and _draining is cleared."""
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        initial_display = terminal._display
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._draining = True
+
+            # stdout while draining: pyte screen updated, but display must NOT change
+            await recv_q.put(["stdout", "SILENT_CONTENT"])
+            await pilot.pause(delay=0.1)
+            assert terminal._display is initial_display  # no rebuild was scheduled
+
+            # pre_cmd fires: screen reset, _draining cleared
+            await recv_q.put(["pre_cmd", "/some/path\n"])
+            await pilot.pause(delay=0.1)
+            assert terminal._draining is False
+            rendered = "".join(line.plain for line in terminal._display.lines)
+            assert "SILENT_CONTENT" not in rendered
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_draining_flag_set_by_send_silent() -> None:
+    """send with mode='silent' sets _draining to True before enqueuing the data."""
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _start_recv_only(terminal)
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
+        try:
+            assert terminal._draining is False
+            await terminal.send("some command\n", mode="silent")
+            assert terminal._draining is True
+        finally:
+            terminal._started = False
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_normal_send_after_pre_cmd_resets_drain_appears_on_screen() -> None:
+    """After pre_cmd clears _draining, subsequent stdout is rendered normally."""
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._draining = True
+            await recv_q.put(["stdout", "SILENT_CONTENT"])
+            await recv_q.put(["pre_cmd", "/some/path\n"])
+            await recv_q.put(["stdout", "VISIBLE_CONTENT"])
+            await pilot.pause(delay=0.2)
+            rendered = "".join(line.plain for line in terminal._display.lines)
+            assert "SILENT_CONTENT" not in rendered
+            assert "VISIBLE_CONTENT" in rendered
+        finally:
+            await _stop_recv_only(terminal)

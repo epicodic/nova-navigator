@@ -20,7 +20,7 @@ import struct
 import termios
 from asyncio import Task, TimerHandle
 from pathlib import PurePath
-from typing import Any
+from typing import Any, Literal
 
 import pyte
 from pyte.screens import Char
@@ -45,6 +45,7 @@ __all__ = [
     "shell_cmd_cd",
     "shell_init_code",
 ]
+
 
 _MOUSE_TRACKING_MODES: frozenset[str] = frozenset({"1000", "1002", "1003", "1006"})
 _RECV_DRAIN_LIMIT: int = 100
@@ -192,6 +193,7 @@ class Terminal(Widget, can_focus=True):
         self.command = command
         self.keep_alive = keep_alive
         self._started = False
+        self._draining = False
         self.ncol = 80
         self.nrow = 24
         self.mouse_tracking = False
@@ -279,10 +281,17 @@ class Terminal(Widget, can_focus=True):
             assert self.send_queue is not None
             self.send_queue.put_nowait(["stdin", char])
 
-    async def send(self, data: str) -> None:
+    async def send(self, data: str, mode: Literal["normal", "silent"] = "normal") -> None:
+        """Send *data* to the shell.
+
+        When *mode* is ``"silent"``, the echo of *data* is suppressed from
+        the display until the next shell prompt reappears.
+        """
         if not self._started:
             return
         assert self.send_queue is not None
+        if mode == "silent":
+            self._draining = True
         self.send_queue.put_nowait(["stdin", data])
 
     async def on_resize(self, _event: events.Resize) -> None:
@@ -335,6 +344,9 @@ class Terminal(Widget, can_focus=True):
                         assert self.send_queue is not None
                         self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
                     elif cmd == "pre_cmd":
+                        if self._draining:
+                            self._screen.reset()
+                            self._draining = False
                         cwd = PurePath(str(message[1]).strip())
                         self.post_message(Terminal.PreCmd(self, cwd))
                     elif cmd == "stdout":
@@ -347,7 +359,7 @@ class Terminal(Widget, can_focus=True):
                         message = self.recv_queue.get_nowait()
                     except asyncio.QueueEmpty:
                         break
-                if stdout_fed:
+                if stdout_fed and not self._draining:
                     self._schedule_rebuild()
                 if disconnected:
                     _logger.info("Terminal disconnected")
@@ -519,6 +531,8 @@ class Terminal(Widget, can_focus=True):
         self._p_out_pre_cmd = os.fdopen(self.fd_pre_cmd, "w+b", 0)
         self.send_queue = asyncio.Queue()
         self._run_task = asyncio.create_task(self._run())
+        # send() cannot be awaited here (sync context); replicate its SILENT logic inline
+        self._draining = True
         self.send_queue.put_nowait(["stdin", shell_init_code(self.fd_pre_cmd_child)])
 
     def open_terminal(self, command: str) -> tuple[int, int, int]:
