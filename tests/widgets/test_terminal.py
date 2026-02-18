@@ -988,8 +988,9 @@ def test_send_is_callable() -> None:
 
 @pytest.mark.asyncio
 async def test_draining_suppresses_display_rebuild_until_pre_cmd() -> None:
-    """While _draining is True, stdout does not update the display.
-    When pre_cmd fires, the pyte screen is reset and _draining is cleared."""
+    """While _draining is True, stdout is discarded (not fed to pyte) and the display
+    does not change.  When pre_cmd fires, _draining is cleared and the content
+    that arrived during draining is absent from the screen."""
     terminal = Terminal("/bin/sh")
     app = TerminalTestApp(terminal)
     async with app.run_test() as pilot:
@@ -999,12 +1000,12 @@ async def test_draining_suppresses_display_rebuild_until_pre_cmd() -> None:
         try:
             terminal._draining = True
 
-            # stdout while draining: pyte screen updated, but display must NOT change
+            # stdout while draining: discarded, display must NOT change
             await recv_q.put(["stdout", "SILENT_CONTENT"])
             await pilot.pause(delay=0.1)
             assert terminal._display is initial_display  # no rebuild was scheduled
 
-            # pre_cmd fires: screen reset, _draining cleared
+            # pre_cmd fires: _draining cleared, no screen reset
             await recv_q.put(["pre_cmd", "/some/path\n"])
             await pilot.pause(delay=0.1)
             assert terminal._draining is False
@@ -1035,7 +1036,8 @@ async def test_draining_flag_set_by_send_silent() -> None:
 
 @pytest.mark.asyncio
 async def test_normal_send_after_pre_cmd_resets_drain_appears_on_screen() -> None:
-    """After pre_cmd clears _draining, subsequent stdout is rendered normally."""
+    """After pre_cmd clears _draining, subsequent stdout is fed to pyte and rendered.
+    Stdout that arrived while draining is discarded and never rendered."""
     terminal = Terminal("/bin/sh")
     app = TerminalTestApp(terminal)
     async with app.run_test() as pilot:
