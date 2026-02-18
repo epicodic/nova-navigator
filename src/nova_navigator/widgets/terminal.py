@@ -345,13 +345,13 @@ class Terminal(Widget, can_focus=True):
                         self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
                     elif cmd == "pre_cmd":
                         if self._draining:
-                            self._screen.reset()
                             self._draining = False
                         cwd = PurePath(str(message[1]).strip())
                         self.post_message(Terminal.PreCmd(self, cwd))
                     elif cmd == "stdout":
-                        self._feed_stdout(str(message[1]))
-                        stdout_fed = True
+                        if not self._draining:
+                            self._feed_stdout(str(message[1]))
+                            stdout_fed = True
                     elif cmd == "disconnect":
                         disconnected = True
                         break
