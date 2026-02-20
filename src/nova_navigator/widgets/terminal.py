@@ -46,6 +46,9 @@ __all__ = [
     "shell_init_code",
 ]
 
+_KILL_LINE = "\x15"  # Ctrl+U — kill whole line to kill ring
+_YANK = "\x19"  # Ctrl+Y — yank from kill ring
+
 
 _MOUSE_TRACKING_MODES: frozenset[str] = frozenset({"1000", "1002", "1003", "1006"})
 _RECV_DRAIN_LIMIT: int = 100
@@ -130,6 +133,7 @@ _TERMINAL_COLORS: dict[str, str] = {
     "cyan": "#86C1B9",
     "brown": "#FEA62B",
     "white": "#FFFFFF",
+    "brightblack": "#444444",
     "default": "default",
 }
 
@@ -209,6 +213,9 @@ class Terminal(Widget, can_focus=True):
         self._display = self.initial_display()
         self._screen = TerminalPyteScreen(self.ncol, self.nrow)
         self._stream = pyte.Stream(self._screen)
+        self._prompt_cursor_x: int = 0
+        self._pending_yank: bool = False
+        self._snapshot_prompt_cursor: bool = False
 
         super().__init__(name=name, id=id, classes=classes)
 
@@ -281,6 +288,21 @@ class Terminal(Widget, can_focus=True):
             assert self.send_queue is not None
             self.send_queue.put_nowait(["stdin", char])
 
+    def has_input(self) -> bool:
+        """Return True if the user has typed something on the current prompt line."""
+        log.info("cursor, prompt cursor:", self._screen.cursor.x, self._prompt_cursor_x)
+        return self._screen.cursor.x > self._prompt_cursor_x
+
+    async def set_terminal_directory(self, path: PurePath) -> None:
+        """Change the shell's working directory to *path*, preserving any typed input.
+
+        If the user has typed text on the current prompt line, it is saved to the
+        kill ring with Ctrl+U, the ``cd`` command runs silently, and the text is
+        restored with Ctrl+Y once the new prompt appears.
+        """
+        self._pending_yank = self.has_input()
+        await self.send(_KILL_LINE + shell_cmd_cd(path) + "\n", mode="silent")
+
     async def send(self, data: str, mode: Literal["normal", "silent"] = "normal") -> None:
         """Send *data* to the shell.
 
@@ -347,6 +369,11 @@ class Terminal(Widget, can_focus=True):
                         if self._draining:
                             self._draining = False
                         cwd = PurePath(str(message[1]).strip())
+                        self._snapshot_prompt_cursor = True
+                        if self._pending_yank:
+                            self._pending_yank = False
+                            assert self.send_queue is not None
+                            self.send_queue.put_nowait(["stdin", _YANK])
                         self.post_message(Terminal.PreCmd(self, cwd))
                     elif cmd == "stdout":
                         if not self._draining:
@@ -427,6 +454,9 @@ class Terminal(Widget, can_focus=True):
             lines.append(line_text)
 
         self._display = TerminalDisplay(lines, self._screen.cursor.x, self._screen.cursor.y)
+        if self._snapshot_prompt_cursor:
+            self._snapshot_prompt_cursor = False
+            self._prompt_cursor_x = self._screen.cursor.x
         self.refresh()
 
     def _process_stdout(self, chars: str) -> None:
