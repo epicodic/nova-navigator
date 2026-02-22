@@ -48,6 +48,7 @@ __all__ = [
 
 _KILL_LINE = "\x15"  # Ctrl+U — kill whole line to kill ring
 _YANK = "\x19"  # Ctrl+Y — yank from kill ring
+_END_OF_LINE = "\x05"  # Ctrl+E — move cursor to end of line, clears yank mark
 
 
 _MOUSE_TRACKING_MODES: frozenset[str] = frozenset({"1000", "1002", "1003", "1006"})
@@ -370,10 +371,6 @@ class Terminal(Widget, can_focus=True):
                             self._draining = False
                         cwd = PurePath(str(message[1]).strip())
                         self._snapshot_prompt_cursor = True
-                        if self._pending_yank:
-                            self._pending_yank = False
-                            assert self.send_queue is not None
-                            self.send_queue.put_nowait(["stdin", _YANK])
                         self.post_message(Terminal.PreCmd(self, cwd))
                     elif cmd == "stdout":
                         if not self._draining:
@@ -457,6 +454,10 @@ class Terminal(Widget, can_focus=True):
         if self._snapshot_prompt_cursor:
             self._snapshot_prompt_cursor = False
             self._prompt_cursor_x = self._screen.cursor.x
+            if self._pending_yank:
+                self._pending_yank = False
+                if self.send_queue is not None:
+                    self.send_queue.put_nowait(["stdin", _YANK + _END_OF_LINE])
         self.refresh()
 
     def _process_stdout(self, chars: str) -> None:
