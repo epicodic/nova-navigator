@@ -1,6 +1,8 @@
 from .bookmarks_dialog import BookmarksDialog
 from .dialog import DefaultButton
 from .files_dialog import CopyMoveFilesDialog, DeleteFilesDialog
+from .job_registry import JobRegistry
+from .jobs_dialog import JobsDialog
 
 # from .processes_dialog import ProcessesDialog
 
@@ -9,5 +11,7 @@ __all__ = [
     "CopyMoveFilesDialog",
     "DefaultButton",
     "DeleteFilesDialog",
+    "JobRegistry",
+    "JobsDialog",
     # "ProcessesDialog",
 ]

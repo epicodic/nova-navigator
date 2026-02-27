@@ -22,7 +22,7 @@ from textual.widgets import Input
 from nova_navigator import archive, debug_analytics
 from nova_navigator.config import conf_, get_config_file_path
 from nova_navigator.decision import Decision
-from nova_navigator.dialogs import BookmarksDialog
+from nova_navigator.dialogs import BookmarksDialog, JobRegistry, JobsDialog
 from nova_navigator.dialogs.decision_dialog import DecisionDialog
 from nova_navigator.editor import Editor
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
@@ -62,7 +62,7 @@ class MainScreen(Screen[None]):
         Binding("ctrl+b", "show_bookmarks", "Bookmark"),
         Binding("ctrl+h", "toggle_hidden", description="Show/Hide Hidden Files", show=False),
         # Binding("ctrl+s", "suspend", "Suspend"),
-        Binding("ctrl+k", "show_processes", "Processes"),
+        Binding("ctrl+k", "show_processes", "Jobs"),
         Binding("ctrl+d", "start_dummy_operation", "Start Dummy Operation"),
     ]
 
@@ -78,10 +78,13 @@ class MainScreen(Screen[None]):
     _last_active_panel: DirectoryBrowser
 
     _bookmark_dialog: BookmarksDialog
+    _job_registry: JobRegistry
+    _jobs_dialog: JobsDialog
 
     def __init__(self) -> None:
         super().__init__()
         self._terminal_mode = self._TerminalMode.MINIMIZED
+        self._job_registry = JobRegistry()
         # self._operations = []
 
     def compose(self) -> ComposeResult:
@@ -183,6 +186,8 @@ class MainScreen(Screen[None]):
         self._terminal.start()
 
         yield self._terminal
+        self._jobs_dialog = JobsDialog(position=(4, 2), registry=self._job_registry)
+        yield self._jobs_dialog
         yield Footer()
 
     def _act(self, name: str) -> Action:
@@ -351,6 +356,7 @@ class MainScreen(Screen[None]):
             move=move,
         )
         if job is not None:
+            self._job_registry.add_job(job)
             await job.start(self.request_callback)
 
     @work
@@ -361,6 +367,7 @@ class MainScreen(Screen[None]):
             paths=paths,
         )
         if job is not None:
+            self._job_registry.add_job(job)
             await job.start(self.request_callback)
 
     def on_bookmarks_dialog_bookmark_selected(self, event: BookmarksDialog.BookmarkSelected) -> None:
@@ -520,10 +527,9 @@ class MainScreen(Screen[None]):
     async def _action_invert_selection(self) -> None:
         self.active_panel().action_invert_selection()
 
-    # async def _action_show_processes(self) -> None:
-    #     processes_dialog = ProcessesDialog(position=(4, 4), operations=self._operations)
-    #     await self.mount(processes_dialog)
-    #     processes_dialog.focus()
+    def action_show_processes(self) -> None:
+        self._jobs_dialog.show()
+        self._jobs_dialog.focus()
 
     # endregion
 
