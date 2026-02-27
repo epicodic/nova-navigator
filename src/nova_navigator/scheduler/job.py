@@ -3,7 +3,7 @@ from collections.abc import Awaitable, Callable
 from enum import Enum, auto
 from typing import Any
 
-from .context import GuiRequestCallback, Progress, TaskContext, TaskStatus
+from .context import GuiRequestCallback, Progress, TaskCancelled, TaskContext, TaskStatus
 from .scheduler import AsyncTaskScheduler
 
 
@@ -19,6 +19,7 @@ class Job:
         RUNNING = auto()
         COMPLETED = auto()
         CANCELED = auto()
+        FAILED = auto()
 
     _title: str
     _task_fn: Callable[[TaskContext], Awaitable[None]]
@@ -26,6 +27,7 @@ class Job:
     _status: TaskStatus
     _cancel_event: threading.Event
     _state: State
+    _error: str | None
 
     def __init__(self, title: str, task_fn: Callable[..., Awaitable[None]], *args: Any, **kwargs: Any) -> None:
         self._title = title
@@ -34,6 +36,7 @@ class Job:
         self._task_fn = lambda ctx: task_fn(ctx, *args, **kwargs)
         self._scheduler = None
         self._state = self.State.INITIALIZED
+        self._error = None
 
     def _progress_callback(self, status: TaskStatus) -> None:
         if status.is_complete():
@@ -41,7 +44,13 @@ class Job:
 
     async def start(self, gui_request_callback: GuiRequestCallback) -> None:
         self._state = self.State.RUNNING
-        self._scheduler = await AsyncTaskScheduler.execute(gui_request_callback, self._task_fn, self._status)
+        try:
+            self._scheduler = await AsyncTaskScheduler.execute(gui_request_callback, self._task_fn, self._status)
+        except TaskCancelled:
+            self._state = self.State.CANCELED
+        except Exception as exc:  # noqa: BLE001
+            self._state = self.State.FAILED
+            self._error = str(exc)
 
     def cancel(self) -> None:
         self._cancel_event.set()
@@ -57,3 +66,8 @@ class Job:
     @property
     def progress(self) -> Progress:
         return self._status.progress
+
+    @property
+    def error(self) -> str | None:
+        """Exception message if the job failed; None otherwise."""
+        return self._error
