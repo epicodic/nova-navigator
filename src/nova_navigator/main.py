@@ -26,8 +26,9 @@ from nova_navigator.dialogs import BookmarksDialog, JobRegistry, JobsDialog
 from nova_navigator.dialogs.decision_dialog import DecisionDialog
 from nova_navigator.editor import Editor
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
+from nova_navigator.filemanager.tasks import dummy_task
 from nova_navigator.icons import ICONS, IconSet
-from nova_navigator.scheduler import DecisionRequest
+from nova_navigator.scheduler import DecisionRequest, Job
 
 # from nova_navigator.operations.file_operations import copy_or_move_files_operation, delete_files_operation
 from nova_navigator.uri import register_common_schemes, vfspath_from_uri
@@ -369,6 +370,12 @@ class MainScreen(Screen[None]):
         if job is not None:
             self._job_registry.add_job(job)
             await job.start(self.request_callback)
+
+    @work
+    async def action_start_dummy_operation(self) -> None:
+        job = Job("Dummy Operation", dummy_task)
+        self._job_registry.add_job(job)
+        await job.start(self.request_callback)
 
     def on_bookmarks_dialog_bookmark_selected(self, event: BookmarksDialog.BookmarkSelected) -> None:
         vpath = vfspath_from_uri(event.bookmark_path)
