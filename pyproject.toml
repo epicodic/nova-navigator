@@ -80,6 +80,7 @@ ignore = [
     "ARG002", # Unused argument
     "FBT001",
     "FBT002",
+    "FBT003",
     "TID252",
     "TC001",  # Move local import into a type-checking block
     "TC002",  # Move third-party import into a type-checking block
@@ -136,6 +137,7 @@ ignore = [
     "ANN201",  # Missing return type annotation for public function
     "D",       # ignore all pydocstyle errors
     "INP001",  # Missing __init__.py 
+    "PLC0415", # import not at top-level (used for monkeypatching in tests)
     "PLR2004", # Magic value used in comparison
 ]
 "debug.py" = ["T100"] # explicitly allow pydebug

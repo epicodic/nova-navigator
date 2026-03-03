@@ -1129,7 +1129,7 @@ async def test_set_terminal_directory_sends_kill_line_and_cd_silently() -> None:
         terminal.send_queue = asyncio.Queue()
         terminal._started = True
 
-        await terminal.set_terminal_directory(PurePath("/tmp/test"))
+        await terminal.set_terminal_directory(PurePath("/tmp/test"))  # noqa: S108
 
         assert terminal._draining is True
         assert terminal.send_queue.qsize() == 1
@@ -1137,7 +1137,7 @@ async def test_set_terminal_directory_sends_kill_line_and_cd_silently() -> None:
         assert item[0] == "stdin"
         data = str(item[1])
         assert data.startswith("\x15")  # KILL_LINE
-        assert "/tmp/test" in data
+        assert "/tmp/test" in data  # noqa: S108
         assert data.endswith("\n")
 
 
@@ -1153,7 +1153,7 @@ async def test_set_terminal_directory_no_pending_yank_when_no_input() -> None:
         terminal._prompt_cursor_x = 0
         terminal._screen.cursor.x = 0  # no user input
 
-        await terminal.set_terminal_directory(PurePath("/tmp"))
+        await terminal.set_terminal_directory(PurePath("/tmp"))  # noqa: S108
 
         assert terminal._pending_yank is False
 
@@ -1170,7 +1170,7 @@ async def test_set_terminal_directory_sets_pending_yank_when_input_present() -> 
         terminal._prompt_cursor_x = 2
         terminal._screen.cursor.x = 6  # user has typed 4 chars
 
-        await terminal.set_terminal_directory(PurePath("/tmp"))
+        await terminal.set_terminal_directory(PurePath("/tmp"))  # noqa: S108
 
         assert terminal._pending_yank is True
 

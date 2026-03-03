@@ -1,0 +1,206 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+import pytest
+
+from nova_navigator.config.model import BaseModel, key_field
+
+# ── Helpers — import loader under test after patching config dir ───────────────
+# We patch _APP_CONFIG_DIR via monkeypatch on the loader module.
+
+
+@dataclass
+class SimpleSettings(BaseModel):
+    """Simple test settings."""
+
+    name: str = "default"
+    count: int = 0
+
+
+@dataclass
+class SectionItem(BaseModel):
+    section_name: str = key_field()
+    value: str = "x"
+
+
+# ── ModelConfig ───────────────────────────────────────────────────────────────
+
+
+def test_model_config_creates_file_when_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    from nova_navigator.config.loader import ModelConfig
+
+    class TConfig(SimpleSettings, ModelConfig):
+        CONFIG_NAME = "test_simple"
+
+    instance = TConfig.load()
+    config_file = tmp_path / "test_simple.toml"
+    assert config_file.exists()
+    assert instance.name == "default"
+    assert instance.count == 0
+
+
+def test_model_config_reads_existing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    from nova_navigator.config.loader import ModelConfig
+
+    class TConfig(SimpleSettings, ModelConfig):
+        CONFIG_NAME = "test_simple2"
+
+    config_file = tmp_path / "test_simple2.toml"
+    config_file.write_text('name = "loaded"\ncount = 7\n')
+
+    instance = TConfig.load()
+    assert instance.name == "loaded"
+    assert instance.count == 7
+
+
+def test_model_config_save_updates_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    from nova_navigator.config.loader import ModelConfig
+
+    class TConfig(SimpleSettings, ModelConfig):
+        CONFIG_NAME = "test_simple3"
+
+    instance = TConfig.load()
+    instance.name = "updated"
+    instance.save()
+
+    content = (tmp_path / "test_simple3.toml").read_text()
+    assert "updated" in content
+
+
+def test_model_config_save_preserves_comments(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    from nova_navigator.config.loader import ModelConfig
+
+    class TConfig(SimpleSettings, ModelConfig):
+        CONFIG_NAME = "test_simple4"
+
+    config_file = tmp_path / "test_simple4.toml"
+    config_file.write_text("# user comment\nname = 'old'\ncount = 0\n")
+
+    instance = TConfig.load()
+    instance.name = "new"
+    instance.save()
+
+    content = (tmp_path / "test_simple4.toml").read_text()
+    assert "# user comment" in content
+    assert "new" in content
+
+
+def test_model_config_creates_parent_directories(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+
+    nested_dir = tmp_path / "a" / "b" / "c"
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", nested_dir)
+
+    from nova_navigator.config.loader import ModelConfig
+
+    class TConfig(SimpleSettings, ModelConfig):
+        CONFIG_NAME = "test_nested"
+
+    TConfig.load()
+    assert (nested_dir / "test_nested.toml").exists()
+
+
+# ── ListConfig ────────────────────────────────────────────────────────────────
+
+
+def test_list_config_creates_file_from_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    from nova_navigator.config.loader import ListConfig
+
+    class TListConfig(ListConfig):
+        CONFIG_NAME = "test_list"
+
+        @classmethod
+        def default_items(cls) -> list[BaseModel]:
+            return [SectionItem(section_name="first", value="aaa")]
+
+    instance = TListConfig.load()
+    assert (tmp_path / "test_list.toml").exists()
+    assert len(instance._items) == 1
+    assert instance._items[0].section_name == "first"
+
+
+def test_list_config_reads_existing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    from nova_navigator.config.loader import ListConfig
+
+    class TListConfig(ListConfig):
+        CONFIG_NAME = "test_list2"
+
+        @classmethod
+        def default_items(cls) -> list[BaseModel]:
+            return []
+
+    (tmp_path / "test_list2.toml").write_text('[mykey]\nvalue = "loaded"\n')
+    instance = TListConfig.load()
+    assert len(instance._items) == 1
+    assert instance._items[0].section_name == "mykey"
+    assert instance._items[0].value == "loaded"
+
+
+def test_list_config_save_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    from nova_navigator.config.loader import ListConfig
+
+    class TListConfig(ListConfig):
+        CONFIG_NAME = "test_list_save"
+        _item_cls = SectionItem
+
+        @classmethod
+        def default_items(cls) -> list[BaseModel]:
+            return [SectionItem(section_name="first", value="aaa")]
+
+    instance = TListConfig.load()
+    instance._items[0].value = "bbb"  # type: ignore[attr-defined]
+    instance.save()
+
+    # reload from disk
+    instance2 = TListConfig.load()
+    assert instance2._items[0].value == "bbb"
+
+
+def test_list_config_save_raises_for_untyped_items(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    from nova_navigator.config.loader import ListConfig
+
+    class TListConfig(ListConfig):
+        CONFIG_NAME = "test_list_untyped"
+
+        @classmethod
+        def default_items(cls) -> list[BaseModel]:
+            return []
+
+    (tmp_path / "test_list_untyped.toml").write_text('[mykey]\nvalue = "loaded"\n')
+    instance = TListConfig.load()
+    with pytest.raises(RuntimeError, match="_item_cls"):
+        instance.save()

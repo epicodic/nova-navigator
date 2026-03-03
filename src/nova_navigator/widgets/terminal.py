@@ -561,7 +561,7 @@ class Terminal(Widget, can_focus=True):
         if self.pid == 0:
             # Child process
             os.close(fd_pre_cmd_parent)
-            os.set_inheritable(fd_pre_cmd_child, True)  # noqa: FBT003
+            os.set_inheritable(fd_pre_cmd_child, True)
             argv = shlex.split(command)
             env = os.environ.copy()
             env["TERM"] = "xterm-256color"
