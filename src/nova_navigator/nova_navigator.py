@@ -19,7 +19,8 @@ from textual.widgets import Input
 from nova_navigator import debug_analytics
 from nova_navigator.config import conf_
 from nova_navigator.decision import Decision
-from nova_navigator.dialogs import BookmarksDialog, JobsDialog, ManageBookmarksDialog
+from nova_navigator.dialogs import BookmarksDialog, EditBookmarksDialog, JobsDialog
+from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
 from nova_navigator.dialogs.decision_dialog import DecisionDialog
 from nova_navigator.editor import Editor
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
@@ -63,6 +64,8 @@ class MainScreen(Screen[None]):
         Binding("ctrl+h", "toggle_hidden", description="Show/Hide Hidden Files", show=False),
         Binding("ctrl+k", "show_processes", "Jobs"),
         Binding("ctrl+d", "start_dummy_operation", "Start Dummy Operation"),
+        Binding("ctrl+g", "go_to_path", "Go to Path", show=False),
+        Binding("ctrl+shift+g", "connect_to_server", "Connect to Server", show=False),
     ]
 
     class _TerminalMode(Enum):
@@ -121,9 +124,6 @@ class MainScreen(Screen[None]):
             mc.action("Rename", name="rename"),
             mc.separator(),
             mc.action("Filter", shortcut="Ctrl+F", action="filter", name="filter"),
-            mc.separator(),
-            mc.action("Bookmarks", shortcut="Ctrl+B", action="show_bookmarks", name="bookmarks"),
-            mc.action("Edit Bookmarks\u2026", shortcut="Ctrl+Shift+B", action="edit_bookmarks", name="edit_bookmarks"),
         )
 
         self._menu_bar.add_menu("Selection", name="selection").add(
@@ -138,9 +138,27 @@ class MainScreen(Screen[None]):
                 shortcut="Ctrl+Click/Ins",
             ),
             mc.separator(),
-            mc.action("Select By Pattern...", name="select_by_pattern"),
+            mc.action("Select By Pattern…", name="select_by_pattern"),
         )
 
+        self._menu_bar.add_menu("Go", name="go").add(
+            mc.action("Go to Path…", shortcut="Ctrl+G", action="go_to_path", name="go_to_path"),
+            mc.separator(),
+            mc.action("Go Back", action="go_back", name="go_back"),
+            mc.action("Go Forward", action="go_forward", name="go_forward"),
+            mc.action("Go Up", action="go_up", name="go_up"),
+            mc.separator(),
+            mc.action(
+                "Connect to Server…", shortcut="Ctrl+Shift+G", action="connect_to_server", name="connect_to_server"
+            ),
+        )
+
+        self._menu_bar.add_menu("Bookmarks", name="bookmarks").add(
+            mc.action("Show Bookmarks", shortcut="Ctrl+B", action="show_bookmarks", name="show_bookmarks"),
+            mc.separator(),
+            mc.action("Add to Bookmarks", action="add_to_bookmarks", name="add_to_bookmarks"),
+            mc.action("Manage Bookmarks", action="edit_bookmarks", name="edit_bookmarks"),
+        )
         self._menu_bar.add_menu("View", name="view").add(
             mc.action("Refresh", name="refresh"),
             mc.separator(),
@@ -166,8 +184,6 @@ class MainScreen(Screen[None]):
                 mc.action("Hide Identical Files", checkable=True),
             ),
         )
-
-        self.action_processes = self._menu_bar.add_menu("Processes")
 
         yield self._menu_bar
 
@@ -388,7 +404,7 @@ class MainScreen(Screen[None]):
             is_path_in_clipboard: bool | None = None
 
             def matches(self, other: AKey) -> bool:
-                if self.is_empty is not None and self.is_empty == other.is_empty:
+                if self.is_empty == other.is_empty:
                     return True
                 if self.is_directory is not None and self.is_directory == other.is_directory:
                     return True
@@ -423,6 +439,7 @@ class MainScreen(Screen[None]):
             (AKey(is_path_in_clipboard=True), "file.paste"),
             (AKey(is_directory=True, is_file=True), "file.delete"),
             (AKey(is_directory=True, is_file=True), "file.rename"),
+            (AKey(is_directory=True, is_file=False, is_empty=True), "bookmarks.add_to_bookmarks"),
         ]
 
         for key, action_name in actions:
@@ -442,24 +459,27 @@ class MainScreen(Screen[None]):
     async def on_directory_browser_context_menu(self, event: DirectoryBrowser.ContextMenu) -> None:
         items: list[tuple[str, int]]
 
-        if event.path is None:
-            items = [
-                ("file.new", 0),
-                ("view.show_hidden_files", 6),
-            ]
-        else:
-            items = [
-                ("file.open", 2),
-                ("file.open_in_other_panel", 2),
-                ("file.edit", 2),
-                ("file.cut", 3),
-                ("file.copy", 3),
-                ("file.copy_names", 4),
-                ("file.paste", 4),
-                ("file.delete", 5),
-                ("file.rename", 5),
-                ("view.show_hidden_files", 6),
-            ]
+        self._update_actions(event.path)
+        # if event.path is None:
+        #     items = [
+        #         ("file.new", 0),
+        #         ("view.show_hidden_files", 6),
+        #     ]
+        # else:
+        items = [
+            ("file.new", 0),
+            ("file.open", 2),
+            ("file.open_in_other_panel", 2),
+            ("file.edit", 2),
+            ("file.cut", 3),
+            ("file.copy", 3),
+            ("file.copy_names", 4),
+            ("file.paste", 4),
+            ("file.delete", 5),
+            ("file.rename", 5),
+            ("file.add_to_bookmarks", 6),
+            ("view.show_hidden_files", 7),
+        ]
 
         menu = Menu()
         last_group = None
@@ -512,13 +532,26 @@ class MainScreen(Screen[None]):
         self.other_panel().set_path(path)
 
     async def _action_show_bookmarks(self) -> None:
-        self._bookmark_dialog = BookmarksDialog(position=(2, 2))
+        panel = self.active_panel()
+        region = panel.region
+        self._bookmark_dialog = BookmarksDialog(position=(region.x + 1, region.y + 1))
         await self.mount(self._bookmark_dialog)
         self._bookmark_dialog.focus()
 
     @work
     async def _action_edit_bookmarks(self) -> None:
-        dialog = ManageBookmarksDialog(conf_.bookmarks)
+        dialog = EditBookmarksDialog(conf_.bookmarks)
+        await dialog.run()
+
+    @work
+    async def _action_add_to_bookmarks(self) -> None:
+        path = self.active_panel().path_item_under_cursor
+        if path is None:
+            return
+        dialog = EditBookmarksDialog(
+            conf_.bookmarks,
+            prefill=(DEFAULT_BOOKMARKS_GROUP, path.name, str(path.path)),
+        )
         await dialog.run()
 
     async def _action_filter(self) -> None:
