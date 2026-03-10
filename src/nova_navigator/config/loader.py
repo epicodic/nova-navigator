@@ -12,7 +12,6 @@ from types import SimpleNamespace
 from typing import Any, ClassVar, Self
 
 import tomlkit
-from tomlkit import TOMLDocument
 
 from nova_navigator.config.model import (
     BaseModel,
@@ -92,13 +91,12 @@ class ModelConfig(ConfigBase):
         """Write the current field values back to the config file."""
         config_dir: Path = _APP_CONFIG_DIR
         file_path = config_dir / f"{self.CONFIG_NAME}.toml"
-        doc: TOMLDocument | None = getattr(self, "_toml_doc", None)
-        if doc is not None:
-            update_toml_doc(doc, self)  # type: ignore
-            file_path.write_text(tomlkit.dumps(doc))
+        doc = getattr(self, "_toml_doc", None)
+        if doc is None:
+            doc = to_toml(self)  # type: ignore
         else:
-            new_doc = to_toml(self)  # type: ignore
-            file_path.write_text(tomlkit.dumps(new_doc))
+            update_toml_doc(doc, self)  # type: ignore
+        file_path.write_text(tomlkit.dumps(doc))
 
 
 class ListConfig(ConfigBase):

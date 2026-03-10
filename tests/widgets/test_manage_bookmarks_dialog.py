@@ -6,92 +6,15 @@ from unittest.mock import patch
 import pytest
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal
-from textual.widgets import Button, Input, ListView, Tree
+from textual.widgets import Button, Input, Tree
 
 from nova_navigator.config.bookmarks import Bookmark, BookmarkConfig, Group
-from nova_navigator.dialogs.manage_bookmarks_dialog import ManageBookmarksDialog, MoveToGroupDialog
-
-
-class _MoveToGroupApp(App[int | None]):
-    def compose(self) -> ComposeResult:
-        return iter([])
-
-
-@pytest.mark.asyncio
-async def test_move_to_group_dialog_lists_groups() -> None:
-    app = _MoveToGroupApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await app.push_screen(MoveToGroupDialog(group_names=["Work", "Personal"]))
-        await pilot.pause()
-        items = list(app.screen.query(ListView))
-        assert len(items) == 1
-        assert len(items[0]) == 2
-
-
-@pytest.mark.asyncio
-async def test_cancel_button_returns_none() -> None:
-    """Cancel button dismisses with None."""
-    dismissed: list[int | None] = []
-
-    app = _MoveToGroupApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await app.push_screen(
-            MoveToGroupDialog(group_names=["Work", "Personal"]),
-            callback=lambda v: dismissed.append(v),
-        )
-        await pilot.pause()
-        await pilot.click(app.screen.query_one("#mtg_cancel", Button))
-        await pilot.pause(0.1)
-
-    assert len(dismissed) == 1
-    assert dismissed[0] is None
-
-
-@pytest.mark.asyncio
-async def test_escape_returns_none() -> None:
-    """Escape key dismisses with None."""
-    dismissed: list[int | None] = []
-
-    app = _MoveToGroupApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await app.push_screen(
-            MoveToGroupDialog(group_names=["Work", "Personal"]),
-            callback=lambda v: dismissed.append(v),
-        )
-        await pilot.pause()
-        await pilot.press("escape")
-        await pilot.pause(0.1)
-
-    assert len(dismissed) == 1
-    assert dismissed[0] is None
-
-
-@pytest.mark.asyncio
-async def test_ok_with_selection_returns_index() -> None:
-    """OK button with a selection dismisses with the selected index."""
-    dismissed: list[int | None] = []
-
-    app = _MoveToGroupApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await app.push_screen(
-            MoveToGroupDialog(group_names=["Work", "Personal"]),
-            callback=lambda v: dismissed.append(v),
-        )
-        await pilot.pause()
-        # ListView highlights index 0 by default; click OK
-        await pilot.click(app.screen.query_one("#mtg_ok", Button))
-        await pilot.pause(0.1)
-
-    assert len(dismissed) == 1
-    assert dismissed[0] == 0
-
+from nova_navigator.dialogs.bookmarks_dialog import BookmarksDialog
+from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
+from nova_navigator.dialogs.edit_bookmarks_dialog import EditBookmarksDialog
 
 # ---------------------------------------------------------------------------
-# ManageBookmarksDialog tests
+# EditBookmarksDialog tests
 # ---------------------------------------------------------------------------
 
 
@@ -114,7 +37,7 @@ def _fixture_config() -> BookmarkConfig:
 @pytest.mark.asyncio
 async def test_tree_shows_groups_and_entries() -> None:
     cfg = _fixture_config()
-    dialog = ManageBookmarksDialog(cfg)
+    dialog = EditBookmarksDialog(cfg)
 
     class _App(App[None]):
         def compose(self) -> ComposeResult:
@@ -137,7 +60,7 @@ async def test_tree_shows_groups_and_entries() -> None:
 @pytest.mark.asyncio
 async def test_form_path_hidden_for_group_selection() -> None:
     cfg = _fixture_config()
-    dialog = ManageBookmarksDialog(cfg)
+    dialog = EditBookmarksDialog(cfg)
 
     class _App(App[None]):
         def compose(self) -> ComposeResult:
@@ -161,7 +84,7 @@ async def test_form_path_hidden_for_group_selection() -> None:
 @pytest.mark.asyncio
 async def test_form_path_visible_for_entry_selection() -> None:
     cfg = _fixture_config()
-    dialog = ManageBookmarksDialog(cfg)
+    dialog = EditBookmarksDialog(cfg)
 
     class _App(App[None]):
         def compose(self) -> ComposeResult:
@@ -188,8 +111,8 @@ async def test_form_path_visible_for_entry_selection() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_dialog_app(cfg: BookmarkConfig) -> tuple[ManageBookmarksDialog, type[App[None]]]:
-    dialog = ManageBookmarksDialog(cfg)
+def _make_dialog_app(cfg: BookmarkConfig) -> tuple[EditBookmarksDialog, type[App[None]]]:
+    dialog = EditBookmarksDialog(cfg)
 
     class _App(App[None]):
         def compose(self) -> ComposeResult:
@@ -424,3 +347,237 @@ async def test_tree_updates_after_name_input_loses_focus() -> None:
         # tree label should reflect the new name
         entry_node = next(iter(next(iter(tree.root.children)).children))
         assert "My Home" in str(entry_node.label)
+
+
+# ---------------------------------------------------------------------------
+# prefill= constructor tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_prefill_adds_entry_to_existing_group() -> None:
+    """prefill= appends an entry to the named group and pre-fills the form on mount."""
+    cfg = _fixture_config()
+    dialog = EditBookmarksDialog(cfg, prefill=("Computer", "Desktop", "/home/user/Desktop"))
+
+    class _App(App[None]):
+        def compose(self) -> ComposeResult:
+            return iter([])
+
+        async def on_mount(self) -> None:
+            await self.push_screen(dialog)
+
+    _App.run_test = lambda self, **kw: App.run_test(self, size=kw.pop("size", (80, 40)), **kw)  # type: ignore[method-assign]
+
+    app = _App()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        computer = dialog._working.groups[0]
+        assert len(computer.bookmarks) == 3
+        assert computer.bookmarks[-1].name == "Desktop"
+        assert computer.bookmarks[-1].path == "/home/user/Desktop"
+
+        assert app.screen.query_one("#input_name", Input).value == "Desktop"
+        assert app.screen.query_one("#input_path", Input).value == "/home/user/Desktop"
+
+
+@pytest.mark.asyncio
+async def test_prefill_creates_new_group_if_missing() -> None:
+    """prefill= creates the named group when it does not exist."""
+    cfg = _fixture_config()
+    dialog = EditBookmarksDialog(cfg, prefill=("New Group", "Server", "/mnt/server"))
+
+    class _App(App[None]):
+        def compose(self) -> ComposeResult:
+            return iter([])
+
+        async def on_mount(self) -> None:
+            await self.push_screen(dialog)
+
+    _App.run_test = lambda self, **kw: App.run_test(self, size=kw.pop("size", (80, 40)), **kw)  # type: ignore[method-assign]
+
+    app = _App()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        assert len(dialog._working.groups) == 3
+        new_group = dialog._working.groups[-1]
+        assert new_group.name == "New Group"
+        assert len(new_group.bookmarks) == 1
+        assert new_group.bookmarks[0].name == "Server"
+        assert new_group.bookmarks[0].path == "/mnt/server"
+
+        assert app.screen.query_one("#input_name", Input).value == "Server"
+        assert app.screen.query_one("#input_path", Input).value == "/mnt/server"
+
+
+# ---------------------------------------------------------------------------
+# Default-group auto-select tests (EditBookmarksDialog)
+# ---------------------------------------------------------------------------
+
+
+def _make_bookmarks_config_with_default_group() -> BookmarkConfig:
+    """Config that has a non-default group first, then the protected Bookmarks group."""
+    return BookmarkConfig(
+        groups=[
+            Group(name="Work", icon=None, bookmarks=[]),
+            Group(name=DEFAULT_BOOKMARKS_GROUP, icon=None, bookmarks=[]),
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_default_selection_is_bookmarks_group() -> None:
+    """EditBookmarksDialog selects the Bookmarks group by default when no prefill given."""
+    cfg = _make_bookmarks_config_with_default_group()
+    dialog, _App = _make_dialog_app(cfg)
+    app = _App()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        assert dialog._current_tag == ("group", 1)
+        assert app.screen.query_one("#input_name", Input).value == DEFAULT_BOOKMARKS_GROUP
+
+
+@pytest.mark.asyncio
+async def test_default_selection_skipped_when_bookmarks_group_absent() -> None:
+    """When no group named Bookmarks exists, nothing is auto-selected."""
+    cfg = BookmarkConfig(groups=[Group(name="Work", icon=None, bookmarks=[])])
+    dialog, _App = _make_dialog_app(cfg)
+    app = _App()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        assert dialog._current_tag is None
+
+
+@pytest.mark.asyncio
+async def test_remove_disabled_for_bookmarks_group() -> None:
+    """Remove button is disabled when the protected Bookmarks group is selected."""
+    cfg = _make_bookmarks_config_with_default_group()
+    dialog, _App = _make_dialog_app(cfg)
+    app = _App()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        assert dialog._current_tag == ("group", 1)
+        assert app.screen.query_one("#btn_remove", Button).disabled
+
+
+@pytest.mark.asyncio
+async def test_remove_enabled_for_non_protected_group() -> None:
+    """Remove button is enabled for any group that is not the protected Bookmarks group."""
+    cfg = _make_bookmarks_config_with_default_group()
+    dialog, _App = _make_dialog_app(cfg)
+    app = _App()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        tree = app.screen.query_one(Tree)
+        tree.focus()
+        await pilot.press("up")  # move to Work group (index 0)
+        await pilot.pause()
+
+        assert dialog._current_tag == ("group", 0)
+        assert not app.screen.query_one("#btn_remove", Button).disabled
+
+
+# ---------------------------------------------------------------------------
+# BookmarksDialog auto-select tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bookmarks_dialog_auto_selects_bookmarks_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BookmarksDialog highlights the Bookmarks group by default."""
+    from nova_navigator.config import conf_
+
+    cfg = BookmarkConfig(
+        groups=[
+            Group(name="Computer", icon=None, bookmarks=[]),
+            Group(name=DEFAULT_BOOKMARKS_GROUP, icon=None, bookmarks=[]),
+        ]
+    )
+    monkeypatch.setattr(conf_, "bookmarks", cfg)
+
+    class _App(App[None]):
+        def compose(self) -> ComposeResult:
+            return iter([])
+
+        async def on_mount(self) -> None:
+            await self.mount(BookmarksDialog(position=(0, 0)))
+
+    app = _App()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        tree = app.query_one(Tree)
+        assert tree.cursor_node is not None
+        assert DEFAULT_BOOKMARKS_GROUP in str(tree.cursor_node.label)
+
+
+@pytest.mark.asyncio
+async def test_bookmarks_dialog_no_auto_select_when_group_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BookmarksDialog does not crash when no Bookmarks group exists."""
+    from nova_navigator.config import conf_
+
+    cfg = BookmarkConfig(groups=[Group(name="Work", icon=None, bookmarks=[])])
+    monkeypatch.setattr(conf_, "bookmarks", cfg)
+
+    class _App(App[None]):
+        def compose(self) -> ComposeResult:
+            return iter([])
+
+        async def on_mount(self) -> None:
+            await self.mount(BookmarksDialog(position=(0, 0)))
+
+    app = _App()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        # cursor may be anywhere (or -1); just confirm no crash
+        tree = app.query_one(Tree)
+        assert tree is not None
+
+
+@pytest.mark.asyncio
+async def test_bookmarks_dialog_selected_group_is_expanded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BookmarksDialog: the auto-selected Bookmarks group is expanded and its entry visible."""
+    from nova_navigator.config import conf_
+
+    cfg = BookmarkConfig(
+        groups=[
+            Group(name="Computer", icon=None, bookmarks=[]),
+            Group(
+                name=DEFAULT_BOOKMARKS_GROUP,
+                icon=None,
+                bookmarks=[Bookmark(name="My Server", path="/mnt/server", icon=None)],
+            ),
+        ]
+    )
+    monkeypatch.setattr(conf_, "bookmarks", cfg)
+
+    class _App(App[None]):
+        def compose(self) -> ComposeResult:
+            return iter([])
+
+        async def on_mount(self) -> None:
+            await self.mount(BookmarksDialog(position=(0, 0)))
+
+    app = _App()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        tree = app.query_one(Tree)
+
+        # Bookmarks group is selected
+        assert tree.cursor_node is not None
+        assert DEFAULT_BOOKMARKS_GROUP in str(tree.cursor_node.label)
+
+        # The selected group is expanded
+        assert tree.cursor_node.is_expanded
+
+        # The added entry is a visible child of the selected node
+        children = list(tree.cursor_node.children)
+        assert len(children) == 1
+        assert "My Server" in str(children[0].label)
