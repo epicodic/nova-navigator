@@ -47,7 +47,22 @@
 ---------------
 - Select By Pattern
 
+# Go
+- Go to Path…           Ctrl+G
+- ----------
+- Go Back
+- Go Forward
+- Go Up
+- ----------
+- Connect to Server…    Ctrl+Shift+G
+- ----------
+- [Device List]
 
+# Bookmarks
+- Show Bookmarks        Ctrl+B
+------------------
+- Add Bookmark
+- Manage Bookmarks
 
 # View
 - Refresh
@@ -64,8 +79,3 @@
     - x Hide Identical Files
 - ----------
 
-# Bookmarks
-- Show Bookmarks
-------------------
-- Add Bookmark
-- Manage Bookmarks

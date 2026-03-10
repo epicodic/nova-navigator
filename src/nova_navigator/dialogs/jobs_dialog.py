@@ -7,7 +7,7 @@ from textual.widgets import Button, Label, ProgressBar
 
 from nova_navigator.scheduler import Job
 
-from ..widgets.overlay_widget import OverlayWidget
+from ..widgets.popup_widget import PopupWidget
 from ..widgets.separator import Separator
 from .job_registry import JobRegistry
 
@@ -220,7 +220,7 @@ class JobRow(Widget):
         self._on_action(self._job)
 
 
-class JobsDialog(OverlayWidget, can_focus=True):
+class JobsDialog(PopupWidget, can_focus=True):
     """Floating overlay that shows running and finished jobs."""
 
     DEFAULT_CSS = """
@@ -254,7 +254,7 @@ class JobsDialog(OverlayWidget, can_focus=True):
             position,
             close_on_escape=True,
             close_on_blur=False,
-            close_action=OverlayWidget.CloseAction.HIDE,
+            close_action=PopupWidget.CloseAction.HIDE,
         )
         self._registry = registry
         self._rows = {}

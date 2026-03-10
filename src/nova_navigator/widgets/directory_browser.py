@@ -35,7 +35,7 @@ from ..icons import ico_
 from ..vfs import VPath
 from ..vfs.filesystems.local import LocalFilesystem
 from ..vfs.types import Stat
-from .overlay_widget import OverlayWidget
+from .popup_widget import PopupWidget
 
 # silence watchdog logging to avoid spamming logs with file system events
 logging.getLogger("watchdog").setLevel(logging.WARNING)
@@ -200,7 +200,7 @@ class Column:
     sorter: Callable[[VPath], Any]
 
 
-class FilterWidget(OverlayWidget, can_focus=True):
+class FilterWidget(PopupWidget, can_focus=True):
     """Widget for finding files in the directory browser."""
 
     DEFAULT_CSS = """
@@ -235,7 +235,7 @@ class FilterWidget(OverlayWidget, can_focus=True):
 
     def __init__(self, title: str, position: tuple[int, int], browser: DirectoryBrowser) -> None:
         super().__init__(
-            title, position, close_on_escape=False, close_on_blur=False, close_action=self.CloseAction.NONE
+            title, position, close_on_escape=False, close_on_blur=False, close_action=self.CloseAction.KEEP
         )
         self.browser = browser
         self.input = Input(placeholder="Type to filter ...", compact=True)
