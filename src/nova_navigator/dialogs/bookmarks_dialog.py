@@ -15,6 +15,9 @@ from ..widgets.popup_widget import PopupWidget
 class BookmarksDialog(PopupWidget, can_focus=True):
     """Bookmarks dialog overlay widget."""
 
+    CLOSE_ACTION = PopupWidget.CloseAction.REMOVE
+    SHOW_CLOSE_BUTTON = True
+
     DEFAULT_CSS = """
         BookmarksDialog {
             width: 40;
@@ -46,7 +49,7 @@ class BookmarksDialog(PopupWidget, can_focus=True):
             self.bookmark_path = bookmark_path
 
     def __init__(self, position: tuple[int, int]) -> None:
-        super().__init__("Bookmarks", position, close_action=PopupWidget.CloseAction.REMOVE)
+        super().__init__("Bookmarks", position)
 
     def compose(self) -> ComposeResult:
         tree: Tree[str] = Tree("Bookmarks", id="bookmark_tree")
@@ -68,9 +71,9 @@ class BookmarksDialog(PopupWidget, can_focus=True):
         tree: Tree[str] = self.query_one(Tree)
         tree.clear()
         for group in conf_.bookmarks.groups:
-            group_node = tree.root.add(ICONS.get_icon(group.icon) + " " + group.name, expand=True)
+            group_node = tree.root.add(ICONS.get_icon(group.icon).glyph + " " + group.name, expand=True)
             for bookmark in group.bookmarks:
-                group_node.add_leaf(ICONS.get_icon(name=bookmark.icon) + " " + bookmark.name, bookmark.path)
+                group_node.add_leaf(ICONS.get_icon(name=bookmark.icon).glyph + " " + bookmark.name, bookmark.path)
 
     def _select_default_group(self) -> None:
         """Move the tree cursor to the default Bookmarks group, if present."""

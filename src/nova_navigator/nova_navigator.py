@@ -33,7 +33,7 @@ from nova_navigator.scheduler import DecisionRequest, Job
 from nova_navigator.uri import vfspath_from_uri
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
-from nova_navigator.widgets import DirectoryBrowser, Footer
+from nova_navigator.widgets import DirectoryBrowser, Footer, JobStatusIcon
 from nova_navigator.widgets.terminal import Terminal
 from nova_widgets.menu import Action, Menu, MenuBar
 from nova_widgets.menu import constructor as mc
@@ -81,6 +81,7 @@ class MainScreen(Screen[None]):
 
     _bookmark_dialog: BookmarksDialog
     _jobs_dialog: JobsDialog
+    _job_status_icon: JobStatusIcon
 
     def __init__(self) -> None:
         super().__init__()
@@ -185,6 +186,12 @@ class MainScreen(Screen[None]):
             ),
         )
 
+        self._job_status_icon = JobStatusIcon(
+            registry=self.app.job_registry,
+            action="show_processes",
+        )
+        self._menu_bar.add_right_widget(self._job_status_icon)
+
         yield self._menu_bar
 
         self._left_panel = DirectoryBrowser(id="pane-left", path=LocalFilesystem.singleton().cwd())
@@ -201,7 +208,7 @@ class MainScreen(Screen[None]):
         self._terminal.start()
 
         yield self._terminal
-        self._jobs_dialog = JobsDialog(position=(4, 2), registry=self.app.job_registry)
+        self._jobs_dialog = JobsDialog(position=(0, 0), registry=self.app.job_registry)
         yield self._jobs_dialog
         yield Footer()
 
@@ -229,6 +236,8 @@ class MainScreen(Screen[None]):
 
     def on_resize(self, event: events.Resize) -> None:
         self._resize_terminal()
+        if self._jobs_dialog.display:
+            self._jobs_dialog._update_position()
 
     def _action_quit(self) -> None:
         self.app.exit()

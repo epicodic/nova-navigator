@@ -250,7 +250,7 @@ def test_model_config_save_serialises_list_of_models(tmp_path: Path, monkeypatch
     instance.save()
 
     instance2 = TConfig.load()
-    assert len(instance2.tags) == 2  # noqa: PLR2004
+    assert len(instance2.tags) == 2
     assert instance2.tags[0].label == "alpha"
     assert instance2.tags[1].label == "beta"
 

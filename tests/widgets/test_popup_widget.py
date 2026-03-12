@@ -9,6 +9,18 @@ class FocusableOverlay(PopupWidget, can_focus=True):
     """OverlayWidget subclass with focus enabled, for keyboard binding tests."""
 
 
+class RemovePopup(PopupWidget):
+    CLOSE_ACTION = PopupWidget.CloseAction.REMOVE
+
+
+class KeepPopup(PopupWidget):
+    CLOSE_ACTION = PopupWidget.CloseAction.KEEP
+
+
+class NoEscapeOverlay(PopupWidget, can_focus=True):
+    BINDINGS = []
+
+
 class OverlayTestApp(App[None]):
     CSS = """
     Screen {
@@ -71,7 +83,7 @@ async def test_hide_makes_overlay_invisible() -> None:
 
 @pytest.mark.asyncio
 async def test_close_with_hide_action_hides_overlay() -> None:
-    overlay = PopupWidget("Test", (0, 0), close_action=PopupWidget.CloseAction.HIDE)
+    overlay = PopupWidget("Test", (0, 0))
     app = OverlayTestApp(overlay)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -83,7 +95,7 @@ async def test_close_with_hide_action_hides_overlay() -> None:
 
 @pytest.mark.asyncio
 async def test_close_with_remove_action_removes_overlay_from_dom() -> None:
-    overlay = PopupWidget("Test", (0, 0), close_action=PopupWidget.CloseAction.REMOVE)
+    overlay = RemovePopup("Test", (0, 0))
     app = OverlayTestApp(overlay)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -94,7 +106,7 @@ async def test_close_with_remove_action_removes_overlay_from_dom() -> None:
 
 @pytest.mark.asyncio
 async def test_close_with_none_action_leaves_overlay_visible() -> None:
-    overlay = PopupWidget("Test", (0, 0), close_action=PopupWidget.CloseAction.KEEP)
+    overlay = KeepPopup("Test", (0, 0))
     app = OverlayTestApp(overlay)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -106,7 +118,7 @@ async def test_close_with_none_action_leaves_overlay_visible() -> None:
 
 @pytest.mark.asyncio
 async def test_escape_key_closes_overlay_when_close_on_escape_true() -> None:
-    overlay = FocusableOverlay("Test", (0, 0), close_on_escape=True, close_action=PopupWidget.CloseAction.HIDE)
+    overlay = FocusableOverlay("Test", (0, 0))
     app = OverlayTestApp(overlay)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -117,7 +129,7 @@ async def test_escape_key_closes_overlay_when_close_on_escape_true() -> None:
 
 @pytest.mark.asyncio
 async def test_escape_key_does_nothing_when_close_on_escape_false() -> None:
-    overlay = FocusableOverlay("Test", (0, 0), close_on_escape=False, close_action=PopupWidget.CloseAction.HIDE)
+    overlay = NoEscapeOverlay("Test", (0, 0))
     app = OverlayTestApp(overlay)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -128,7 +140,7 @@ async def test_escape_key_does_nothing_when_close_on_escape_false() -> None:
 
 @pytest.mark.asyncio
 async def test_close_restores_focus_to_saved_widget() -> None:
-    overlay = PopupWidget("Test", (0, 0), close_action=PopupWidget.CloseAction.HIDE)
+    overlay = PopupWidget("Test", (0, 0))
     app = OverlayTestApp(overlay)
     async with app.run_test() as pilot:
         await pilot.pause()

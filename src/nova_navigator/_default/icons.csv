@@ -1,4 +1,6 @@
 # format: name,nerdfont,unicode
+# nerdfont: one or more U+XXXX codepoints concatenated (e.g. U+ee06U+ee07)
+# unicode:  one or more grapheme clusters concatenated (e.g. ○◔◑◕●)
 
 # filesystem
 file,U+f15b,📄
@@ -63,9 +65,15 @@ disc,U+ede9,💿
 bookmark,U+f02e,🔖
 remote,U+f08b9,🖧
 plus,U+f067,➕
+
 minus,U+f068,➖
 info,U+ea74,🛈 
 checkbox,U+f0131,🞎 
 checkbox_checked,U+f0132,⛝ 
 radio,U+f0130,🞅 
 radio_checked,U+f043e,⦿ 
+
+# job status
+job-spinner,U+ee06U+ee07U+ee08U+ee09U+ee0aU+ee0b,○◔◑◕●
+job-spinner_full,U+f4aa,●
+job-error,U+f071,⚠

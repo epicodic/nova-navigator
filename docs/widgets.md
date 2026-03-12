@@ -67,23 +67,25 @@ It uses Textual's `overlay: screen` CSS property to position itself in front of 
 ### Construction
 
 ```python
-PopupWidget(
-    title: str,
-    position: tuple[int, int],
-    *,
-    close_on_escape: bool = True,
-    close_on_blur: bool = True,
-    close_action: PopupWidget.CloseAction = CloseAction.HIDE,
-)
+PopupWidget(title: str, position: tuple[int, int])
 ```
 
 | Parameter | Description |
 |-----------|-------------|
 | `title` | Text shown in the widget's border title. |
 | `position` | `(x, y)` offset (in character cells) from the top-left of the screen. |
-| `close_on_escape` | If `True` (default), pressing `Escape` calls `close()`. |
-| `close_on_blur` | If `True` (default), losing focus calls `close()`. |
-| `close_action` | Controls what `close()` does: `HIDE` (default), `REMOVE`, or `KEEP`. |
+
+Behaviour is configured via class variables (see below), not constructor arguments.
+
+### Class variables
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `CLOSE_ACTION` | `CloseAction` | `HIDE` | Controls what `close()` does. |
+| `CLOSE_ON_BLUR` | `bool` | `True` | If `True`, losing focus calls `close()`. |
+| `SHOW_CLOSE_BUTTON` | `bool` | `False` | If `True`, renders a close button in the border. |
+
+To suppress the default `Escape` binding, override `BINDINGS` in the subclass.
 
 ### Close actions
 
@@ -105,7 +107,7 @@ This preserves keyboard focus in the underlying panel after a popup is dismissed
 
 ### Blur-based auto-close
 
-When `close_on_blur=True` the widget monitors both `Blur` and `DescendantBlur` events.
+When `CLOSE_ON_BLUR = True` the widget monitors both `Blur` and `DescendantBlur` events.
 It calls `close()` only when neither the widget itself nor any of its children has focus.
 This allows popups that contain focusable children (e.g. input fields) to stay open while the user interacts with those children.
 
@@ -113,18 +115,21 @@ This allows popups that contain focusable children (e.g. input fields) to stay o
 
 | Key | Action |
 |-----|--------|
-| `Escape` | Close the popup (when `close_on_escape=True`). |
+| `Escape` | Calls `close()` (defined in `BINDINGS`; override to suppress). |
 
 ### Subclassing
 
-Subclass `PopupWidget` and implement `compose()` to add content.
+Subclass `PopupWidget`, set class variables to configure behaviour, and implement `compose()` to add content.
 
 ```python
 from nova_navigator.widgets.popup_widget import PopupWidget
 
 class MyPopup(PopupWidget):
-    def __init__(self) -> None:
-        super().__init__("My Popup", position=(10, 5), close_action=PopupWidget.CloseAction.REMOVE)
+    CLOSE_ACTION = PopupWidget.CloseAction.REMOVE
+    SHOW_CLOSE_BUTTON = True
+
+    def __init__(self, position: tuple[int, int]) -> None:
+        super().__init__("My Popup", position)
 
     def compose(self) -> ComposeResult:
         yield Label("Hello from popup")

@@ -3,10 +3,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from weakref import ref
 
-IconProvider = Callable[[str], str]
+from nova_widgets.icon import Icon
+
+IconProvider = Callable[[str], Icon]
 
 
-ICON_PROVIDER: IconProvider = lambda s: s  # noqa: E731
+ICON_PROVIDER: IconProvider = Icon.of
 
 
 def set_icon_provider(provider: IconProvider) -> None:
@@ -39,7 +41,7 @@ class Action:
     _checkable: bool
     _checked: bool
     _enabled: bool
-    _icon: str | None
+    _icon: Icon | None
     _name: str | None
     _is_separator: bool
     _shortcut: str | None
@@ -85,7 +87,7 @@ class Action:
         return self._name
 
     @property
-    def icon(self) -> str | None:
+    def icon(self) -> Icon | None:
         return self._icon
 
     @property

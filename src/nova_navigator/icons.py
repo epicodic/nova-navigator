@@ -7,14 +7,30 @@ from typing import ClassVar, TextIO
 
 from nova_widgets import Icon
 
+# Matches one grapheme cluster: base codepoint + optional variation selector / combining marks.
+# Covers all glyphs in icons.csv. ZWJ sequences are not supported.
+_GRAPHEME_RE = re.compile(r".\ufe0f?[\u0300-\u036f\ufe00-\ufe0f]*", re.DOTALL)
 
-def _parse_icon_glyph(glyph_str: str) -> str:
-    # replace occurences of U+XXXX or \uXXXX with the corresponding unicode character
-    def replace_match(match: re.Match[str]) -> str:
-        codepoint = int(match.group(1), 16)
-        return chr(codepoint)
+# Matches a single U+XXXX or \uXXXX codepoint token.
+_CODEPOINT_RE = re.compile(r"(?:U\+|\\u)([0-9A-Fa-f]{4,6})")
 
-    return re.sub(r"(?:U\+|\\u)([0-9A-Fa-f]{4,6})", replace_match, glyph_str)
+
+def _parse_nerdfont_frames(cell: str) -> list[str]:
+    """Return list of nerdfont glyph strings from a cell like ``U+ee06U+ee07``."""
+    matches = _CODEPOINT_RE.findall(cell)
+    # nerdfont glyphs take 2 columns but are 1 codepoint; pad with a trailing space
+    return [chr(int(cp, 16)) + " " for cp in matches]
+
+
+def _parse_unicode_frames(cell: str) -> list[str]:
+    """Return list of grapheme-cluster strings from a cell like ``○◔◑◕●``."""
+
+    # First expand any U+XXXX or \uXXXX escape sequences that may remain
+    def _expand(m: re.Match[str]) -> str:
+        return chr(int(m.group(1), 16))
+
+    expanded = _CODEPOINT_RE.sub(_expand, cell)
+    return _GRAPHEME_RE.findall(expanded)
 
 
 class IconSet:
@@ -24,7 +40,8 @@ class IconSet:
 
     _glyph_variant: ClassVar[Variants] = Variants.NERDFONT
 
-    Glyphs = tuple[str, str]
+    # Each entry stores (nerdfont_frames, unicode_frames)
+    Glyphs = tuple[list[str], list[str]]
 
     _icons: dict[str, Glyphs]
 
@@ -36,14 +53,17 @@ class IconSet:
             self._load_icons(f)
 
     def _load_icons(self, f: TextIO) -> None:
-        reader = csv.reader(filter(lambda row: len(row.strip()) > 0 and row[0] != "#", f), delimiter=",", quotechar='"')
-        icons = {
-            row[0]: (
-                _parse_icon_glyph(row[1]) + " ",  # nerdfont glyphs have size of 2 but take only 1 character
-                _parse_icon_glyph(row[2]),
-            )
-            for row in reader
-        }
+        reader = csv.reader(
+            filter(lambda row: len(row.strip()) > 0 and row[0] != "#", f),
+            delimiter=",",
+            quotechar='"',
+        )
+        icons: dict[str, IconSet.Glyphs] = {}
+        for row in reader:
+            name = row[0]
+            nf_frames = _parse_nerdfont_frames(row[1])
+            uni_frames = _parse_unicode_frames(row[2])
+            icons[name] = (nf_frames, uni_frames)
         self._icons = icons
 
     @classmethod
@@ -64,7 +84,10 @@ class IconSet:
         glyphs = self._icons.get(name)
         if glyphs is None:
             return default
-        return Icon(glyphs[variant.value])
+        frames = glyphs[variant.value]
+        if not frames:
+            return default
+        return Icon.from_glyphs(frames)
 
     def __iter__(self) -> Iterator[tuple[str, Glyphs]]:
         return iter(self._icons.items())
