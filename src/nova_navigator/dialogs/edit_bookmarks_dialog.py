@@ -34,6 +34,8 @@ class _MoveToGroupOverlay(PopupWidget, can_focus=True):
     is fired on the parent ModalScreen — preventing the dialog from jumping.
     """
 
+    CLOSE_ACTION = PopupWidget.CloseAction.KEEP
+
     DEFAULT_CSS = """
     _MoveToGroupOverlay {
         width: 30;
@@ -50,7 +52,7 @@ class _MoveToGroupOverlay(PopupWidget, can_focus=True):
 
     def __init__(self, on_selected: Callable[[int], None]) -> None:
         # CloseAction.KEEP: base close() leaves display/DOM untouched; we manage visibility.
-        super().__init__("", (0, 0), close_action=PopupWidget.CloseAction.KEEP)
+        super().__init__("", (0, 0))
         self._on_selected = on_selected
         self._options = []
         self.visible = False
@@ -251,14 +253,14 @@ class EditBookmarksDialog(Dialog):
         tree: Tree[_NodeTag] = self.query_one(Tree)
         tree.clear()
         for gi, group in enumerate(self._working.groups):
-            icon = ICONS.get_icon(group.icon) + " " if group.icon else ""
+            icon = ICONS.get_icon(group.icon).glyph + " " if group.icon else ""
             group_node = tree.root.add(
                 f"{icon}{group.name}",
                 data=("group", gi),
                 expand=True,
             )
             for ei, entry in enumerate(group.bookmarks):
-                eicon = ICONS.get_icon(entry.icon) + " " if entry.icon else ""
+                eicon = ICONS.get_icon(entry.icon).glyph + " " if entry.icon else ""
                 group_node.add_leaf(
                     f"{eicon}{entry.name}  {entry.path}",
                     data=("entry", gi, ei),
@@ -434,13 +436,13 @@ class EditBookmarksDialog(Dialog):
         if tag[0] == "group":
             gi = tag[1]
             group = self._working.groups[gi]
-            icon = ICONS.get_icon(group.icon) + " " if group.icon else ""
+            icon = ICONS.get_icon(group.icon).glyph + " " if group.icon else ""
             node.set_label(f"{icon}{group.name}")
         else:
             entry_tag = cast("_EntryTag", tag)
             gi, ei = entry_tag[1], entry_tag[2]
             entry = self._working.groups[gi].bookmarks[ei]
-            eicon = ICONS.get_icon(entry.icon) + " " if entry.icon else ""
+            eicon = ICONS.get_icon(entry.icon).glyph + " " if entry.icon else ""
             node.set_label(f"{eicon}{entry.name}  {entry.path}")
 
     # ------------------------------------------------------------------ button actions

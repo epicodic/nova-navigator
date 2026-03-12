@@ -22,8 +22,8 @@ from nova_navigator.config.model import (
     update_toml_doc,
 )
 
-_APP_CONFIG_DIR: Path = Path.home() / ".config" / "nova_navigator"
-_DEFAULT_CONFIG_DIR: Path = Path(__file__).parent.parent.parent.parent / "config" / "default"
+_APP_CONFIG_DIR: Path = Path.home() / ".config" / "nova-navigator"
+_DEFAULT_CONFIG_DIR: Path = Path(__file__).parent.parent / "_default"
 
 
 def get_config_file_path(config_filename: str) -> Path:
