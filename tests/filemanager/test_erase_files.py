@@ -221,3 +221,32 @@ async def test_erase_skipped_dir_not_counted_in_completed() -> None:
 
     assert status.progress.total == 1
     assert status.progress.completed == 1
+
+
+@pytest.mark.asyncio
+async def test_erase_directory_progress_total() -> None:
+    """Erasing a directory of 3 files must report a total of at least 3 in the progress.
+
+    BUG: erase_files only increments total by len(paths) (i.e. 1 for the
+    directory itself), so progress.total stays at 1 even though the directory
+    contains 3 files.  The correct value is 3 (the files) or 4 (the directory
+    plus its 3 files).
+    """
+    fs = MockFilesystem(
+        {
+            "/home/user/mydir/a.txt": b"a",
+            "/home/user/mydir/b.txt": b"b",
+            "/home/user/mydir/c.txt": b"c",
+        }
+    )
+
+    status = make_status()
+    await run_task(
+        lambda ctx: erase_files(ctx, [fs.path("/home/user/mydir")]),
+        [Decision.YES],
+        status=status,
+    )
+
+    assert status.progress.total >= 3
+    assert status.progress.completed == status.progress.total
+    assert status.progress.step_completed == status.progress.step_total
