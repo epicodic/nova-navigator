@@ -474,3 +474,32 @@ async def test_move_cancelled() -> None:
             lambda ctx: move_files(ctx, [fs.path("/src/file.txt")], fs.path("/home/user")),
             status=status,
         )
+
+
+@pytest.mark.asyncio
+async def test_move_directory_progress_total() -> None:
+    """Moving a directory of 3 files must report a total of at least 3 in the progress.
+
+    BUG: move_files only increments total by len(src_paths) (i.e. 1 for the
+    directory itself), so progress.total stays at 1 even though the directory
+    contains 3 files.  The correct value is 3 (the files) or 4 (the directory
+    plus its 3 files).
+    """
+    src_fs = MockFilesystem(
+        {
+            "/src/mydir/a.txt": b"a",
+            "/src/mydir/b.txt": b"b",
+            "/src/mydir/c.txt": b"c",
+        }
+    )
+    dst_fs = MockFilesystem()
+
+    status = make_status()
+    await run_task(
+        lambda ctx: move_files(ctx, [src_fs.path("/src/mydir")], dst_fs.path("/home/user")),
+        status=status,
+    )
+
+    assert status.progress.total >= 3
+    assert status.progress.completed == status.progress.total
+    assert status.progress.step_completed == status.progress.step_total
