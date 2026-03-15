@@ -593,6 +593,35 @@ async def test_copy_directory_progress_total() -> None:
 
 
 @pytest.mark.asyncio
+async def test_copy_plain_files_total_known_upfront() -> None:
+    """Copying 5 plain files must set progress.total to 5 before any file is processed."""
+    src_fs = MockFilesystem(
+        {
+            "/src/a.txt": b"a",
+            "/src/b.txt": b"b",
+            "/src/c.txt": b"c",
+            "/src/d.txt": b"d",
+            "/src/e.txt": b"e",
+        }
+    )
+    dst_fs = MockFilesystem()
+
+    first_total: list[int] = []
+
+    def cb(s: TaskStatus) -> None:
+        if not first_total:
+            first_total.append(s.progress.total)
+
+    status = TaskStatus(cancel_event=threading.Event(), progress_callback=cb)
+    srcs = [src_fs.path(p) for p in ("/src/a.txt", "/src/b.txt", "/src/c.txt", "/src/d.txt", "/src/e.txt")]
+    await run_task(lambda ctx: copy_files(ctx, srcs, dst_fs.path("/home/user")), status=status)
+
+    assert first_total[0] == 5, f"Expected total=5 on first callback, got {first_total[0]}"
+    assert status.progress.total == 5
+    assert status.progress.completed == 5
+
+
+@pytest.mark.asyncio
 async def test_copy_file_partial_destination_removed_on_write_error() -> None:
     """BUG-6: partial destination file must be removed after a write error.
 

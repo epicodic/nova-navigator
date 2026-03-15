@@ -4,7 +4,7 @@ import pytest
 
 from nova_navigator.decision import Decision
 from nova_navigator.filemanager.tasks import FileCopyOptions, move_files
-from nova_navigator.scheduler import TaskCancelled
+from nova_navigator.scheduler import TaskCancelled, TaskStatus
 from tests._utils.mock_filesystem import MockFilesystem
 
 from .common import make_status, read_all, run_task
@@ -503,3 +503,37 @@ async def test_move_directory_progress_total() -> None:
     assert status.progress.total >= 3
     assert status.progress.completed == status.progress.total
     assert status.progress.step_completed == status.progress.step_total
+
+
+@pytest.mark.asyncio
+async def test_move_plain_files_total_known_upfront() -> None:
+    """Moving 5 plain files must set progress.total to 5 before any file is processed.
+
+    When all src_paths are plain files, move_files knows the count immediately
+    and must report total=5 on the very first progress callback, before any
+    individual file has been completed.
+    """
+    src_fs = MockFilesystem(
+        {
+            "/src/a.txt": b"a",
+            "/src/b.txt": b"b",
+            "/src/c.txt": b"c",
+            "/src/d.txt": b"d",
+            "/src/e.txt": b"e",
+        }
+    )
+    dst_fs = MockFilesystem()
+
+    first_total: list[int] = []
+
+    def cb(s: TaskStatus) -> None:
+        if not first_total:
+            first_total.append(s.progress.total)
+
+    status = TaskStatus(cancel_event=threading.Event(), progress_callback=cb)
+    srcs = [src_fs.path(p) for p in ("/src/a.txt", "/src/b.txt", "/src/c.txt", "/src/d.txt", "/src/e.txt")]
+    await run_task(lambda ctx: move_files(ctx, srcs, dst_fs.path("/home/user")), status=status)
+
+    assert first_total[0] == 5, f"Expected total=5 on first callback, got {first_total[0]}"
+    assert status.progress.total == 5
+    assert status.progress.completed == 5
