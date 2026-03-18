@@ -75,6 +75,7 @@ Always run `uv run qa` after changes and confirm zero failures before claiming w
 | `docs/coding_conventions.md` | Naming, style, and code patterns for this project |
 | `docs/scheduler.md` | Async task scheduler framework — read before touching `scheduler/` or long-running operations |
 | `docs/directory_browser.md` | Directory browser widget design — read before touching `widgets/directory_browser.py` |
+| `docs/terminal.md` | Terminal sub-package architecture — read before touching `terminal/` |
 
 Steps:
 1. List `docs/` to see available documentation.
@@ -132,9 +133,13 @@ The codebase lives under `src/` and contains two packages:
 
 **Operations:** `nova_navigator/operations/` — file operations (copy, move, delete) implemented as `Operation` subclasses. `Operation.process()` runs in a thread via `asyncio.to_thread`. `filemanager/tasks.py` contains generator-based task implementations (`copy_file`, `erase`) built on top of `vfs`.
 
+**Terminal:** `nova_navigator/terminal/` — embedded terminal emulator sub-package. See `docs/terminal.md` for the complete architecture guide.
+- `pty_backend.py` — `PtyBackend` ABC and `LocalPtyBackend` (PTY process management)
+- `shell_driver.py` — `ShellDriver` ABC with `ZshDriver`, `BashDriver`, `FallbackDriver`; shell hooks, quoting, precmd parsing
+- `terminal.py` — `Terminal` Textual widget (pyte rendering, draining, event handling)
+
 **UI widgets:** `nova_navigator/widgets/`
 - `directory_browser.py` — main dual-pane file browser widget
-- `terminal.py` — embedded terminal emulator (using `pyte`)
 - `side_bar.py`, `footer.py`, `overlay_widget.py`
 
 **Dialogs:** `nova_navigator/dialogs/` — bookmarks, processes, file dialogs.
