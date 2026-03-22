@@ -506,7 +506,7 @@ class MainScreen(Screen[None]):
             ("file.paste", 4),
             ("file.delete", 5),
             ("file.rename", 5),
-            ("file.add_to_bookmarks", 6),
+            ("bookmarks.add_to_bookmarks", 6),
             ("view.show_hidden_files", 7),
         ]
 
