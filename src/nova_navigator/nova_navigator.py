@@ -6,7 +6,7 @@ import subprocess
 import sys
 from enum import Enum
 from pathlib import PurePath
-from typing import ClassVar, NamedTuple, cast
+from typing import ClassVar, NamedTuple, cast, override
 
 from textual import events, work
 from textual.app import App, ComposeResult
@@ -60,12 +60,13 @@ class MainScreen(Screen[None]):
         Binding("f6", "copy_or_move_files(True)", "Move"),
         Binding("f8", "delete_files", "Delete"),
         Binding("ctrl+b", "show_bookmarks", "Bookmark"),
-        Binding("ctrl+shift+b", "edit_bookmarks", "Edit Bookmarks"),
         Binding("ctrl+h", "toggle_hidden", description="Show/Hide Hidden Files", show=False),
-        Binding("ctrl+k", "show_processes", "Jobs"),
         Binding("ctrl+d", "start_dummy_operation", "Start Dummy Operation"),
         Binding("ctrl+g", "go_to_path", "Go to Path", show=False),
-        Binding("ctrl+shift+g", "connect_to_server", "Connect to Server", show=False),
+        Binding("alt+left", "go_back", "Go Back", show=False),
+        Binding("alt+right", "go_forward", "Go Forward", show=False),
+        Binding("alt+up", "go_up", "Go Up"),
+        #        Binding("ctrl+shift+g", "connect_to_server", "Connect to Server", show=False),
     ]
 
     class _TerminalMode(Enum):
@@ -146,9 +147,9 @@ class MainScreen(Screen[None]):
         self._menu_bar.add_menu("Go", name="go").add(
             mc.action("Go to Path…", shortcut="Ctrl+G", action="go_to_path", name="go_to_path"),
             mc.separator(),
-            mc.action("Go Back", action="go_back", name="go_back"),
-            mc.action("Go Forward", action="go_forward", name="go_forward"),
-            mc.action("Go Up", action="go_up", name="go_up"),
+            mc.action("Go Back", shortcut="Alt+Left", action="go_back", name="go_back"),
+            mc.action("Go Forward", shortcut="Alt+Right", action="go_forward", name="go_forward"),
+            mc.action("Go Up", shortcut="Alt+Up", action="go_up", name="go_up"),
             mc.separator(),
             mc.action(
                 "Connect to Server…", shortcut="Ctrl+Shift+G", action="connect_to_server", name="connect_to_server"
@@ -252,7 +253,7 @@ class MainScreen(Screen[None]):
         await super().on_event(event)
 
     async def _on_key(self, event: events.Key) -> None:
-        self.log(f"MainScreen _on_key: {event.key}")
+        # self.log(f"MainScreen _on_key: {event.key}")
         if await self._handle_key(event):
             # if the event was handled, stop its propagation
             event.stop()
@@ -374,6 +375,12 @@ class MainScreen(Screen[None]):
         vpath = event.path
         await self._open_path(vpath, event.browser)
 
+    async def _on_directory_browser_path_changed(self, event: DirectoryBrowser.PathChanged) -> None:
+        # Only sync the terminal if no programmatic navigation task is already in
+        # flight. When _nav_task is running, _open_path already issued the cd.
+        if self._nav_task is None or self._nav_task.done():
+            await self._set_terminal_directory(event.path)
+
     async def _on_directory_browser_item_changed(self, event: DirectoryBrowser.ItemChanged) -> None:
         self._update_actions(event.path)
 
@@ -422,7 +429,6 @@ class MainScreen(Screen[None]):
         vpath = vfspath_from_uri(event.bookmark_path)
         _logger.info("Bookmark selected: %s", vpath)
         self.active_panel().set_path(vpath)
-        await self._set_terminal_directory(vpath)
 
     def _update_actions(self, path: VPath | None) -> None:
         class AKey(NamedTuple):
@@ -566,6 +572,18 @@ class MainScreen(Screen[None]):
         self._bookmark_dialog = BookmarksDialog(position=(region.x + 1, region.y + 1))
         await self.mount(self._bookmark_dialog)
         self._bookmark_dialog.focus()
+
+    def _action_go_back(self) -> None:
+        self.active_panel().go_back()
+
+    def _action_go_forward(self) -> None:
+        self.active_panel().go_forward()
+
+    async def _action_go_up(self) -> None:
+        panel = self.active_panel()
+        parent_path = panel.path.parent
+        if parent_path is not None:
+            await self._open_path(parent_path, panel)
 
     @work
     async def _action_edit_bookmarks(self) -> None:

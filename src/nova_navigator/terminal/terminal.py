@@ -251,6 +251,8 @@ class Terminal(Widget, can_focus=True):
         # Resolved when _nav_pending reaches 0.  Allows callers to await
         # completion of a programmatic directory change.
         self._nav_future: Future[PurePath] | None = None
+        # Last known cwd reported by the shell via precmd.
+        self._cwd: PurePath | None = None
 
         super().__init__(name=name, id=id, classes=classes)
 
@@ -351,6 +353,8 @@ class Terminal(Widget, can_focus=True):
         """
         if not self._started:
             return path
+        if self._cwd is not None and path == self._cwd:
+            return self._cwd
         if self._driver.supports_stop_resume:
             self._pending_yank = self.has_input()
             if self._pending_yank:
@@ -418,6 +422,7 @@ class Terminal(Widget, can_focus=True):
     def _handle_pre_cmd(self, raw: str) -> None:
         """Process a pre_cmd message: update nav state, resume shell, post event."""
         _pid, cwd = self._driver.parse_precmd_payload(raw)
+        self._cwd = cwd
         if self._nav_pending > 0:
             self._nav_pending -= 1
         if self._draining and self._nav_pending == 0:
