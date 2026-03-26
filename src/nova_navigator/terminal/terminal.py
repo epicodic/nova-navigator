@@ -204,6 +204,25 @@ class Terminal(Widget, can_focus=True):
             self.cwd = cwd
             super().__init__()
 
+    class PathChanged(Message):
+        """Posted when the shell's working directory changes.
+
+        For user commands this fires on every precmd.  For programmatic
+        navigations it fires only once the *last* pending cd completes,
+        so intermediate directories are never announced.
+
+        ``user_initiated`` is True when the cd was typed by the user in
+        the terminal (not triggered by ``request_cd``).  Handlers should
+        only update external state (e.g. directory browser panels) for
+        user-initiated changes.
+        """
+
+        def __init__(self, terminal_widget: Terminal, cwd: PurePath, *, user_initiated: bool) -> None:
+            self.terminal_widget = terminal_widget
+            self.cwd = cwd
+            self.user_initiated = user_initiated
+            super().__init__()
+
     class Closed(Message):
         """Posted when the underlying shell process exits and ``keep_alive`` is False."""
 
@@ -335,42 +354,45 @@ class Terminal(Widget, can_focus=True):
         log.info("cursor, prompt cursor:", self._screen.cursor.x, self._prompt_cursor_x)
         return self._screen.cursor.x > self._prompt_cursor_x
 
-    async def set_terminal_directory(self, path: PurePath) -> PurePath:
-        """Change the shell's working directory to *path*, preserving any typed input.
+    def request_cd(self, path: PurePath) -> None:
+        """Issue a cd command to the shell without waiting for completion.
 
-        Returns the actual CWD reported by the shell once the last in-flight
-        navigation completes.  If the caller is cancelled while awaiting, the
-        cd still executes but the result is discarded.
-
-        For drivers that support stop/resume (zsh, bash):
-        - Typed text is saved to the kill ring with Ctrl+U.
-        - The cd command runs silently (draining suppresses echo).
-        - After precmd, the text is restored with Ctrl+Y.
-
-        For FallbackDriver (POSIX sh):
-        - The cd command is written directly (echo visible).
-        - Returns *path* immediately (no synchronisation).
+        When the shell is idle (no programmatic navigations pending) and
+        already at *path*, the request is skipped.  ``Terminal.PathChanged``
+        will be posted once the cd completes and no further navigations are
+        pending.
         """
         if not self._started:
-            return path
-        if self._cwd is not None and path == self._cwd:
-            return self._cwd
+            return
+        if self._nav_pending == 0 and self._cwd is not None and path == self._cwd:
+            return
         if self._driver.supports_stop_resume:
             self._pending_yank = self.has_input()
             if self._pending_yank:
                 self._backend.write(_KILL_LINE.encode())
             self._nav_pending += 1
             self._draining = True
-            # Create or reuse a future.  Multiple rapid navigations share
-            # the same future — it resolves when the *last* pre_cmd arrives.
             if self._nav_future is None or self._nav_future.done():
                 self._nav_future = asyncio.get_running_loop().create_future()
             cmd = " " + self._driver.cd_command(str(path)) + "\n"
             self._backend.write(cmd.encode())
+        else:
+            cmd = " " + self._driver.cd_command(str(path)) + "\n"
+            self._backend.write(cmd.encode())
+
+    async def set_terminal_directory(self, path: PurePath) -> PurePath:
+        """Change the shell's working directory to *path*, preserving any typed input.
+
+        Returns the actual CWD reported by the shell once the last in-flight
+        navigation completes.  See ``request_cd`` for the fire-and-forget
+        variant used by the directory browser sync.
+        """
+        if not self._started:
+            return path
+        self.request_cd(path)
+        if self._driver.supports_stop_resume and self._nav_future is not None and not self._nav_future.done():
             return await self._nav_future
-        cmd = " " + self._driver.cd_command(str(path)) + "\n"
-        self._backend.write(cmd.encode())
-        return path
+        return self._cwd or path
 
     async def send(self, data: str, mode: Literal["normal", "silent"] = "normal") -> None:
         """Send *data* to the shell.
@@ -422,7 +444,9 @@ class Terminal(Widget, can_focus=True):
     def _handle_pre_cmd(self, raw: str) -> None:
         """Process a pre_cmd message: update nav state, resume shell, post event."""
         _pid, cwd = self._driver.parse_precmd_payload(raw)
+        cwd_changed = cwd != self._cwd
         self._cwd = cwd
+        was_programmatic = self._nav_pending > 0
         if self._nav_pending > 0:
             self._nav_pending -= 1
         if self._draining and self._nav_pending == 0:
@@ -442,6 +466,8 @@ class Terminal(Widget, can_focus=True):
             self._backend.resume()
         if self._nav_pending == 0:
             self._snapshot_prompt_cursor = True
+            if cwd_changed:
+                self.post_message(Terminal.PathChanged(self, cwd, user_initiated=not was_programmatic))
         self.post_message(Terminal.PreCmd(self, cwd))
 
     async def recv(self) -> None:

@@ -1379,3 +1379,99 @@ async def test_race_c_two_navigations_first_pre_cmd_resumes_shell() -> None:
             assert nav_task_a.done()
         finally:
             await _stop_recv_only(terminal)
+
+
+# ---------------------------------------------------------------------------
+# request_cd / PathChanged: user_initiated flag & race condition tests
+# ---------------------------------------------------------------------------
+
+
+class PathChangedCapturingApp(TerminalTestApp):
+    def __init__(self, terminal: Terminal) -> None:
+        super().__init__(terminal)
+        self.path_changed_events: list[Terminal.PathChanged] = []
+
+    def on_terminal_path_changed(self, event: Terminal.PathChanged) -> None:
+        self.path_changed_events.append(event)
+
+
+@pytest.mark.asyncio
+async def test_request_cd_path_changed_is_not_user_initiated() -> None:
+    """PathChanged from a programmatic request_cd has user_initiated=False."""
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = PathChangedCapturingApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._started = True
+            terminal.request_cd(PurePath("/tmp/a"))
+            assert terminal._nav_pending == 1
+
+            # Simulate precmd acknowledging the cd
+            await recv_q.put(["pre_cmd", "1234:/tmp/a"])
+            await pilot.pause(delay=0.15)
+
+            assert len(app.path_changed_events) == 1
+            assert app.path_changed_events[0].user_initiated is False
+            assert app.path_changed_events[0].cwd == PurePath("/tmp/a")
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_user_cd_path_changed_is_user_initiated() -> None:
+    """PathChanged from a user-typed cd (no request_cd) has user_initiated=True."""
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = PathChangedCapturingApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            # No request_cd — user typed cd in the terminal
+            assert terminal._nav_pending == 0
+
+            await recv_q.put(["pre_cmd", "1234:/tmp/b"])
+            await pilot.pause(delay=0.15)
+
+            assert len(app.path_changed_events) == 1
+            assert app.path_changed_events[0].user_initiated is True
+            assert app.path_changed_events[0].cwd == PurePath("/tmp/b")
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_rapid_request_cd_only_last_fires_path_changed() -> None:
+    """Multiple rapid request_cd calls only produce PathChanged for the final cd."""
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = PathChangedCapturingApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._started = True
+            terminal.request_cd(PurePath("/a"))
+            terminal.request_cd(PurePath("/b"))
+            terminal.request_cd(PurePath("/c"))
+            assert terminal._nav_pending == 3
+
+            # First two precmds: intermediate, no PathChanged
+            await recv_q.put(["pre_cmd", "1234:/a"])
+            await pilot.pause(delay=0.15)
+            assert len(app.path_changed_events) == 0
+
+            await recv_q.put(["pre_cmd", "1234:/b"])
+            await pilot.pause(delay=0.15)
+            assert len(app.path_changed_events) == 0
+
+            # Last precmd: PathChanged fires
+            await recv_q.put(["pre_cmd", "1234:/c"])
+            await pilot.pause(delay=0.15)
+            assert len(app.path_changed_events) == 1
+            assert app.path_changed_events[0].cwd == PurePath("/c")
+        finally:
+            await _stop_recv_only(terminal)

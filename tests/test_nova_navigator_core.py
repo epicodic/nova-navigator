@@ -29,7 +29,7 @@ class _StubCore(NovaNavigatorCore):
     async def set_terminal_directory(self, path: VPath) -> None:
         self.terminal_directory = path
 
-    async def set_panel_path(self, path: VPath, panel: PanelRef) -> None:
+    async def set_panel_directory(self, path: VPath, panel: PanelRef) -> None:
         self.panel_path = path
 
 
@@ -38,12 +38,12 @@ def test_nova_navigator_core_has_job_registry() -> None:
     assert isinstance(core.job_registry, JobRegistry)
 
 
-def test_open_path_directory_sets_terminal_directory() -> None:
+def test_open_path_directory_sets_panel_directory() -> None:
     fs = MockFilesystem({"/some/dir": None})
     path = VPath("/some/dir", fs)
     core = _StubCore()
     asyncio.run(core.open_path(path))
-    assert core.terminal_directory == path
+    assert core.panel_path == path
 
 
 def test_open_path_file_executes_open_command() -> None:
