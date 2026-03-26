@@ -87,7 +87,6 @@ class MainScreen(Screen[None]):
     def __init__(self) -> None:
         super().__init__()
         self._terminal_mode = self._TerminalMode.MINIMIZED
-        self._nav_task: asyncio.Task[PurePath] | None = None
 
     @property
     def app(self) -> NovaNavigator:  # type: ignore[override]
@@ -322,7 +321,7 @@ class MainScreen(Screen[None]):
         else:
             self._left_panel.focus()
             self._last_active_panel = self._left_panel
-        await self.app.set_terminal_directory(self._last_active_panel.path)
+        self._set_terminal_directory(self._last_active_panel.path)
 
     def action_toggle_maximized_terminal(self) -> None:
         if self._terminal_mode == self._TerminalMode.MAXIMIZED:
@@ -352,45 +351,24 @@ class MainScreen(Screen[None]):
             case self._TerminalMode.MAXIMIZED:
                 self._terminal.styles.height = self.size.height - 2
 
-    async def _set_terminal_directory(self, path: VPath) -> None:
+    def _set_terminal_directory(self, path: VPath) -> None:
         if not isinstance(path.filesystem, LocalFilesystem):
             return
-        # Cancel any in-flight programmatic navigation so a stale PreCmd
-        # cannot update the wrong panel.
-        if self._nav_task is not None and not self._nav_task.done():
-            self._nav_task.cancel()
-
-        # Capture the requesting panel so the callback updates the right one
-        # even if the active panel changes before the cd completes.
-        requesting_panel = self.active_panel()
-
-        async def _navigate() -> PurePath:
-            cwd = await self._terminal.set_terminal_directory(path.path)
-            requesting_panel.set_path(VPath(cwd, LocalFilesystem.singleton()))
-            return cwd
-
-        self._nav_task = asyncio.create_task(_navigate())
+        self._terminal.request_cd(path.path)
 
     async def _on_directory_browser_path_selected(self, event: DirectoryBrowser.PathSelected) -> None:
         vpath = event.path
         await self._open_path(vpath, event.browser)
 
-    async def _on_directory_browser_path_changed(self, event: DirectoryBrowser.PathChanged) -> None:
-        # Only sync the terminal if no programmatic navigation task is already in
-        # flight. When _nav_task is running, _open_path already issued the cd.
-        if self._nav_task is None or self._nav_task.done():
-            await self._set_terminal_directory(event.path)
+    def _on_directory_browser_path_changed(self, event: DirectoryBrowser.PathChanged) -> None:
+        self._set_terminal_directory(event.path)
 
     async def _on_directory_browser_item_changed(self, event: DirectoryBrowser.ItemChanged) -> None:
         self._update_actions(event.path)
 
-    def _on_terminal_pre_cmd(self, event: Terminal.PreCmd) -> None:
-        # Ignore pre_cmds from programmatic navigations — the _nav_task
-        # callback handles those.  Only react to user-typed cd commands.
-        if self._nav_task is not None and not self._nav_task.done():
-            return
-        # TODO handle non-local paths
-        self.active_panel().set_path(VPath(event.cwd, LocalFilesystem.singleton()))
+    def _on_terminal_path_changed(self, event: Terminal.PathChanged) -> None:
+        if event.user_initiated:
+            self.active_panel().set_path(VPath(event.cwd, LocalFilesystem.singleton()))
 
     # jobs and tasks
 
@@ -662,10 +640,7 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
             process = subprocess.Popen(args=args, cwd=cwd)  # noqa: ASYNC220
             process.wait()
 
-    async def set_terminal_directory(self, path: VPath) -> None:
-        await self._main_screen._set_terminal_directory(path)
-
-    async def set_panel_path(self, path: VPath, panel: PanelRef) -> None:
+    async def set_panel_directory(self, path: VPath, panel: PanelRef) -> None:
         self._main_screen._resolve_panel(panel).set_path(path)
 
     async def request_callback(
