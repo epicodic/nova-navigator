@@ -44,7 +44,7 @@ class DecisionResponse(Enum):
 Task = Generator["DecisionRequest | Task", DecisionResponse, None]
 
 
-def task(func : Callable[..., Any]) -> Callable[..., Task]:
+def task(func: Callable[..., Any]) -> Callable[..., Task]:
     if inspect.isgeneratorfunction(func):
         return func
 
@@ -52,7 +52,8 @@ def task(func : Callable[..., Any]) -> Callable[..., Task]:
     def wrapper(*args: Any, **kwargs: Any) -> Task:
         result = func(*args, **kwargs)
         return result
-        yield # yield to make this a generator
+        yield  # yield to make this a generator # noqa: UNREACHABLE
+
     return wrapper
 
 

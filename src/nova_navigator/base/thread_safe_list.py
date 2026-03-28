@@ -39,5 +39,5 @@ class ThreadSafeList[T]:
         self._lock.acquire()
         return self._list
 
-    def __exit__(self, _exc_type, _exc_val, _exc_tb) -> None:  # noqa: ANN001
+    def __exit__(self, _exc_type: type[BaseException] | None, _exc_val: BaseException | None, _exc_tb: object) -> None:
         self._lock.release()
