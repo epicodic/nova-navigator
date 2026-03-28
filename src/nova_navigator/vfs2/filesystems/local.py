@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+from io import FileIO, TextIOWrapper
+from pathlib import PurePath
 from stat import S_ISDIR, S_ISLNK
-from typing import override
+from typing import Any, override
 
 from ..filesystem import Filesystem, Stat, StreamReaderLike, StreamWriterLike
 from ..vpath import VPath
@@ -40,17 +42,17 @@ class LocalFilesystem(Filesystem):
 
     @override
     def iterdir(self, path: VPath) -> list[VPath]:
+        self._assert_vpath(path)
         return [path / name for name in os.listdir(path.path)]
 
     @override
-    def path(self, path: str) -> VPath:
-        return VPath(path, self)
-
     def parent(self, path: VPath) -> VPath:
+        self._assert_vpath(path)
         return VPath(path.path.parent, self)
 
     @override
     def stat(self, path: VPath) -> Stat:
+        self._assert_vpath(path)
         lstat = os.stat(path, follow_symlinks=False)
 
         try:
@@ -77,8 +79,44 @@ class LocalFilesystem(Filesystem):
 
     @override
     def read(self, path: VPath) -> StreamReaderLike:
-        return open(path.path, "rb")
+        self._assert_vpath(path)
+
+        class StreamReaderWrapper:
+            def __init__(self, f: Any) -> None:
+                assert isinstance(f, FileIO)
+                self._f = f
+
+            def read(self, size: int) -> bytes:
+                return self._f.read(size)
+
+            def close(self) -> None:
+                self._f.close()
+
+        return StreamReaderWrapper(open(path.path, mode="rb"))
 
     @override
     def write(self, path: VPath) -> StreamWriterLike:
-        return open(path.path, "wb")
+        self._assert_vpath(path)
+
+        class StreamWriterWrapper:
+            def __init__(self, f: Any) -> None:
+                assert isinstance(f, FileIO)
+                self._f = f
+
+            def write(self, data: bytes) -> int:
+                return self._f.write(data)
+
+            def close(self) -> None:
+                self._f.close()
+
+        return StreamWriterWrapper(open(path.path, "wb"))
+
+    @override
+    def remove(self, path: VPath) -> None:
+        self._assert_vpath(path)
+        os.remove(path.path)
+
+    @override
+    def rmdir(self, path: VPath) -> None:
+        self._assert_vpath(path)
+        os.rmdir(path.path)
