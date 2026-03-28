@@ -29,6 +29,7 @@ from textual.widgets import Button, Input, Static
 from textual.widgets.data_table import ColumnKey
 
 from nova_widgets import unicode
+from nova_widgets.custom_border import CustomBorderMixin
 
 from ..config import conf_
 from ..icons import ico_
@@ -130,6 +131,15 @@ def column_formatter_size(path: VPath) -> str:
 
     size = stat.size
     for unit in ["", "K", "M", "G", "T"]:
+        if size < DECIMAL_MAGNITUDE:
+            return f"{size}{unit}"
+        size //= DECIMAL_MAGNITUDE
+    return f"{size}P"
+
+
+def _format_size(size: int) -> str:
+    """Format *size* bytes as a human-readable decimal magnitude string."""
+    for unit in ["B", "K", "M", "G", "T"]:
         if size < DECIMAL_MAGNITUDE:
             return f"{size}{unit}"
         size //= DECIMAL_MAGNITUDE
@@ -279,7 +289,13 @@ class FilterWidget(PopupWidget, can_focus=True):
         self.browser.on_filter_widget_input_changed(event)
 
 
-class DirectoryBrowser(ScrollView):
+class DirectoryBrowser(CustomBorderMixin, ScrollView):
+    DEFAULT_CSS = """
+    DirectoryBrowser {
+        border: round grey;
+    }
+    """
+
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "select_cursor", "Select", show=False),
         Binding("up", "cursor_up", "Cursor up", show=False),
@@ -635,6 +651,24 @@ class DirectoryBrowser(ScrollView):
 
         return styles
 
+    def render_border_bottom_left(self) -> Strip:
+        n = len(self._selected_items)
+        if n == 0:
+            return Strip.blank(0)
+        total = sum(p.stat.size for p in self._selected_items if not p.stat.is_directory)
+        text = f" {n} file{'s' if n != 1 else ''}, {_format_size(total)} "
+        return Strip([Segment(text, self._border_rich_style())])
+
+    def render_border_bottom_right(self) -> Strip:
+        if not self._shown_items:
+            return Strip.blank(0)
+        item = self._shown_items[self.cursor_row]
+        if isinstance(item, UpPath) or not item.stat.is_symlink:
+            return Strip.blank(0)
+        # TODO: replace placeholder once VPath.symlink_target is implemented
+        text = " → (symlink) "
+        return Strip([Segment(text, self._border_rich_style())])
+
     def render_line(self, y: int) -> Strip:
         scroll_x, scroll_y = self.scroll_offset
 
@@ -756,6 +790,12 @@ class DirectoryBrowser(ScrollView):
         self._refresh_region(region)
         return self
 
+    def _is_symlink_at_row(self, row: int) -> bool:
+        if not self._shown_items or not (0 <= row < len(self._shown_items)):
+            return False
+        item = self._shown_items[row]
+        return not isinstance(item, UpPath) and item.stat.is_symlink
+
     def _scroll_cursor_into_view(self, animate: bool = False) -> None:
         """When the cursor is at a boundary, this method handles scrolling to ensure it remains visible."""
         fixed_offset = Spacing(self.HEADER_HEIGHT, 0, 0, 0)
@@ -778,6 +818,8 @@ class DirectoryBrowser(ScrollView):
         if old_row != new_row:
             self.refresh_row(old_row)
             self.refresh_row(new_row)
+            if self._is_symlink_at_row(old_row) != self._is_symlink_at_row(new_row):
+                self.refresh(layout=False)
             self._scroll_cursor_into_view()
             self.post_message(DirectoryBrowser.ItemChanged(self, self.path_item_under_cursor))
 
