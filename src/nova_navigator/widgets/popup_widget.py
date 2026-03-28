@@ -7,15 +7,15 @@ from rich.segment import Segment
 from rich.style import Style as RichStyle
 from textual import events, on
 from textual.binding import Binding, BindingType
-from textual.geometry import Region
 from textual.strip import Strip
 from textual.widget import Widget
 
+from nova_widgets.custom_border import CustomBorderMixin
+
 _CLOSE_GLYPH = "🗙"  # cross, 1 cell wide
-_MIN_WIDTH_FOR_CLOSE_BTN = 5  # need at least: left-corner + space + glyph + space + right-corner
 
 
-class PopupWidget(Widget):
+class PopupWidget(CustomBorderMixin, Widget):
     """Base class for popup panels that float over the screen.
 
     Subclass this and implement `compose()` to add content.
@@ -71,35 +71,15 @@ class PopupWidget(Widget):
         # Capture focus at mount so close() can restore it after first open.
         self._saved_focus = self.app.focused
 
-    def render_lines(self, crop: Region) -> list[Strip]:
-        strips = super().render_lines(crop)
+    def render_border_top_right(self) -> Strip:
         if not self.SHOW_CLOSE_BUTTON:
-            return strips
-        # The top border is at outer y=0. Check if it falls within this crop.
-        border_y = 0
-        if not (crop.y <= border_y < crop.y + crop.height):
-            return strips
-        idx = border_y - crop.y
-        strip = strips[idx]
-        w = strip.cell_length
-        if w < _MIN_WIDTH_FOR_CLOSE_BTN:
-            return strips
-        # Layout: … ─ ─   ✕   ┐  (space at w-4, glyph at w-3, space at w-2, corner at w-1)
-        btn_x = w - 4
-        # Extract border style from the segment at that position.
-        border_seg_style: RichStyle | None = None
-        for seg in strip.crop(btn_x, btn_x + 1):
-            border_seg_style = seg.style
-            break
+            return Strip.blank(0)
+        base_style = self._border_rich_style()
         if self._close_btn_hovered:
-            glyph_style: RichStyle = RichStyle(reverse=True)
-            if border_seg_style is not None:
-                glyph_style = border_seg_style + glyph_style
+            glyph_style = base_style + RichStyle(reverse=True)
         else:
-            glyph_style = border_seg_style  # type: ignore[assignment]
-        padded = Strip([Segment(f" {_CLOSE_GLYPH} ", glyph_style)], 3)
-        strips[idx] = strip.crop(0, btn_x) + padded + strip.crop(btn_x + 3, w)
-        return strips
+            glyph_style = base_style
+        return Strip([Segment(f" {_CLOSE_GLYPH} ", glyph_style)], 3)
 
     def show(self) -> None:
         # Refresh saved focus each time the popup is shown, not just on first mount.
