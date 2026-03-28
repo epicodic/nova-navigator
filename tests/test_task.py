@@ -5,9 +5,10 @@ import pytest
 
 from nova_navigator.task import DecisionRequest, DecisionResponse, Task, TaskScheduler, task
 
-actual_task_order : list[int] = []
+actual_task_order: list[int] = []
 
-#@task
+
+@task
 def task1(id: int, input: str, all: bool = False) -> Task:
     if input[0:3] == "ask":
         response = yield DecisionRequest(input, id=id, input=input, all=all)
@@ -15,21 +16,21 @@ def task1(id: int, input: str, all: bool = False) -> Task:
             return
 
     print(f"Task 1 ({id}): running...")
+    actual_task_order.append(id)
     time.sleep(0.01)
     print(f"Task 1 ({id}): completed.")
-    actual_task_order.append(id)
 
 
 @task
 def task2(id: int) -> None:
     print(f"Task 2 ({id}): running...")
+    actual_task_order.append(id)
     time.sleep(0.01)
     print(f"Task 2 ({id}): completed.")
-    actual_task_order.append(id)
+
 
 @pytest.mark.asyncio
 async def test_task_scheduler_basic() -> None:
-
     global actual_task_order  # noqa: PLW0603
     actual_task_order = []
     tasks = [
@@ -43,8 +44,8 @@ async def test_task_scheduler_basic() -> None:
         task1(8, "ask1"),
         task1(9, "no_ask"),
         task1(10, "ask3"),
-        ]
-    expected_task_order = [2,4,6,8,1,7,3,9]
+    ]
+    expected_task_order = [2, 4, 6, 7, 9, 1, 8, 3, 10]
 
     async def gui_callback(
         request: DecisionRequest,
@@ -66,33 +67,40 @@ async def test_task_scheduler_basic() -> None:
             print(f"GUI responding YES to '{request.message}'")
             future.set_result(DecisionResponse.YES)
 
-
     await TaskScheduler.execute(gui_request_callback=gui_callback, tasks=tasks)
 
     assert actual_task_order == expected_task_order
 
 
-#@task
-def task3() -> Task:
-    print("Task 2: running...")
+@task
+def task3(id: int, input: str) -> Task:
+    print("Task 3: running...")
+    actual_task_order.append(id)
     time.sleep(0.01)
     for i in range(3):
-        yield task3()
-    print("Task 2: completed.")
-
+        yield task1(id=id + 1 + i, input=f"{input}_{id}_{i}")
+    print("Task 3: completed.")
 
 
 @pytest.mark.asyncio
 async def test_task_scheduler_task_spawn() -> None:
     tasks = [
-        #task3(),
-        #task3(),
-     ]
+        task3(0, "ask3"),
+        task3(4, "no_ask3"),
+    ]
+
+    expected_task_order = [0, 4, 5, 6, 7, 1, 2, 3]
+
+    global actual_task_order  # noqa: PLW0603
+    actual_task_order = []
 
     async def gui_callback(
         request: DecisionRequest,
         future: asyncio.Future[DecisionResponse],
     ) -> None:
         print(f"GUI received request: '{request.message}' with args {request.kwargs}")
+        await asyncio.sleep(0.1)
+        future.set_result(DecisionResponse.YES)
 
     await TaskScheduler.execute(gui_request_callback=gui_callback, tasks=tasks)
+    assert actual_task_order == expected_task_order
