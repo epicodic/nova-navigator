@@ -651,7 +651,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
 
         return styles
 
-    def render_border_bottom_left(self) -> Strip:
+    def render_border_bottom_right(self) -> Strip:
         n = len(self._selected_items)
         if n == 0:
             return Strip.blank(0)
@@ -659,7 +659,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         text = f" {n} file{'s' if n != 1 else ''}, {_format_size(total)} "
         return Strip([Segment(text, self._border_rich_style())])
 
-    def render_border_bottom_right(self) -> Strip:
+    def render_border_bottom_left(self) -> Strip:
         if not self._shown_items:
             return Strip.blank(0)
         item = self._shown_items[self.cursor_row]
@@ -869,6 +869,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
             self._selected_items.add(cursor_item)
 
         self.refresh_row(self.cursor_row)
+        self.refresh_border()
 
     def action_select_all(self) -> None:
         self._selected_items = {item for item in self._shown_items if not isinstance(item, UpPath)}

@@ -59,6 +59,6 @@ async def test_close_button_at_top_right() -> None:
         w = popup.outer_size.width
         strips = popup.render_lines(Region(0, 0, w, popup.outer_size.height))
         top_text = strips[0].text
-        # Slot " 🗙 " is 3 cells wide, placed before the right corner (1 cell)
-        # So positions w-4..w-2 are space, glyph, space; top_text[w-3] == "🗙"
-        assert top_text[w - 3] == "🗙"
+        # Slot " 🗙 " is 3 cells wide, placed before pad+corner (2 cells)
+        # So positions w-5..w-3 are space, glyph, space; top_text[w-4] == "🗙"
+        assert top_text[w - 4] == "🗙"
