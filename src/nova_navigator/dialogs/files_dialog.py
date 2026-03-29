@@ -56,7 +56,7 @@ class CopyMoveFilesDialog(Dialog):
             yield Static("Filename:")
             yield Input(value=self.source_paths[0].name, placeholder="Enter filename")
 
-    def _on_mount(self, _event: events.Mount) -> None:
+    def _on_mount(self, event: events.Mount) -> None:
         for path in self.source_paths[0 : self.MAX_DISPLAYED_FILES]:
             self._source_files.append(NoSelectListView.ListItem(Static(path.name)))
         if len(self.source_paths) > self.MAX_DISPLAYED_FILES:
