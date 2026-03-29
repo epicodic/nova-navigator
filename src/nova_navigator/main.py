@@ -5,7 +5,7 @@ import re
 import subprocess
 from enum import Enum
 from pathlib import PurePath
-from typing import Any, ClassVar, NamedTuple
+from typing import ClassVar, NamedTuple
 
 # import paramiko
 from textual import events, work

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import PurePath
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
 from .types import Stat
 from .vpath import VPath

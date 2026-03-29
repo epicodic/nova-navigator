@@ -195,7 +195,7 @@ class GlobalConfig:
 
 
 def get_config_file_path(config_filename: str) -> Path:
-    config_file_path = _APP_CONFIG_DIR / f"{config_filename}"
+    # config_file_path = _APP_CONFIG_DIR / f"{config_filename}"
     # if not config_file_path.exists():
     #    shutil.copy(
     #        _DEFAULT_CONFIG_DIR / config_filename,
