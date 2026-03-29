@@ -177,7 +177,7 @@ class TaskScheduler:
         while True:
             self._run_ready_tasks()  # process any tasks that became ready while we were running this one
             try:
-                result = task.send(decision)  # type: ignore[arg-type]  # None is valid for first send()
+                result = task.send(decision)  # ty:ignore[invalid-argument-type] # None is valid for first send()
                 if isinstance(result, DecisionRequest):
                     decision = self.submit_request(task, result)
                     if decision is not None:
