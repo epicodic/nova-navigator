@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import override
+from typing import cast, override
 
 import paramiko
 
@@ -149,4 +149,4 @@ class SSHFilesystem(Filesystem):
 
     @override
     def write(self, path: VPath) -> StreamWriterLike:
-        return self._sftp_client.open(path.path.as_posix(), "wb")  # type: ignore[return-value]
+        return cast(StreamWriterLike, self._sftp_client.open(path.path.as_posix(), "wb"))
