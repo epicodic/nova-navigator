@@ -1,0 +1,14 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Nova Navigator Main",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/nova_navigator/main.py",
+            "console": "externalTerminal",
+            "args": "",
+            "justMyCode": false,
+        }
+    ]
+}
