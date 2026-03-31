@@ -298,6 +298,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "select_cursor", "Select", show=False),
+        Binding("ctrl+right", "follow_symlink", "Follow Symlink", show=False),
         Binding("up", "cursor_up", "Cursor up", show=False),
         Binding("down", "cursor_down", "Cursor down", show=False),
         Binding("right", "cursor_right", "Cursor right", show=False),
@@ -305,7 +306,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         Binding("pageup", "page_up", "Page up", show=False),
         Binding("pagedown", "page_down", "Page down", show=False),
         Binding("home", "scroll_top", "Top", show=False),
-        Binding("end", "scroll_bottom", "Bottom", show=False),
+        Binding("alt+b", "scroll_bottom", "Bottom", show=False),
         Binding("insert", "insert_select", "Select", show=False),
         Binding("ctrl+a", "select_all", "Select All", show=False),
         Binding("ctrl+f", "filter", "Filter", show=True),
@@ -665,8 +666,11 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         item = self._shown_items[self.cursor_row]
         if isinstance(item, UpPath) or not item.stat.is_symlink:
             return Strip.blank(0)
-        # TODO: replace placeholder once VPath.symlink_target is implemented
-        text = " → (symlink) "
+        try:
+            target = item.filesystem.readlink(item)
+        except OSError:
+            target = "?"
+        text = f" → {target} "
         return Strip([Segment(text, self._border_rich_style())])
 
     def render_line(self, y: int) -> Strip:
@@ -818,8 +822,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         if old_row != new_row:
             self.refresh_row(old_row)
             self.refresh_row(new_row)
-            if self._is_symlink_at_row(old_row) != self._is_symlink_at_row(new_row):
-                self.refresh(layout=False)
+            self.refresh_border()
             self._scroll_cursor_into_view()
             self.post_message(DirectoryBrowser.ItemChanged(self, self.path_item_under_cursor))
 
@@ -986,6 +989,19 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         else:
             path = item
         self.post_message(DirectoryBrowser.PathSelected(self, path))
+
+    def action_follow_symlink(self) -> None:
+        """Navigate to the target of the symlink under the cursor."""
+        if not self.is_valid_row_index(self.cursor_row):
+            return
+        item = self._shown_items[self.cursor_row]
+        if isinstance(item, UpPath) or not item.stat.is_symlink:
+            return
+        try:
+            target_vpath = item.filesystem.resolve_link(item)
+        except OSError:
+            return
+        self.post_message(DirectoryBrowser.PathSelected(self, target_vpath))
 
     def _on_directory_browser_path_selected(self, event: PathSelected) -> None:
         if event.path.stat.is_directory:

@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Button
@@ -18,7 +20,10 @@ class KeepPopup(PopupWidget):
 
 
 class NoEscapeOverlay(PopupWidget, can_focus=True):
-    BINDINGS = []
+    BINDINGS: ClassVar[list] = []
+
+    def action_close_popup(self) -> None:
+        return
 
 
 class OverlayTestApp(App[None]):
