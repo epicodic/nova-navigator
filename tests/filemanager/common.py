@@ -24,7 +24,7 @@ def make_status(print_progress: bool = False, cancel_event: threading.Event | No
 
 
 def run_task(task: Task, decisions: list[DecisionResponse] | None = None) -> list[DecisionRequest]:
-    """Drive a Task generator to completion, supplying decisions as needed.
+    """Drive a Task to completion, supplying decisions as needed.
 
     Returns the list of DecisionRequests that were yielded.
     """

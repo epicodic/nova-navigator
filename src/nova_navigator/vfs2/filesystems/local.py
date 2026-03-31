@@ -10,10 +10,17 @@ from ..vpath import VPath
 
 
 class LocalFilesystem(Filesystem):
+    """Filesystem implementation for the local operating-system filesystem.
+
+    A singleton (:meth:`singleton`) is provided for the common case where a
+    single process-wide instance is sufficient.
+    """
+
     _singleton: LocalFilesystem | None = None
 
     @staticmethod
     def singleton() -> LocalFilesystem:
+        """Return the process-wide singleton :class:`LocalFilesystem` instance."""
         if LocalFilesystem._singleton is None:
             LocalFilesystem._singleton = LocalFilesystem()
         return LocalFilesystem._singleton

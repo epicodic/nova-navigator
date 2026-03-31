@@ -12,6 +12,8 @@ from ..vpath import VPath
 
 @dataclass
 class StatEntry:
+    """Raw stat data parsed from a remote ``stat`` command for a single file."""
+
     size: int
     permissions: int
     owner: str
@@ -52,10 +54,13 @@ def _parse_stat_output(output: str) -> dict[str, StatEntry]:
 
 
 class SSHFilesystem(Filesystem):
+    """Filesystem implementation for remote hosts accessed over SSH/SFTP."""
+
     _ssh_client: paramiko.SSHClient
     _sftp_client: paramiko.SFTPClient
 
     def __init__(self, hostname: str, port: int = 22, ssh_client: paramiko.SSHClient | None = None) -> None:
+        """Connect to *hostname*:*port* over SSH, reusing *ssh_client* if provided."""
         if ssh_client is None:
             self._ssh_client = paramiko.SSHClient()
             self._ssh_client.load_system_host_keys()
