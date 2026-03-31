@@ -286,3 +286,7 @@ class MockFilesystem(Filesystem):
     def exists(self, path: str) -> bool:
         """Return True if *path* exists in this filesystem."""
         return PurePosixPath(path) in self._nodes
+
+    @override
+    def readlink(self, path: VPath) -> str:
+        raise OSError(f"Not a symbolic link: '{path}'")

@@ -40,6 +40,14 @@ class Filesystem(ABC):
         """Create a :class:`~nova_navigator.vfs.vpath.VPath` bound to this filesystem."""
         return VPath(str(p), self)
 
+    def resolve_link(self, path: VPath) -> VPath:
+        """Return the resolved target path of the symbolic link at *path*."""
+        self._assert_vpath(path)
+        target = self.readlink(path)
+        if target.startswith("/"):
+            return self.path(target)
+        return self.parent(path) / target
+
     @abstractmethod
     def is_same_device(self, path1: VPath, path2: VPath) -> bool:
         """Return True if *path1* and *path2* are on the same device (filesystem)."""
@@ -94,4 +102,11 @@ class Filesystem(ABC):
 
         If the directory already exists, FileExistsError is raised.
         If a parent directory in the path does not exist, FileNotFoundError is raised.
+        """
+
+    @abstractmethod
+    def readlink(self, path: VPath) -> str:
+        """Return the target of the symbolic link at *path*.
+
+        Raises ``OSError`` if *path* is not a symbolic link.
         """

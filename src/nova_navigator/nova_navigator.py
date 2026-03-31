@@ -6,7 +6,7 @@ import subprocess
 import sys
 from enum import Enum
 from pathlib import PurePath
-from typing import ClassVar, NamedTuple, cast, override
+from typing import ClassVar, NamedTuple, cast
 
 from textual import events, work
 from textual.app import App, ComposeResult
@@ -115,6 +115,7 @@ class MainScreen(Screen[None]):
             mc.separator(),
             mc.action("Open", shortcut="Enter", action="open_path", name="open"),
             mc.action("Open in Other Panel", action="open_in_other_panel", name="open_in_other_panel"),
+            mc.action("Follow Symlink", shortcut="Shift+Enter", action="follow_symlink", name="follow_symlink"),
             mc.action("Edit", shortcut="F4", action="open_editor", name="edit"),
             mc.separator(),
             mc.action("Copy", shortcut="Ctrl+C", name="copy"),
@@ -415,6 +416,7 @@ class MainScreen(Screen[None]):
             is_file: bool | None = None
             is_executable: bool | None = None
             is_path_in_clipboard: bool | None = None
+            is_symlink: bool | None = None
 
             def matches(self, other: AKey) -> bool:
                 if self.is_empty == other.is_empty:
@@ -427,6 +429,8 @@ class MainScreen(Screen[None]):
                     return True
                 if self.is_path_in_clipboard is not None and self.is_path_in_clipboard == other.is_path_in_clipboard:
                     return True
+                if self.is_symlink is not None and self.is_symlink == other.is_symlink:
+                    return True
 
                 if all(  # noqa: SIM103
                     v is None
@@ -436,6 +440,7 @@ class MainScreen(Screen[None]):
                         self.is_file,
                         self.is_executable,
                         self.is_path_in_clipboard,
+                        self.is_symlink,
                     )
                 ):
                     return True  # matches anything
@@ -445,6 +450,7 @@ class MainScreen(Screen[None]):
         actions: list[tuple[AKey, str]] = [
             (AKey(is_directory=True, is_file=True), "file.open"),
             (AKey(is_directory=True), "file.open_in_other_panel"),
+            (AKey(is_symlink=True), "file.follow_symlink"),
             (AKey(is_file=True), "file.edit"),
             (AKey(is_directory=True, is_file=True), "file.cut"),
             (AKey(is_directory=True, is_file=True), "file.copy"),
@@ -464,6 +470,7 @@ class MainScreen(Screen[None]):
                         is_directory=path is not None and path.stat.is_directory,
                         is_file=path is not None and not path.stat.is_directory,
                         is_executable=path is not None and path.stat.is_executable and not path.stat.is_directory,
+                        is_symlink=path is not None and path.stat.is_symlink,
                     )
                 )
             )
@@ -483,6 +490,7 @@ class MainScreen(Screen[None]):
             ("file.new", 0),
             ("file.open", 2),
             ("file.open_in_other_panel", 2),
+            ("file.follow_symlink", 2),
             ("file.edit", 2),
             ("file.cut", 3),
             ("file.copy", 3),
@@ -543,6 +551,9 @@ class MainScreen(Screen[None]):
     async def _action_open_in_other_panel(self) -> None:
         path = self.active_panel().path_item_under_cursor
         self.other_panel().set_path(path)
+
+    def _action_follow_symlink(self) -> None:
+        self.active_panel().action_follow_symlink()
 
     async def _action_show_bookmarks(self) -> None:
         panel = self.active_panel()

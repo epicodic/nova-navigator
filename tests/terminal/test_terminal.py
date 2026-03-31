@@ -1406,7 +1406,7 @@ async def test_request_cd_path_changed_is_not_user_initiated() -> None:
         recv_q = await _start_recv_only(terminal)
         try:
             terminal._started = True
-            terminal.request_cd(PurePath("/tmp/a"))
+            terminal.request_cd(PurePath("/tmp/a"))  # noqa: S108
             assert terminal._nav_pending == 1
 
             # Simulate precmd acknowledging the cd
@@ -1415,7 +1415,7 @@ async def test_request_cd_path_changed_is_not_user_initiated() -> None:
 
             assert len(app.path_changed_events) == 1
             assert app.path_changed_events[0].user_initiated is False
-            assert app.path_changed_events[0].cwd == PurePath("/tmp/a")
+            assert app.path_changed_events[0].cwd == PurePath("/tmp/a")  # noqa: S108
         finally:
             await _stop_recv_only(terminal)
 
@@ -1438,7 +1438,7 @@ async def test_user_cd_path_changed_is_user_initiated() -> None:
 
             assert len(app.path_changed_events) == 1
             assert app.path_changed_events[0].user_initiated is True
-            assert app.path_changed_events[0].cwd == PurePath("/tmp/b")
+            assert app.path_changed_events[0].cwd == PurePath("/tmp/b")  # noqa: S108
         finally:
             await _stop_recv_only(terminal)
 
