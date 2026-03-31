@@ -23,6 +23,13 @@ PATH_SEPARATOR = "/"
 
 @dataclass
 class URIComponent:
+    """A single component of a parsed URI.
+
+    Represents one layer of a (possibly nested) URI, holding the optional
+    *scheme* (e.g. ``"ssh"``), optional *netloc* (e.g. ``"user@host:22"``),
+    and mandatory *path* segment.
+    """
+
     scheme: str | None
     netloc: str | None
     path: str
@@ -30,6 +37,13 @@ class URIComponent:
 
 @dataclass
 class ParseResult:
+    """The result of parsing a (possibly nested) URI into its components.
+
+    ``components[0]`` is the outermost layer; subsequent elements represent
+    nested filesystem schemes found inside the path, e.g. a tar archive
+    embedded in an SSH path.
+    """
+
     components: list[URIComponent]
 
 
@@ -41,6 +55,18 @@ _NESTED_SCHEMA_REGEX = re.compile(r"/(\w+)://")
 
 
 def parse_uri(uri: str) -> ParseResult:
+    """Parse a URI that may contain nested filesystem schemes.
+
+    A nested URI embeds additional scheme references inside the path, separated
+    by ``/<scheme>://``.  For example::
+
+        ssh://host/archive.tar.gz/tar://file.txt
+
+    is split into two :class:`URIComponent` entries: one for the SSH layer
+    (path ``/archive.tar.gz``) and one for the tar layer (path ``/file.txt``).
+
+    Raises :exc:`ValueError` for syntactically invalid URIs.
+    """
     components: list[URIComponent] = []
 
     uri = uri.strip()

@@ -2,6 +2,13 @@ import threading
 
 
 class ThreadSafeList[T]:
+    """A list wrapper that serialises all mutations and reads with a :class:`threading.Lock`.
+
+    Can also be used as a context manager (``with my_list as raw:``), which
+    holds the lock for the duration of the ``with`` block and exposes the
+    underlying list directly for bulk operations.
+    """
+
     _list: list[T]
     _lock: threading.Lock
 
@@ -10,21 +17,26 @@ class ThreadSafeList[T]:
         self._lock = threading.Lock()
 
     def append(self, item: T) -> None:
+        """Append *item* to the end of the list under the lock."""
         with self._lock:
             self._list.append(item)
 
     def pop(self, index: int = -1) -> T:
+        """Remove and return the item at *index* (default: last) under the lock."""
         with self._lock:
             return self._list.pop(index)
 
     def peek(self, index: int = -1) -> T:
+        """Return the item at *index* without removing it, under the lock."""
         with self._lock:
             return self._list[index]
 
     def pop_front(self) -> T:
+        """Remove and return the first item."""
         return self.pop(0)
 
     def peek_front(self) -> T:
+        """Return the first item without removing it."""
         return self.peek(0)
 
     def __len__(self) -> int:
