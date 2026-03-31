@@ -180,3 +180,11 @@ class SSHFilesystem(Filesystem):
     def mkdir(self, path: VPath) -> None:
         self._assert_vpath(path)
         self._sftp_client.mkdir(path.path.as_posix())
+
+    @override
+    def readlink(self, path: VPath) -> str:
+        self._assert_vpath(path)
+        result = self._sftp_client.readlink(path.path.as_posix())
+        if result is None:
+            raise OSError(f"{path} is not a symbolic link")
+        return result

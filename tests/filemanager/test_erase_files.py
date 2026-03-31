@@ -272,7 +272,16 @@ async def test_erase_plain_files_total_known_upfront() -> None:
             first_total.append(s.progress.total)
 
     status = TaskStatus(cancel_event=threading.Event(), progress_callback=cb)
-    paths = [fs.path(p) for p in ("/home/user/a.txt", "/home/user/b.txt", "/home/user/c.txt", "/home/user/d.txt", "/home/user/e.txt")]
+    paths = [
+        fs.path(p)
+        for p in (
+            "/home/user/a.txt",
+            "/home/user/b.txt",
+            "/home/user/c.txt",
+            "/home/user/d.txt",
+            "/home/user/e.txt",
+        )
+    ]
     await run_task(lambda ctx: erase_files(ctx, paths), status=status)
 
     assert first_total[0] == 5, f"Expected total=5 on first callback, got {first_total[0]}"

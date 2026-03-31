@@ -48,6 +48,11 @@ class _SymlinkMockFilesystem(MockFilesystem):
             )
         return s
 
+    def readlink(self, path: VPath) -> str:
+        if path.name == "link.txt":
+            return "/some/target"
+        raise OSError(f"Not a symbolic link: '{path}'")
+
 
 @pytest.mark.asyncio
 async def test_bottom_right_shows_symlink_placeholder_for_symlink() -> None:
@@ -62,4 +67,4 @@ async def test_bottom_right_shows_symlink_placeholder_for_symlink() -> None:
 
         strips = browser.render_lines(Region(0, browser.outer_size.height - 1, browser.outer_size.width, 1))
         bottom_text = strips[0].text
-        assert "symlink" in bottom_text
+        assert "/some/target" in bottom_text
