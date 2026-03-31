@@ -1,6 +1,7 @@
 import threading
 
 from nova_navigator.task import DecisionRequest, DecisionResponse, Task, TaskStatus
+from tests.mock_filesystem import MockFilesystem
 
 
 def make_status(print_progress: bool = False, cancel_event: threading.Event | None = None) -> TaskStatus:
@@ -23,6 +24,13 @@ def make_status(print_progress: bool = False, cancel_event: threading.Event | No
     )
 
 
+def read_all(fs: MockFilesystem, path: str) -> bytes:
+    reader = fs.read(fs.path(path))
+    data = reader.read(1024 * 1024)  # read up to 1 MiB, which should be enough for all test cases
+    reader.close()
+    return data
+
+
 def run_task(task: Task, decisions: list[DecisionResponse] | None = None) -> list[DecisionRequest]:
     """Drive a Task to completion, supplying decisions as needed.
 
@@ -36,7 +44,9 @@ def run_task(task: Task, decisions: list[DecisionResponse] | None = None) -> lis
             if not isinstance(val, DecisionRequest):
                 raise AssertionError(f"Unexpected yield type: {type(val)}")
             requests.append(val)
-            response = pending.pop(0) if pending else DecisionResponse.YES
+            if not pending:
+                raise AssertionError("Task yielded a DecisionRequest but no more decisions are specified")
+            response = pending.pop(0)
             val = task.send(response)
     except StopIteration:
         pass
