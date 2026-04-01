@@ -2,7 +2,7 @@ from abc import abstractmethod
 from pathlib import PurePath
 from typing import Literal
 
-from ..path_stats import PathStats
+from ..vfs2.types import Stat
 
 
 class Archive:
@@ -23,6 +23,6 @@ class Archive:
         raise NotImplementedError
 
     @abstractmethod
-    def stats(self, path: PurePath) -> PathStats:
+    def stats(self, path: PurePath) -> Stat:
         """Get the stats of a file/directory inside the archive."""
         raise NotImplementedError
