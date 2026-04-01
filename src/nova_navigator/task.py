@@ -164,6 +164,13 @@ class TaskStatus:
         """Mark the current step as fully complete."""
         self.set_step_progress(self._progress.step_total, self._progress.step_total)
 
+    def is_complete(self) -> bool:
+        """Return ``True`` if the task is fully complete (completed >= total)."""
+        return (
+            self._progress.completed >= self._progress.total
+            and self._progress.step_completed >= self._progress.step_total
+        )
+
 
 GuiRequestCallback = Callable[[DecisionRequest, asyncio.Future[DecisionResponse]], Awaitable[None]]
 
@@ -196,11 +203,12 @@ class TaskScheduler:
         self._decisions_for_all = {}
 
     @staticmethod
-    async def execute(gui_request_callback: GuiRequestCallback, tasks: list[Task]) -> None:
+    async def execute(gui_request_callback: GuiRequestCallback, tasks: list[Task]) -> "TaskScheduler":
         """Create a scheduler and run *tasks* in a worker thread, awaiting completion."""
         loop = asyncio.get_running_loop()
         scheduler = TaskScheduler(gui_request_callback=gui_request_callback, event_loop=loop)
         await asyncio.create_task(asyncio.to_thread(scheduler.run_tasks, tasks))
+        return scheduler
 
     def run_tasks(self, tasks: list[Task]) -> None:
         """Run a list of tasks sequentially, blocking until all have finished."""
@@ -219,8 +227,6 @@ class TaskScheduler:
         while len(self._waiting_tasks_with_requests) > 0 or len(self._ready_tasks_with_responses) > 0:
             self._run_ready_tasks()
             time.sleep(0.1)  # avoid busy waiting
-
-        print("All tasks completed.")
 
     def _run_task(self, task: Task, decision: DecisionResponse | None = None) -> None:
         # decision is only allowed to be not None if the task is waiting for a response
@@ -265,7 +271,6 @@ class TaskScheduler:
     async def _notify_gui_task(self) -> None:
         while len(self._waiting_tasks_with_requests) > 0:
             task, request = self._waiting_tasks_with_requests.peek_front()
-            print(f"Notifying GUI for request: {request.message} with args {request.kwargs}")
             future: asyncio.Future[DecisionResponse] = asyncio.get_event_loop().create_future()
             await self._gui_request_callback(request, future)
             await future
