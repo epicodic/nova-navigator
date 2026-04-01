@@ -2,7 +2,7 @@ import zipfile
 from pathlib import PurePath
 from typing import override
 
-from .archive import Archive, PathStats
+from .archive import Archive, Stat
 
 
 class ZipArchive(Archive):
@@ -46,10 +46,10 @@ class ZipArchive(Archive):
         return [PurePath(part) for part in contents]
 
     @override
-    def stats(self, path: PurePath) -> PathStats:
+    def stats(self, path: PurePath) -> Stat:
         if path == path.parent:
             # Root directory of the archive
-            return PathStats(
+            return Stat(
                 size=0,
                 modified=0,
                 is_hidden=False,
@@ -62,7 +62,7 @@ class ZipArchive(Archive):
         if member is None:
             raise FileNotFoundError(f"Path '{path}', {path.name} not found in archive '{self._archive_path}'")
 
-        return PathStats(
+        return Stat(
             size=member.file_size,
             modified=0.0,  # member.date_time,
             is_hidden=member.filename.startswith("."),
