@@ -2,7 +2,7 @@ import threading
 
 import pytest
 
-from nova_navigator.filemanager.tasks import _iterate_files
+from nova_navigator.filemanager.tasks import _iterate_dirs_and_files
 from nova_navigator.task import TaskCancelled, TaskStatus
 from nova_navigator.vfs2 import VPath
 from tests.mock_filesystem import MockFilesystem
@@ -10,8 +10,8 @@ from tests.mock_filesystem import MockFilesystem
 from .common import make_status
 
 
-def paths_str(result: list[VPath]) -> set[str]:
-    return {str(p.path) for p in result}
+def paths_str(result: list[VPath]) -> list[str]:
+    return [str(p.path) for p in result]
 
 
 # ---------------------------------------------------------------------------
@@ -22,15 +22,22 @@ def paths_str(result: list[VPath]) -> set[str]:
 def test_iterate_files_single_file() -> None:
     """A plain file yields itself."""
     fs = MockFilesystem({"/home/user/file.txt": b"hello"})
-    result = list(_iterate_files(make_status(), fs.path("/home/user/file.txt")))
-    assert paths_str(result) == {"/home/user/file.txt"}
+    result = list(_iterate_dirs_and_files(make_status(), fs.path("/home/user/file.txt")))
+    assert paths_str(result) == ["/home/user/file.txt"]
+
+
+def test_iterate_files_single_file_in_directory() -> None:
+    """A plain file yields itself."""
+    fs = MockFilesystem({"/home/user/file.txt": b"hello"})
+    result = list(_iterate_dirs_and_files(make_status(), fs.path("/home/user/")))
+    assert paths_str(result) == ["/home/user", "/home/user/file.txt"]
 
 
 def test_iterate_files_empty_directory() -> None:
     """An empty directory yields nothing."""
     fs = MockFilesystem({"/home/user/empty": None})
-    result = list(_iterate_files(make_status(), fs.path("/home/user/empty")))
-    assert result == []
+    result = list(_iterate_dirs_and_files(make_status(), fs.path("/home/user/empty")))
+    assert paths_str(result) == ["/home/user/empty"]
 
 
 def test_iterate_files_flat_directory() -> None:
@@ -42,8 +49,8 @@ def test_iterate_files_flat_directory() -> None:
             "/data/c.txt": b"c",
         }
     )
-    result = list(_iterate_files(make_status(), fs.path("/data")))
-    assert paths_str(result) == {"/data/a.txt", "/data/b.txt", "/data/c.txt"}
+    result = list(_iterate_dirs_and_files(make_status(), fs.path("/data")))
+    assert paths_str(result) == ["/data", "/data/a.txt", "/data/b.txt", "/data/c.txt"]
 
 
 def test_iterate_files_nested_directories() -> None:
@@ -55,8 +62,15 @@ def test_iterate_files_nested_directories() -> None:
             "/root/sub/deep/c.txt": b"c",
         }
     )
-    result = list(_iterate_files(make_status(), fs.path("/root")))
-    assert paths_str(result) == {"/root/a.txt", "/root/sub/b.txt", "/root/sub/deep/c.txt"}
+    result = list(_iterate_dirs_and_files(make_status(), fs.path("/root")))
+    assert paths_str(result) == [
+        "/root",
+        "/root/a.txt",
+        "/root/sub",
+        "/root/sub/b.txt",
+        "/root/sub/deep",
+        "/root/sub/deep/c.txt",
+    ]
 
 
 def test_iterate_files_mixed_files_and_dirs() -> None:
@@ -68,8 +82,14 @@ def test_iterate_files_mixed_files_and_dirs() -> None:
             "/root/empty_dir": None,
         }
     )
-    result = list(_iterate_files(make_status(), fs.path("/root")))
-    assert paths_str(result) == {"/root/file.txt", "/root/subdir/nested.txt"}
+    result = list(_iterate_dirs_and_files(make_status(), fs.path("/root")))
+    assert paths_str(result) == [
+        "/root",
+        "/root/file.txt",
+        "/root/subdir",
+        "/root/subdir/nested.txt",
+        "/root/empty_dir",
+    ]
 
 
 def test_iterate_files_updates_progress() -> None:
@@ -87,7 +107,7 @@ def test_iterate_files_updates_progress() -> None:
             "/root/b.txt": b"b",
         }
     )
-    list(_iterate_files(status, fs.path("/root")))
+    list(_iterate_dirs_and_files(status, fs.path("/root")))
 
     totals = [t for _, t in progress_log]
     completed = [c for c, _ in progress_log]
@@ -107,6 +127,6 @@ def test_iterate_files_cancelled() -> None:
     assert status.cancel_event is not None
     status.cancel_event.set()
 
-    gen = _iterate_files(status, fs.path("/root"))
+    gen = _iterate_dirs_and_files(status, fs.path("/root"))
     with pytest.raises(TaskCancelled):
         list(gen)

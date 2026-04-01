@@ -1,3 +1,4 @@
+import contextlib
 from collections.abc import Generator
 from dataclasses import dataclass
 from typing import Literal
@@ -9,16 +10,16 @@ from ..vfs2 import VPath
 CHUNK_SIZE = 64 * 1024  # 64 KB
 
 
-def _iterate_files(status: TaskStatus, path: VPath) -> Generator[VPath, None, None]:
+def _iterate_dirs_and_files(status: TaskStatus, path: VPath) -> Generator[VPath, None, None]:
+    yield path
+
     if path.stat.is_directory:
         paths = path.iterdir()
         status.update_progress(inc_total=len(paths))
         for child in paths:
             status.check_cancelled()
-            yield from _iterate_files(status, child)
+            yield from _iterate_dirs_and_files(status, child)
             status.update_progress(inc_completed=1)
-    else:
-        yield path
 
 
 OverwritePolicy = Literal["overwrite", "skip", "ask"]
@@ -96,15 +97,22 @@ def copy_files(
     it is a file or directory.  *options* is forwarded to every
     :func:`copy_file` call.
     """
+    dst_filesystem = dst_path.filesystem
     status.update_progress(inc_total=len(src_paths))
     for src_path in src_paths:
         status.check_cancelled()
         if src_path.stat.is_directory:
             dst_dir = dst_path / src_path.name
-            for file_path in _iterate_files(status, src_path):
-                rel = file_path.path.relative_to(src_path.path)
-                dst_file = dst_dir / rel
-                yield from copy_file(status, file_path, dst_file, options)
+
+            for p in _iterate_dirs_and_files(status, src_path):
+                rel = p.path.relative_to(src_path.path)
+                dst_path = dst_dir / rel
+
+                if p.stat.is_directory:
+                    with contextlib.suppress(FileExistsError):
+                        dst_filesystem.mkdir(dst_path)
+                else:
+                    yield from copy_file(status, p, dst_path, options)
         else:
             yield from copy_file(status, src_path, dst_path / src_path.name, options)
         status.update_progress(inc_completed=1)

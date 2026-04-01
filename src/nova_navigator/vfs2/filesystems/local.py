@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from io import FileIO
+from io import BufferedReader, BufferedWriter
 from stat import S_ISDIR, S_ISLNK
 from typing import Any, override
 
@@ -89,7 +89,7 @@ class LocalFilesystem(Filesystem):
 
         class StreamReaderWrapper:
             def __init__(self, f: Any) -> None:
-                assert isinstance(f, FileIO)
+                assert isinstance(f, BufferedReader)
                 self._f = f
 
             def read(self, size: int) -> bytes:
@@ -106,7 +106,7 @@ class LocalFilesystem(Filesystem):
 
         class StreamWriterWrapper:
             def __init__(self, f: Any) -> None:
-                assert isinstance(f, FileIO)
+                assert isinstance(f, BufferedWriter)
                 self._f = f
 
             def write(self, data: bytes) -> int:
@@ -115,6 +115,7 @@ class LocalFilesystem(Filesystem):
             def close(self) -> None:
                 self._f.close()
 
+        os.makedirs(path.path.parent, exist_ok=True)
         return StreamWriterWrapper(open(path.path, "wb"))
 
     @override
