@@ -74,6 +74,10 @@ class ArchiveFilesystem(Filesystem):
     def rmdir(self, path: VPath) -> None:
         raise NotImplementedError("ArchiveFilesystem is read-only")
 
+    @override
+    def mkdir(self, path: VPath) -> None:
+        raise NotImplementedError("ArchiveFilesystem is read-only")
+
     def __eq__(self, value: object) -> bool:
         return (
             isinstance(value, ArchiveFilesystem)
