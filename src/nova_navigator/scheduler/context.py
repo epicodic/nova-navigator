@@ -11,19 +11,35 @@ from nova_navigator.decision import Decision
 class DecisionRequest:
     """A request for a user decision, yielded by a task.
 
-    The *message* is a format string that may reference *kwargs* for display.
     The *title* also serves as the deduplication key inside :class:`TaskScheduler` so
     that ``ALL`` / ``NO`` responses suppress identical prompts.
+
+    *dialog_type* is an optional string tag used by the GUI to select a specialised
+    dialog widget (e.g. ``"overwrite"`` renders :class:`OverwriteDecisionDialog`).
+
+    *details* is a free-form dict that the specialised dialog can inspect to render
+    additional context (filenames, sizes, dates, …).
     """
 
     title: str
     expected_decisions: list[Decision]
     message: str
+    dialog_type: str | None
+    details: dict[str, Any]
 
-    def __init__(self, title: str, expected_decisions: list[Decision], message: str) -> None:
+    def __init__(
+        self,
+        title: str,
+        expected_decisions: list[Decision],
+        message: str,
+        dialog_type: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         self.title = title
         self.expected_decisions = expected_decisions
         self.message = message
+        self.dialog_type = dialog_type
+        self.details = details if details is not None else {}
 
 
 @dataclass
@@ -173,7 +189,7 @@ class TaskContext:
     """
 
     _status: TaskStatus
-    _decision_requester: Callable[[str, list[Decision], str], Awaitable[Decision]]
+    _decision_requester: Callable[["DecisionRequest"], Awaitable[Decision]]
     _subtask_tracker: _SubtaskTracker
 
     @property
@@ -185,9 +201,12 @@ class TaskContext:
         title: str,
         expected_decisions: list[Decision],
         message: str,
+        dialog_type: str | None = None,
+        details: dict[str, Any] | None = None,
     ) -> Decision:
         """Request a user decision via the GUI; suspends until the user responds."""
-        return await self._decision_requester(title, expected_decisions, message)
+        request = DecisionRequest(title, expected_decisions, message, dialog_type, details)
+        return await self._decision_requester(request)
 
     async def subtask[R](self, coro: Coroutine[Any, Any, R]) -> asyncio.Task[R]:
         """Start *coro* as a concurrent asyncio task and yield control so it can begin."""

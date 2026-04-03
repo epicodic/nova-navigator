@@ -81,8 +81,9 @@ class AsyncTaskScheduler:
     def _create_decision_requester(
         self,
         gui_loop: asyncio.AbstractEventLoop,
-    ) -> Callable[[str, list[Decision], str], Awaitable[Decision]]:
-        async def requester(title: str, expected: list[Decision], msg: str) -> Decision:
+    ) -> Callable[[DecisionRequest], Awaitable[Decision]]:
+        async def requester(request: DecisionRequest) -> Decision:
+            title = request.title
             if title in self._decisions_to_all:
                 return self._decisions_to_all[title]
             assert self._request_lock is not None
@@ -90,7 +91,6 @@ class AsyncTaskScheduler:
                 if title in self._decisions_to_all:
                     return self._decisions_to_all[title]
 
-                request = DecisionRequest(title, expected, msg)
                 gui_future: asyncio.Future[Decision] = asyncio.run_coroutine_threadsafe(
                     _create_future_in_loop(), gui_loop
                 ).result()
