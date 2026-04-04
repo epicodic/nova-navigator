@@ -31,6 +31,10 @@ async def copy_or_move_files_job(src_paths: list[VPath], dst_path: VPath, move: 
         _logger.info("%s cancelled by user", "Move" if move else "Copy")
         return None
 
+    # When copying/moving a single file, use the (possibly edited) filename.
+    if len(src_paths) == 1 and dialog.filename is not None:
+        dst_path = dst_path / dialog.filename
+
     verb = "Move" if move else "Copy"
     names = ", ".join(p.name for p in src_paths)
     _logger.info("%s %d item(s) [%s] -> %s", verb, len(src_paths), names, dst_path.path)
