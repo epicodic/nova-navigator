@@ -1,5 +1,5 @@
 from textual import events
-from textual.widgets import Input, Static
+from textual.widgets import Button, Input, Static
 
 from nova_navigator.vfs.filesystem import VPath
 
@@ -10,6 +10,8 @@ from .dialog import ComposeResult, DefaultButton, Dialog
 class CopyMoveFilesDialog(Dialog):
     AUTO_FOCUS = "Input"
     MAX_DISPLAYED_FILES = 10
+
+    filename: str | None = None  # set to the entered filename when OK is confirmed
 
     DEFAULT_CSS = """
     CopyMoveFilesDialog {
@@ -55,6 +57,21 @@ class CopyMoveFilesDialog(Dialog):
             yield Static("")  # Spacer
             yield Static("Filename:")
             yield Input(value=self.source_paths[0].name, placeholder="Enter filename")
+
+    def _capture_filename(self) -> None:
+        """Read the Input value and store it in self.filename before dismissing."""
+        if len(self.source_paths) == 1:
+            value = self.query_one(Input).value.strip()
+            self.filename = value if value else self.source_paths[0].name
+
+    def action_accept_dialog(self) -> None:
+        self._capture_filename()
+        super().action_accept_dialog()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if self._button_accept and event.button.id == self._button_accept.id:
+            self._capture_filename()
+        super().on_button_pressed(event)
 
     def _on_mount(self, event: events.Mount) -> None:
         for path in self.source_paths[0 : self.MAX_DISPLAYED_FILES]:

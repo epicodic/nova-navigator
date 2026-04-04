@@ -99,6 +99,63 @@ Button {
     width: 100%;
 }
 
+Button.-style-flat:focus {
+    color: $text;
+    background: $primary;
+    border: block $primary;
+    text-style: none;
+}
+Button.-style-flat.-primary:focus {
+    color: $text;
+    background: $primary;
+    border: block $primary;
+    text-style: none;
+}
+Button.-style-flat.-success:focus {
+    color: $text;
+    background: $success;
+    border: block $success;
+    text-style: none;
+}
+Button.-style-flat.-warning:focus {
+    color: $text;
+    background: $warning;
+    border: block $warning;
+    text-style: none;
+}
+Button.-style-flat.-error:focus {
+    color: $text;
+    background: $error;
+    border: block $error;
+    text-style: none;
+}
+
+Button.-style-flat:hover {
+    color: $text;
+    background: $primary-lighten-2;
+    border: block $primary-lighten-2;
+}
+Button.-style-flat.-primary:hover {
+    color: $text;
+    background: $primary-lighten-2;
+    border: block $primary-lighten-2;
+}
+Button.-style-flat.-success:hover {
+    color: $text;
+    background: $success-lighten-2;
+    border: block $success-lighten-2;
+}
+Button.-style-flat.-warning:hover {
+    color: $text;
+    background: $warning-lighten-2;
+    border: block $warning-lighten-2;
+}
+Button.-style-flat.-error:hover {
+    color: $text;
+    background: $error-lighten-2;
+    border: block $error-lighten-2;
+}
+
 
 
 #pane-left {
