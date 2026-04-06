@@ -23,15 +23,13 @@ class DecisionRequest:
     """
 
     title: str
-    expected_decisions: set[Decision]
+    expected_decisions: list[Decision]
     message: str
-    kwargs: dict[str, Any]
 
-    def __init__(self, title: str, expected_decisions: set[Decision], message: str, **kwargs: Any) -> None:
+    def __init__(self, title: str, expected_decisions: list[Decision], message: str) -> None:
         self.title = title
         self.expected_decisions = expected_decisions
         self.message = message
-        self.kwargs = kwargs
 
 
 Task = Generator["DecisionRequest | Task", Decision, None]
@@ -176,7 +174,7 @@ class TaskScheduler:
     _gui_request_callback: GuiRequestCallback
     _event_loop: asyncio.AbstractEventLoop
 
-    _decisions_for_all: dict[str, Decision]
+    _decisions_to_all: dict[str, Decision]
 
     def __init__(self, gui_request_callback: GuiRequestCallback, event_loop: asyncio.AbstractEventLoop) -> None:
         self._waiting_tasks_with_requests = ThreadSafeList()
@@ -184,7 +182,7 @@ class TaskScheduler:
         self._notify_task = None
         self._gui_request_callback = gui_request_callback
         self._event_loop = event_loop
-        self._decisions_for_all = {}
+        self._decisions_to_all = {}
 
     @staticmethod
     async def execute(gui_request_callback: GuiRequestCallback, tasks: list[Task]) -> "TaskScheduler":
@@ -240,8 +238,8 @@ class TaskScheduler:
     def submit_request(self, task: Task, request: DecisionRequest) -> Decision | None:
         """Submit a decision request, returning a cached response immediately or ``None`` if queued."""
         # check if there is a global answer for this request already -> then respond immediately
-        if request.message in self._decisions_for_all:
-            return self._decisions_for_all[request.message]
+        if request.title in self._decisions_to_all:
+            return self._decisions_to_all[request.title]
 
         self._waiting_tasks_with_requests.append((task, request))
         self._notify_gui()
@@ -269,12 +267,12 @@ class TaskScheduler:
         if not response.is_to_all:
             return
 
-        self._decisions_for_all[answered_request.message] = response
+        self._decisions_to_all[answered_request.title] = response
 
         with self._waiting_tasks_with_requests as waiting_tasks:
             remaining_waiting_tasks: list[tuple[Task, DecisionRequest]] = []
             for task, req in waiting_tasks:
-                if req.message == answered_request.message:
+                if req.title == answered_request.title:
                     self._ready_tasks_with_responses.append((task, response))
                 else:
                     remaining_waiting_tasks.append((task, req))
