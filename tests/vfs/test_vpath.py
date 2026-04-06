@@ -1,9 +1,5 @@
-# from math import floor
-
-# from nova_navigator.vfs2 import VPath
 from nova_navigator.vfs2.filesystems import LocalFilesystem
-
-# from nova_navigator.vfs2.filesystems.ssh import SSHFilesystem
+from tests.mock_filesystem import MockFilesystem
 from tests.test_utils import DATA_DIR
 
 
@@ -57,3 +53,39 @@ def test_vpath_local_filesystem() -> None:
 #     assert file211_ssh.stat.is_directory == file211_local.stat.is_directory
 #     assert file211_ssh.stat.is_executable == file211_local.stat.is_executable
 #     assert file211_ssh.stat.is_symlink == file211_local.stat.is_symlink
+
+
+def test_walk() -> None:
+    fs = MockFilesystem(
+        {
+            "/home/user/dir1/file11.txt": b"content11",
+            "/home/user/dir1/file12.txt": b"content12",
+            "/home/user/dir2/dir21/file211.txt": b"content211",
+            "/home/user/dir2/dir21/file212.txt": b"content212",
+            "/home/user/dir3/file31.txt": b"content31",
+        }
+    )
+    vpath = fs.path("/home/user")
+    walk_result = list(vpath.walk())
+
+    assert len(walk_result) == 5
+
+    assert walk_result[0][0] == vpath
+    assert [d.name for d in walk_result[0][1]] == ["dir1", "dir2", "dir3"]
+    assert walk_result[0][2] == []
+
+    assert walk_result[1][0] == vpath / "dir1"
+    assert walk_result[1][1] == []
+    assert [f.name for f in walk_result[1][2]] == ["file11.txt", "file12.txt"]
+
+    assert walk_result[2][0] == vpath / "dir2"
+    assert [d.name for d in walk_result[2][1]] == ["dir21"]
+    assert walk_result[2][2] == []
+
+    assert walk_result[3][0] == vpath / "dir2" / "dir21"
+    assert walk_result[3][1] == []
+    assert [f.name for f in walk_result[3][2]] == ["file211.txt", "file212.txt"]
+
+    assert walk_result[4][0] == vpath / "dir3"
+    assert walk_result[4][1] == []
+    assert [f.name for f in walk_result[4][2]] == ["file31.txt"]

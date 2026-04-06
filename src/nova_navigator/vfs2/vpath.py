@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import mimetypes
 import os
+from collections.abc import Generator
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -34,6 +35,25 @@ class VPath:
     def iterdir(self) -> list[VPath]:
         """Return the list of immediate children of this directory."""
         return self._filesystem.iterdir(self)
+
+    def walk(self) -> Generator[tuple[VPath, list[VPath], list[VPath]], None, None]:
+        """Like os.walk, but yields tuples of (root: VPath, dirs: list[VPath], files: list[VPath))."""
+        root = self
+        if not root.stat.is_directory:
+            raise NotADirectoryError(f"{root} is not a directory")
+
+        dirs = []
+        files = []
+        for child in root.iterdir():
+            if child.stat.is_directory:
+                dirs.append(child)
+            else:
+                files.append(child)
+
+        yield root, dirs, files
+
+        for d in dirs:
+            yield from d.walk()
 
     @property
     def stat(self) -> Stat:
