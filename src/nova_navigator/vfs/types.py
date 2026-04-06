@@ -7,6 +7,7 @@ class Stat:
 
     size: int = -1
     modified: float = -1.0
+    mode: int = -1
     is_hidden: bool = False
     is_directory: bool = False
     is_executable: bool = False

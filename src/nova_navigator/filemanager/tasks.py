@@ -9,6 +9,7 @@ from nova_navigator.scheduler import TaskContext
 
 from ..vfs import VPath
 from ..vfs.filesystem import Filesystem
+from ..vfs.types import Stat
 
 _logger = logging.getLogger(__name__)
 
@@ -133,6 +134,7 @@ async def copy_file(
             if _failed:
                 with contextlib.suppress(Exception):
                     dst_path.filesystem.remove(dst_path)
+    dst_path.filesystem.copy_stat(dst_path, src_stat)
     return True
 
 
@@ -154,11 +156,13 @@ async def _copy_dir(
     options: FileCopyOptions,
 ) -> None:
     file_tasks: list[asyncio.Task[None]] = []
+    dir_stats: list[tuple[VPath, Stat]] = []
     for src_root, _src_dirs, src_files in src_path.walk():
         ctx.status.check_cancelled()
         dst_root = dst_path / src_root.path.relative_to(src_path.path)
         with contextlib.suppress(FileExistsError):
             dst_filesystem.mkdir(dst_root)
+        dir_stats.append((dst_root, src_root.stat))
         if src_files:
             ctx.status.update_progress(inc_total=len(src_files))
         for f in src_files:
@@ -166,6 +170,10 @@ async def _copy_dir(
             t = await ctx.subtask(_copy_file_step(ctx, f, dst_root / f.name, options))
             file_tasks.append(t)
     await asyncio.gather(*file_tasks)
+    # Apply directory attributes bottom-up so that parent mtime is not disturbed
+    # by child directory attribute changes.
+    for dst_dir, src_stat in reversed(dir_stats):
+        dst_filesystem.copy_stat(dst_dir, src_stat)
 
 
 async def copy_files(
@@ -237,12 +245,14 @@ async def _move_dir_contents(
     with contextlib.suppress(FileExistsError):
         actual_dst.filesystem.mkdir(actual_dst)
     src_dirs: list[VPath] = []
+    dir_stats: list[tuple[VPath, Stat]] = []
     for src_root, _src_dirs, src_files in src_path.walk():
         ctx.status.check_cancelled()
         dst_root = actual_dst / src_root.path.relative_to(src_path.path)
         with contextlib.suppress(FileExistsError):
             actual_dst.filesystem.mkdir(dst_root)
         src_dirs.append(src_root)
+        dir_stats.append((dst_root, src_root.stat))
         if src_files:
             ctx.status.update_progress(inc_total=len(src_files))
         for f in src_files:
@@ -273,6 +283,10 @@ async def _move_dir_contents(
     for d in reversed(src_dirs):
         with contextlib.suppress(OSError):
             d.filesystem.rmdir(d)
+    # Apply directory attributes bottom-up so that parent mtime is not disturbed
+    # by child directory attribute changes.
+    for dst_dir, src_stat in reversed(dir_stats):
+        actual_dst.filesystem.copy_stat(dst_dir, src_stat)
 
 
 async def _move_path(

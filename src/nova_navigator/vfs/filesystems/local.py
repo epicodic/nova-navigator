@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import stat as stat_mod
 from io import BufferedReader, BufferedWriter
 from stat import S_ISDIR, S_ISLNK
 from typing import Any, override
@@ -89,6 +90,7 @@ class LocalFilesystem(Filesystem):
         return Stat(
             size=stat.st_size,
             modified=stat.st_mtime,
+            mode=stat_mod.S_IMODE(lstat.st_mode),
             is_hidden=is_hidden,
             is_directory=S_ISDIR(stat.st_mode),
             is_executable=stat.st_mode & 0o111 != 0,
@@ -151,6 +153,15 @@ class LocalFilesystem(Filesystem):
     def mkdir(self, path: VPath) -> None:
         self._assert_vpath(path)
         os.mkdir(path.path)
+
+    @override
+    def copy_stat(self, path: VPath, src_stat: Stat) -> None:
+        self._assert_vpath(path)
+        p = path.path
+        if src_stat.modified >= 0:
+            os.utime(p, (src_stat.modified, src_stat.modified), follow_symlinks=False)
+        if src_stat.mode >= 0:
+            os.chmod(p, src_stat.mode, follow_symlinks=False)
 
     @override
     def readlink(self, path: VPath) -> str:
