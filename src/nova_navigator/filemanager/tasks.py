@@ -1,4 +1,5 @@
 import contextlib
+import logging
 from dataclasses import dataclass
 from typing import Literal
 
@@ -11,6 +12,8 @@ CHUNK_SIZE = 64 * 1024  # 64 KB
 
 
 OverwritePolicy = Literal["overwrite", "skip", "ask"]
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -49,9 +52,8 @@ def copy_file(status: TaskStatus, src_path: VPath, dst_path: VPath, options: Fil
                 elif options.overwrite == "ask":
                     decision = yield DecisionRequest(
                         "Overwrite",
-                        expected_decisions={Decision.YES, Decision.NO, Decision.ALL, Decision.NONE},
+                        expected_decisions=[Decision.YES, Decision.NO, Decision.ALL, Decision.NONE],
                         message=f"File '{dst_path.path}' already exists. Overwrite?",
-                        dst=dst_path.path,
                     )
                     if decision.is_negative:
                         status.set_completed()
@@ -107,4 +109,44 @@ def copy_files(
                     status.update_progress(inc_completed=1)
         else:
             yield from copy_file(status, src_path, destination / src_path.name, options)
+        status.update_progress(inc_completed=1)
+
+
+@dataclass
+class EraseFilesOptions:
+    """Options that control the behaviour of file erase operations."""
+
+    ask_before_erase: bool = True
+
+
+def erase_files(status: TaskStatus, paths: list[VPath], options: EraseFilesOptions | None = None) -> Task:
+    """Task that erases each path in *paths*.
+
+    Directories are removed recursively.  Progress is incremented by one for
+    each element of *paths* regardless of whether it is a file or directory.
+    """
+    if options is None:
+        options = EraseFilesOptions()
+
+    _logger.warning("erase_files: options=%s", options)
+
+    status.update_progress(inc_total=len(paths))
+    for path in paths:
+        status.check_cancelled()
+        if path.stat.is_directory:
+            if len(path.iterdir()) > 0 and options.ask_before_erase:
+                decision = yield DecisionRequest(
+                    "Delete non-empty directory",
+                    expected_decisions=[Decision.YES, Decision.NO, Decision.ALL, Decision.NONE],
+                    message=f"Directory '{path.path}' is not empty. Delete it recursively?",
+                )
+                if decision.is_negative:
+                    continue
+
+            yield from erase_files(status, list(path.iterdir()), EraseFilesOptions(ask_before_erase=False))
+            path.filesystem.rmdir(path)
+
+        else:
+            path.filesystem.remove(path)
+
         status.update_progress(inc_completed=1)
