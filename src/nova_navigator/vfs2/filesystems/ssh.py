@@ -80,6 +80,10 @@ class SSHFilesystem(Filesystem):
         return f"{self.__class__.__name__}({self._ssh_client!r})"
 
     @override
+    def is_same_device(self, path1: VPath, path2: VPath) -> bool:
+        return False
+
+    @override
     def cwd(self) -> VPath:
         cwd = self._sftp_client.getcwd()
         if cwd is None:
@@ -155,6 +159,22 @@ class SSHFilesystem(Filesystem):
     @override
     def write(self, path: VPath) -> StreamWriterLike:
         return cast("StreamWriterLike", self._sftp_client.open(path.path.as_posix(), "wb"))
+
+    @override
+    def remove(self, path: VPath) -> None:
+        self._assert_vpath(path)
+        self._sftp_client.remove(path.path.as_posix())
+
+    @override
+    def rename(self, src_path: VPath, dst_path: VPath) -> None:
+        self._assert_vpath(src_path)
+        self._assert_vpath(dst_path)
+        self._sftp_client.rename(src_path.path.as_posix(), dst_path.path.as_posix())
+
+    @override
+    def rmdir(self, path: VPath) -> None:
+        self._assert_vpath(path)
+        self._sftp_client.rmdir(path.path.as_posix())
 
     @override
     def mkdir(self, path: VPath) -> None:

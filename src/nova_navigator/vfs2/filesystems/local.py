@@ -35,6 +35,19 @@ class LocalFilesystem(Filesystem):
         return f"{self.__class__.__name__}"
 
     @override
+    def is_same_device(self, path1: VPath, path2: VPath) -> bool:
+        self._assert_vpath(path1)
+        if not isinstance(path2.filesystem, LocalFilesystem):
+            return False
+        # Use os.stat to get device IDs and compare them
+        try:
+            stat1 = os.stat(path1.path)
+            stat2 = os.stat(path2.path)
+            return stat1.st_dev == stat2.st_dev
+        except (FileNotFoundError, OSError):
+            return False
+
+    @override
     def cwd(self) -> VPath:
         return VPath(os.getcwd(), self)
 
@@ -122,6 +135,12 @@ class LocalFilesystem(Filesystem):
     def remove(self, path: VPath) -> None:
         self._assert_vpath(path)
         os.remove(path.path)
+
+    @override
+    def rename(self, src_path: VPath, dst_path: VPath) -> None:
+        self._assert_vpath(src_path)
+        self._assert_vpath(dst_path)
+        os.rename(src_path.path, dst_path.path)
 
     @override
     def rmdir(self, path: VPath) -> None:

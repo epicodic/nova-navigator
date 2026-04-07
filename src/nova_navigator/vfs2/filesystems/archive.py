@@ -59,6 +59,11 @@ class ArchiveFilesystem(Filesystem):
         return self._archive.stats(path.path)
 
     @override
+    def is_same_device(self, path1: VPath, path2: VPath) -> bool:
+        self._assert_vpath(path1)
+        return path1.filesystem == path2.filesystem
+
+    @override
     def read(self, path: VPath) -> StreamReaderLike:
         raise NotImplementedError("ArchiveFilesystem does not support read()")
 
@@ -68,6 +73,10 @@ class ArchiveFilesystem(Filesystem):
 
     @override
     def remove(self, path: VPath) -> None:
+        raise NotImplementedError("ArchiveFilesystem is read-only")
+
+    @override
+    def rename(self, src_path: VPath, dst_path: VPath) -> None:
         raise NotImplementedError("ArchiveFilesystem is read-only")
 
     @override

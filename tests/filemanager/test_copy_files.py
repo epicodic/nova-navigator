@@ -21,12 +21,12 @@ def test_copy_file_simple() -> None:
     dst_fs = MockFilesystem()
 
     src = src_fs.path("/src/file.txt")
-    dst = dst_fs.path("/home/user/file.txt")
+    dst = dst_fs.path("/home/user/other.txt")
 
     run_task(copy_file(make_status(), src, dst))
 
-    assert dst_fs.path("/home/user/file.txt").stat.size == len(content)
-    assert read_all(dst_fs, "/home/user/file.txt") == content
+    assert dst_fs.path("/home/user/other.txt").stat.size == len(content)
+    assert read_all(dst_fs, "/home/user/other.txt") == content
     assert src_fs.readers[0].close_count == 1
     assert dst_fs.writers[0].close_count == 1
 
@@ -34,40 +34,40 @@ def test_copy_file_simple() -> None:
 def test_copy_file_overwrite_skip() -> None:
     """skip policy leaves dst unchanged when dst exists."""
     src_fs = MockFilesystem({"/src/file.txt": b"new"})
-    dst_fs = MockFilesystem({"/home/user/file.txt": b"original"})
+    dst_fs = MockFilesystem({"/home/user/other.txt": b"original"})
 
     src = src_fs.path("/src/file.txt")
-    dst = dst_fs.path("/home/user/file.txt")
+    dst = dst_fs.path("/home/user/other.txt")
 
     run_task(copy_file(make_status(), src, dst, FileCopyOptions(overwrite="skip")))
 
     assert len(dst_fs.writers) == 0
     assert src_fs.readers[0].close_count == 1
-    assert read_all(dst_fs, "/home/user/file.txt") == b"original"
+    assert read_all(dst_fs, "/home/user/other.txt") == b"original"
 
 
 def test_copy_file_overwrite_force() -> None:
     """overwrite policy replaces dst content without asking."""
     src_fs = MockFilesystem({"/src/file.txt": b"new content"})
-    dst_fs = MockFilesystem({"/home/user/file.txt": b"old"})
+    dst_fs = MockFilesystem({"/home/user/other.txt": b"old"})
 
     src = src_fs.path("/src/file.txt")
-    dst = dst_fs.path("/home/user/file.txt")
+    dst = dst_fs.path("/home/user/other.txt")
 
     run_task(copy_file(make_status(), src, dst, FileCopyOptions(overwrite="overwrite")))
 
     assert src_fs.readers[0].close_count == 1
     assert dst_fs.writers[0].close_count == 1
-    assert read_all(dst_fs, "/home/user/file.txt") == b"new content"
+    assert read_all(dst_fs, "/home/user/other.txt") == b"new content"
 
 
 def test_copy_file_ask_yes() -> None:
     """ask policy prompts the user; YES overwrites dst."""
     src_fs = MockFilesystem({"/src/file.txt": b"replacement"})
-    dst_fs = MockFilesystem({"/home/user/file.txt": b"old"})
+    dst_fs = MockFilesystem({"/home/user/other.txt": b"old"})
 
     src = src_fs.path("/src/file.txt")
-    dst = dst_fs.path("/home/user/file.txt")
+    dst = dst_fs.path("/home/user/other.txt")
 
     requests = run_task(
         copy_file(make_status(), src, dst, FileCopyOptions(overwrite="ask")),
@@ -77,16 +77,16 @@ def test_copy_file_ask_yes() -> None:
     assert len(requests) == 1
     assert src_fs.readers[0].close_count == 1
     assert dst_fs.writers[0].close_count == 1
-    assert read_all(dst_fs, "/home/user/file.txt") == b"replacement"
+    assert read_all(dst_fs, "/home/user/other.txt") == b"replacement"
 
 
 def test_copy_file_ask_no() -> None:
     """ask policy prompts the user; NO leaves dst unchanged."""
     src_fs = MockFilesystem({"/src/file.txt": b"replacement"})
-    dst_fs = MockFilesystem({"/home/user/file.txt": b"original"})
+    dst_fs = MockFilesystem({"/home/user/other.txt": b"original"})
 
     src = src_fs.path("/src/file.txt")
-    dst = dst_fs.path("/home/user/file.txt")
+    dst = dst_fs.path("/home/user/other.txt")
 
     requests = run_task(
         copy_file(make_status(), src, dst, FileCopyOptions(overwrite="ask")),
@@ -96,7 +96,7 @@ def test_copy_file_ask_no() -> None:
     assert len(requests) == 1
     assert len(dst_fs.writers) == 0
     assert src_fs.readers[0].close_count == 1
-    assert read_all(dst_fs, "/home/user/file.txt") == b"original"
+    assert read_all(dst_fs, "/home/user/other.txt") == b"original"
 
 
 def test_copy_file_reader_closed_on_error() -> None:
@@ -204,8 +204,30 @@ def test_copy_file_write_error_closes_streams() -> None:
 # copy_paths tests
 # ---------------------------------------------------------------------------
 
+# 1. copy single file to new location and different name
+# 2. copy single file to new directory
+# 3. copy flat directory (only files, no subdirs)
+# 4. copy deep directory hierarchy (multiple levels of nested subdirs)
+# 5. copy mix of files and directories in same operation
+# 6. overwrite policy: skip, overwrite, ask (with YES, NO, ALL, NONE)
+# 7. progress tracking: overall progress should track number of src_paths completed
+# 8. cancellation: TaskCancelled should be raised if cancel event is set mid-copy
+# 9. error handling: OSError during read/write should propagate and still close streams
 
+
+# 1.
 def test_copy_paths_single_file() -> None:
+    """A single file is copied into the destination directory under its original name."""
+    src_fs = MockFilesystem({"/src/hello.txt": b"hello"})
+    dst_fs = MockFilesystem()
+
+    run_task(copy_files(make_status(), [src_fs.path("/src/hello.txt")], dst_fs.path("/home/user/other.txt")))
+
+    assert read_all(dst_fs, "/home/user/other.txt") == b"hello"
+
+
+# 2.
+def test_copy_paths_single_to_dir() -> None:
     """A single file is copied into the destination directory under its original name."""
     src_fs = MockFilesystem({"/src/hello.txt": b"hello"})
     dst_fs = MockFilesystem()
@@ -234,6 +256,7 @@ def test_copy_paths_multiple_files() -> None:
     assert read_all(dst_fs, "/home/user/c.txt") == b"ccc"
 
 
+# 3.
 def test_copy_paths_flat_directory() -> None:
     """A directory whose contents are all flat files is copied recursively."""
     src_fs = MockFilesystem(
@@ -252,6 +275,7 @@ def test_copy_paths_flat_directory() -> None:
     assert read_all(dst_fs, "/dst/mydir/b.txt") == b"b"
 
 
+# 4.
 def test_copy_paths_deep_hierarchy() -> None:
     """Nested subdirectory trees are copied with their full relative structure preserved."""
     src_fs = MockFilesystem(
@@ -271,6 +295,7 @@ def test_copy_paths_deep_hierarchy() -> None:
     assert read_all(dst_fs, "/dst/root/sub/deep/bottom.txt") == b"bottom"
 
 
+# 5.
 def test_copy_paths_mixed_files_and_dirs() -> None:
     """A mix of plain files and directories in src_paths are all handled correctly."""
     src_fs = MockFilesystem(
@@ -289,6 +314,7 @@ def test_copy_paths_mixed_files_and_dirs() -> None:
     assert read_all(dst_fs, "/dst/dir/nested.txt") == b"nested"
 
 
+# 6. (skip)
 def test_copy_paths_overwrite_skip() -> None:
     """skip policy silently leaves every existing destination file unchanged."""
     src_fs = MockFilesystem(
@@ -313,6 +339,7 @@ def test_copy_paths_overwrite_skip() -> None:
     assert read_all(dst_fs, "/dst/b.txt") == b"original-b"
 
 
+# 6. (overwrite)
 def test_copy_paths_overwrite_force() -> None:
     """overwrite policy replaces existing destination files without prompting."""
     src_fs = MockFilesystem(
@@ -336,6 +363,7 @@ def test_copy_paths_overwrite_force() -> None:
     assert read_all(dst_fs, "/dst/b.txt") == b"new-b"
 
 
+# 6. (ask with YES)
 def test_copy_paths_overwrite_ask_yes() -> None:
     """ask policy prompts once per conflicting file; YES overwrites it."""
     src_fs = MockFilesystem({"/src/file.txt": b"new"})
@@ -350,6 +378,7 @@ def test_copy_paths_overwrite_ask_yes() -> None:
     assert read_all(dst_fs, "/dst/file.txt") == b"new"
 
 
+# 6. (ask with NO)
 def test_copy_paths_overwrite_ask_no() -> None:
     """ask policy prompts once per conflicting file; NO leaves destination unchanged."""
     src_fs = MockFilesystem({"/src/file.txt": b"new"})
@@ -365,6 +394,7 @@ def test_copy_paths_overwrite_ask_no() -> None:
     assert read_all(dst_fs, "/dst/file.txt") == b"original"
 
 
+# 6. (ask per file)
 def test_copy_paths_overwrite_ask_per_file() -> None:
     """ask policy prompts independently for each conflicting file."""
     src_fs = MockFilesystem(
@@ -392,6 +422,7 @@ def test_copy_paths_overwrite_ask_per_file() -> None:
     assert read_all(dst_fs, "/dst/b.txt") == b"old-b"
 
 
+# 6. (ALL)
 def test_copy_paths_overwrite_yes_to_all() -> None:
     """YES_TO_ALL resolves all subsequent conflicts without further prompts."""
     src_fs = MockFilesystem(
@@ -427,6 +458,41 @@ def test_copy_paths_overwrite_yes_to_all() -> None:
     assert read_all(dst_fs, "/dst/c.txt") == b"new-c"
 
 
+# 6. (NONE)
+def test_copy_paths_overwrite_no_to_all() -> None:
+    """NONE (No to All) skips all remaining conflicts without further prompts."""
+    src_fs = MockFilesystem(
+        {
+            "/src/a.txt": b"new-a",
+            "/src/b.txt": b"new-b",
+            "/src/c.txt": b"new-c",
+        }
+    )
+    dst_fs = MockFilesystem(
+        {
+            "/dst/a.txt": b"old-a",
+            "/dst/b.txt": b"old-b",
+            "/dst/c.txt": b"old-c",
+        }
+    )
+
+    srcs = [src_fs.path(p) for p in ("/src/a.txt", "/src/b.txt", "/src/c.txt")]
+    # NONE on all prompts - all files should remain unchanged
+    requests = run_task(
+        copy_files(make_status(), srcs, dst_fs.path("/dst")),
+        [Decision.NONE, Decision.NONE, Decision.NONE],
+    )
+
+    # Three separate conflicts → three separate DecisionRequests (run_task drives
+    # them all; de-duplication happens in TaskScheduler, not in the Task itself)
+    assert len(requests) == 3
+    # All destination files should remain unchanged (no writes)
+    assert len(dst_fs.writers) == 0
+    assert read_all(dst_fs, "/dst/a.txt") == b"old-a"
+    assert read_all(dst_fs, "/dst/b.txt") == b"old-b"
+    assert read_all(dst_fs, "/dst/c.txt") == b"old-c"
+
+
 def test_copy_paths_no_conflict_no_prompt() -> None:
     """When destination files do not exist, no DecisionRequests are yielded."""
     src_fs = MockFilesystem(
@@ -445,6 +511,7 @@ def test_copy_paths_no_conflict_no_prompt() -> None:
     assert read_all(dst_fs, "/home/user/y.txt") == b"y"
 
 
+# 7.
 def test_copy_paths_progress_tracks_src_paths() -> None:
     """Overall progress completed equals len(src_paths) when done; total is set upfront."""
     events: list[tuple[int, int]] = []
@@ -466,6 +533,7 @@ def test_copy_paths_progress_tracks_src_paths() -> None:
     assert max(completeds) == 3  # all three paths marked completed
 
 
+# 8.
 def test_copy_paths_cancelled_mid_list() -> None:
     """TaskCancelled is raised when the cancel event fires between source paths."""
     src_fs = MockFilesystem({"/src/a.txt": b"a", "/src/b.txt": b"b"})
@@ -477,3 +545,27 @@ def test_copy_paths_cancelled_mid_list() -> None:
 
     with pytest.raises(TaskCancelled):
         run_task(copy_files(status, [src_fs.path("/src/a.txt"), src_fs.path("/src/b.txt")], dst_fs.path("/home/user")))
+
+
+# 9.
+def test_copy_paths_error_during_directory_copy() -> None:
+    """OSError during recursive directory copy propagates correctly."""
+    src_fs = MockFilesystem(
+        {
+            "/src/mydir/file1.txt": b"content1",
+            "/src/mydir/file2.txt": b"content2",
+        }
+    )
+    dst_fs = MockFilesystem(
+        write_errors={"/home/user/mydir/file2.txt": OSError("disk full")},
+    )
+    dst_fs._mkdir_p(PurePosixPath("/home/user/mydir"))
+
+    with pytest.raises(OSError, match="disk full"):
+        run_task(copy_files(make_status(), [src_fs.path("/src/mydir")], dst_fs.path("/home/user")))
+
+    # Verify that file1.txt was copied successfully before the error
+    assert read_all(dst_fs, "/home/user/mydir/file1.txt") == b"content1"
+    # Verify streams were closed even after error
+    assert all(r.close_count >= 1 for r in src_fs.readers)
+    assert all(w.close_count >= 1 for w in dst_fs.writers)
