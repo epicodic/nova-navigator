@@ -629,6 +629,9 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
     def __init__(self) -> None:
         super().__init__()
 
+    def action_help_quit(self) -> None:
+        pass
+
     def _handle_exception(self, error: Exception) -> None:
         sys.settrace(debug_analytics.trace_handler)
         debug_analytics.write_crash(error)
