@@ -4,12 +4,11 @@ from typing import Any, ClassVar
 from textual import widgets
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import (
-    Horizontal,
-    Vertical,
-)
+from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets.button import ButtonVariant
+
+from nova_widgets import ButtonBox
 
 from ..decision import Decision
 
@@ -42,7 +41,6 @@ class Dialog(ModalScreen[str]):
 
         #button_box {
             height: auto;
-            align-horizontal: center;
         }
 
         Button {
@@ -63,7 +61,7 @@ class Dialog(ModalScreen[str]):
     _title: str = ""
     _buttons: list[Button]
     _dialog_box: Vertical | None = None
-    _button_box: Horizontal | None = None
+    _button_box: ButtonBox | None = None
     _button_accept: Button | None = None
     _button_dismiss: Button | None = None
 
@@ -100,8 +98,8 @@ class Dialog(ModalScreen[str]):
         yield widgets.Label(self._title)
 
     def compose(self) -> ComposeResult:
-        self._button_box = Horizontal(
-            *[
+        self._button_box = ButtonBox(
+            [
                 widgets.Button(
                     button.label,
                     id=button.id,
