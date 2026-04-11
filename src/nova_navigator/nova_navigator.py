@@ -31,9 +31,9 @@ from nova_navigator.nova_navigator_core import (
 )
 from nova_navigator.scheduler import DecisionRequest, Job
 from nova_navigator.terminal import Terminal
-from nova_navigator.uri import vfspath_from_uri
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
+from nova_navigator.vfs.scheme_registry import vfspath_from_uri
 from nova_navigator.widgets import DirectoryBrowser, Footer, JobStatusIcon
 from nova_widgets.menu import Action, Menu, MenuBar
 from nova_widgets.menu import constructor as mc
