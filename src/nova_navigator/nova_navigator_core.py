@@ -8,9 +8,9 @@ from nova_navigator import archive
 from nova_navigator.config import conf_, get_config_file_path
 from nova_navigator.dialogs import JobRegistry
 from nova_navigator.icons import ICONS, IconSet
-from nova_navigator.uri import register_common_schemes, vfspath_from_uri  # noqa: F401 (re-exported)
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import ArchiveFilesystem
+from nova_navigator.vfs.scheme_registry import register_common_schemes, vfspath_from_uri  # noqa: F401 (re-exported)
 from nova_widgets.menu import SYMBOL_TABLE, set_icon_provider
 
 # ---------------------------------------------------------------------------
