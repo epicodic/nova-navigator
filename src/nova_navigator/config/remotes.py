@@ -13,6 +13,7 @@ from nova_navigator.config.model import BaseModel, key_field
 class SshSettings(BaseModel):
     """SSH protocol settings for a remote connection."""
 
+    host: str = ""
     user: str | None = None
     port: int | None = None
     identity_file: str | None = None
