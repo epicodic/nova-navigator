@@ -21,6 +21,7 @@ dependencies = [
 nn = "nova_navigator.main:main"
 qa = "tools.qa:main"
 dialog_tester = "tools.dialog_tester:main"
+widget_tester = "tools.widget_tester:main"
 
 [build-system]
 requires = ["uv_build"]
