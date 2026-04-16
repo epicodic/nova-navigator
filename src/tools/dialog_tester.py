@@ -15,6 +15,7 @@ import json
 import sys
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from textual import work
@@ -34,6 +35,9 @@ from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_navigator.vfs.vpath import VPath
 
 _fs = LocalFilesystem.singleton()
+
+# Absolute path so CSS_PATH resolves regardless of cwd.
+_TCSS = str(Path(__file__).parent.parent / "nova_navigator" / "nn.tcss")
 
 _LauncherFn = Callable[[App[Any]], Coroutine[Any, Any, str]]
 
@@ -149,6 +153,8 @@ def _resolve_entry(name: str) -> DialogEntry:
 class _RunnerApp(App[str | None]):
     """Minimal app that immediately launches one dialog then exits."""
 
+    CSS_PATH = _TCSS
+
     def __init__(self, entry: DialogEntry) -> None:
         super().__init__()
         self._entry = entry
@@ -174,6 +180,8 @@ class _RunnerApp(App[str | None]):
 
 class _ScreenshotApp(App[str]):
     """Headless app that launches one dialog, captures a screenshot, then exits."""
+
+    CSS_PATH = _TCSS
 
     def __init__(self, entry: DialogEntry) -> None:
         super().__init__()
