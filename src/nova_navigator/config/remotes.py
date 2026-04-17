@@ -23,7 +23,6 @@ class SshSettings(BaseModel):
 class ProxySettings(BaseModel):
     """Proxy settings for a remote connection."""
 
-    type: str = "socks5"
     host: str = ""
     port: int = 1080
 

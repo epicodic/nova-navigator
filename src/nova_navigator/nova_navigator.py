@@ -19,7 +19,7 @@ from textual.widgets import Input
 from nova_navigator import debug_analytics
 from nova_navigator.config import conf_
 from nova_navigator.decision import Decision
-from nova_navigator.dialogs import BookmarksDialog, EditBookmarksDialog, JobsDialog
+from nova_navigator.dialogs import BookmarksDialog, EditBookmarksDialog, EditRemotesDialog, JobsDialog
 from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
 from nova_navigator.dialogs.decision_dialog import make_decision_dialog
 from nova_navigator.editor import Editor
@@ -154,6 +154,8 @@ class MainScreen(Screen[None]):
             mc.action(
                 "Connect to Server…", shortcut="Ctrl+Shift+G", action="connect_to_server", name="connect_to_server"
             ),
+            mc.separator(),
+            mc.action("Manage Remotes…", action="manage_remotes", name="manage_remotes"),
         )
 
         self._menu_bar.add_menu("Bookmarks", name="bookmarks").add(
@@ -577,6 +579,11 @@ class MainScreen(Screen[None]):
     @work
     async def _action_edit_bookmarks(self) -> None:
         dialog = EditBookmarksDialog(conf_.bookmarks)
+        await dialog.run()
+
+    @work
+    async def _action_manage_remotes(self) -> None:
+        dialog = EditRemotesDialog(conf_.remotes)
         await dialog.run()
 
     @work

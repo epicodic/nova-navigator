@@ -121,9 +121,8 @@ async def test_proxy_fields_hidden_when_unchecked() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.pause(delay=0.1)
-        # first entry has no proxy
-        proxy_fields = app.screen.query_one("#proxy_fields")
-        assert not proxy_fields.display
+        # first entry has no proxy — host/port inputs should be disabled
+        assert app.screen.query_one("#input_proxy_host", Input).disabled
 
 
 @pytest.mark.asyncio
@@ -137,8 +136,7 @@ async def test_proxy_fields_shown_when_checked() -> None:
         checkbox = app.screen.query_one("#check_proxy", Checkbox)
         checkbox.value = True
         await pilot.pause()
-        proxy_fields = app.screen.query_one("#proxy_fields")
-        assert proxy_fields.display
+        assert not app.screen.query_one("#input_proxy_host", Input).disabled
 
 
 @pytest.mark.asyncio

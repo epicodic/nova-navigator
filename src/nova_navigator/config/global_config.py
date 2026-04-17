@@ -4,6 +4,7 @@ import typing
 
 from .bookmarks import BookmarkConfig
 from .filetypes import FileTypeConfig
+from .remotes import RemoteConfig
 from .settings import Settings
 
 __all__ = ["GlobalConfig", "conf_"]
@@ -14,6 +15,7 @@ class GlobalConfig:
 
     filetypes: FileTypeConfig
     bookmarks: BookmarkConfig
+    remotes: RemoteConfig
     settings: Settings
 
     def load_all_configs(self) -> None:
