@@ -18,7 +18,6 @@ from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.icons import ICONS
 
 _PROTOCOL_OPTIONS: list[tuple[str, str]] = [("SSH", "ssh")]
-_PROXY_TYPE_OPTIONS: list[tuple[str, str]] = [("SOCKS5", "socks5"), ("HTTP", "http")]
 
 
 class EditRemotesDialog(Dialog):
@@ -109,24 +108,12 @@ class EditRemotesDialog(Dialog):
             width: 1fr;
         }
 
-        #proxy_section {
-            height: auto;
-        }
-
-        #proxy_fields {
-            height: auto;
-        }
-
         #input_proxy_host {
             width: 1fr;
         }
 
         #input_proxy_port {
             width: 10;
-        }
-
-        #select_proxy_type {
-            width: 14;
         }
     }
     """
@@ -204,29 +191,13 @@ class EditRemotesDialog(Dialog):
                 ),
                 id="ssh_section",
             ),
-            Vertical(
-                Static("── Proxy ──", classes="form_label"),
-                Checkbox("Enable proxy", id="check_proxy", disabled=True),
-                Vertical(
-                    Horizontal(
-                        Label("Host: ", classes="form_label"),
-                        Input(placeholder="proxy host", id="input_proxy_host", disabled=True),
-                        Label("  Port: ", classes="form_label"),
-                        Input(placeholder="1080", id="input_proxy_port", disabled=True),
-                        classes="form_row",
-                    ),
-                    Horizontal(
-                        Label("Type: ", classes="form_label"),
-                        Select(
-                            options=[(label, value) for label, value in _PROXY_TYPE_OPTIONS],
-                            id="select_proxy_type",
-                            disabled=True,
-                        ),
-                        classes="form_row",
-                    ),
-                    id="proxy_fields",
-                ),
-                id="proxy_section",
+            Horizontal(
+                Checkbox("Enable Proxy", id="check_proxy", disabled=True),
+                Label("  Host: ", classes="form_label"),
+                Input(placeholder="proxy host", id="input_proxy_host", disabled=True),
+                Label("  Port: ", classes="form_label"),
+                Input(placeholder="1080", id="input_proxy_port", disabled=True),
+                classes="form_row",
             ),
             id="form_container",
         )
@@ -270,6 +241,8 @@ class EditRemotesDialog(Dialog):
             "#input_username",
             "#input_identity_file",
             "#check_proxy",
+            "#input_proxy_host",
+            "#input_proxy_port",
         ):
             self.query_one(widget_id).disabled = disabled  # type: ignore[union-attr]
 
@@ -290,7 +263,6 @@ class EditRemotesDialog(Dialog):
                 self.query_one("#input_proxy_host", Input).value = ""
                 self.query_one("#input_proxy_port", Input).value = ""
                 self.query_one("#ssh_section").display = False
-                self.query_one("#proxy_fields").display = False
                 self._update_remove_button()
                 return
 
@@ -316,14 +288,11 @@ class EditRemotesDialog(Dialog):
             # proxy
             proxy_enabled = entry.proxy is not None
             self.query_one("#check_proxy", Checkbox).value = proxy_enabled
-            self.query_one("#proxy_fields").display = proxy_enabled
             proxy = entry.proxy or ProxySettings()
             self.query_one("#input_proxy_host", Input).value = proxy.host
             self.query_one("#input_proxy_port", Input).value = str(proxy.port) if proxy.port != 1080 else ""  # noqa: PLR2004
-            self.query_one("#select_proxy_type", Select).value = proxy.type
             self.query_one("#input_proxy_host", Input).disabled = not proxy_enabled
             self.query_one("#input_proxy_port", Input).disabled = not proxy_enabled
-            self.query_one("#select_proxy_type", Select).disabled = not proxy_enabled
 
             self._update_remove_button()
         finally:
@@ -465,8 +434,7 @@ class EditRemotesDialog(Dialog):
             entry.proxy = ProxySettings()
         elif not proxy_enabled:
             entry.proxy = None
-        self.query_one("#proxy_fields").display = proxy_enabled
-        for widget_id in ("#input_proxy_host", "#input_proxy_port", "#select_proxy_type"):
+        for widget_id in ("#input_proxy_host", "#input_proxy_port"):
             self.query_one(widget_id).disabled = not proxy_enabled  # type: ignore[union-attr]
         if proxy_enabled and entry.proxy:
             self._syncing = True
@@ -475,7 +443,6 @@ class EditRemotesDialog(Dialog):
                 self.query_one("#input_proxy_port", Input).value = (
                     str(entry.proxy.port) if entry.proxy.port != 1080 else ""  # noqa: PLR2004
                 )
-                self.query_one("#select_proxy_type", Select).value = entry.proxy.type
             finally:
                 self._syncing = False
 
@@ -497,15 +464,6 @@ class EditRemotesDialog(Dialog):
             return
         port_str = event.value.strip()
         entry.proxy.port = int(port_str) if port_str.isdigit() else 1080
-
-    @on(Select.Changed, "#select_proxy_type")
-    def _on_proxy_type_changed(self, event: Select.Changed) -> None:
-        if self._syncing or self._current_index is None:
-            return
-        entry = self._working[self._current_index]
-        if entry.proxy is None:
-            return
-        entry.proxy.type = str(event.value)
 
     # ------------------------------------------------------------------ dialog result
 
