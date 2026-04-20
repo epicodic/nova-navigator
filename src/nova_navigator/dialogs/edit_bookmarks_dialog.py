@@ -10,7 +10,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Input, Label, ListItem, ListView, Tree
+from textual.widgets import Label, ListItem, ListView, Tree
 
 from nova_navigator.config.bookmarks import Bookmark, BookmarkConfig, Group
 from nova_navigator.decision import Decision
@@ -19,6 +19,7 @@ from nova_navigator.dialogs.dialog import Dialog
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.icons import ICONS
 from nova_navigator.widgets.popup_widget import PopupWidget
+from nova_widgets import Button, ButtonBox, Input
 
 # Tag types stored in tree node data
 _GroupTag = tuple[str, int]  # ("group", group_index)
@@ -106,6 +107,14 @@ class EditBookmarksDialog(Dialog):
         #action_row {
             width: auto;
             height: 1fr;
+
+            Vertical {
+                width: auto;
+            }
+
+            .button-box-row {
+                width: auto;
+            }
         }
 
         #tree_row {
@@ -128,17 +137,14 @@ class EditBookmarksDialog(Dialog):
 
         #input_name {
             width: 1fr;
-            border: inner $surface;
         }
 
         #input_path {
             width: 1fr;
-            border: inner $surface;
         }
 
         #input_icon {
             width: 20;
-            border: inner $surface;
         }
 
         #btn_pick_icon {
@@ -199,13 +205,15 @@ class EditBookmarksDialog(Dialog):
     def compose_content(self) -> ComposeResult:
         yield Horizontal(
             Tree("Bookmarks", id="bookmark_tree"),
-            Vertical(
-                Button("Add Group", id="btn_add_group", flat=True),
-                Button("Add Entry", id="btn_add_entry", disabled=True, flat=True),
-                Button("Remove", id="btn_remove", disabled=True, flat=True),
-                Button("↑ Move Up", id="btn_move_up", disabled=True, flat=True),
-                Button("↓ Move Down", id="btn_move_down", disabled=True, flat=True),
-                Button("Move to…", id="btn_move_to_group", disabled=True, flat=True),
+            ButtonBox(
+                [
+                    [Button("Add Group", id="btn_add_group")],
+                    [Button("Add Entry", id="btn_add_entry", disabled=True)],
+                    [Button("Remove", id="btn_remove", disabled=True)],
+                    [Button("↑ Move Up", id="btn_move_up", disabled=True)],
+                    [Button("↓ Move Down", id="btn_move_down", disabled=True)],
+                    [Button("Move to…", id="btn_move_to_group", disabled=True)],
+                ],
                 id="action_row",
             ),
             id="tree_row",
@@ -216,7 +224,7 @@ class EditBookmarksDialog(Dialog):
                 Input(placeholder="Name", id="input_name"),
                 Label("  Icon: ", classes="form_label"),
                 Input(placeholder="Icon", id="input_icon"),
-                Button("…", id="btn_pick_icon", flat=True),
+                Button("…", id="btn_pick_icon"),
                 id="form_row_name",
             ),
             Horizontal(

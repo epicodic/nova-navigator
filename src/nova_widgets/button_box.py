@@ -78,31 +78,43 @@ class ButtonBox(Widget):
         if pos is None:
             return
         r, c = pos
-        if c > 0:
-            self._rows[r][c - 1].focus()
+        for c2 in range(c - 1, -1, -1):
+            btn = self._rows[r][c2]
+            if not btn.disabled:
+                btn.focus()
+                return
 
     def action_focus_right(self) -> None:
         pos = self._focused_position()
         if pos is None:
             return
         r, c = pos
-        if c < len(self._rows[r]) - 1:
-            self._rows[r][c + 1].focus()
+        for c2 in range(c + 1, len(self._rows[r])):
+            btn = self._rows[r][c2]
+            if not btn.disabled:
+                btn.focus()
+                return
 
     def action_focus_up(self) -> None:
         pos = self._focused_position()
         if pos is None:
             return
         r, c = pos
-        if r > 0:
-            target_row = self._rows[r - 1]
-            target_row[min(c, len(target_row) - 1)].focus()
+        for r2 in range(r - 1, -1, -1):
+            target_row = self._rows[r2]
+            btn = target_row[min(c, len(target_row) - 1)]
+            if not btn.disabled:
+                btn.focus()
+                return
 
     def action_focus_down(self) -> None:
         pos = self._focused_position()
         if pos is None:
             return
         r, c = pos
-        if r < len(self._rows) - 1:
-            target_row = self._rows[r + 1]
-            target_row[min(c, len(target_row) - 1)].focus()
+        for r2 in range(r + 1, len(self._rows)):
+            target_row = self._rows[r2]
+            btn = target_row[min(c, len(target_row) - 1)]
+            if not btn.disabled:
+                btn.focus()
+                return

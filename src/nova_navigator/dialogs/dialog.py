@@ -8,13 +8,13 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets.button import ButtonVariant
 
-from nova_widgets import ButtonBox
+from nova_widgets import Button, ButtonBox
 
 from ..decision import Decision
 
 
 @dataclass
-class Button:
+class ButtonSpec:
     label: str
     id: str
     variant: ButtonVariant = "default"
@@ -23,8 +23,8 @@ class Button:
 DefaultButton = Decision
 
 
-def _default_button(button: DefaultButton) -> Button:
-    return Button(label=button.tr, id=button.name, variant="primary" if button.is_positive else "error")
+def _default_button(button: DefaultButton) -> ButtonSpec:
+    return ButtonSpec(label=button.tr, id=button.name, variant="primary" if button.is_positive else "error")
 
 
 class Dialog(ModalScreen[str]):
@@ -59,17 +59,17 @@ class Dialog(ModalScreen[str]):
     ]
 
     _title: str = ""
-    _buttons: list[Button]
+    _buttons: list[ButtonSpec]
     _dialog_box: Vertical | None = None
     _button_box: ButtonBox | None = None
-    _button_accept: Button | None = None
-    _button_dismiss: Button | None = None
+    _button_accept: ButtonSpec | None = None
+    _button_dismiss: ButtonSpec | None = None
 
     def __init__(
         self,
         title: str,
         id: str | None = None,
-        buttons: list[Button | DefaultButton] | None = None,
+        buttons: list[ButtonSpec | DefaultButton] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs, id=id)
@@ -100,11 +100,10 @@ class Dialog(ModalScreen[str]):
     def compose(self) -> ComposeResult:
         self._button_box = ButtonBox(
             [
-                widgets.Button(
+                Button(
                     button.label,
                     id=button.id,
                     variant=button.variant,
-                    flat=True,
                 )
                 for button in self._buttons
             ],
@@ -120,7 +119,7 @@ class Dialog(ModalScreen[str]):
         yield self._dialog_box
         yield widgets.Footer()
 
-    def on_button_pressed(self, event: widgets.Button.Pressed) -> None:
+    def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id)
 
     def action_accept_dialog(self) -> None:

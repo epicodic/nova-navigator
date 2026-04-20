@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from textual.widgets import Button
+from textual.widgets import Button as _Button
+from textual.widgets import Checkbox as _Checkbox
+from textual.widgets import Input as _Input
+from textual.widgets import Select as _Select
 from textual.widgets._button import ButtonVariant
 
 
-class FlatButton(Button):
+class Button(_Button):
     """A ``Button`` that always uses the flat look with Nova Navigator styling.
 
     Equivalent to ``Button(..., flat=True)`` but also ships the modified
@@ -14,57 +17,57 @@ class FlatButton(Button):
     """
 
     DEFAULT_CSS = """
-    FlatButton.-style-flat:focus {
+    Button.-style-flat:focus {
         color: $text;
         background: $primary;
         border: block $primary;
         text-style: none;
     }
-    FlatButton.-style-flat.-primary:focus {
+    Button.-style-flat.-primary:focus {
         color: $text;
         background: $primary;
         border: block $primary;
         text-style: none;
     }
-    FlatButton.-style-flat.-success:focus {
+    Button.-style-flat.-success:focus {
         color: $text;
         background: $success;
         border: block $success;
         text-style: none;
     }
-    FlatButton.-style-flat.-warning:focus {
+    Button.-style-flat.-warning:focus {
         color: $text;
         background: $warning;
         border: block $warning;
         text-style: none;
     }
-    FlatButton.-style-flat.-error:focus {
+    Button.-style-flat.-error:focus {
         color: $text;
         background: $error;
         border: block $error;
         text-style: none;
     }
-    FlatButton.-style-flat:hover {
+    Button.-style-flat:hover {
         color: $text;
         background: $primary-lighten-2;
         border: block $primary-lighten-2;
     }
-    FlatButton.-style-flat.-primary:hover {
+    Button.-style-flat.-primary:hover {
         color: $text;
         background: $primary-lighten-2;
         border: block $primary-lighten-2;
     }
-    FlatButton.-style-flat.-success:hover {
+    Button.-style-flat.-success:hover {
         color: $text;
         background: $success-lighten-2;
         border: block $success-lighten-2;
     }
-    FlatButton.-style-flat.-warning:hover {
+    Button.-style-flat.-warning:hover {
         color: $text;
         background: $warning-lighten-2;
         border: block $warning-lighten-2;
     }
-    FlatButton.-style-flat.-error:hover {
+    Button.-style-flat.-error:hover {
         color: $text;
         background: $error-lighten-2;
         border: block $error-lighten-2;
@@ -80,6 +83,7 @@ class FlatButton(Button):
         id: str | None = None,
         classes: str | None = None,
         disabled: bool = False,
+        compact: bool = False,
     ) -> None:
         super().__init__(
             label,
@@ -89,4 +93,50 @@ class FlatButton(Button):
             classes=classes,
             disabled=disabled,
             flat=True,
+            compact=compact,
         )
+
+
+class Input(_Input):
+    """An ``Input`` with the Nova Navigator flat surface border style."""
+
+    DEFAULT_CSS = """
+    Input {
+        border: inner $surface;
+
+        &:focus {
+            background: $primary 25%;
+            border: inner $primary 25%;
+        }
+    }
+    """
+
+
+class Select(_Select[object]):
+    """A ``Select`` with the Nova Navigator flat surface border style."""
+
+    DEFAULT_CSS = """
+    Select > SelectCurrent {
+        border: inner $surface;
+    }
+    Select:focus > SelectCurrent {
+        background: $primary 25%;
+        border: inner $primary 25%;
+    }
+    """
+
+
+class Checkbox(_Checkbox):
+    """A ``Checkbox`` with no border and no background tint on focus."""
+
+    DEFAULT_CSS = """
+    Checkbox {
+        border: inner transparent;
+        background: transparent;
+
+        &:focus {
+            background: $primary 25%;
+            border: inner $primary 25%;
+        }
+    }
+    """
