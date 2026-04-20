@@ -9,13 +9,14 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Checkbox, Input, Label, ListItem, ListView, Select, Static
+from textual.widgets import Label, ListItem, ListView, Static
 
 from nova_navigator.config.remotes import ProxySettings, RemoteConfig, RemoteConnection, SshSettings
 from nova_navigator.decision import Decision
 from nova_navigator.dialogs.dialog import Dialog
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.icons import ICONS
+from nova_widgets import Button, Checkbox, Input, Select
 
 _PROTOCOL_OPTIONS: list[tuple[str, str]] = [("SSH", "ssh")]
 
@@ -57,10 +58,6 @@ class EditRemotesDialog(Dialog):
         .form_label {
             width: auto;
             border: inner transparent;
-        }
-
-        Input {
-            border: inner $surface;
         }
 
         #input_name {
@@ -141,8 +138,8 @@ class EditRemotesDialog(Dialog):
         yield Horizontal(
             ListView(id="remote_list"),
             Vertical(
-                Button("Add", id="btn_add", flat=True),
-                Button("Remove", id="btn_remove", disabled=True, flat=True),
+                Button("Add", id="btn_add"),
+                Button("Remove", id="btn_remove", disabled=True),
                 id="action_col",
             ),
             id="list_row",
@@ -153,7 +150,7 @@ class EditRemotesDialog(Dialog):
                 Input(placeholder="Name", id="input_name", disabled=True),
                 Label("  Icon: ", classes="form_label"),
                 Input(placeholder="Icon", id="input_icon", disabled=True),
-                Button("…", id="btn_pick_icon", flat=True, disabled=True),
+                Button("…", id="btn_pick_icon", disabled=True),
                 classes="form_row",
             ),
             Horizontal(
