@@ -10,9 +10,9 @@ from typing import ClassVar
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, VerticalScroll
-from textual.widgets import Checkbox, Footer, Input, Label, Rule, Select, Static
+from textual.widgets import Footer, Label, Rule, Static
 
-from nova_widgets.flat_widgets import FlatButton
+from nova_widgets import Button, Checkbox, Input, Select
 from nova_widgets.menu import MenuBar
 from nova_widgets.menu import constructor as mc
 
@@ -32,7 +32,7 @@ class WidgetTesterApp(App[None]):
 
     DEFAULT_CSS = """
     WidgetTesterApp {
-        #btn-row FlatButton { width: auto; min-width: 16; }
+        #btn-row Button { width: auto; min-width: 16; }
 
         VerticalScroll { height: 1fr; }
 
@@ -92,12 +92,12 @@ class WidgetTesterApp(App[None]):
             # ── Buttons ──────────────────────────────────────────────────────
             yield Label("Buttons", classes="section-title")
             with Horizontal(classes="row", id="btn-row"):
-                yield FlatButton("Default")
-                yield FlatButton("Primary", variant="primary")
-                yield FlatButton("Success", variant="success")
-                yield FlatButton("Warning", variant="warning")
-                yield FlatButton("Error", variant="error")
-                yield FlatButton("Disabled", disabled=True)
+                yield Button("Default")
+                yield Button("Primary", variant="primary")
+                yield Button("Success", variant="success")
+                yield Button("Warning", variant="warning")
+                yield Button("Error", variant="error")
+                yield Button("Disabled", disabled=True)
 
             # ── Input boxes ──────────────────────────────────────────────────
             yield Label("Input boxes", classes="section-title")
@@ -133,7 +133,7 @@ class WidgetTesterApp(App[None]):
         yield Static("", id="result")
         yield Footer()
 
-    def on_button_pressed(self, event: FlatButton.Pressed) -> None:
+    def on_button_pressed(self, event: Button.Pressed) -> None:
         self.query_one("#result", Static).update(f"Button pressed: {event.button.label!r}")
 
     def on_input_changed(self, event: Input.Changed) -> None:
