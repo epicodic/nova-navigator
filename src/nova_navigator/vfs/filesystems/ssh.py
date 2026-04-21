@@ -183,13 +183,13 @@ class SSHFilesystem(Filesystem):
         self._sftp_client.mkdir(path.path.as_posix())
 
     @override
-    def copy_stat(self, path: VPath, src_stat: Stat) -> None:
+    def copy_stat(self, path: VPath, stat: Stat) -> None:
         self._assert_vpath(path)
         p = path.path.as_posix()
-        if src_stat.modified >= 0:
-            self._sftp_client.utime(p, (src_stat.modified, src_stat.modified))
-        if src_stat.mode >= 0:
-            self._sftp_client.chmod(p, src_stat.mode)
+        if stat.modified >= 0:
+            self._sftp_client.utime(p, (stat.modified, stat.modified))
+        if stat.mode >= 0:
+            self._sftp_client.chmod(p, stat.mode)
 
     @override
     def readlink(self, path: VPath) -> str:

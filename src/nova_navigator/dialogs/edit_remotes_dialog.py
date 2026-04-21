@@ -9,7 +9,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Label, ListItem, ListView, Static
+from textual.widgets import Label, ListItem, ListView
 
 from nova_navigator.config.remotes import ProxySettings, RemoteConfig, RemoteConnection, SshSettings
 from nova_navigator.decision import Decision
@@ -60,6 +60,11 @@ class EditRemotesDialog(Dialog):
             border: inner transparent;
         }
 
+        .form_label-main {
+            width: 16;
+            border: inner transparent;
+        }
+
         #input_name {
             width: 1fr;
         }
@@ -76,9 +81,6 @@ class EditRemotesDialog(Dialog):
 
         #uri_preview {
             width: 1fr;
-            color: $text-muted;
-            border: inner transparent;
-            padding: 0 1;
         }
 
         #select_type {
@@ -146,7 +148,7 @@ class EditRemotesDialog(Dialog):
         )
         yield Vertical(
             Horizontal(
-                Label("Name: ", classes="form_label"),
+                Label("Name: ", classes="form_label form_label-main"),
                 Input(placeholder="Name", id="input_name", disabled=True),
                 Label("  Icon: ", classes="form_label"),
                 Input(placeholder="Icon", id="input_icon", disabled=True),
@@ -154,12 +156,12 @@ class EditRemotesDialog(Dialog):
                 classes="form_row",
             ),
             Horizontal(
-                Label("URI: ", classes="form_label"),
-                Static("", id="uri_preview"),
+                Label("URI: ", classes="form_label form_label-main"),
+                Input("", id="uri_preview", disabled=True),
                 classes="form_row",
             ),
             Horizontal(
-                Label("Type: ", classes="form_label"),
+                Label("Type: ", classes="form_label form_label-main"),
                 Select(
                     options=[(label, value) for label, value in _PROTOCOL_OPTIONS],
                     id="select_type",
@@ -168,28 +170,27 @@ class EditRemotesDialog(Dialog):
                 classes="form_row",
             ),
             Vertical(
-                Static("── SSH ──", classes="form_label"),
                 Horizontal(
-                    Label("Address: ", classes="form_label"),
+                    Label("Address: ", classes="form_label form_label-main"),
                     Input(placeholder="hostname or IP", id="input_address", disabled=True),
                     Label("  Port: ", classes="form_label"),
                     Input(placeholder="22", id="input_port", disabled=True),
                     classes="form_row",
                 ),
                 Horizontal(
-                    Label("Username: ", classes="form_label"),
+                    Label("Username: ", classes="form_label form_label-main"),
                     Input(placeholder="user", id="input_username", disabled=True),
                     classes="form_row",
                 ),
                 Horizontal(
-                    Label("Identity File: ", classes="form_label"),
-                    Input(placeholder="~/.ssh/id_ed25519", id="input_identity_file", disabled=True),
+                    Label("Identity File: ", classes="form_label form_label-main"),
+                    Input(id="input_identity_file", disabled=True),
                     classes="form_row",
                 ),
                 id="ssh_section",
             ),
             Horizontal(
-                Checkbox("Enable Proxy", id="check_proxy", disabled=True),
+                Checkbox("Use Proxy", id="check_proxy", disabled=True),
                 Label("  Host: ", classes="form_label"),
                 Input(placeholder="proxy host", id="input_proxy_host", disabled=True),
                 Label("  Port: ", classes="form_label"),
@@ -251,7 +252,7 @@ class EditRemotesDialog(Dialog):
                 self._set_form_disabled(True)
                 self.query_one("#input_name", Input).value = ""
                 self.query_one("#input_icon", Input).value = ""
-                self.query_one("#uri_preview", Static).update("")
+                self.query_one("#uri_preview", Input).value = ""
                 self.query_one("#input_address", Input).value = ""
                 self.query_one("#input_port", Input).value = ""
                 self.query_one("#input_username", Input).value = ""
@@ -268,7 +269,7 @@ class EditRemotesDialog(Dialog):
 
             self.query_one("#input_name", Input).value = entry.name
             self.query_one("#input_icon", Input).value = entry.icon or ""
-            self.query_one("#uri_preview", Static).update(entry.uri or "")
+            self.query_one("#uri_preview", Input).value = entry.uri or ""
 
             # protocol
             proto = "ssh"  # only supported for now
@@ -317,7 +318,7 @@ class EditRemotesDialog(Dialog):
             return
         uri = self._build_uri_preview()
         self._working[self._current_index].uri = uri
-        self.query_one("#uri_preview", Static).update(uri)
+        self.query_one("#uri_preview", Input).value = uri
         self._update_list_item_label(self._current_index)
 
     # ------------------------------------------------------------------ event handlers
