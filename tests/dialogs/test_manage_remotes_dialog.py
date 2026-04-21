@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Button, Checkbox, Input, ListItem, ListView, Static
+from textual.widgets import Button, Checkbox, Input, ListItem, ListView
 
 from nova_navigator.config.remotes import RemoteConfig, RemoteConnection, SshSettings
 from nova_navigator.dialogs.edit_remotes_dialog import EditRemotesDialog
@@ -109,8 +109,8 @@ async def test_uri_preview_updates_on_address_change() -> None:
         addr_input = app.screen.query_one("#input_address", Input)
         addr_input.value = "10.0.0.1"
         await pilot.pause()
-        preview = app.screen.query_one("#uri_preview", Static)
-        assert "10.0.0.1" in str(preview.content)
+        preview = app.screen.query_one("#uri_preview", Input)
+        assert "10.0.0.1" in preview.value
 
 
 @pytest.mark.asyncio

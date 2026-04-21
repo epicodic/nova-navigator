@@ -133,6 +133,8 @@ class Checkbox(_Checkbox):
     Checkbox {
         border: inner transparent;
         background: transparent;
+        margin: 0;
+        padding: 0;
 
         &:focus {
             background: $primary 25%;

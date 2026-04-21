@@ -38,7 +38,7 @@ def test_remote_connection_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
         name="myserver",
         uri="ssh://user@example.com",
         icon="server",
-        ssh=SshSettings(host="192.168.1.10", user="alice", port=2222, identity_file="~/.ssh/id_ed25519"),
+        ssh=SshSettings(host="192.168.1.10", user="alice", port=2222, identity_file="~/.ssh/foo"),
         proxy=ProxySettings(host="proxy.example.com", port=1080),
     )
     cfg = RemoteConfig.load()
@@ -55,7 +55,7 @@ def test_remote_connection_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     assert loaded.ssh.host == "192.168.1.10"
     assert loaded.ssh.user == "alice"
     assert loaded.ssh.port == 2222
-    assert loaded.ssh.identity_file == "~/.ssh/id_ed25519"
+    assert loaded.ssh.identity_file == "~/.ssh/foo"
     assert loaded.proxy is not None
     assert loaded.proxy.host == "proxy.example.com"
     assert loaded.proxy.port == 1080

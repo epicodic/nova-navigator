@@ -288,11 +288,11 @@ class MockFilesystem(Filesystem):
         return PurePosixPath(path) in self._nodes
 
     @override
-    def copy_stat(self, path: VPath, src_stat: Stat) -> None:
+    def copy_stat(self, path: VPath, stat: Stat) -> None:
         posix = self._to_posix(path)
         node = self._node(posix)
-        if src_stat.modified >= 0:
-            node.modified = src_stat.modified
+        if stat.modified >= 0:
+            node.modified = stat.modified
 
     @override
     def readlink(self, path: VPath) -> str:
