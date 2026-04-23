@@ -17,12 +17,10 @@ def _fixture_config() -> RemoteConfig:
     cfg._items = [
         RemoteConnection(
             name="my-server",
-            uri="ssh://alice@192.168.1.10",
             ssh=SshSettings(host="192.168.1.10", user="alice", port=None, identity_file=None),
         ),
         RemoteConnection(
             name="dev-box",
-            uri="ssh://dev.example.com",
             ssh=SshSettings(host="dev.example.com"),
         ),
     ]

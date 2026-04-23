@@ -36,7 +36,6 @@ def test_remote_connection_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
 
     conn = RemoteConnection(
         name="myserver",
-        uri="ssh://user@example.com",
         icon="server",
         ssh=SshSettings(host="192.168.1.10", user="alice", port=2222, identity_file="~/.ssh/foo"),
         proxy=ProxySettings(host="proxy.example.com", port=1080),
@@ -49,7 +48,6 @@ def test_remote_connection_round_trip(tmp_path: Path, monkeypatch: pytest.Monkey
     assert len(cfg2._items) == 1
     loaded = cfg2._items[0]
     assert loaded.name == "myserver"
-    assert loaded.uri == "ssh://user@example.com"
     assert loaded.icon == "server"
     assert loaded.ssh is not None
     assert loaded.ssh.host == "192.168.1.10"
@@ -68,7 +66,7 @@ def test_remote_connection_optional_fields_none(tmp_path: Path, monkeypatch: pyt
 
     from nova_navigator.config.remotes import RemoteConfig, RemoteConnection
 
-    conn = RemoteConnection(name="minimal", uri="sftp://host/")
+    conn = RemoteConnection(name="minimal")
     cfg = RemoteConfig.load()
     cfg._items = [conn]
     cfg.save()
@@ -87,7 +85,7 @@ def test_remote_connection_key_field(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     from nova_navigator.config.remotes import RemoteConfig, RemoteConnection
 
-    conn = RemoteConnection(name="myhost", uri="ssh://myhost/")
+    conn = RemoteConnection(name="myhost")
     cfg = RemoteConfig.load()
     cfg._items = [conn]
     cfg.save()
