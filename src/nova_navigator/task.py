@@ -1,16 +1,10 @@
 import asyncio
-import concurrent.futures
-import inspect
 import threading
-import time
-from collections.abc import Awaitable, Callable, Generator
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
-from functools import wraps
-from typing import Any
+from typing import Any, cast
 
 from nova_navigator.decision import Decision
-
-from .base.thread_safe_list import ThreadSafeList
 
 
 @dataclass(init=False)
@@ -30,28 +24,6 @@ class DecisionRequest:
         self.title = title
         self.expected_decisions = expected_decisions
         self.message = message
-
-
-Task = Generator["DecisionRequest | Task", Decision, None]
-
-
-def task(func: Callable[..., Any]) -> Callable[..., Task]:
-    """Decorator that normalises a plain function into a :data:`Task`.
-
-    If *func* is already a generator function it is returned unchanged.
-    Otherwise a thin wrapper is added so callers can treat it uniformly as a
-    generator regardless of whether it ever yields.
-    """
-    if inspect.isgeneratorfunction(func):
-        return func
-
-    @wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> Task:
-        result = func(*args, **kwargs)
-        return result
-        yield  # type: ignore[unreachable]
-
-    return wrapper
 
 
 @dataclass
@@ -157,123 +129,128 @@ class TaskStatus:
 GuiRequestCallback = Callable[[DecisionRequest, asyncio.Future[Decision]], Awaitable[None]]
 
 
-class TaskScheduler:
-    r"""Runs :data:`Task`\\ s in a thread and routes :class:`DecisionRequest`\\ s to the GUI.
+@dataclass
+class TaskContext:
+    """Context passed as the first argument to every async task function.
 
-    Tasks yield either a :class:`DecisionRequest` (pause for user input) or a
-    nested :data:`Task` (sub-task to run inline).  When a request is yielded
-    the scheduler suspends the task, notifies the GUI via *gui_request_callback*,
-    and resumes the task with the :class:`Decision` once the user
-    replies.  ``YES_TO_ALL`` / ``NO_TO_ALL`` responses are cached and applied
-    automatically to subsequent identical requests.
+    Provides access to progress/cancellation state and GUI decision requests.
     """
 
-    _waiting_tasks_with_requests: ThreadSafeList[tuple[Task, DecisionRequest]]
-    _ready_tasks_with_responses: ThreadSafeList[tuple[Task, Decision]]
-    _notify_task: concurrent.futures.Future[None] | None
+    _status: TaskStatus
+    _decision_requester: Callable[[str, list[Decision], str], Awaitable[Decision]]
+
+    @property
+    def status(self) -> TaskStatus:
+        return self._status
+
+    async def request_decision(
+        self,
+        title: str,
+        expected_decisions: list[Decision],
+        message: str,
+    ) -> Decision:
+        """Request a user decision via the GUI; suspends until the user responds."""
+        return await self._decision_requester(title, expected_decisions, message)
+
+    async def subtask[R](self, coro: Coroutine[Any, Any, R]) -> asyncio.Task[R]:
+        """Start *coro* as a concurrent asyncio task and yield control so it can begin."""
+        t: asyncio.Task[R] = asyncio.create_task(coro)
+        await asyncio.sleep(0)
+        return t
+
+
+async def _create_future_in_loop() -> asyncio.Future[Decision]:
+    return asyncio.get_event_loop().create_future()
+
+
+async def _wait_for_future(future: asyncio.Future[Decision]) -> Decision:
+    """Poll *future* (which lives in another event loop) until it is done."""
+    await asyncio.sleep(0)
+    while not future.done():  # noqa: ASYNC110
+        await asyncio.sleep(0.01)
+    return future.result()
+
+
+class AsyncTaskScheduler:
+    """Runs async task coroutines in a worker thread with an isolated event loop.
+
+    Decision requests are bridged to the GUI event loop via
+    :func:`asyncio.run_coroutine_threadsafe`.  An :class:`asyncio.Lock` ensures
+    only one GUI dialog is in flight at a time; ``ALL``/``NONE`` responses are
+    cached and applied automatically to subsequent identical requests.
+    """
+
     _gui_request_callback: GuiRequestCallback
-    _event_loop: asyncio.AbstractEventLoop
-
     _decisions_to_all: dict[str, Decision]
+    _request_lock: asyncio.Lock | None
 
-    def __init__(self, gui_request_callback: GuiRequestCallback, event_loop: asyncio.AbstractEventLoop) -> None:
-        self._waiting_tasks_with_requests = ThreadSafeList()
-        self._ready_tasks_with_responses = ThreadSafeList()
-        self._notify_task = None
+    def __init__(self, gui_request_callback: GuiRequestCallback) -> None:
         self._gui_request_callback = gui_request_callback
-        self._event_loop = event_loop
         self._decisions_to_all = {}
+        self._request_lock = None
 
     @staticmethod
-    async def execute(gui_request_callback: GuiRequestCallback, tasks: list[Task]) -> "TaskScheduler":
-        """Create a scheduler and run *tasks* in a worker thread, awaiting completion."""
-        loop = asyncio.get_running_loop()
-        scheduler = TaskScheduler(gui_request_callback=gui_request_callback, event_loop=loop)
-        await asyncio.create_task(asyncio.to_thread(scheduler.run_tasks, tasks))
+    async def execute(
+        gui_request_callback: GuiRequestCallback,
+        task_fn: Callable[[TaskContext], Awaitable[None]],
+        status: TaskStatus,
+    ) -> "AsyncTaskScheduler":
+        """Run *task_fn* in a worker thread and await its completion."""
+        gui_loop = asyncio.get_running_loop()
+        scheduler = AsyncTaskScheduler(gui_request_callback)
+        await asyncio.to_thread(scheduler._run_in_worker_thread, task_fn, status, gui_loop)
         return scheduler
 
-    def run_tasks(self, tasks: list[Task]) -> None:
-        """Run a list of tasks sequentially, blocking until all have finished."""
+    def _run_in_worker_thread(
+        self,
+        task_fn: Callable[[TaskContext], Awaitable[None]],
+        status: TaskStatus,
+        gui_loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self._run_impl(task_fn, status, gui_loop))
+        finally:
+            loop.close()
 
-        def task_spawner() -> Task:
-            for task in tasks:  # noqa: UP028
-                yield task
+    async def _run_impl(
+        self,
+        task_fn: Callable[[TaskContext], Awaitable[None]],
+        status: TaskStatus,
+        gui_loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        self._request_lock = asyncio.Lock()
+        ctx = TaskContext(
+            _status=status,
+            _decision_requester=self._create_decision_requester(gui_loop),
+        )
+        await task_fn(ctx)
 
-        self.run_task(task_spawner())
+    def _create_decision_requester(
+        self,
+        gui_loop: asyncio.AbstractEventLoop,
+    ) -> Callable[[str, list[Decision], str], Awaitable[Decision]]:
+        async def requester(title: str, expected: list[Decision], msg: str) -> Decision:
+            if title in self._decisions_to_all:
+                return self._decisions_to_all[title]
+            assert self._request_lock is not None
+            async with self._request_lock:
+                if title in self._decisions_to_all:
+                    return self._decisions_to_all[title]
 
-    def run_task(self, task: Task) -> None:
-        """Run a single task to completion, processing any pending ready-tasks along the way."""
-        self._run_task(task)
+                request = DecisionRequest(title, expected, msg)
+                gui_future: asyncio.Future[Decision] = asyncio.run_coroutine_threadsafe(
+                    _create_future_in_loop(), gui_loop
+                ).result()
+                asyncio.run_coroutine_threadsafe(
+                    cast("Coroutine[Any, Any, None]", self._gui_request_callback(request, gui_future)),
+                    gui_loop,
+                )
+                decision = await _wait_for_future(gui_future)
 
-        # keep running until all pending tasks are done
-        while len(self._waiting_tasks_with_requests) > 0 or len(self._ready_tasks_with_responses) > 0:
-            self._run_ready_tasks()
-            time.sleep(0.1)  # avoid busy waiting
+                if decision.is_to_all:
+                    self._decisions_to_all[title] = decision
+                return decision
 
-    def _run_task(self, task: Task, decision: Decision | None = None) -> None:
-        # decision is only allowed to be not None if the task is waiting for a response
-        # otherwise, we we get an exception during the first send()
-        while True:
-            self._run_ready_tasks()  # process any tasks that became ready while we were running this one
-            try:
-                result = task.send(decision)  # ty:ignore[invalid-argument-type] # None is valid for first send()
-                if isinstance(result, DecisionRequest):
-                    decision = self.submit_request(task, result)
-                    if decision is not None:
-                        continue  # continue immediately if we got a response
-
-                    return  # task is suspended waiting for user input
-                elif isinstance(result, Generator):
-                    self._run_task(result)
-                else:
-                    break  # type: ignore[unreachable]
-            except StopIteration:
-                break
-
-    def _run_ready_tasks(self) -> None:
-        while len(self._ready_tasks_with_responses) > 0:
-            task, response = self._ready_tasks_with_responses.pop_front()
-            self._run_task(task, response)
-
-    def submit_request(self, task: Task, request: DecisionRequest) -> Decision | None:
-        """Submit a decision request, returning a cached response immediately or ``None`` if queued."""
-        # check if there is a global answer for this request already -> then respond immediately
-        if request.title in self._decisions_to_all:
-            return self._decisions_to_all[request.title]
-
-        self._waiting_tasks_with_requests.append((task, request))
-        self._notify_gui()
-        return None
-
-    def _notify_gui(self) -> None:
-        if self._notify_task is None or self._notify_task.done():
-            self._notify_task = asyncio.run_coroutine_threadsafe(self._notify_gui_task(), self._event_loop)
-            # loop.create_task(self._notify_gui_task())
-
-    async def _notify_gui_task(self) -> None:
-        while len(self._waiting_tasks_with_requests) > 0:
-            task, request = self._waiting_tasks_with_requests.peek_front()
-            future: asyncio.Future[Decision] = asyncio.get_event_loop().create_future()
-            await self._gui_request_callback(request, future)
-            await future
-            response = future.result()
-            self._ready_tasks_with_responses.append((task, response))
-            self._waiting_tasks_with_requests.pop_front()
-
-            if response.is_to_all:
-                self._answer_all(request, response)
-
-    def _answer_all(self, answered_request: DecisionRequest, response: Decision) -> None:
-        if not response.is_to_all:
-            return
-
-        self._decisions_to_all[answered_request.title] = response
-
-        with self._waiting_tasks_with_requests as waiting_tasks:
-            remaining_waiting_tasks: list[tuple[Task, DecisionRequest]] = []
-            for task, req in waiting_tasks:
-                if req.title == answered_request.title:
-                    self._ready_tasks_with_responses.append((task, response))
-                else:
-                    remaining_waiting_tasks.append((task, req))
-            waiting_tasks[:] = remaining_waiting_tasks
+        return requester

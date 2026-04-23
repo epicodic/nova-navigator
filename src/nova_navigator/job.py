@@ -1,39 +1,36 @@
 import threading
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from enum import Enum, auto
 from typing import Any
 
-from .task import GuiRequestCallback, Progress, Task, TaskScheduler, TaskStatus
+from .task import AsyncTaskScheduler, GuiRequestCallback, Progress, TaskContext, TaskStatus
 
 
 class Job:
-    """Represents a long-running job that can be started and cancelled, and whose progress can be tracked.
+    """Represents a long-running job whose progress can be tracked and that can be cancelled.
 
-    The process is driven by a Task, which performs the actual work and reports progress and cancellation status via
-    a TaskStatus object. The Task and possibly spwaned subtasks are executed in a worker thread by a TaskScheduler,
-    which also handles any DecisionRequests that are yielded. Those requests are forwarded to the GUI via the provided
-    GuiRequestCallback, passed in to the start() method.
+    The task function receives a :class:`TaskContext` as its first argument and is
+    executed by :class:`AsyncTaskScheduler` in a worker thread.
     """
 
     class State(Enum):
         INITIALIZED = auto()
         RUNNING = auto()
         COMPLETED = auto()
-        # FAILED = auto()
         CANCELED = auto()
 
     _title: str
-    _task: Task
-    _scheduler: TaskScheduler | None
+    _task_fn: Callable[[TaskContext], Awaitable[None]]
+    _scheduler: AsyncTaskScheduler | None
     _status: TaskStatus
     _cancel_event: threading.Event
     _state: State
 
-    def __init__(self, title: str, task_fn: Callable[..., Task], *args: Any, **kwargs: Any) -> None:
+    def __init__(self, title: str, task_fn: Callable[..., Awaitable[None]], *args: Any, **kwargs: Any) -> None:
         self._title = title
         self._cancel_event = threading.Event()
         self._status = TaskStatus(cancel_event=self._cancel_event, progress_callback=self._progress_callback)
-        self._task = task_fn(self._status, *args, **kwargs)
+        self._task_fn = lambda ctx: task_fn(ctx, *args, **kwargs)
         self._scheduler = None
         self._state = self.State.INITIALIZED
 
@@ -43,7 +40,7 @@ class Job:
 
     async def start(self, gui_request_callback: GuiRequestCallback) -> None:
         self._state = self.State.RUNNING
-        self._scheduler = await TaskScheduler.execute(gui_request_callback, [self._task])
+        self._scheduler = await AsyncTaskScheduler.execute(gui_request_callback, self._task_fn, self._status)
 
     def cancel(self) -> None:
         self._cancel_event.set()

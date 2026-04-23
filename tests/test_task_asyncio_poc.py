@@ -10,12 +10,12 @@ the current generator-based execution model where:
 import asyncio
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any
+from dataclasses import dataclass
 
 import pytest
 
 from nova_navigator.decision import Decision
-from nova_navigator.task import DecisionRequest, Task, TaskScheduler
+from nova_navigator.task import DecisionRequest
 
 # ==============================================================================
 # Shared infrastructure for both implementations
@@ -35,7 +35,7 @@ def log(msg: str) -> None:
 # ==============================================================================
 
 
-def gen_simple_task(task_id: int, delay: float = 0.01) -> Task:
+def gen_simple_task(task_id: int, delay: float = 0.01):  # type: ignore[return]
     """A simple task that just runs and completes."""
     log(f"gen_task_{task_id}: starting")
     time.sleep(delay)
@@ -44,7 +44,7 @@ def gen_simple_task(task_id: int, delay: float = 0.01) -> Task:
     yield  # type: ignore[unreachable]
 
 
-def gen_task_with_decision(task_id: int, decision_title: str) -> Task:
+def gen_task_with_decision(task_id: int, decision_title: str):  # type: ignore[return]
     """A task that needs user input."""
     log(f"gen_task_{task_id}: starting")
     log(f"gen_task_{task_id}: requesting decision '{decision_title}'")
@@ -56,7 +56,7 @@ def gen_task_with_decision(task_id: int, decision_title: str) -> Task:
     log(f"gen_task_{task_id}: got decision {decision}, completed")
 
 
-def gen_parent_with_subtasks(parent_id: int, num_subtasks: int) -> Task:
+def gen_parent_with_subtasks(parent_id: int, num_subtasks: int):  # type: ignore[return]
     """A parent task that spawns multiple subtasks."""
     log(f"gen_parent_{parent_id}: starting")
     for i in range(num_subtasks):
@@ -68,9 +68,6 @@ def gen_parent_with_subtasks(parent_id: int, num_subtasks: int) -> Task:
 # ==============================================================================
 # PROPOSED: Asyncio-based implementation
 # ==============================================================================
-
-
-from dataclasses import dataclass
 
 
 @dataclass
@@ -93,7 +90,7 @@ class TaskContext:
         await coro
 
 
-async def async_simple_task(ctx: TaskContext, task_id: int, delay: float = 0.01) -> None:
+async def async_simple_task(_ctx: TaskContext, task_id: int, delay: float = 0.01) -> None:
     """A simple async task that just runs and completes."""
     log(f"async_task_{task_id}: starting")
     await asyncio.sleep(delay)
@@ -199,54 +196,16 @@ class AsyncTaskScheduler:
         return requester
 
 
+@pytest.mark.skip(reason="Generator-based TaskScheduler removed; see AsyncTaskScheduler tests")
 @pytest.mark.asyncio
 async def test_generator_subtask_blocking_allows_parent_to_continue() -> None:
     """Test that generator-based tasks allow parent to continue when subtask blocks."""
-    global execution_log
-    execution_log = []
-
-    decisions_made = []
-
-    async def gui_callback(request: DecisionRequest, future: asyncio.Future[Decision]) -> None:
-        """Simulated GUI dialog - responds after a delay."""
-        log(f"  [GUI] received request: '{request.title}'")
-        decisions_made.append(request.title)
-        await asyncio.sleep(0.05)  # Simulate user thinking
-        log(f"  [GUI] responding YES to '{request.title}'")
-        future.set_result(Decision.YES)
-
-    # Create tasks: parent spawns 3 subtasks that each need decisions
-    tasks = [gen_parent_with_subtasks(parent_id=1, num_subtasks=3)]
-
-    await TaskScheduler.execute(gui_request_callback=gui_callback, tasks=tasks)
-
-    # Verify execution order
-    print("\n=== Generator Execution Log ===")
-    for entry in execution_log:
-        print(entry)
-
-    # Key assertions:
-    # 1. All 3 subtasks should be launched before any complete
-    assert "gen_parent_1: yielding subtask 0" in execution_log
-    assert "gen_parent_1: yielding subtask 1" in execution_log
-    assert "gen_parent_1: yielding subtask 2" in execution_log
-
-    # 2. All subtasks launch before parent says "all subtasks yielded"
-    launch_0_idx = execution_log.index("gen_parent_1: yielding subtask 0")
-    launch_1_idx = execution_log.index("gen_parent_1: yielding subtask 1")
-    launch_2_idx = execution_log.index("gen_parent_1: yielding subtask 2")
-    parent_complete_idx = execution_log.index("gen_parent_1: all subtasks yielded, completing")
-
-    assert launch_0_idx < launch_1_idx < launch_2_idx < parent_complete_idx
-
-    # 3. All decision requests should be made
-    assert len(decisions_made) == 3
 
 
 @pytest.mark.asyncio
 async def test_asyncio_subtask_blocking_allows_parent_to_continue() -> None:
     """Test that asyncio tasks with sleep(0) allow parent to continue when subtask blocks."""
-    global execution_log
+    global execution_log  # noqa: PLW0603
     execution_log = []
 
     decisions_made = []
@@ -262,7 +221,7 @@ async def test_asyncio_subtask_blocking_allows_parent_to_continue() -> None:
     # Create tasks: parent spawns 3 subtasks that each need decisions
     tasks = [lambda ctx: async_parent_with_subtasks(ctx, parent_id=1, num_subtasks=3)]
 
-    await AsyncTaskScheduler.execute(gui_request_callback=gui_callback, tasks=tasks)
+    await AsyncTaskScheduler.execute(gui_request_callback=gui_callback, tasks=tasks)  # ty: ignore[invalid-argument-type]
 
     # Verify execution order
     print("\n=== Asyncio Execution Log ===")
@@ -297,7 +256,7 @@ async def test_asyncio_subtask_blocking_allows_parent_to_continue() -> None:
 @pytest.mark.asyncio
 async def test_decision_caching_with_all() -> None:
     """Test that YES_TO_ALL caches decisions in asyncio implementation."""
-    global execution_log
+    global execution_log  # noqa: PLW0603
     execution_log = []
 
     decision_count = 0
@@ -324,7 +283,7 @@ async def test_decision_caching_with_all() -> None:
         lambda ctx: async_task_with_decision(ctx, 3, "same_decision"),
     ]
 
-    await AsyncTaskScheduler.execute(gui_request_callback=gui_callback, tasks=tasks)
+    await AsyncTaskScheduler.execute(gui_request_callback=gui_callback, tasks=tasks)  # ty: ignore[invalid-argument-type]
 
     # Should only get 1 GUI callback due to caching
     assert decision_count == 1
@@ -335,55 +294,7 @@ async def test_decision_caching_with_all() -> None:
     assert any("async_task_3:" in entry and "completed" in entry for entry in execution_log)
 
 
+@pytest.mark.skip(reason="Generator-based TaskScheduler removed; see AsyncTaskScheduler tests")
 @pytest.mark.asyncio
 async def test_execution_order_comparison() -> None:
     """Compare execution order between generator and asyncio implementations."""
-    # Test generator version
-    global execution_log
-    execution_log = []
-
-    async def gui_callback_gen(request: DecisionRequest, future: asyncio.Future[Decision]) -> None:
-        await asyncio.sleep(0.01)
-        future.set_result(Decision.YES)
-
-    tasks_gen = [
-        gen_simple_task(1),
-        gen_task_with_decision(2, "decision_2"),
-        gen_simple_task(3),
-    ]
-
-    await TaskScheduler.execute(gui_request_callback=gui_callback_gen, tasks=tasks_gen)
-    gen_log = execution_log.copy()
-
-    # Test asyncio version
-    execution_log = []
-
-    async def gui_callback_async(request: DecisionRequest, future: asyncio.Future[Decision]) -> None:
-        await asyncio.sleep(0.01)
-        future.set_result(Decision.YES)
-
-    tasks_async = [
-        lambda ctx: async_simple_task(ctx, 1),
-        lambda ctx: async_task_with_decision(ctx, 2, "decision_2"),
-        lambda ctx: async_simple_task(ctx, 3),
-    ]
-
-    await AsyncTaskScheduler.execute(gui_request_callback=gui_callback_async, tasks=tasks_async)
-    async_log = execution_log.copy()
-
-    print("\n=== Generator Log ===")
-    for entry in gen_log:
-        print(entry)
-
-    print("\n=== Asyncio Log ===")
-    for entry in async_log:
-        print(entry)
-
-    # Both should complete all tasks
-    assert any("gen_task_1:" in entry and "completed" in entry for entry in gen_log)
-    assert any("gen_task_2:" in entry and "completed" in entry for entry in gen_log)
-    assert any("gen_task_3:" in entry and "completed" in entry for entry in gen_log)
-
-    assert any("async_task_1:" in entry and "completed" in entry for entry in async_log)
-    assert any("async_task_2:" in entry and "completed" in entry for entry in async_log)
-    assert any("async_task_3:" in entry and "completed" in entry for entry in async_log)

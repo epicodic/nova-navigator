@@ -1,110 +1,175 @@
 import asyncio
+import threading
 import time
+from collections.abc import Awaitable, Callable
 
 import pytest
 
-from nova_navigator.task import Decision, DecisionRequest, Task, TaskScheduler, task
-
-actual_task_order: list[int] = []
-
-
-@task
-def task1(id: int, input: str, expected_decisions: list[Decision] | None = None) -> Task:
-    if input[0:3] == "ask":
-        response = yield DecisionRequest(
-            input,
-            expected_decisions or [Decision.YES, Decision.NO],
-            input,
-        )
-        if response.is_negative:
-            return
-
-    print(f"Task 1 ({id}): running...")
-    actual_task_order.append(id)
-    time.sleep(0.01)
-    print(f"Task 1 ({id}): completed.")
+from nova_navigator.task import (
+    AsyncTaskScheduler,
+    Decision,
+    DecisionRequest,
+    TaskContext,
+    TaskStatus,
+)
 
 
-@task
-def task2(id: int) -> None:
-    print(f"Task 2 ({id}): running...")
-    actual_task_order.append(id)
-    time.sleep(0.01)
-    print(f"Task 2 ({id}): completed.")
+def _make_status() -> TaskStatus:
+    return TaskStatus(cancel_event=threading.Event(), progress_callback=lambda _: None)
 
 
-@pytest.mark.asyncio
-async def test_task_scheduler_basic() -> None:
-    global actual_task_order  # noqa: PLW0603
-    actual_task_order = []
-    tasks = [
-        task1(1, "ask1"),
-        task1(2, "no_ask"),
-        task1(3, "ask1", [Decision.YES, Decision.NO, Decision.ALL, Decision.NONE]),
-        task1(4, "no_ask"),
-        task1(5, "ask2"),
-        task1(6, "no_ask"),
-        task2(id=7),
-        task1(8, "ask1"),
-        task1(9, "no_ask"),
-        task1(10, "ask3"),
-    ]
-    expected_task_order = [2, 4, 6, 7, 9, 1, 8, 3, 10]
+async def _run(
+    task_fn: Callable[[TaskContext], Awaitable[None]],
+    decisions: list[Decision] | None = None,
+    status: TaskStatus | None = None,
+) -> list[DecisionRequest]:
+    """Run task_fn via AsyncTaskScheduler with simulated GUI decisions."""
+    pending = list(decisions or [])
+    requests: list[DecisionRequest] = []
+    if status is None:
+        status = _make_status()
 
-    async def gui_callback(
-        request: DecisionRequest,
-        future: asyncio.Future[Decision],
-    ) -> None:
-        print(f"GUI received request: '{request.message}'")
-        # Simulate user interaction delay
-        if request.message == "ask1":
-            await asyncio.sleep(0.1)
-            result = Decision.ALL if Decision.ALL in request.expected_decisions else Decision.YES
-            print(f"GUI responding {result} to '{request.message}'")
-            future.set_result(result)
-        if request.message == "ask2":
-            await asyncio.sleep(0.1)
-            print(f"GUI responding NO to '{request.message}'")
-            future.set_result(Decision.NO)
-        if request.message == "ask3":
-            await asyncio.sleep(0.1)
-            print(f"GUI responding YES to '{request.message}'")
-            future.set_result(Decision.YES)
+    async def gui_callback(request: DecisionRequest, future: asyncio.Future[Decision]) -> None:
+        requests.append(request)
+        if not pending:
+            raise AssertionError(f"Unexpected decision request: {request.title!r}")
+        future.set_result(pending.pop(0))
 
-    await TaskScheduler.execute(gui_request_callback=gui_callback, tasks=tasks)
-
-    assert actual_task_order == expected_task_order
-
-
-@task
-def task3(id: int, input: str) -> Task:
-    print("Task 3: running...")
-    actual_task_order.append(id)
-    time.sleep(0.01)
-    for i in range(3):
-        yield task1(id=id + 1 + i, input=f"{input}_{id}_{i}")
-    print("Task 3: completed.")
+    await AsyncTaskScheduler.execute(gui_callback, task_fn, status)
+    return requests
 
 
 @pytest.mark.asyncio
-async def test_task_scheduler_task_spawn() -> None:
-    tasks = [
-        task3(0, "ask3"),
-        task3(4, "no_ask3"),
-    ]
+async def test_scheduler_simple_task_completes() -> None:
+    """A task with no decisions runs and completes."""
+    ran = []
 
-    expected_task_order = [0, 4, 5, 6, 7, 1, 2, 3]
+    async def my_task(_ctx: TaskContext) -> None:
+        ran.append(True)
+        time.sleep(0.01)  # noqa: ASYNC251 — blocking I/O is intentional in worker thread
 
-    global actual_task_order  # noqa: PLW0603
-    actual_task_order = []
+    await _run(my_task)
+    assert ran == [True]
 
-    async def gui_callback(
-        request: DecisionRequest,
-        future: asyncio.Future[Decision],
-    ) -> None:
-        print(f"GUI received request: '{request.message}'")
-        await asyncio.sleep(0.1)
+
+@pytest.mark.asyncio
+async def test_scheduler_routes_decision_to_gui() -> None:
+    """A task that requests a decision receives the GUI response."""
+    received: list[Decision] = []
+
+    async def my_task(ctx: TaskContext) -> None:
+        d = await ctx.request_decision("Confirm", [Decision.YES, Decision.NO], "Are you sure?")
+        received.append(d)
+
+    requests = await _run(my_task, decisions=[Decision.YES])
+    assert len(requests) == 1
+    assert requests[0].title == "Confirm"
+    assert received == [Decision.YES]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_multiple_sequential_decisions() -> None:
+    """Multiple sequential decision requests are each routed to the GUI."""
+    received: list[Decision] = []
+
+    async def my_task(ctx: TaskContext) -> None:
+        d1 = await ctx.request_decision("Q1", [Decision.YES, Decision.NO], "First?")
+        d2 = await ctx.request_decision("Q2", [Decision.YES, Decision.NO], "Second?")
+        received.extend([d1, d2])
+
+    requests = await _run(my_task, decisions=[Decision.YES, Decision.NO])
+    assert len(requests) == 2
+    assert received == [Decision.YES, Decision.NO]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_all_caches_for_same_title() -> None:
+    """ALL response for a title suppresses subsequent GUI prompts with the same title."""
+
+    async def my_task(ctx: TaskContext) -> None:
+        t1 = await ctx.subtask(_ask(ctx, "Overwrite"))
+        t2 = await ctx.subtask(_ask(ctx, "Overwrite"))
+        t3 = await ctx.subtask(_ask(ctx, "Overwrite"))
+        await asyncio.gather(t1, t2, t3)
+
+    async def _ask(ctx: TaskContext, title: str) -> None:
+        await ctx.request_decision(title, [Decision.YES, Decision.ALL], "Overwrite?")
+
+    nonlocal_count = [0]
+
+    async def gui_cb(_request: DecisionRequest, future: asyncio.Future[Decision]) -> None:
+        nonlocal_count[0] += 1
+        future.set_result(Decision.ALL)
+
+    await AsyncTaskScheduler.execute(gui_cb, my_task, _make_status())
+    assert nonlocal_count[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_scheduler_none_caches_for_same_title() -> None:
+    """NONE response suppresses subsequent prompts with the same title."""
+    gui_call_count = [0]
+
+    async def my_task(ctx: TaskContext) -> None:
+        t1 = await ctx.subtask(_ask(ctx))
+        t2 = await ctx.subtask(_ask(ctx))
+        await asyncio.gather(t1, t2)
+
+    async def _ask(ctx: TaskContext) -> None:
+        await ctx.request_decision("Delete", [Decision.YES, Decision.NONE], "Delete?")
+
+    async def gui_cb(_request: DecisionRequest, future: asyncio.Future[Decision]) -> None:
+        gui_call_count[0] += 1
+        future.set_result(Decision.NONE)
+
+    await AsyncTaskScheduler.execute(gui_cb, my_task, _make_status())
+    assert gui_call_count[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_scheduler_different_titles_each_get_gui_call() -> None:
+    """Requests with different titles each trigger a separate GUI callback."""
+    gui_call_count = [0]
+
+    async def my_task(ctx: TaskContext) -> None:
+        await ctx.request_decision("Title A", [Decision.YES], "A?")
+        await ctx.request_decision("Title B", [Decision.YES], "B?")
+
+    async def gui_cb(_request: DecisionRequest, future: asyncio.Future[Decision]) -> None:
+        gui_call_count[0] += 1
         future.set_result(Decision.YES)
 
-    await TaskScheduler.execute(gui_request_callback=gui_callback, tasks=tasks)
-    assert actual_task_order == expected_task_order
+    await AsyncTaskScheduler.execute(gui_cb, my_task, _make_status())
+    assert gui_call_count[0] == 2
+
+
+@pytest.mark.asyncio
+async def test_context_subtask_runs_concurrently() -> None:
+    """ctx.subtask() starts the sub-task immediately (before parent continues)."""
+    log: list[str] = []
+
+    async def my_task(ctx: TaskContext) -> None:
+        log.append("parent: before subtask")
+        t = await ctx.subtask(_child(log))
+        log.append("parent: after subtask launch")
+        await t
+
+    async def _child(log: list[str]) -> None:
+        log.append("child: running")
+
+    await _run(my_task)
+    assert log.index("child: running") < log.index("parent: after subtask launch")
+
+
+@pytest.mark.asyncio
+async def test_scheduler_exception_propagates() -> None:
+    """Exceptions raised inside a task propagate out of execute()."""
+
+    async def bad_task(_ctx: TaskContext) -> None:
+        raise ValueError("boom")
+
+    async def noop_cb(req: DecisionRequest, fut: asyncio.Future[Decision]) -> None:
+        pass
+
+    with pytest.raises(ValueError, match="boom"):
+        await AsyncTaskScheduler.execute(noop_cb, bad_task, _make_status())
