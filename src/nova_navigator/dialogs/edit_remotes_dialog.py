@@ -205,9 +205,19 @@ class EditRemotesDialog(Dialog):
 
     # ------------------------------------------------------------------ list
 
+    def _entry_uri(self, entry: RemoteConnection) -> str:
+        """Build a URI string from the entry's SSH settings."""
+        ssh = entry.ssh
+        if not ssh or not ssh.host:
+            return ""
+        netloc = f"{ssh.user}@{ssh.host}" if ssh.user else ssh.host
+        if ssh.port is not None and ssh.port != 22:  # noqa: PLR2004
+            netloc = f"{netloc}:{ssh.port}"
+        return f"ssh://{netloc}"
+
     def _make_list_label(self, entry: RemoteConnection) -> str:
         icon = ICONS.get_icon(entry.icon).glyph + " " if entry.icon else ""
-        uri = entry.uri or ""
+        uri = self._entry_uri(entry)
         return f"{icon}{entry.name}  {uri}"
 
     def _rebuild_list(self, select_index: int | None) -> None:
@@ -269,7 +279,7 @@ class EditRemotesDialog(Dialog):
 
             self.query_one("#input_name", Input).value = entry.name
             self.query_one("#input_icon", Input).value = entry.icon or ""
-            self.query_one("#uri_preview", Input).value = entry.uri or ""
+            self.query_one("#uri_preview", Input).value = self._entry_uri(entry)
 
             # protocol
             proto = "ssh"  # only supported for now
@@ -317,7 +327,6 @@ class EditRemotesDialog(Dialog):
         if self._current_index is None:
             return
         uri = self._build_uri_preview()
-        self._working[self._current_index].uri = uri
         self.query_one("#uri_preview", Input).value = uri
         self._update_list_item_label(self._current_index)
 
