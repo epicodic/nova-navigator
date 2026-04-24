@@ -4,7 +4,7 @@ from typing import Any, cast
 
 from nova_navigator.decision import Decision
 
-from .context import DecisionRequest, GuiRequestCallback, TaskContext, TaskStatus
+from .context import DecisionRequest, GuiRequestCallback, TaskContext, TaskStatus, _SubtaskTracker
 
 
 async def _create_future_in_loop() -> asyncio.Future[Decision]:
@@ -69,11 +69,14 @@ class AsyncTaskScheduler:
         gui_loop: asyncio.AbstractEventLoop,
     ) -> None:
         self._request_lock = asyncio.Lock()
+        tracker = _SubtaskTracker()
         ctx = TaskContext(
             _status=status,
             _decision_requester=self._create_decision_requester(gui_loop),
+            _subtask_tracker=tracker,
         )
         await task_fn(ctx)
+        await tracker.wait_all()
 
     def _create_decision_requester(
         self,

@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable
 import pytest
 
 from nova_navigator.decision import Decision
-from nova_navigator.scheduler import AsyncTaskScheduler, DecisionRequest, TaskContext, TaskStatus
+from nova_navigator.scheduler import AsyncTaskScheduler, DecisionRequest, TaskCancelled, TaskContext, TaskStatus
 
 
 def _make_status() -> TaskStatus:
@@ -27,10 +27,12 @@ class TaskHarness:
     """
 
     log: list[str]
+    gui_call_count: int
     _held: dict[str, tuple[asyncio.Event, Decision]]
 
     def __init__(self) -> None:
         self.log = []
+        self.gui_call_count = 0
         self._held = {}
 
     def hold(self, title: str, answer: Decision) -> None:
@@ -43,6 +45,7 @@ class TaskHarness:
         event.set()
 
     async def _gui_callback(self, request: DecisionRequest, future: asyncio.Future[Decision]) -> None:
+        self.gui_call_count += 1
         if request.title in self._held:
             event, decision = self._held[request.title]
             await event.wait()
@@ -50,9 +53,9 @@ class TaskHarness:
         else:
             future.set_result(Decision.YES)
 
-    async def run(self, task_fn: Callable[[TaskContext], Awaitable[None]]) -> None:
+    async def run(self, task_fn: Callable[[TaskContext], Awaitable[None]], status: TaskStatus | None = None) -> None:
         """Execute *task_fn* via AsyncTaskScheduler and await its full completion."""
-        await AsyncTaskScheduler.execute(self._gui_callback, task_fn, _make_status())
+        await AsyncTaskScheduler.execute(self._gui_callback, task_fn, status or _make_status())
 
     def start(self, task_fn: Callable[[TaskContext], Awaitable[None]]) -> asyncio.Task[None]:
         """Schedule *task_fn* as an asyncio.Task so the caller can interleave awaits."""
@@ -117,7 +120,6 @@ async def test_blocking_subtask_with_held_decision() -> None:
         T:prepare F, F:runs, F:finishes,
         B:continues, B:finishes,
         E:continues, E:finishes,
-        T:finishes
     """
     harness = TaskHarness()
     harness.hold("Confirm", Decision.ALL)
@@ -162,24 +164,23 @@ async def test_blocking_subtask_with_held_decision() -> None:
         harness.log.append("T")
 
         harness.log.append("T:prepare A")
-        t_a = await ctx.subtask(task_A(ctx))
+        await ctx.subtask(task_A(ctx))
 
         harness.log.append("T:prepare B")
-        t_b = await ctx.subtask(task_B(ctx))
+        await ctx.subtask(task_B(ctx))
 
         harness.log.append("T:prepare C")
-        t_c = await ctx.subtask(task_C(ctx))
+        await ctx.subtask(task_C(ctx))
 
         harness.log.append("T:prepare D")
-        t_d = await ctx.subtask(task_D(ctx))
+        await ctx.subtask(task_D(ctx))
 
         harness.log.append("T:prepare E")
-        t_e = await ctx.subtask(task_E(ctx))
+        await ctx.subtask(task_E(ctx))
 
         harness.log.append("T:prepare F")
-        t_f = await ctx.subtask(task_F(ctx))
+        await ctx.subtask(task_F(ctx))
 
-        await asyncio.gather(t_a, t_b, t_c, t_d, t_e, t_f)
         harness.log.append("T:finishes")
 
     runner = harness.start(task_T)
@@ -207,9 +208,168 @@ async def test_blocking_subtask_with_held_decision() -> None:
         "T:prepare F",
         "F:runs",
         "F:finishes",
+        "T:finishes",
         "B:continues",
         "B:finishes",
         "E:continues",
         "E:finishes",
-        "T:finishes",
     ]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_multiple_sequential_decisions() -> None:
+    """Multiple sequential decision requests are each routed to the GUI in order."""
+    received: list[Decision] = []
+
+    async def my_task(ctx: TaskContext) -> None:
+        d1 = await ctx.request_decision("Q1", [Decision.YES, Decision.NO], "First?")
+        d2 = await ctx.request_decision("Q2", [Decision.YES, Decision.NO], "Second?")
+        received.extend([d1, d2])
+
+    harness = TaskHarness()
+    harness.hold("Q1", Decision.YES)
+    harness.hold("Q2", Decision.NO)
+    harness.answer("Q1")
+    harness.answer("Q2")
+    await harness.run(my_task)
+
+    assert received == [Decision.YES, Decision.NO]
+    assert harness.gui_call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_scheduler_all_caches_for_same_title() -> None:
+    """Decision.ALL for a title suppresses subsequent GUI prompts with the same title."""
+
+    async def my_task(ctx: TaskContext) -> None:
+        await ctx.subtask(ctx.request_decision("Overwrite", [Decision.YES, Decision.ALL], "Overwrite?"))
+        await ctx.subtask(ctx.request_decision("Overwrite", [Decision.YES, Decision.ALL], "Overwrite?"))
+        await ctx.subtask(ctx.request_decision("Overwrite", [Decision.YES, Decision.ALL], "Overwrite?"))
+
+    harness = TaskHarness()
+    harness.hold("Overwrite", Decision.ALL)
+    harness.answer("Overwrite")
+    await harness.run(my_task)
+
+    assert harness.gui_call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_scheduler_none_caches_for_same_title() -> None:
+    """Decision.NONE for a title suppresses subsequent GUI prompts with the same title."""
+
+    async def my_task(ctx: TaskContext) -> None:
+        await ctx.subtask(ctx.request_decision("Delete", [Decision.YES, Decision.NONE], "Delete?"))
+        await ctx.subtask(ctx.request_decision("Delete", [Decision.YES, Decision.NONE], "Delete?"))
+
+    harness = TaskHarness()
+    harness.hold("Delete", Decision.NONE)
+    harness.answer("Delete")
+    await harness.run(my_task)
+
+    assert harness.gui_call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_scheduler_different_titles_each_get_gui_call() -> None:
+    """Requests with different titles each trigger a separate GUI callback."""
+
+    async def my_task(ctx: TaskContext) -> None:
+        await ctx.request_decision("Title A", [Decision.YES], "A?")
+        await ctx.request_decision("Title B", [Decision.YES], "B?")
+
+    harness = TaskHarness()
+    # both titles are unregistered → auto-answered YES; two separate GUI calls expected
+    await harness.run(my_task)
+
+    assert harness.gui_call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_context_subtask_runs_concurrently() -> None:
+    """ctx.subtask() yields control so the child starts before the parent continues."""
+    harness = TaskHarness()
+
+    async def my_task(ctx: TaskContext) -> None:
+        harness.log.append("parent:before")
+        t = await ctx.subtask(_child())
+        harness.log.append("parent:after")
+        await t
+
+    async def _child() -> None:
+        harness.log.append("child:running")
+
+    await harness.run(my_task)
+    assert harness.log.index("child:running") < harness.log.index("parent:after")
+
+
+@pytest.mark.asyncio
+async def test_scheduler_exception_propagates() -> None:
+    """Exceptions raised inside a task propagate out of run()."""
+
+    async def bad_task(_ctx: TaskContext) -> None:
+        raise ValueError("boom")
+
+    harness = TaskHarness()
+    with pytest.raises(ValueError, match="boom"):
+        await harness.run(bad_task)
+
+
+@pytest.mark.asyncio
+async def test_fire_and_forget_subtask_exception_propagates() -> None:
+    """An exception in a fire-and-forget subtask is re-raised after the root task returns."""
+
+    async def root(ctx: TaskContext) -> None:
+        await ctx.subtask(_bad_subtask())
+        # root returns immediately; scheduler must drain and surface the subtask exception
+
+    async def _bad_subtask() -> None:
+        raise RuntimeError("subtask boom")
+
+    harness = TaskHarness()
+    with pytest.raises(RuntimeError, match="subtask boom"):
+        await harness.run(root)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_stops_task() -> None:
+    """Setting the cancel event causes check_cancelled() to raise TaskCancelled."""
+    cancel_event = threading.Event()
+    status = TaskStatus(cancel_event=cancel_event, progress_callback=lambda _: None)
+    harness = TaskHarness()
+    reached_end = False
+
+    async def my_task(ctx: TaskContext) -> None:
+        nonlocal reached_end
+        cancel_event.set()
+        ctx.status.check_cancelled()  # should raise
+        reached_end = True  # must not be reached
+
+    with pytest.raises(TaskCancelled):
+        await harness.run(my_task, status)
+
+    assert not reached_end
+
+
+@pytest.mark.asyncio
+async def test_nested_subtasks_all_tracked() -> None:
+    """Subtasks that themselves spawn subtasks are tracked and complete before execute() returns."""
+    harness = TaskHarness()
+
+    async def root(ctx: TaskContext) -> None:
+        await ctx.subtask(_level1(ctx))
+        harness.log.append("root:done")
+
+    async def _level1(ctx: TaskContext) -> None:
+        await ctx.subtask(_level2())
+        harness.log.append("level1:done")
+
+    async def _level2() -> None:
+        harness.log.append("level2:done")
+
+    await harness.run(root)
+
+    # all three levels must have completed when run() returns
+    assert "level2:done" in harness.log
+    assert "level1:done" in harness.log
+    assert "root:done" in harness.log

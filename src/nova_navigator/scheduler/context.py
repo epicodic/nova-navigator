@@ -129,6 +129,42 @@ class TaskStatus:
 GuiRequestCallback = Callable[[DecisionRequest, asyncio.Future[Decision]], Awaitable[None]]
 
 
+class _SubtaskTracker:
+    """Reference-counts in-flight subtasks so the worker loop can drain after the root task returns.
+
+    task_started() and the done callback are both called from the same worker-thread
+    event loop, so no locking is needed.
+    """
+
+    _count: int
+    _done_event: asyncio.Event
+    _first_exc: BaseException | None
+
+    def __init__(self) -> None:
+        self._count = 0
+        self._done_event = asyncio.Event()
+        self._done_event.set()
+        self._first_exc = None
+
+    def task_started(self) -> None:
+        if self._count == 0:
+            self._done_event.clear()
+        self._count += 1
+
+    def task_finished(self, task: asyncio.Task[object]) -> None:
+        if not task.cancelled() and (exc := task.exception()) and self._first_exc is None:
+            self._first_exc = exc
+        self._count -= 1
+        if self._count == 0:
+            self._done_event.set()
+
+    async def wait_all(self) -> None:
+        """Suspend until all tracked subtasks have finished."""
+        await self._done_event.wait()
+        if self._first_exc is not None:
+            raise self._first_exc
+
+
 @dataclass
 class TaskContext:
     """Context passed as the first argument to every async task function.
@@ -138,6 +174,7 @@ class TaskContext:
 
     _status: TaskStatus
     _decision_requester: Callable[[str, list[Decision], str], Awaitable[Decision]]
+    _subtask_tracker: _SubtaskTracker
 
     @property
     def status(self) -> TaskStatus:
@@ -154,6 +191,8 @@ class TaskContext:
 
     async def subtask[R](self, coro: Coroutine[Any, Any, R]) -> asyncio.Task[R]:
         """Start *coro* as a concurrent asyncio task and yield control so it can begin."""
+        self._subtask_tracker.task_started()
         t: asyncio.Task[R] = asyncio.create_task(coro)
+        t.add_done_callback(self._subtask_tracker.task_finished)
         await asyncio.sleep(0)
         return t
