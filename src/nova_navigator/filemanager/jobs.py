@@ -2,7 +2,7 @@ from nova_navigator.dialogs import DeleteFilesDialog
 from nova_navigator.vfs2 import VPath
 
 from ..dialogs.files_dialog import CopyMoveFilesDialog
-from ..job import Job
+from ..scheduler import Job
 from .tasks import copy_files, erase_files
 
 

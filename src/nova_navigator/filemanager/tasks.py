@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from nova_navigator.decision import Decision
-from nova_navigator.task import TaskContext
+from nova_navigator.scheduler import TaskContext
 
 from ..vfs2 import VPath
 from ..vfs2.filesystem import Filesystem

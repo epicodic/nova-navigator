@@ -3,7 +3,8 @@ from collections.abc import Awaitable, Callable
 from enum import Enum, auto
 from typing import Any
 
-from .task import AsyncTaskScheduler, GuiRequestCallback, Progress, TaskContext, TaskStatus
+from .context import GuiRequestCallback, Progress, TaskContext, TaskStatus
+from .scheduler import AsyncTaskScheduler
 
 
 class Job:
