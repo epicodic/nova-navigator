@@ -148,6 +148,7 @@ convention = "google"
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"
 cache_dir = ".cache/pytest"
+asyncio_mode = "strict"
 
 
 #######################################

@@ -2,10 +2,11 @@ import threading
 from pathlib import PurePosixPath
 
 import pytest
-
-from nova_navigator.filemanager.tasks import CHUNK_SIZE, FileCopyOptions, copy_file, copy_files
-from nova_navigator.task import Decision, TaskCancelled, TaskStatus
 from tests.mock_filesystem import MockFilesystem
+
+from nova_navigator.decision import Decision
+from nova_navigator.filemanager.tasks import CHUNK_SIZE, FileCopyOptions, copy_file, copy_files
+from nova_navigator.scheduler import TaskCancelled, TaskStatus
 
 from .common import make_status, read_all, run_task
 

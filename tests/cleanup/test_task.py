@@ -5,9 +5,9 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
-from nova_navigator.task import (
+from nova_navigator.decision import Decision
+from nova_navigator.scheduler import (
     AsyncTaskScheduler,
-    Decision,
     DecisionRequest,
     TaskContext,
     TaskStatus,

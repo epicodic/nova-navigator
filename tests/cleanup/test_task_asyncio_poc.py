@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import pytest
 
 from nova_navigator.decision import Decision
-from nova_navigator.task import DecisionRequest
+from nova_navigator.scheduler import DecisionRequest
 
 # ==============================================================================
 # Shared infrastructure for both implementations
