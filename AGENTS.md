@@ -110,10 +110,11 @@ The codebase lives under `src/` and contains two packages:
 
 **Legacy VFS:** `nova_navigator/vfs/` — older VFS implementation still partially used by the app; being replaced by `vfs2/`.
 
-**Task system:** `nova_navigator/task.py` — defines a coroutine-like generator protocol for long-running operations that may need user decisions:
-- `Task = Generator[DecisionRequest | Task, DecisionResponse, None]`
-- `TaskScheduler` runs tasks in a thread and bridges decision requests to the GUI via async callbacks
-- Tasks `yield DecisionRequest(...)` to pause and ask the user; the scheduler resumes them with a `DecisionResponse`
+**Task system:** `nova_navigator/task.py` — async task scheduler for long-running operations with user decision support. See `docs/tasks.md` for complete task framework guide.
+- `AsyncTaskScheduler` runs async task functions in worker threads with isolated event loops
+- Tasks accept `TaskContext` for progress tracking, cancellation, and user decisions
+- `TaskContext.request_decision()` pauses execution to show user dialogs
+- `TaskContext.subtask()` — spawn a subtask
 
 **Operations:** `nova_navigator/operations/` — file operations (copy, move, delete) implemented as `Operation` subclasses. `Operation.process()` runs in a thread via `asyncio.to_thread`. `filemanager/tasks.py` contains generator-based task implementations (`copy_file`, `erase`) built on top of `vfs2`.
 
@@ -146,6 +147,10 @@ A separate package in `src/nova_widgets/` providing:
 ## Coding Conventions
 
 Full reference: `docs/coding_conventions.md`
+
+## Task Scheduler
+
+For implementing long-running async operations: see `docs/tasks.md` for the task framework guide, API reference, and implementation patterns.
 
 ### Python
 

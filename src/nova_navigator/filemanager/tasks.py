@@ -241,7 +241,7 @@ async def erase_files(
                 )
                 if decision.is_negative:
                     continue
-            await erase_files(ctx, list(path.iterdir()), EraseFilesOptions(ask_before_erase=False))
+            await ctx.subtask(erase_files(ctx, list(path.iterdir()), EraseFilesOptions(ask_before_erase=False)))
             path.filesystem.rmdir(path)
         else:
             path.filesystem.remove(path)
