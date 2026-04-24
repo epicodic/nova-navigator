@@ -199,6 +199,7 @@ def test_write_content_visible_before_close() -> None:
     assert reader.read(1024) == b"live"
     reader.close()
     writer.close()
+    writer.close()
 
 
 def test_write_tracks_writer() -> None:
@@ -494,3 +495,104 @@ def test_rename_directory_updates_all_descendants() -> None:
     reader2 = fs.read(fs.path("/x/y/other.txt"))
     assert reader2.read(1024) == b"shallow"
     reader2.close()
+
+
+# ---------------------------------------------------------------------------
+# write() — additional cases
+# ---------------------------------------------------------------------------
+
+
+def test_write_on_directory_raises() -> None:
+    fs = MockFilesystem({"/home/user/d": None})
+    with pytest.raises(IsADirectoryError):
+        fs.write(fs.path("/home/user/d"))
+
+
+def test_write_error_injection() -> None:
+    fs = MockFilesystem(
+        {"/home/user/f.txt": b"original"},
+        write_errors={"/home/user/f.txt": OSError("injected write error")},
+    )
+    writer = fs.write(fs.path("/home/user/f.txt"))
+    with pytest.raises(OSError, match="injected write error"):
+        writer.write(b"data")
+    writer.close()
+    assert writer.close_count == 1
+
+
+def test_write_errors_only_affect_specified_path() -> None:
+    fs = MockFilesystem(
+        write_errors={"/home/user/bad.txt": OSError("injected")},
+    )
+    writer = fs.write(fs.path("/home/user/good.txt"))
+    assert writer.write(b"ok") == 2
+    writer.close()
+
+
+# ---------------------------------------------------------------------------
+# rmdir() — additional cases
+# ---------------------------------------------------------------------------
+
+
+def test_rmdir_missing_raises() -> None:
+    fs = MockFilesystem()
+    with pytest.raises(FileNotFoundError):
+        fs.rmdir(fs.path("/home/user/no_such_dir"))
+
+
+# ---------------------------------------------------------------------------
+# mkdir()
+# ---------------------------------------------------------------------------
+
+
+def test_mkdir_creates_directory() -> None:
+    fs = MockFilesystem()
+    fs.mkdir(fs.path("/home/user/newdir"))
+    assert fs.path("/home/user/newdir").stat.is_directory
+
+
+def test_mkdir_existing_directory_raises() -> None:
+    fs = MockFilesystem({"/home/user/existing": None})
+    with pytest.raises(FileExistsError):
+        fs.mkdir(fs.path("/home/user/existing"))
+
+
+def test_mkdir_existing_file_raises() -> None:
+    fs = MockFilesystem({"/home/user/f.txt": b"x"})
+    with pytest.raises(FileExistsError):
+        fs.mkdir(fs.path("/home/user/f.txt"))
+
+
+def test_mkdir_missing_parent_raises() -> None:
+    fs = MockFilesystem()
+    with pytest.raises((FileNotFoundError, NotADirectoryError)):
+        fs.mkdir(fs.path("/no/such/parent/newdir"))
+
+
+def test_mkdir_parent_is_file_raises() -> None:
+    fs = MockFilesystem({"/home/user/f.txt": b"x"})
+    with pytest.raises(NotADirectoryError):
+        fs.mkdir(fs.path("/home/user/f.txt/child"))
+
+
+def test_mkdir_new_dir_appears_in_iterdir() -> None:
+    fs = MockFilesystem()
+    fs.mkdir(fs.path("/home/user/newdir"))
+    children = {str(p.path) for p in fs.path("/home/user").iterdir()}
+    assert "/home/user/newdir" in children
+
+
+# ---------------------------------------------------------------------------
+# is_same_device()
+# ---------------------------------------------------------------------------
+
+
+def test_is_same_device_same_filesystem() -> None:
+    fs = MockFilesystem({"/a.txt": b"x", "/b.txt": b"y"})
+    assert fs.is_same_device(fs.path("/a.txt"), fs.path("/b.txt"))
+
+
+def test_is_same_device_different_filesystem() -> None:
+    fs1 = MockFilesystem({"/a.txt": b"x"})
+    fs2 = MockFilesystem({"/a.txt": b"x"})
+    assert not fs1.is_same_device(fs1.path("/a.txt"), fs2.path("/a.txt"))

@@ -5,7 +5,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path, PurePath
 
-DATA_DIR = Path(__file__).parent / "data"
+DATA_DIR = Path(__file__).parent / "_data"
 
 
 def create_file(path: PurePath, content: str) -> None:
