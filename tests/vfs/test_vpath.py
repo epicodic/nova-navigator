@@ -1,6 +1,6 @@
 from nova_navigator.vfs2.filesystems import LocalFilesystem
-from tests.mock_filesystem import MockFilesystem
-from tests.test_utils import DATA_DIR
+from tests._utils.data import DATA_DIR
+from tests._utils.mock_filesystem import MockFilesystem
 
 
 def test_vpath_local_filesystem() -> None:
