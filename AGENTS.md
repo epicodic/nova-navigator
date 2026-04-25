@@ -66,6 +66,23 @@ Always run `uv run qa` after changes and confirm zero failures before claiming w
 
 ---
 
+## Read Documentation First
+
+**Before making any design decision or starting an implementation**, look for and read all relevant documentation in `docs/`.
+
+| File | Topic |
+|------|-------|
+| `docs/coding_conventions.md` | Naming, style, and code patterns for this project |
+| `docs/scheduler.md` | Async task scheduler framework — read before touching `scheduler/` or long-running operations |
+| `docs/directory_browser.md` | Directory browser widget design — read before touching `widgets/directory_browser.py` |
+
+Steps:
+1. List `docs/` to see available documentation.
+2. Read every file whose topic overlaps with your task.
+3. Only then proceed with design decisions or code changes.
+
+---
+
 ## Documentation
 
 If the change involves documentation updates in `docs/`, verify that changes are correct.
