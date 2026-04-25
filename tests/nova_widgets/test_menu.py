@@ -130,3 +130,86 @@ async def test_menu_enter_on_checkable_item_toggles_checked_to_true() -> None:
     assert checkable.checked is True
     assert len(app.triggered) == 1
     assert app.triggered[0] is checkable
+
+
+@pytest.mark.asyncio
+async def test_right_arrow_opens_submenu() -> None:
+    sub = Menu("Submenu")
+    sub.add_action("Sub Item", name="sub_item")
+
+    menu = Menu()
+    menu.add_action("Before", name="before")
+    menu.add(sub)
+
+    app = MenuTestApp(menu)
+    async with app.run_test() as pilot:
+        await pilot.press("down")  # highlight index 0 (Before)
+        await pilot.press("down")  # highlight index 1 (Submenu)
+        await pilot.press("right")  # open submenu
+        await pilot.pause()
+        # Parent menu has the submenu registered as opened
+        assert menu._opened_submenu is sub
+        # The submenu widget is now in the DOM
+        menus = list(app.query(Menu))
+        assert sub in menus
+
+
+@pytest.mark.asyncio
+async def test_enter_on_submenu_item_opens_submenu() -> None:
+    sub = Menu("Submenu")
+    sub.add_action("Sub Item", name="sub_item")
+
+    menu = Menu()
+    menu.add(sub)
+
+    app = MenuTestApp(menu)
+    async with app.run_test() as pilot:
+        await pilot.press("down")  # highlight index 0 (Submenu)
+        await pilot.press("enter")  # enter also opens a submenu item
+        await pilot.pause()
+        assert menu._opened_submenu is sub
+
+
+@pytest.mark.asyncio
+async def test_left_arrow_closes_submenu_and_returns_focus_to_parent() -> None:
+    sub = Menu("Submenu")
+    sub.add_action("Sub Item", name="sub_item")
+
+    menu = Menu()
+    menu.add_action("Before", name="before")
+    menu.add(sub)
+
+    app = MenuTestApp(menu)
+    async with app.run_test() as pilot:
+        await pilot.press("down")  # highlight index 1 (Submenu)
+        await pilot.press("down")
+        await pilot.press("right")  # open submenu — focus is now on sub
+        await pilot.pause()
+        assert menu._opened_submenu is sub
+
+        await pilot.press("left")  # close submenu — focus returns to parent
+        await pilot.pause()
+        assert menu._opened_submenu is None
+        # Submenu is removed from DOM
+        assert sub not in list(app.query(Menu))
+
+
+@pytest.mark.asyncio
+async def test_triggering_item_in_submenu_fires_triggered_on_app() -> None:
+    sub = Menu("Submenu")
+    sub_action = sub.add_action("Sub Item", name="sub_item")
+
+    menu = Menu()
+    menu.add(sub)
+
+    app = MenuTestApp(menu)
+    async with app.run_test() as pilot:
+        await pilot.press("down")  # highlight the Submenu item
+        await pilot.press("right")  # open submenu
+        await pilot.pause()
+        await pilot.press("down")  # highlight "Sub Item" inside the submenu
+        await pilot.press("enter")  # trigger it
+        await pilot.pause()
+
+    assert len(app.triggered) == 1
+    assert app.triggered[0] is sub_action
