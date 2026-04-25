@@ -28,10 +28,17 @@ main() {
     ###############
     # Setup
 
-    # Python environment variables
+    # Load shared environment settings from .env (paths there are workspace-relative)
+    set -a
+    # shellcheck source=.env
+    source "$WORKSPACE_ROOT/.env"
+    set +a
+    # .env uses paths relative to workspace root; make them absolute
+    export PYTHONPYCACHEPREFIX="$WORKSPACE_ROOT/$PYTHONPYCACHEPREFIX"
 
-    # avoid __pycache__ directories being created in source directories
-    export PYTHONPYCACHEPREFIX="$WORKSPACE_ROOT/.cache/pycache"
+    # tell uv to auto-load .env so that PYTHONPYCACHEPREFIX also applies to
+    # all `uv run` sub-processes started from this shell
+    export UV_ENV_FILE="$WORKSPACE_ROOT/.env"
 
     # avoid adding the project root to sys.path, which mimics the behavior of
     # Bazel and prevents accidental imports from source directories
