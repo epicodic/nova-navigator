@@ -213,3 +213,75 @@ async def test_triggering_item_in_submenu_fires_triggered_on_app() -> None:
 
     assert len(app.triggered) == 1
     assert app.triggered[0] is sub_action
+
+
+# region -------------------- Mouse interaction tests ------------------------
+
+
+@pytest.mark.asyncio
+async def test_mouse_hover_highlights_first_item() -> None:
+    menu = Menu()
+    menu.add_action("Item A", name="item_a")
+    menu.add_action("Item B", name="item_b")
+
+    app = MenuTestApp(menu)
+    async with app.run_test() as pilot:
+        # Row 0 is the top border; row 1 is the first item
+        await pilot.hover(menu, offset=(2, 1))
+        await pilot.pause()
+        assert menu._highlighted == 0
+
+
+@pytest.mark.asyncio
+async def test_mouse_hover_second_item_changes_highlight() -> None:
+    menu = Menu()
+    menu.add_action("Item A", name="item_a")
+    menu.add_action("Item B", name="item_b")
+
+    app = MenuTestApp(menu)
+    async with app.run_test() as pilot:
+        await pilot.hover(menu, offset=(2, 1))  # hover first item
+        await pilot.pause()
+        assert menu._highlighted == 0
+
+        await pilot.hover(menu, offset=(2, 2))  # hover second item
+        await pilot.pause()
+        assert menu._highlighted == 1
+
+
+@pytest.mark.asyncio
+async def test_mouse_click_triggers_hovered_item() -> None:
+    menu = Menu()
+    action_a = menu.add_action("Item A", name="item_a")
+    menu.add_action("Item B", name="item_b")
+
+    app = MenuTestApp(menu)
+    async with app.run_test() as pilot:
+        # pilot.click() does not fire MouseMove, so hover first to set the highlight
+        await pilot.hover(menu, offset=(2, 1))  # highlight first item
+        await pilot.pause()
+        await pilot.click(menu, offset=(2, 1))  # click → trigger
+        await pilot.pause()
+
+    assert len(app.triggered) == 1
+    assert app.triggered[0] is action_a
+
+
+@pytest.mark.asyncio
+async def test_mouse_click_on_submenu_item_opens_submenu() -> None:
+    sub = Menu("Submenu")
+    sub.add_action("Sub Item", name="sub_item")
+
+    menu = Menu()
+    menu.add(sub)  # submenu is at index 0 → row 1
+
+    app = MenuTestApp(menu)
+    async with app.run_test() as pilot:
+        await pilot.hover(menu, offset=(2, 1))  # highlight the submenu row
+        await pilot.pause()
+        await pilot.click(menu, offset=(2, 1))  # click opens the submenu
+        await pilot.pause()
+        assert menu._opened_submenu is sub
+
+
+# endregion

@@ -54,9 +54,9 @@ async def test_menu_bar_click_opens_menu() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
 
-        # Simulate the mouse-down that triggers menu opening
+        # Click the item to trigger menu opening
         item = app.query(MenuBarItem).first()
-        item.post_message(MenuBarItem.Selected(item))
+        await pilot.click(item)
         await pilot.pause(delay=0.1)
 
         # The File menu should now be mounted as a child of the MenuBar
@@ -82,7 +82,7 @@ async def test_menu_bar_right_arrow_while_menu_open_moves_to_next_item() -> None
 
         # Open "File"
         items = list(app.query(MenuBarItem))
-        items[0].post_message(MenuBarItem.Selected(items[0]))
+        await pilot.click(items[0])
         await pilot.pause(delay=0.1)
         active_file = _active_item(app)
         assert active_file is not None
@@ -109,7 +109,7 @@ async def test_menu_bar_left_arrow_while_menu_open_moves_to_previous_item() -> N
 
         # Open "Edit" (the middle item)
         items = list(app.query(MenuBarItem))
-        items[1].post_message(MenuBarItem.Selected(items[1]))
+        await pilot.click(items[1])
         await pilot.pause(delay=0.1)
         active_edit = _active_item(app)
         assert active_edit is not None
