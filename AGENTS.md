@@ -107,7 +107,7 @@ The codebase lives under `src/` and contains two packages:
 - `filesystems/ssh.py` — `SSHFilesystem` via paramiko
 - `filesystems/azure.py` — Azure blob stub (incomplete)
 
-**Task system:** `nova_navigator/task.py` — async task scheduler for long-running operations with user decision support. See `docs/tasks.md` for complete task framework guide.
+**Task system:** `nova_navigator/scheduler/` — async scheduler for long-running operations with user decision support. See `docs/scheduler.md` for the complete scheduler framework guide.
 - `AsyncTaskScheduler` runs async task functions in worker threads with isolated event loops
 - Tasks accept `TaskContext` for progress tracking, cancellation, and user decisions
 - `TaskContext.request_decision()` pauses execution to show user dialogs
@@ -147,7 +147,7 @@ Full reference: `docs/coding_conventions.md`
 
 ## Task Scheduler
 
-For implementing long-running async operations: see `docs/tasks.md` for the task framework guide, API reference, and implementation patterns.
+For implementing long-running async operations: see `docs/scheduler.md` for the scheduler framework guide, API reference, and implementation patterns.
 
 ### Python
 
