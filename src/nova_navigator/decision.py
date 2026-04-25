@@ -4,18 +4,17 @@ from typing import Any
 
 class Decision(Flag):
     # base decisions
-    _POSITIVE = 0x0000
     _NEGATIVE = 0x0001
 
     # modifiers
     _MODIFIER_TO_ALL = 0x10000
 
     # the actual decisions
-    YES = 0x0002 | _POSITIVE
+    YES = 0x0002
     NO = 0x0002 | _NEGATIVE
-    OK = 0x0004 | _POSITIVE
+    OK = 0x0004
     CANCEL = 0x0004 | _NEGATIVE
-    RETRY = 0x0008 | _POSITIVE
+    RETRY = 0x0008
     SKIP = 0x0008 | _NEGATIVE
 
     # mask to extract the base decision (YES, NO, OK, CANCEL, RETRY, SKIP)
@@ -43,7 +42,7 @@ class Decision(Flag):
         return self._is_set(self, self._NEGATIVE)
 
     def is_decision(self, value: "Decision") -> bool:
-        return bool(self & Decision(self._MASK)) == value
+        return (self & Decision(self._MASK)) == value
 
     def __str__(self) -> str:
         name = self.name.replace("_", " ")

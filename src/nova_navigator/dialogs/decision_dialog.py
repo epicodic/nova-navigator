@@ -8,7 +8,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 
 from ..decision import Decision
-from ..task import DecisionRequest
+from ..scheduler import DecisionRequest
 
 _logger = logging.getLogger(__name__)
 
