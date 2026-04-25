@@ -1,5 +1,4 @@
 import threading
-from pathlib import PurePosixPath
 
 import pytest
 
@@ -18,7 +17,7 @@ async def test_erase_single_file() -> None:
 
     await run_task(lambda ctx: erase_files(ctx, [fs.path("/home/user/file.txt")]))
 
-    assert PurePosixPath("/home/user/file.txt") not in fs._nodes
+    assert not fs.exists("/home/user/file.txt")
 
 
 @pytest.mark.asyncio
@@ -30,7 +29,7 @@ async def test_erase_multiple_files() -> None:
     await run_task(lambda ctx: erase_files(ctx, paths))
 
     for p in ("/home/user/a.txt", "/home/user/b.txt", "/home/user/c.txt"):
-        assert PurePosixPath(p) not in fs._nodes
+        assert not fs.exists(p)
 
 
 @pytest.mark.asyncio
@@ -41,7 +40,7 @@ async def test_erase_empty_directory() -> None:
     requests = await run_task(lambda ctx: erase_files(ctx, [fs.path("/home/user/emptydir")]))
 
     assert len(requests) == 0
-    assert PurePosixPath("/home/user/emptydir") not in fs._nodes
+    assert not fs.exists("/home/user/emptydir")
 
 
 @pytest.mark.asyncio
@@ -55,8 +54,8 @@ async def test_erase_non_empty_directory_ask_yes() -> None:
     )
 
     assert len(requests) == 1
-    assert PurePosixPath("/home/user/dir/file.txt") not in fs._nodes
-    assert PurePosixPath("/home/user/dir") not in fs._nodes
+    assert not fs.exists("/home/user/dir/file.txt")
+    assert not fs.exists("/home/user/dir")
 
 
 @pytest.mark.asyncio
@@ -70,8 +69,8 @@ async def test_erase_non_empty_directory_ask_no() -> None:
     )
 
     assert len(requests) == 1
-    assert PurePosixPath("/home/user/dir/file.txt") in fs._nodes
-    assert PurePosixPath("/home/user/dir") in fs._nodes
+    assert fs.exists("/home/user/dir/file.txt")
+    assert fs.exists("/home/user/dir")
 
 
 @pytest.mark.asyncio
@@ -93,7 +92,7 @@ async def test_erase_multiple_non_empty_dirs_ask_all() -> None:
     # Only one prompt; the cached ALL answer silences the second
     assert len(requests) == 1
     for p in ("/home/user/dir1/a.txt", "/home/user/dir1", "/home/user/dir2/b.txt", "/home/user/dir2"):
-        assert PurePosixPath(p) not in fs._nodes
+        assert not fs.exists(p)
 
 
 @pytest.mark.asyncio
@@ -115,7 +114,7 @@ async def test_erase_multiple_non_empty_dirs_ask_none() -> None:
     # Only one prompt; the cached NONE answer silences the second
     assert len(requests) == 1
     for p in ("/home/user/dir1/a.txt", "/home/user/dir1", "/home/user/dir2/b.txt", "/home/user/dir2"):
-        assert PurePosixPath(p) in fs._nodes
+        assert fs.exists(p)
 
 
 @pytest.mark.asyncio
@@ -141,7 +140,7 @@ async def test_erase_recursive_nested_directory() -> None:
         "/home/user/root/sub",
         "/home/user/root",
     ):
-        assert PurePosixPath(p) not in fs._nodes
+        assert not fs.exists(p)
 
 
 @pytest.mark.asyncio
@@ -154,7 +153,7 @@ async def test_erase_ask_before_erase_false_skips_prompt() -> None:
     )
 
     assert len(requests) == 0
-    assert PurePosixPath("/home/user/dir") not in fs._nodes
+    assert not fs.exists("/home/user/dir")
 
 
 @pytest.mark.asyncio
@@ -174,9 +173,9 @@ async def test_erase_mixed_files_and_dirs() -> None:
     )
 
     assert len(requests) == 1
-    assert PurePosixPath("/home/user/file.txt") not in fs._nodes
-    assert PurePosixPath("/home/user/dir/nested.txt") not in fs._nodes
-    assert PurePosixPath("/home/user/dir") not in fs._nodes
+    assert not fs.exists("/home/user/file.txt")
+    assert not fs.exists("/home/user/dir/nested.txt")
+    assert not fs.exists("/home/user/dir")
 
 
 @pytest.mark.asyncio
