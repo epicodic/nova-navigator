@@ -33,19 +33,23 @@ async def copy_file(
     src_path: VPath,
     dst_path: VPath,
     options: FileCopyOptions | None = None,
-) -> None:
+) -> bool:
     """Copy a single file from *src_path* to *dst_path*.
 
     Reads in CHUNK_SIZE chunks, updating step-level progress. When the
     destination already exists the action depends on ``options.overwrite``:
     ``"overwrite"`` replaces unconditionally, ``"skip"`` leaves it untouched,
     ``"ask"`` requests a user decision.
+
+    Returns ``True`` if the file was actually written, ``False`` if the copy
+    was skipped (destination exists and overwrite policy did not proceed).
     """
     if options is None:
         options = FileCopyOptions()
 
     reader = None
     writer = None
+    _failed = False
     try:
         src_stat = src_path.stat
         reader = src_path.filesystem.read(src_path)
@@ -54,8 +58,7 @@ async def copy_file(
             dst_stat = dst_path.stat_or_none
             if dst_stat is not None:
                 if options.overwrite == "skip":
-                    ctx.status.set_completed()
-                    return
+                    return False
                 elif options.overwrite == "ask":
                     decision = await ctx.request_decision(
                         "Overwrite",
@@ -63,8 +66,7 @@ async def copy_file(
                         message=f"File '{dst_path.path}' already exists. Overwrite?",
                     )
                     if decision.is_negative:
-                        ctx.status.set_completed()
-                        return
+                        return False
 
         writer = dst_path.filesystem.write(dst_path)
         ctx.status.set_step_progress(0, src_stat.size)
@@ -78,11 +80,18 @@ async def copy_file(
             ctx.status.update_step_progress(inc_completed=len(chunk))
 
         ctx.status.set_step_completed()
+    except BaseException:
+        _failed = True
+        raise
     finally:
         if reader:
             reader.close()
         if writer:
             writer.close()
+            if _failed:
+                with contextlib.suppress(Exception):
+                    dst_path.filesystem.remove(dst_path)
+    return True
 
 
 async def _copy_file_step(
@@ -102,13 +111,12 @@ async def _copy_dir(
     dst_filesystem: Filesystem,
     options: FileCopyOptions,
 ) -> None:
-    file_tasks: list[asyncio.Task[None]] = []
+    file_tasks: list[asyncio.Task[bool]] = []
     for src_root, _src_dirs, src_files in src_path.walk():
         ctx.status.check_cancelled()
         dst_root = dst_path / src_root.path.relative_to(src_path.path)
         with contextlib.suppress(FileExistsError):
             dst_filesystem.mkdir(dst_root)
-        ctx.status.update_progress(inc_total=len(src_files))
         for f in src_files:
             ctx.status.check_cancelled()
             t = await ctx.subtask(copy_file(ctx, f, dst_root / f.name, options))
@@ -139,8 +147,13 @@ async def copy_files(
     dst_stat = destination.stat_or_none
     dst_is_directory = dst_stat is not None and dst_stat.is_directory
 
-    if len(src_paths) == 1 and not dst_is_directory:
+    if len(src_paths) == 1 and not dst_is_directory and not src_paths[0].stat.is_directory:
         await copy_file(ctx, src_paths[0], destination, options)
+        ctx.status.update_progress(inc_completed=1)
+        return
+
+    if len(src_paths) == 1 and not dst_is_directory and src_paths[0].stat.is_directory:
+        await _copy_dir(ctx, src_paths[0], destination, dst_filesystem, options)
         ctx.status.update_progress(inc_completed=1)
         return
 
@@ -155,6 +168,57 @@ async def copy_files(
         subtasks.append(t)
 
     await asyncio.gather(*subtasks)
+
+
+async def _move_dir_contents(
+    ctx: TaskContext,
+    src_path: VPath,
+    actual_dst: VPath,
+    options: FileCopyOptions,
+    *,
+    same_device: bool,
+) -> None:
+    """Walk *src_path* and move each file into the mirrored path under *actual_dst*.
+
+    Used when the destination directory already exists (so an atomic rename of
+    the whole tree is not possible). Files are processed individually so that
+    the overwrite policy is applied at file granularity. Source directories are
+    removed bottom-up after their contents are moved.
+    """
+    with contextlib.suppress(FileExistsError):
+        actual_dst.filesystem.mkdir(actual_dst)
+    src_dirs: list[VPath] = []
+    for src_root, _src_dirs, src_files in src_path.walk():
+        ctx.status.check_cancelled()
+        dst_root = actual_dst / src_root.path.relative_to(src_path.path)
+        with contextlib.suppress(FileExistsError):
+            actual_dst.filesystem.mkdir(dst_root)
+        src_dirs.append(src_root)
+        for f in src_files:
+            ctx.status.check_cancelled()
+            f_dst = dst_root / f.name
+            if same_device:
+                f_dst_stat = f_dst.stat_or_none
+                if f_dst_stat is not None:
+                    if options.overwrite == "skip":
+                        continue
+                    if options.overwrite == "ask":
+                        decision = await ctx.request_decision(
+                            "Overwrite",
+                            expected_decisions=[Decision.YES, Decision.NO, Decision.ALL, Decision.NONE],
+                            message=f"File '{f_dst.path}' already exists. Overwrite?",
+                        )
+                        if decision.is_negative:
+                            continue
+                    f_dst.filesystem.remove(f_dst)
+                f.filesystem.rename(f, f_dst)
+            else:
+                copied = await copy_file(ctx, f, f_dst, options)
+                if copied:
+                    f.filesystem.remove(f)
+    for d in reversed(src_dirs):
+        with contextlib.suppress(OSError):
+            d.filesystem.rmdir(d)
 
 
 async def _move_path(
@@ -180,40 +244,35 @@ async def _move_path(
 
     if same_device:
         actual_dst_stat = actual_dst.stat_or_none
-        if actual_dst_stat is not None:
-            if options.overwrite == "skip":
-                ctx.status.update_progress(inc_completed=1)
-                return
-            if options.overwrite == "ask":
-                decision = await ctx.request_decision(
-                    "Overwrite",
-                    expected_decisions=[Decision.YES, Decision.NO, Decision.ALL, Decision.NONE],
-                    message=f"'{actual_dst.path}' already exists. Overwrite?",
-                )
-                if decision.is_negative:
+        if src_path.stat.is_directory and actual_dst_stat is not None and actual_dst_stat.is_directory:
+            # Destination directory already exists: walk per-file for fine-grained overwrite policy.
+            await _move_dir_contents(ctx, src_path, actual_dst, options, same_device=True)
+        else:
+            if actual_dst_stat is not None:
+                if options.overwrite == "skip":
                     ctx.status.update_progress(inc_completed=1)
                     return
-            if actual_dst_stat.is_directory:
-                await erase_files(ctx, [actual_dst], EraseFilesOptions(ask_before_erase=False))
-            else:
-                actual_dst.filesystem.remove(actual_dst)
-        src_path.filesystem.rename(src_path, actual_dst)
+                if options.overwrite == "ask":
+                    decision = await ctx.request_decision(
+                        "Overwrite",
+                        expected_decisions=[Decision.YES, Decision.NO, Decision.ALL, Decision.NONE],
+                        message=f"'{actual_dst.path}' already exists. Overwrite?",
+                    )
+                    if decision.is_negative:
+                        ctx.status.update_progress(inc_completed=1)
+                        return
+                if actual_dst_stat.is_directory:
+                    await erase_files(ctx, [actual_dst], EraseFilesOptions(ask_before_erase=False))
+                else:
+                    actual_dst.filesystem.remove(actual_dst)
+            src_path.filesystem.rename(src_path, actual_dst)
     else:
         if src_path.stat.is_directory:
-            with contextlib.suppress(FileExistsError):
-                actual_dst.filesystem.mkdir(actual_dst)
-            for src_root, _src_dirs, src_files in src_path.walk():
-                ctx.status.check_cancelled()
-                dst_root = actual_dst / src_root.path.relative_to(src_path.path)
-                with contextlib.suppress(FileExistsError):
-                    actual_dst.filesystem.mkdir(dst_root)
-                for f in src_files:
-                    ctx.status.check_cancelled()
-                    await copy_file(ctx, f, dst_root / f.name, options)
-            await erase_files(ctx, [src_path], EraseFilesOptions(ask_before_erase=False))
+            await _move_dir_contents(ctx, src_path, actual_dst, options, same_device=False)
         else:
-            await copy_file(ctx, src_path, actual_dst, options)
-            src_path.filesystem.remove(src_path)
+            copied = await copy_file(ctx, src_path, actual_dst, options)
+            if copied:
+                src_path.filesystem.remove(src_path)
 
     ctx.status.update_progress(inc_completed=1)
 
