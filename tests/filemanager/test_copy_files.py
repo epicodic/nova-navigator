@@ -4,7 +4,7 @@ from pathlib import PurePosixPath
 import pytest
 
 from nova_navigator.decision import Decision
-from nova_navigator.filemanager.tasks import CHUNK_SIZE, FileCopyOptions, copy_file, copy_paths
+from nova_navigator.filemanager.tasks import CHUNK_SIZE, FileCopyOptions, copy_file, copy_files
 from nova_navigator.scheduler import TaskCancelled, TaskStatus
 from tests._utils.mock_filesystem import MockFilesystem
 
@@ -212,7 +212,7 @@ async def test_copy_paths_single_file() -> None:
     src_fs = MockFilesystem({"/src/hello.txt": b"hello"})
     dst_fs = MockFilesystem()
 
-    await run_task(lambda ctx: copy_paths(ctx, [src_fs.path("/src/hello.txt")], dst_fs.path("/home/user/other.txt")))
+    await run_task(lambda ctx: copy_files(ctx, [src_fs.path("/src/hello.txt")], dst_fs.path("/home/user/other.txt")))
 
     assert read_all(dst_fs, "/home/user/other.txt") == b"hello"
 
@@ -223,7 +223,7 @@ async def test_copy_paths_single_to_dir() -> None:
     src_fs = MockFilesystem({"/src/hello.txt": b"hello"})
     dst_fs = MockFilesystem()
 
-    await run_task(lambda ctx: copy_paths(ctx, [src_fs.path("/src/hello.txt")], dst_fs.path("/home/user")))
+    await run_task(lambda ctx: copy_files(ctx, [src_fs.path("/src/hello.txt")], dst_fs.path("/home/user")))
 
     assert read_all(dst_fs, "/home/user/hello.txt") == b"hello"
 
@@ -235,7 +235,7 @@ async def test_copy_paths_multiple_files() -> None:
     dst_fs = MockFilesystem()
 
     srcs = [src_fs.path(p) for p in ("/src/a.txt", "/src/b.txt", "/src/c.txt")]
-    await run_task(lambda ctx: copy_paths(ctx, srcs, dst_fs.path("/home/user")))
+    await run_task(lambda ctx: copy_files(ctx, srcs, dst_fs.path("/home/user")))
 
     assert read_all(dst_fs, "/home/user/a.txt") == b"aaa"
     assert read_all(dst_fs, "/home/user/b.txt") == b"bbb"
@@ -249,7 +249,7 @@ async def test_copy_paths_flat_directory() -> None:
     dst_fs = MockFilesystem()
     dst_fs._mkdir_p(PurePosixPath("/dst/mydir"))
 
-    await run_task(lambda ctx: copy_paths(ctx, [src_fs.path("/src/mydir")], dst_fs.path("/dst")))
+    await run_task(lambda ctx: copy_files(ctx, [src_fs.path("/src/mydir")], dst_fs.path("/dst")))
 
     assert read_all(dst_fs, "/dst/mydir/a.txt") == b"a"
     assert read_all(dst_fs, "/dst/mydir/b.txt") == b"b"
@@ -268,7 +268,7 @@ async def test_copy_paths_deep_hierarchy() -> None:
     dst_fs = MockFilesystem()
     dst_fs._mkdir_p(PurePosixPath("/dst/root/sub/deep"))
 
-    await run_task(lambda ctx: copy_paths(ctx, [src_fs.path("/src/root")], dst_fs.path("/dst")))
+    await run_task(lambda ctx: copy_files(ctx, [src_fs.path("/src/root")], dst_fs.path("/dst")))
 
     assert read_all(dst_fs, "/dst/root/top.txt") == b"top"
     assert read_all(dst_fs, "/dst/root/sub/mid.txt") == b"mid"
@@ -283,7 +283,7 @@ async def test_copy_paths_mixed_files_and_dirs() -> None:
     dst_fs._mkdir_p(PurePosixPath("/dst/dir"))
 
     srcs = [src_fs.path("/src/standalone.txt"), src_fs.path("/src/dir")]
-    await run_task(lambda ctx: copy_paths(ctx, srcs, dst_fs.path("/dst")))
+    await run_task(lambda ctx: copy_files(ctx, srcs, dst_fs.path("/dst")))
 
     assert read_all(dst_fs, "/dst/standalone.txt") == b"standalone"
     assert read_all(dst_fs, "/dst/dir/nested.txt") == b"nested"
@@ -296,7 +296,7 @@ async def test_copy_paths_overwrite_skip() -> None:
     dst_fs = MockFilesystem({"/dst/a.txt": b"original-a", "/dst/b.txt": b"original-b"})
 
     srcs = [src_fs.path("/src/a.txt"), src_fs.path("/src/b.txt")]
-    requests = await run_task(lambda ctx: copy_paths(ctx, srcs, dst_fs.path("/dst"), FileCopyOptions(overwrite="skip")))
+    requests = await run_task(lambda ctx: copy_files(ctx, srcs, dst_fs.path("/dst"), FileCopyOptions(overwrite="skip")))
 
     assert requests == []
     assert len(dst_fs.writers) == 0
@@ -312,7 +312,7 @@ async def test_copy_paths_overwrite_force() -> None:
 
     srcs = [src_fs.path("/src/a.txt"), src_fs.path("/src/b.txt")]
     requests = await run_task(
-        lambda ctx: copy_paths(ctx, srcs, dst_fs.path("/dst"), FileCopyOptions(overwrite="overwrite"))
+        lambda ctx: copy_files(ctx, srcs, dst_fs.path("/dst"), FileCopyOptions(overwrite="overwrite"))
     )
 
     assert requests == []
@@ -327,7 +327,7 @@ async def test_copy_paths_overwrite_ask_yes() -> None:
     dst_fs = MockFilesystem({"/dst/file.txt": b"old"})
 
     requests = await run_task(
-        lambda ctx: copy_paths(ctx, [src_fs.path("/src/file.txt")], dst_fs.path("/dst")),
+        lambda ctx: copy_files(ctx, [src_fs.path("/src/file.txt")], dst_fs.path("/dst")),
         [Decision.YES],
     )
 
@@ -342,7 +342,7 @@ async def test_copy_paths_overwrite_ask_no() -> None:
     dst_fs = MockFilesystem({"/dst/file.txt": b"original"})
 
     requests = await run_task(
-        lambda ctx: copy_paths(ctx, [src_fs.path("/src/file.txt")], dst_fs.path("/dst")),
+        lambda ctx: copy_files(ctx, [src_fs.path("/src/file.txt")], dst_fs.path("/dst")),
         [Decision.NO],
     )
 
@@ -359,7 +359,7 @@ async def test_copy_paths_overwrite_ask_per_file() -> None:
 
     srcs = [src_fs.path("/src/a.txt"), src_fs.path("/src/b.txt")]
     requests = await run_task(
-        lambda ctx: copy_paths(ctx, srcs, dst_fs.path("/dst")),
+        lambda ctx: copy_files(ctx, srcs, dst_fs.path("/dst")),
         [Decision.YES, Decision.NO],
     )
 
@@ -377,7 +377,7 @@ async def test_copy_paths_overwrite_yes_to_all() -> None:
     srcs = [src_fs.path(p) for p in ("/src/a.txt", "/src/b.txt", "/src/c.txt")]
     # Scheduler caches ALL after the first prompt; sub-tasks 2 and 3 get the cached response.
     requests = await run_task(
-        lambda ctx: copy_paths(ctx, srcs, dst_fs.path("/dst")),
+        lambda ctx: copy_files(ctx, srcs, dst_fs.path("/dst")),
         [Decision.ALL],
     )
 
@@ -395,7 +395,7 @@ async def test_copy_paths_overwrite_no_to_all() -> None:
 
     srcs = [src_fs.path(p) for p in ("/src/a.txt", "/src/b.txt", "/src/c.txt")]
     requests = await run_task(
-        lambda ctx: copy_paths(ctx, srcs, dst_fs.path("/dst")),
+        lambda ctx: copy_files(ctx, srcs, dst_fs.path("/dst")),
         [Decision.NONE],
     )
 
@@ -413,7 +413,7 @@ async def test_copy_paths_no_conflict_no_prompt() -> None:
     dst_fs = MockFilesystem()
 
     srcs = [src_fs.path("/src/x.txt"), src_fs.path("/src/y.txt")]
-    requests = await run_task(lambda ctx: copy_paths(ctx, srcs, dst_fs.path("/home/user")))
+    requests = await run_task(lambda ctx: copy_files(ctx, srcs, dst_fs.path("/home/user")))
 
     assert requests == []
     assert read_all(dst_fs, "/home/user/x.txt") == b"x"
@@ -434,7 +434,7 @@ async def test_copy_paths_progress_tracks_src_paths() -> None:
     srcs = [src_fs.path(p) for p in ("/src/a.txt", "/src/b.txt", "/src/c.txt")]
 
     await run_task(
-        lambda ctx: copy_paths(ctx, srcs, dst_fs.path("/home/user")),
+        lambda ctx: copy_files(ctx, srcs, dst_fs.path("/home/user")),
         status=status,
     )
 
@@ -456,7 +456,7 @@ async def test_copy_paths_cancelled_mid_list() -> None:
 
     with pytest.raises(TaskCancelled):
         await run_task(
-            lambda ctx: copy_paths(
+            lambda ctx: copy_files(
                 ctx, [src_fs.path("/src/a.txt"), src_fs.path("/src/b.txt")], dst_fs.path("/home/user")
             ),
             status=status,
@@ -473,4 +473,4 @@ async def test_copy_paths_error_during_directory_copy() -> None:
     dst_fs._mkdir_p(PurePosixPath("/home/user/mydir"))
 
     with pytest.raises(OSError, match="disk full"):
-        await run_task(lambda ctx: copy_paths(ctx, [src_fs.path("/src/mydir")], dst_fs.path("/home/user")))
+        await run_task(lambda ctx: copy_files(ctx, [src_fs.path("/src/mydir")], dst_fs.path("/home/user")))
