@@ -7,7 +7,7 @@ from textual.binding import Binding
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Static, TextArea
 
-from .vfs2 import VPath
+from .vfs import VPath
 
 
 class EditorFooter(Footer):

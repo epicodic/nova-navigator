@@ -31,9 +31,9 @@ from nova_widgets import unicode
 
 from ..config import conf_
 from ..icons import ico_
-from ..vfs2 import VPath
-from ..vfs2.filesystems.local import LocalFilesystem
-from ..vfs2.types import Stat
+from ..vfs import VPath
+from ..vfs.filesystems.local import LocalFilesystem
+from ..vfs.types import Stat
 from .overlay_widget import OverlayWidget
 
 
