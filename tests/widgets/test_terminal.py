@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import shlex
 from io import StringIO
 from pathlib import PurePath
+from typing import Any
 
 import pytest
 from pyte.screens import Char
@@ -140,7 +142,7 @@ def test_translate_terminal_color_unknown_string_passes_through() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _render_display(display: TerminalDisplay) -> list[Text]:
+def _render_display(display: TerminalDisplay) -> list[Any]:
     """Collect the Text lines yielded by TerminalDisplay.__rich_console__."""
     console = Console(file=StringIO(), highlight=False, markup=False)
     return list(display.__rich_console__(console, console.options))
@@ -533,14 +535,17 @@ async def test_on_resize_puts_set_size_message_in_send_queue() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _start_recv_only(terminal: Terminal) -> None:
-    """Start the recv() task without forking a PTY."""
-    terminal.recv_queue = asyncio.Queue()
+async def _start_recv_only(terminal: Terminal) -> asyncio.Queue[list[object]]:
+    """Start the recv() task without forking a PTY. Returns the recv_queue."""
+    recv_queue: asyncio.Queue[list[object]] = asyncio.Queue()
+    terminal.recv_queue = recv_queue
     terminal.recv_task_t = asyncio.create_task(terminal.recv())
+    return recv_queue
 
 
 async def _stop_recv_only(terminal: Terminal) -> None:
     """Cancel the recv() task started by _start_recv_only."""
+    assert terminal.recv_task_t is not None
     terminal.recv_task_t.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await terminal.recv_task_t
@@ -557,9 +562,9 @@ async def test_stdout_message_updates_display_content() -> None:
     app = TerminalTestApp(terminal)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await _start_recv_only(terminal)
+        recv_q = await _start_recv_only(terminal)
         try:
-            await terminal.recv_queue.put(["stdout", "Hello"])
+            await recv_q.put(["stdout", "Hello"])
             await pilot.pause(delay=0.15)
             rendered = "".join(line.plain for line in terminal._display.lines)
             assert "Hello" in rendered
@@ -584,9 +589,9 @@ async def test_pre_cmd_message_posts_terminal_pre_cmd_event() -> None:
     app = CapturingApp(terminal)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await _start_recv_only(terminal)
+        recv_q = await _start_recv_only(terminal)
         try:
-            await terminal.recv_queue.put(["pre_cmd", "/home/user\n"])
+            await recv_q.put(["pre_cmd", "/home/user\n"])
             await pilot.pause(delay=0.15)
             assert len(received) == 1
             assert received[0].cwd == PurePath("/home/user")
@@ -605,10 +610,10 @@ async def test_decset_1000h_enables_mouse_tracking() -> None:
     app = TerminalTestApp(terminal)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await _start_recv_only(terminal)
+        recv_q = await _start_recv_only(terminal)
         try:
             assert terminal.mouse_tracking is False
-            await terminal.recv_queue.put(["stdout", "\x1b[?1000h"])
+            await recv_q.put(["stdout", "\x1b[?1000h"])
             await pilot.pause(delay=0.15)
             assert terminal.mouse_tracking is True
         finally:
@@ -621,11 +626,301 @@ async def test_decset_1000l_disables_mouse_tracking() -> None:
     app = TerminalTestApp(terminal)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await _start_recv_only(terminal)
+        recv_q = await _start_recv_only(terminal)
         try:
             terminal.mouse_tracking = True
-            await terminal.recv_queue.put(["stdout", "\x1b[?1000l"])
+            await recv_q.put(["stdout", "\x1b[?1000l"])
             await pilot.pause(delay=0.15)
             assert terminal.mouse_tracking is False
+        finally:
+            await _stop_recv_only(terminal)
+
+
+# ---------------------------------------------------------------------------
+# shell_cmd_cd — path injection safety
+# ---------------------------------------------------------------------------
+
+
+def test_shell_cmd_cd_handles_path_with_single_quote() -> None:
+    path = PurePath("/home/user/O'Brien")
+    cmd = shell_cmd_cd(path)
+    cd_part = cmd.split("&&")[0].strip()
+    # shlex.split must succeed (no unmatched quotes) and yield the original path
+    parsed = shlex.split(cd_part)
+    assert parsed[0] == "cd"
+    assert parsed[1] == str(path)
+
+
+# ---------------------------------------------------------------------------
+# _translate_terminal_color — fullmatch guard
+# ---------------------------------------------------------------------------
+
+
+def test_translate_terminal_color_7_digit_hex_not_prefixed() -> None:
+    result = _translate_terminal_color("0000001")
+    assert result == "0000001"
+
+
+# ---------------------------------------------------------------------------
+# Mouse click handling
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_on_click_ignored_when_not_started() -> None:
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # send_queue is None; on_click must return early without touching it
+        await terminal.on_click(events.Click(None, 5, 3, 0, 0, 1, shift=False, meta=False, ctrl=False))
+        assert terminal.send_queue is None
+
+
+@pytest.mark.asyncio
+async def test_on_click_ignored_when_mouse_tracking_disabled() -> None:
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
+        terminal.mouse_tracking = False
+
+        await terminal.on_click(events.Click(None, 5, 3, 0, 0, 1, shift=False, meta=False, ctrl=False))
+
+        assert terminal.send_queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_on_click_puts_click_message_in_send_queue_when_mouse_tracking_enabled() -> None:
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
+        terminal.mouse_tracking = True
+
+        await terminal.on_click(events.Click(None, 5, 3, 0, 0, 1, shift=False, meta=False, ctrl=False))
+
+        assert terminal.send_queue.qsize() == 1
+        item = terminal.send_queue.get_nowait()
+        assert item[0] == "click"
+        assert item[1] == 5
+        assert item[2] == 3
+
+
+# ---------------------------------------------------------------------------
+# Mouse scroll handling
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_on_scroll_down_ignored_when_not_started() -> None:
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await terminal.on_mouse_scroll_down(
+            events.MouseScrollDown(None, 5, 3, 0, 0, 1, shift=False, meta=False, ctrl=False)
+        )
+        assert terminal.send_queue is None
+
+
+@pytest.mark.asyncio
+async def test_on_scroll_down_ignored_when_mouse_tracking_disabled() -> None:
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
+        terminal.mouse_tracking = False
+
+        await terminal.on_mouse_scroll_down(
+            events.MouseScrollDown(None, 5, 3, 0, 0, 1, shift=False, meta=False, ctrl=False)
+        )
+
+        assert terminal.send_queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_on_scroll_down_puts_scroll_message_in_send_queue() -> None:
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
+        terminal.mouse_tracking = True
+
+        await terminal.on_mouse_scroll_down(
+            events.MouseScrollDown(None, 5, 3, 0, 0, 1, shift=False, meta=False, ctrl=False)
+        )
+
+        assert terminal.send_queue.qsize() == 1
+        item = terminal.send_queue.get_nowait()
+        assert item[0] == "scroll"
+        assert item[1] == "down"
+
+
+@pytest.mark.asyncio
+async def test_on_scroll_up_puts_scroll_message_in_send_queue() -> None:
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
+        terminal.mouse_tracking = True
+
+        await terminal.on_mouse_scroll_up(
+            events.MouseScrollUp(None, 5, 3, 0, 0, 1, shift=False, meta=False, ctrl=False)
+        )
+
+        assert terminal.send_queue.qsize() == 1
+        item = terminal.send_queue.get_nowait()
+        assert item[0] == "scroll"
+        assert item[1] == "up"
+
+
+# ---------------------------------------------------------------------------
+# Terminal.send
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_ignored_when_not_started() -> None:
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await terminal.send("hello")  # must not raise
+        assert terminal.send_queue is None
+
+
+@pytest.mark.asyncio
+async def test_send_puts_stdin_message_in_send_queue() -> None:
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
+
+        await terminal.send("hello")
+
+        assert terminal.send_queue.qsize() == 1
+        item = terminal.send_queue.get_nowait()
+        assert item == ["stdin", "hello"]
+
+
+# ---------------------------------------------------------------------------
+# recv() behavior: extended mouse tracking modes (1002 / 1003 / 1006)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_decset_1002h_enables_mouse_tracking() -> None:
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            assert terminal.mouse_tracking is False
+            await recv_q.put(["stdout", "\x1b[?1002h"])
+            await pilot.pause(delay=0.15)
+            assert terminal.mouse_tracking is True
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_decset_1003h_enables_mouse_tracking() -> None:
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            assert terminal.mouse_tracking is False
+            await recv_q.put(["stdout", "\x1b[?1003h"])
+            await pilot.pause(delay=0.15)
+            assert terminal.mouse_tracking is True
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_decset_1006h_enables_mouse_tracking() -> None:
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            assert terminal.mouse_tracking is False
+            await recv_q.put(["stdout", "\x1b[?1006h"])
+            await pilot.pause(delay=0.15)
+            assert terminal.mouse_tracking is True
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_decset_1002l_disables_mouse_tracking() -> None:
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal.mouse_tracking = True
+            await recv_q.put(["stdout", "\x1b[?1002l"])
+            await pilot.pause(delay=0.15)
+            assert terminal.mouse_tracking is False
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_decset_1003l_disables_mouse_tracking() -> None:
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal.mouse_tracking = True
+            await recv_q.put(["stdout", "\x1b[?1003l"])
+            await pilot.pause(delay=0.15)
+            assert terminal.mouse_tracking is False
+        finally:
+            await _stop_recv_only(terminal)
+
+
+# ---------------------------------------------------------------------------
+# Rendering: cursor reverse stored in raw display lines (double-stylization bug)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cursor_reverse_span_not_stored_in_raw_display_lines() -> None:
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            await recv_q.put(["stdout", "hello"])
+            await pilot.pause(delay=0.15)
+            cursor_y = terminal._display.cursor_y
+            line = terminal._display.lines[cursor_y]
+            reverse_spans = [s for s in line._spans if s.style == "reverse"]
+            # In the correct implementation cursor reverse is applied only inside
+            # TerminalDisplay.__rich_console__, so the stored line carries no reverse spans.
+            assert len(reverse_spans) == 0
         finally:
             await _stop_recv_only(terminal)

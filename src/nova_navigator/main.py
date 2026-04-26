@@ -34,7 +34,7 @@ from nova_navigator.uri import register_common_schemes, vfspath_from_uri
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import ArchiveFilesystem, LocalFilesystem
 from nova_navigator.widgets import DirectoryBrowser, Footer
-from nova_navigator.widgets.terminal import Terminal, shell_clear_prompt, shell_cmd_cd, shell_init_code
+from nova_navigator.widgets.terminal import Terminal, shell_clear_prompt, shell_cmd_cd
 from nova_widgets.menu import SYMBOL_TABLE, Action, Menu, MenuBar, set_icon_provider
 from nova_widgets.menu import constructor as mc
 
@@ -200,7 +200,7 @@ class MainScreen(Screen[None]):
         return self._left_panel
 
     async def on_mount(self) -> None:
-        pre_cmd = shell_init_code(self._terminal.fd_pre_cmd_child)
+        pre_cmd = self._terminal.get_shell_init_code()
         await self._terminal.send(pre_cmd)
 
     def on_resize(self, event: events.Resize) -> None:

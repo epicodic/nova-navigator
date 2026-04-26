@@ -1,18 +1,15 @@
-"""A terminal emulator for Textual.
+"""A terminal emulator widget for Textual.
 
 Based on David Brochart's pyte example:
 https://github.com/selectel/pyte/blob/master/examples/terminal_emulator.py
 
 """
-# mypy: ignore-errors
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import fcntl
-
-# FIXME: when hitting Alt+e, app is waiting for any stdin (output not shown)
-# TODO: do not show cursor when widget is not focused
 import os
 import pty
 import re
@@ -21,14 +18,14 @@ import signal
 import struct
 import termios
 from asyncio import Task
-from collections.abc import Generator
-from pathlib import Path, PurePath
+from pathlib import PurePath
 from typing import Any
 
 import pyte
 from pyte.screens import Char
 from rich.color import ColorParseError
 from rich.console import Console, ConsoleOptions, ConsoleRenderable
+from rich.console import RenderResult as RichRenderResult
 from rich.style import Style
 from rich.text import Text
 from textual import events, log
@@ -36,9 +33,26 @@ from textual.app import RenderResult
 from textual.message import Message
 from textual.widget import Widget
 
+__all__ = [
+    "Terminal",
+    "TerminalDisplay",
+    "TerminalPyteScreen",
+    "shell_clear_prompt",
+    "shell_cmd_cd",
+    "shell_init_code",
+]
+
+_MOUSE_TRACKING_MODES: frozenset[str] = frozenset({"1000", "1002", "1003", "1006"})
+
+_re_ansi_sequence = re.compile(r"(\x1b\[\??[\d;]*[a-zA-Z])")
+_DECSET_PREFIX = "\x1b[?"
+
 
 class TerminalPyteScreen(pyte.Screen):
-    """Overrides the pyte.Screen class to be used with TERM=linux."""
+    """pyte.Screen subclass that drops the unsupported ``private`` keyword from ``set_margins``.
+
+    Workaround for a pyte compatibility issue triggered by certain escape sequences.
+    """
 
     def set_margins(self, *args: Any, **kwargs: Any) -> None:
         kwargs.pop("private", None)
@@ -46,42 +60,27 @@ class TerminalPyteScreen(pyte.Screen):
 
 
 class TerminalDisplay(ConsoleRenderable):
-    """Rich display for the terminal."""
+    """Rich renderable for a single terminal frame."""
 
-    def __init__(self, lines: list[Text], cursor_x: int, cursor_y: int):
+    def __init__(self, lines: list[Text], cursor_x: int, cursor_y: int) -> None:
         self.lines = lines
         self.cursor_x = cursor_x
         self.cursor_y = cursor_y
 
-    def __rich_console__(self, _console: Console, _options: ConsoleOptions) -> Generator[Text]:
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RichRenderResult:
+        # Cursor reverse is applied here only; we copy the row so the stored line is never mutated.
+        result: list[Text] = []
         for y, line in enumerate(self.lines):
             if y == self.cursor_y:
-                line.stylize("reverse", self.cursor_x, self.cursor_x + 1)
-            yield line
+                rendered_line = line.copy()
+                rendered_line.stylize("reverse", self.cursor_x, self.cursor_x + 1)
+            else:
+                rendered_line = line
+            result.append(rendered_line)
+        return result
 
 
-_re_ansi_sequence = re.compile(r"(\x1b\[\??[\d;]*[a-zA-Z])")
-DECSET_PREFIX = "\x1b[?"
-
-
-def shell_init_code(fd: int) -> str:
-    NN_PRECMD = "_nn_precmd() { pwd>&%d }" % fd  # noqa: UP031
-    # _nn_precmd() { pwd>&%d; kill -STOP $$; }
-
-    # if shell_type == SHELL_ZSH:
-    return f" {NN_PRECMD} ; precmd_functions+=(_nn_precmd)\n"
-
-
-def shell_clear_prompt() -> str:
-    return "\b" * 200
-
-
-def shell_cmd_cd(path: PurePath) -> str:
-    return f"cd '{path}' >& /dev/null && printf '\\e[A'"
-
-
-# OPTIMIZE: check a way to use textual.keys
-_CTRL_KEYS = {
+_CTRL_KEYS: dict[str, str] = {
     "up": "\x1bOA",
     "down": "\x1bOB",
     "right": "\x1bOC",
@@ -114,7 +113,6 @@ _CTRL_KEYS = {
     "f20": "\x1b[34~",
 }
 
-
 _TERMINAL_COLORS: dict[str, str] = {
     "black": "#000000",
     "red": "#AB4642",
@@ -129,18 +127,32 @@ _TERMINAL_COLORS: dict[str, str] = {
 }
 
 
-def _translate_terminal_color(color: str) -> str:
-    if re.match("[0-9a-f]{6}", color, re.IGNORECASE):
-        return f"#{color}"
+def shell_init_code(fd: int) -> str:
+    """Return zsh init code that hooks precmd to write the current directory to *fd*."""
+    return f" _nn_precmd() {{ pwd>&{fd} }} ; precmd_functions+=(_nn_precmd)\n"
 
+
+def shell_clear_prompt() -> str:
+    """Return 200 backspace characters to erase the current shell prompt."""
+    return "\b" * 200
+
+
+def shell_cmd_cd(path: PurePath) -> str:
+    """Return a shell command that silently changes directory to *path*."""
+    return f"cd {shlex.quote(str(path))} >& /dev/null && printf '\\e[A'"
+
+
+def _translate_terminal_color(color: str) -> str:
+    """Map a pyte color name or 6-digit hex string to a Rich-compatible color string."""
+    if re.fullmatch("[0-9a-f]{6}", color, re.IGNORECASE):
+        return f"#{color}"
     if color in _TERMINAL_COLORS:
         return _TERMINAL_COLORS[color]
-
     return color
 
 
 class Terminal(Widget, can_focus=True):
-    """Terminal widget."""
+    """PTY-backed terminal emulator widget for Textual."""
 
     DEFAULT_CSS = """
     Terminal {
@@ -148,9 +160,8 @@ class Terminal(Widget, can_focus=True):
     }
     """
 
-    # messages
     class PreCmd(Message):
-        """Posted before running each command in the terminal."""
+        """Posted after each command completes in the embedded shell."""
 
         def __init__(self, terminal_widget: Terminal, cwd: PurePath) -> None:
             self.terminal_widget = terminal_widget
@@ -165,60 +176,50 @@ class Terminal(Widget, can_focus=True):
         classes: str | None = None,
     ) -> None:
         self.command = command
-
         self._started = False
-
-        # default size, will be adapted on_resize
         self.ncol = 80
         self.nrow = 24
         self.mouse_tracking = False
 
-        # variables used when starting the emulator: self.start()
-        self.send_queue: asyncio.Queue[list[object]] = None
-        self.recv_queue: asyncio.Queue[list[object]] = None
-        self.recv_task_t: Task[None] = None
+        self.send_queue: asyncio.Queue[list[object]] | None = None
+        self.recv_queue: asyncio.Queue[list[object]] | None = None
+        self.recv_task_t: Task[None] | None = None
+        self._run_task: Task[None] | None = None
+        # Stored in _run() so stop() can remove readers without a running-loop call
+        self._loop: asyncio.AbstractEventLoop | None = None
 
         self._display = self.initial_display()
         self._screen = TerminalPyteScreen(self.ncol, self.nrow)
-        self.stream = pyte.Stream(self._screen)
+        self._stream = pyte.Stream(self._screen)
 
         super().__init__(name=name, id=id, classes=classes)
+
+    # ------------------------------------------------------------------
+    # Public interface used by MainScreen
+    # ------------------------------------------------------------------
+
+    def get_shell_init_code(self) -> str:
+        """Return zsh init code wiring the precmd hook to this terminal's pre-cmd pipe fd."""
+        return shell_init_code(self.fd_pre_cmd_child)
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
     def start(self) -> None:
         if self._started:
             return
 
-        # TerminalEmulator.__init__(self, command: str):
-        # FIXME: fix ResourceWarning (manually close the fd / p_out broke (blocking)
-        # The following error happens on self.fd, when stopping the emulator with stop():
-
-        # ResourceWarning: unclosed file <_io.FileIO name=8 mode='rb+' closefd=True>
-
-        # With the try-except blocks around the while True, the warnings are now
-        # appearing immediately. But closing fd or p_out there, still causes a
-        # crash/block/hang or the warning is still there...
-
-        # It maybe has to be implemented somewhere at the CancelledError.
-
         self.ncol = 80
         self.nrow = 24
 
         self.fd, self.fd_pre_cmd, self.fd_pre_cmd_child = self.open_terminal(command=self.command)
-        self.p_out = os.fdopen(self.fd, "w+b", 0)  # 0: buffering off
-        self.p_out_pre_cmd = os.fdopen(self.fd_pre_cmd, "w+b", 0)  # 0: buffering off
+        self._p_out = os.fdopen(self.fd, "w+b", 0)
+        self._p_out_pre_cmd = os.fdopen(self.fd_pre_cmd, "w+b", 0)
         self.send_queue = asyncio.Queue()
         self.recv_queue = asyncio.Queue()
-        self.recv_queue_precmd = asyncio.Queue()
-        self.event = asyncio.Event()
-
-        # TerminalEmulator.start
-        # self.emulator.start()
-        self.run_task = asyncio.create_task(self._run())
-
-        ## Terminal.start()
-
+        self._run_task = asyncio.create_task(self._run())
         self.recv_task_t = asyncio.create_task(self.recv())
-
         self._started = True
 
     def stop(self) -> None:
@@ -226,159 +227,174 @@ class Terminal(Widget, can_focus=True):
             return
 
         self._display = self.initial_display()
-
-        self.recv_task_t.cancel()
-
-        # self.emulator.stop()
-        # TerminalEmulator.stop
-        self.run_task.cancel()
-
-        os.kill(self.pid, signal.SIGTERM)
-        os.waitpid(self.pid, 0)
-
         self._started = False
+
+        if self._loop is not None:
+            with contextlib.suppress(Exception):
+                self._loop.remove_reader(self._p_out)
+            with contextlib.suppress(Exception):
+                self._loop.remove_reader(self._p_out_pre_cmd)
+
+        if self.recv_task_t is not None:
+            self.recv_task_t.cancel()
+        if self._run_task is not None:
+            self._run_task.cancel()
+
+        with contextlib.suppress(OSError):
+            os.kill(self.pid, signal.SIGTERM)
+        with contextlib.suppress(OSError):
+            os.waitpid(self.pid, os.WNOHANG)
+
+        with contextlib.suppress(OSError):
+            self._p_out.close()
+        with contextlib.suppress(OSError):
+            self._p_out_pre_cmd.close()
 
     def render(self) -> RenderResult:
         return self._display
+
+    # ------------------------------------------------------------------
+    # Event handlers
+    # ------------------------------------------------------------------
 
     async def on_key(self, event: events.Key) -> None:
         if not self._started:
             return
 
         if event.key == "ctrl+f1":
-            # release focus from widget: because event.stop() follows, releasing
-            # focus would not be possible without mouse click.
-            #
-            # OPTIMIZE: make the key to release focus configurable
             self.app.set_focus(None)
             return
 
         event.stop()
         char = _CTRL_KEYS.get(event.key) or event.character
         if char:
-            await self.send_queue.put(["stdin", char])
+            assert self.send_queue is not None
+            self.send_queue.put_nowait(["stdin", char])
 
     async def send(self, data: str) -> None:
         if not self._started:
             return
-        await self.send_queue.put(["stdin", data])
+        assert self.send_queue is not None
+        self.send_queue.put_nowait(["stdin", data])
 
     async def on_resize(self, _event: events.Resize) -> None:
         if not self._started:
             return
-
         self.ncol = self.size.width
         self.nrow = self.size.height
-        await self.send_queue.put(["set_size", self.nrow, self.ncol])
+        assert self.send_queue is not None
+        self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
         self._screen.resize(self.nrow, self.ncol)
 
-    async def on_click(self, event: events.MouseEvent) -> None:
+    async def on_click(self, event: events.Click) -> None:
         if not self._started:
             return
-
-        if self.mouse_tracking is False:
+        if not self.mouse_tracking:
             return
-
-        await self.send_queue.put(["click", event.x, event.y, event.button])
+        assert self.send_queue is not None
+        self.send_queue.put_nowait(["click", event.x, event.y, event.button])
 
     async def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
         if not self._started:
             return
-
-        if self.mouse_tracking is False:
+        if not self.mouse_tracking:
             return
-
-        await self.send_queue.put(["scroll", "down", event.x, event.y])
+        assert self.send_queue is not None
+        self.send_queue.put_nowait(["scroll", "down", event.x, event.y])
 
     async def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
         if not self._started:
             return
-
-        if self.mouse_tracking is False:
+        if not self.mouse_tracking:
             return
+        assert self.send_queue is not None
+        self.send_queue.put_nowait(["scroll", "up", event.x, event.y])
 
-        await self.send_queue.put(["scroll", "up", event.x, event.y])
+    # ------------------------------------------------------------------
+    # recv loop
+    # ------------------------------------------------------------------
 
     async def recv(self) -> None:
+        assert self.recv_queue is not None
         try:
             while True:
                 message = await self.recv_queue.get()
                 cmd = message[0]
                 if cmd == "setup":
-                    await self.send_queue.put(["set_size", self.nrow, self.ncol])
+                    assert self.send_queue is not None
+                    self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
 
                 elif cmd == "pre_cmd":
-                    cwd = PurePath(message[1].strip())
+                    cwd = PurePath(str(message[1]).strip())
                     self.post_message(Terminal.PreCmd(self, cwd))
 
                 elif cmd == "stdout":
-                    chars = message[1]
-
-                    # log("recv stdout:", chars)
-
-                    for sep_match in re.finditer(_re_ansi_sequence, chars):
-                        sequence = sep_match.group(0)
-                        if sequence.startswith(DECSET_PREFIX):
-                            parameters = sequence.removeprefix(DECSET_PREFIX).split(";")
-                            if "1000h" in parameters:
-                                self.mouse_tracking = True
-                            if "1000l" in parameters:
-                                self.mouse_tracking = False
-
-                    try:
-                        self.stream.feed(chars)
-                    except TypeError as error:
-                        # pyte could get into errors here: Screen.cursor_position()
-                        # is getting 4 args. Happens when TERM=linux and using
-                        # w3m (default options).
-
-                        # This also happened when TERM is not set to "linux" and w3m
-                        # is started without the option "-no-mouse".
-                        log.warning("could not feed:", error)
-
-                    lines = []
-                    last_char: Char
-                    last_style: Style
-                    for y in range(self._screen.lines):
-                        line_text = Text()
-                        line = self._screen.buffer[y]
-                        style_change_pos: int = 0
-                        for x in range(self._screen.columns):
-                            char: Char = line[x]
-
-                            line_text.append(char.data)
-
-                            # if style changed, stylize it with rich
-                            if x > 0:
-                                last_char = line[x - 1]
-                                if not self.char_style_cmp(char, last_char) or x == self._screen.columns - 1:
-                                    last_style = self.char_rich_style(last_char)
-                                    line_text.stylize(last_style, style_change_pos, x + 1)
-                                    style_change_pos = x
-
-                            if self._screen.cursor.x == x and self._screen.cursor.y == y:
-                                line_text.stylize("reverse", x, x + 1)
-
-                        lines.append(line_text)
-
-                    self._display = TerminalDisplay(lines, self._screen.cursor.x, self._screen.cursor.y)
-                    self.refresh()
+                    self._process_stdout(str(message[1]))
 
                 elif cmd == "disconnect":
                     self.stop()
         except asyncio.CancelledError:
-            # log.warning("Terminal.recv cancelled")
             pass
 
-    def char_rich_style(self, char: Char) -> Style:
-        """Returns a rich.Style from the pyte.Char."""
-        foreground = _translate_terminal_color(char.fg)
-        background = _translate_terminal_color(char.bg)
-        style: Style
+    # ------------------------------------------------------------------
+    # Internal: screen rendering
+    # ------------------------------------------------------------------
+
+    def _process_stdout(self, chars: str) -> None:
+        """Parse ANSI output, update the pyte screen, and refresh the display."""
+        for sep_match in re.finditer(_re_ansi_sequence, chars):
+            sequence = sep_match.group(0)
+            if sequence.startswith(_DECSET_PREFIX):
+                body = sequence.removeprefix(_DECSET_PREFIX)
+                action = body[-1]
+                modes = set(body[:-1].split(";"))
+                if _MOUSE_TRACKING_MODES & modes:
+                    self.mouse_tracking = action == "h"
+
         try:
-            style = Style(
-                color=foreground,
-                bgcolor=background,
+            self._stream.feed(chars)
+        except TypeError as error:
+            log.warning("could not feed:", error)
+
+        lines: list[Text] = []
+        for y in range(self._screen.lines):
+            line_text = Text()
+            line = self._screen.buffer[y]
+            style_change_pos = 0
+            for x in range(self._screen.columns):
+                char: Char = line[x]
+                line_text.append(char.data)
+
+                is_last_col = x == self._screen.columns - 1
+
+                if x > 0:
+                    last_char: Char = line[x - 1]
+                    if not self.char_style_cmp(char, last_char):
+                        last_style = self.char_rich_style(last_char)
+                        line_text.stylize(last_style, style_change_pos, x)
+                        style_change_pos = x
+
+                if is_last_col:
+                    cur_style = self.char_rich_style(char)
+                    line_text.stylize(cur_style, style_change_pos, x + 1)
+
+            lines.append(line_text)
+
+        self._display = TerminalDisplay(lines, self._screen.cursor.x, self._screen.cursor.y)
+        self.refresh()
+
+    # ------------------------------------------------------------------
+    # Style helpers
+    # ------------------------------------------------------------------
+
+    def char_rich_style(self, char: Char) -> Style:
+        """Return a Rich Style built from the visual attributes of a pyte Char."""
+        fg = _translate_terminal_color(char.fg)
+        bg = _translate_terminal_color(char.bg)
+        try:
+            return Style(
+                color=fg,
+                bgcolor=bg,
                 bold=char.bold,
                 italic=char.italics,
                 underline=char.underscore,
@@ -388,116 +404,124 @@ class Terminal(Widget, can_focus=True):
             )
         except ColorParseError as error:
             log.warning("color parse error:", error)
-            style = Style()
-
-        return style
+            return Style()
 
     def char_style_cmp(self, given: Char, other: Char) -> bool:
-        """Compares two pyte.Chars and returns if these are the same.
-
-        Returns:
-            True    if char styles are the same
-            False   if char styles differ
-        """
-        return bool(
-            given.fg == other.fg
-            and given.bg == other.bg
-            and given.bold == other.bold
-            and given.italics == other.italics
-            and given.underscore == other.underscore
-            and given.strikethrough == other.strikethrough
-            and given.reverse == other.reverse
-            and given.blink == other.blink
+        """Return True if two pyte Chars have identical visual style."""
+        return (
+            given.fg,
+            given.bg,
+            given.bold,
+            given.italics,
+            given.underscore,
+            given.strikethrough,
+            given.reverse,
+            given.blink,
+        ) == (
+            other.fg,
+            other.bg,
+            other.bold,
+            other.italics,
+            other.underscore,
+            other.strikethrough,
+            other.reverse,
+            other.blink,
         )
 
     def initial_display(self) -> TerminalDisplay:
-        """Returns the display when initially creating the terminal or clearing it."""
+        """Return the initial (empty single-line) display state."""
         return TerminalDisplay([Text()], 0, 0)
 
-    # class TerminalEmulator:
+    # ------------------------------------------------------------------
+    # Internal: PTY setup
+    # ------------------------------------------------------------------
+
     def open_terminal(self, command: str) -> tuple[int, int, int]:
+        """Fork a PTY and exec *command*.
+
+        Returns ``(master_fd, pre_cmd_read_fd, pre_cmd_child_fd_number)``.
+
+        ``pre_cmd_child_fd_number`` is the numeric fd value of the write end of the
+        pre-cmd pipe.  It is already closed in the parent process but its numeric value
+        is retained so it can be embedded in the zsh init script that runs inside the
+        child process (where the fd is still open).
+        """
         fd_pre_cmd_parent, fd_pre_cmd_child = os.pipe()
 
         self.pid, fd = pty.fork()
         if self.pid == 0:
-            os.close(fd_pre_cmd_parent)  # child doesn't read from itself
-            # we want to use the descriptor in the child process
+            # Child process
+            os.close(fd_pre_cmd_parent)
             os.set_inheritable(fd_pre_cmd_child, True)  # noqa: FBT003
-
             argv = shlex.split(command)
-            # OPTIMIZE: do not use a fixed LC_ALL
-            env = {
-                "TERM": "xterm",
-                "LC_ALL": "en_US.UTF-8",
-                "HOME": str(Path.home()),
-            }
+            env = os.environ.copy()
+            env["TERM"] = "xterm-256color"
+            env["LC_ALL"] = "en_US.UTF-8"
             os.execvpe(argv[0], argv, env)  # noqa: S606
-            # we never reach here
             raise RuntimeError("execvpe failed")
-        os.close(fd_pre_cmd_child)  # parent doesn't write to child
 
+        # Parent process: close write end of the pre-cmd pipe.
+        # Its numeric value is kept as self.fd_pre_cmd_child and embedded in the shell
+        # init script where the fd is still open inside the child.
+        os.close(fd_pre_cmd_child)
         return fd, fd_pre_cmd_parent, fd_pre_cmd_child
+
+    def _dispatch_send_message(self, msg: list[Any]) -> None:
+        """Write a single send-queue message to the PTY master."""
+        if msg[0] == "stdin":
+            self._p_out.write(str(msg[1]).encode())
+        elif msg[0] == "set_size":
+            winsize = struct.pack("HH", int(msg[1]), int(msg[2]))
+            fcntl.ioctl(self.fd, termios.TIOCSWINSZ, winsize)
+        elif msg[0] == "click":
+            x = int(msg[1]) + 1
+            y = int(msg[2]) + 1
+            button = int(msg[3])
+            if button == 1:
+                self._p_out.write(f"\x1b[<0;{x};{y}M".encode())
+                self._p_out.write(f"\x1b[<0;{x};{y}m".encode())
+        elif msg[0] == "scroll":
+            x = int(msg[2]) + 1
+            y = int(msg[3]) + 1
+            if msg[1] == "up":
+                self._p_out.write(f"\x1b[<64;{x};{y}M".encode())
+            if msg[1] == "down":
+                self._p_out.write(f"\x1b[<65;{x};{y}M".encode())
 
     async def _run(self) -> None:
         loop = asyncio.get_running_loop()
+        # Store loop reference so stop() can call remove_reader from sync context
+        self._loop = loop
 
-        # write pre-cmd to terminal
-        # os.write(fd, self.get_precmd(fd_pre_cmd_write).encode())
-
-        quiet = False
+        assert self.recv_queue is not None
 
         def on_output() -> None:
+            assert self.recv_queue is not None
             try:
-                nonlocal quiet
-                read = self.p_out.read(65536).decode()
+                read = self._p_out.read(65536).decode()
                 self.recv_queue.put_nowait(["stdout", read])
-
             except UnicodeDecodeError as error:
-                # NOTE: this happens sometimes, eg in w3m browsing wrongly decoded docs
-                # OPTIMIZE: here a screen refresh could be needed. some chars are
-                #   left in the buffer when scrolling
                 log.warning("decode error:", error)
             except Exception:  # noqa: BLE001
-                # this exception tell's us to end the emulator:
-                # throwed when exiting the command
-                loop.remove_reader(self.p_out)
+                loop.remove_reader(self._p_out)
                 self.recv_queue.put_nowait(["disconnect", 1])
 
         def on_pre_cmd() -> None:
+            assert self.recv_queue is not None
             try:
-                self.recv_queue.put_nowait(["pre_cmd", self.p_out_pre_cmd.read(65536).decode()])
+                self.recv_queue.put_nowait(["pre_cmd", self._p_out_pre_cmd.read(65536).decode()])
             except UnicodeDecodeError:
                 pass
             except Exception:  # noqa: BLE001
-                loop.remove_reader(self.p_out_pre_cmd)
+                loop.remove_reader(self._p_out_pre_cmd)
 
-        loop.add_reader(self.p_out, on_output)
-        loop.add_reader(self.p_out_pre_cmd, on_pre_cmd)
-        await self.recv_queue.put(["setup", {}])
+        loop.add_reader(self._p_out, on_output)
+        loop.add_reader(self._p_out_pre_cmd, on_pre_cmd)
+        self.recv_queue.put_nowait(["setup", {}])
+
         try:
+            assert self.send_queue is not None
             while True:
-                msg = await self.send_queue.get()
-                if msg[0] == "stdin":
-                    self.p_out.write(msg[1].encode())
-                elif msg[0] == "set_size":
-                    winsize = struct.pack("HH", msg[1], msg[2])
-                    fcntl.ioctl(self.fd, termios.TIOCSWINSZ, winsize)
-                elif msg[0] == "click":
-                    x = msg[1] + 1
-                    y = msg[2] + 1
-                    button = msg[3]
-
-                    if button == 1:
-                        self.p_out.write(f"\x1b[<0;{x};{y}M".encode())
-                        self.p_out.write(f"\x1b[<0;{x};{y}m".encode())
-                elif msg[0] == "scroll":
-                    x = msg[2] + 1
-                    y = msg[3] + 1
-
-                    if msg[1] == "up":
-                        self.p_out.write(f"\x1b[<64;{x};{y}M".encode())
-                    if msg[1] == "down":
-                        self.p_out.write(f"\x1b[<65;{x};{y}M".encode())
+                self._dispatch_send_message(list(await self.send_queue.get()))
         except asyncio.CancelledError:
-            # log.warning("TerminalEmulator._run cancelled")
             pass
