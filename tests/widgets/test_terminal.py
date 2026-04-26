@@ -552,6 +552,56 @@ async def _stop_recv_only(terminal: Terminal) -> None:
 
 
 # ---------------------------------------------------------------------------
+# _feed_stdout / _rebuild_display
+# ---------------------------------------------------------------------------
+
+
+def test_feed_stdout_updates_pyte_screen_without_changing_display(terminal_instance: Terminal) -> None:
+    initial_display = terminal_instance._display
+    terminal_instance._feed_stdout("Hello")
+    # _display must not be replaced — only _rebuild_display does that
+    assert terminal_instance._display is initial_display
+
+
+@pytest.mark.asyncio
+async def test_stdout_recv_defers_display_rebuild() -> None:
+    """recv() schedules a deferred rebuild via call_later, not an immediate one."""
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            await recv_q.put(["stdout", "Hello"])
+            await asyncio.sleep(0.005)  # let recv() run, but the 16.6 ms timer has not fired yet
+            assert terminal._rebuild_handle is not None  # timer is pending
+            await asyncio.sleep(0.05)  # wait for the timer to fire
+            assert terminal._rebuild_handle is None  # timer fired and cleared the handle
+            rendered = "".join(line.plain for line in terminal._display.lines)
+            assert "Hello" in rendered
+        finally:
+            await _stop_recv_only(terminal)
+
+
+def test_rebuild_display_reflects_pyte_screen_after_feed(terminal_instance: Terminal) -> None:
+    terminal_instance._feed_stdout("Hello")
+    terminal_instance._rebuild_display()
+    rendered = "".join(line.plain for line in terminal_instance._display.lines)
+    assert "Hello" in rendered
+
+
+def test_feed_stdout_then_rebuild_is_equivalent_to_process_stdout() -> None:
+    t1 = Terminal("/bin/sh")
+    t2 = Terminal("/bin/sh")
+    t1._process_stdout("Hello world")
+    t2._feed_stdout("Hello world")
+    t2._rebuild_display()
+    rendered1 = "".join(line.plain for line in t1._display.lines)
+    rendered2 = "".join(line.plain for line in t2._display.lines)
+    assert rendered1 == rendered2
+
+
+# ---------------------------------------------------------------------------
 # recv() behavior: stdout updates the display
 # ---------------------------------------------------------------------------
 

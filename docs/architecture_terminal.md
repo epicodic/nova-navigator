@@ -43,6 +43,7 @@ It is a focusable `textual.Widget` and owns:
 | `_run_task` | `Task[None] \| None` | PTY I/O pump — writes stdin, processes size changes |
 | `recv_task_t` | `Task[None] \| None` | Processes `recv_queue` entries and updates the display |
 | `_loop` | `asyncio.AbstractEventLoop \| None` | Event loop reference stored by `_run()` so `stop()` can call `remove_reader` synchronously |
+| `_rebuild_handle` | `TimerHandle \| None` | Pending `call_later` handle for the next display rebuild; `None` when no rebuild is scheduled |
 
 ### Helper functions (module level)
 
@@ -60,6 +61,8 @@ It is a focusable `textual.Widget` and owns:
 | `_CTRL_KEYS` | Maps Textual key names to their VT escape sequences |
 | `_TERMINAL_COLORS` | Maps 9 named pyte colors plus `"default"` to hex values |
 | `_MOUSE_TRACKING_MODES` | The four DECSET mode numbers that toggle mouse tracking: `{"1000", "1002", "1003", "1006"}` |
+| `_RECV_DRAIN_LIMIT` | Maximum number of queued messages drained per `recv()` iteration (default 100) |
+| `_DISPLAY_FPS` | Maximum display rebuild rate in frames per second (default 60) |
 
 ---
 
@@ -108,7 +111,7 @@ asyncio event loop
 ├── loop.add_reader(_p_out_pre_cmd, on_pre_cmd)  ← fires when shell writes pwd
 │
 ├── Task: _run()      ← registers readers, reads send_queue, writes stdin / resize to PTY
-└── Task: recv()      ← reads recv_queue, updates pyte screen, calls refresh()
+└── Task: recv()      ← reads recv_queue, feeds pyte, schedules deferred display rebuild
 ```
 
 ### `on_output` (event loop callback)
@@ -136,25 +139,36 @@ Afterwards it awaits messages from `send_queue` and dispatches:
 
 ### `recv()` coroutine (task)
 
-Awaits messages from `recv_queue` and dispatches:
+Awaits messages from `recv_queue`, drains up to `_RECV_DRAIN_LIMIT` already-queued messages without yielding (via `get_nowait`), and dispatches:
 
 | Message | Action |
 |---------|--------|
 | `["setup", {}]` | Sends initial `set_size` to PTY |
 | `["pre_cmd", cwd]` | Posts `Terminal.PreCmd` Textual message |
-| `["stdout", text]` | Scans for DECSET mouse sequences; feeds text to pyte; re-renders display |
+| `["stdout", text]` | Calls `_feed_stdout` (DECSET scan + pyte feed); schedules a deferred display rebuild via `_schedule_rebuild` |
 | `["disconnect", _]` | Calls `stop()` |
 
 ---
 
 ## Screen Rendering Pipeline
 
-Every time `recv()` processes a `stdout` message:
+Rendering is split into two phases with different frequencies.
+
+### Phase 1 — per stdout chunk: `_feed_stdout(chars)`
+
+Called once per `stdout` message received from the PTY, at full read rate:
 
 1. **ANSI scan:** The raw text is searched with `_re_ansi_sequence` for DECSET sequences.
 Any sequence whose mode numbers intersect `_MOUSE_TRACKING_MODES` (`{"1000", "1002", "1003", "1006"}`) updates `mouse_tracking` — `h` enables it, `l` disables it.
 
 2. **pyte feed:** `self._stream.feed(chars)` parses the ANSI escape sequences and updates the pyte `TerminalPyteScreen` buffer (cursor position, character cells, colors, attributes).
+
+After `_feed_stdout` returns, `recv()` calls `_schedule_rebuild()`, which posts a `call_later(1 / _DISPLAY_FPS)` timer if one is not already pending.
+This means many consecutive reads cause only one rebuild per frame.
+
+### Phase 2 — rate-limited: `_rebuild_display()`
+
+Called by the event loop timer at most `_DISPLAY_FPS` (60) times per second:
 
 3. **Rich Text conversion:** For each row in the pyte buffer, a `rich.text.Text` object is built.
    Characters are appended one by one.

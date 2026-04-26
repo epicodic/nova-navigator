@@ -17,7 +17,7 @@ import shlex
 import signal
 import struct
 import termios
-from asyncio import Task
+from asyncio import Task, TimerHandle
 from pathlib import PurePath
 from typing import Any
 
@@ -43,6 +43,8 @@ __all__ = [
 ]
 
 _MOUSE_TRACKING_MODES: frozenset[str] = frozenset({"1000", "1002", "1003", "1006"})
+_RECV_DRAIN_LIMIT: int = 100
+_DISPLAY_FPS: float = 60.0
 
 _re_ansi_sequence = re.compile(r"(\x1b\[\??[\d;]*[a-zA-Z])")
 _DECSET_PREFIX = "\x1b[?"
@@ -187,6 +189,7 @@ class Terminal(Widget, can_focus=True):
         self._run_task: Task[None] | None = None
         # Stored in _run() so stop() can remove readers without a running-loop call
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._rebuild_handle: TimerHandle | None = None
 
         self._display = self.initial_display()
         self._screen = TerminalPyteScreen(self.ncol, self.nrow)
@@ -228,6 +231,10 @@ class Terminal(Widget, can_focus=True):
 
         self._display = self.initial_display()
         self._started = False
+
+        if self._rebuild_handle is not None:
+            self._rebuild_handle.cancel()
+            self._rebuild_handle = None
 
         if self._loop is not None:
             with contextlib.suppress(Exception):
@@ -319,19 +326,29 @@ class Terminal(Widget, can_focus=True):
         try:
             while True:
                 message = await self.recv_queue.get()
-                cmd = message[0]
-                if cmd == "setup":
-                    assert self.send_queue is not None
-                    self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
-
-                elif cmd == "pre_cmd":
-                    cwd = PurePath(str(message[1]).strip())
-                    self.post_message(Terminal.PreCmd(self, cwd))
-
-                elif cmd == "stdout":
-                    self._process_stdout(str(message[1]))
-
-                elif cmd == "disconnect":
+                stdout_fed = False
+                disconnected = False
+                for _ in range(_RECV_DRAIN_LIMIT):
+                    cmd = message[0]
+                    if cmd == "setup":
+                        assert self.send_queue is not None
+                        self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
+                    elif cmd == "pre_cmd":
+                        cwd = PurePath(str(message[1]).strip())
+                        self.post_message(Terminal.PreCmd(self, cwd))
+                    elif cmd == "stdout":
+                        self._feed_stdout(str(message[1]))
+                        stdout_fed = True
+                    elif cmd == "disconnect":
+                        disconnected = True
+                        break
+                    try:
+                        message = self.recv_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                if stdout_fed:
+                    self._schedule_rebuild()
+                if disconnected:
                     self.stop()
         except asyncio.CancelledError:
             pass
@@ -340,8 +357,18 @@ class Terminal(Widget, can_focus=True):
     # Internal: screen rendering
     # ------------------------------------------------------------------
 
-    def _process_stdout(self, chars: str) -> None:
-        """Parse ANSI output, update the pyte screen, and refresh the display."""
+    def _schedule_rebuild(self) -> None:
+        """Schedule a display rebuild if one is not already pending."""
+        if self._rebuild_handle is None:
+            self._rebuild_handle = asyncio.get_running_loop().call_later(1.0 / _DISPLAY_FPS, self._on_rebuild_timer)
+
+    def _on_rebuild_timer(self) -> None:
+        """Timer callback: clear the handle and rebuild the display."""
+        self._rebuild_handle = None
+        self._rebuild_display()
+
+    def _feed_stdout(self, chars: str) -> None:
+        """Scan for DECSET sequences and feed chars to the pyte stream. Does not rebuild display."""
         for sep_match in re.finditer(_re_ansi_sequence, chars):
             sequence = sep_match.group(0)
             if sequence.startswith(_DECSET_PREFIX):
@@ -356,6 +383,8 @@ class Terminal(Widget, can_focus=True):
         except TypeError as error:
             log.warning("could not feed:", error)
 
+    def _rebuild_display(self) -> None:
+        """Rebuild Rich Text lines from the current pyte screen state and schedule a repaint."""
         lines: list[Text] = []
         for y in range(self._screen.lines):
             line_text = Text()
@@ -373,7 +402,6 @@ class Terminal(Widget, can_focus=True):
                         last_style = self.char_rich_style(last_char)
                         line_text.stylize(last_style, style_change_pos, x)
                         style_change_pos = x
-
                 if is_last_col:
                     cur_style = self.char_rich_style(char)
                     line_text.stylize(cur_style, style_change_pos, x + 1)
@@ -382,6 +410,11 @@ class Terminal(Widget, can_focus=True):
 
         self._display = TerminalDisplay(lines, self._screen.cursor.x, self._screen.cursor.y)
         self.refresh()
+
+    def _process_stdout(self, chars: str) -> None:
+        """Parse ANSI output, update the pyte screen, and refresh the display."""
+        self._feed_stdout(chars)
+        self._rebuild_display()
 
     # ------------------------------------------------------------------
     # Style helpers
