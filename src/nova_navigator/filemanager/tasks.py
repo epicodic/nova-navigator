@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import logging
 from dataclasses import dataclass
 from typing import Literal
 
@@ -8,6 +9,8 @@ from nova_navigator.scheduler import TaskContext
 
 from ..vfs import VPath
 from ..vfs.filesystem import Filesystem
+
+_logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 64 * 1024  # 64 KB
 
@@ -47,6 +50,7 @@ async def copy_file(
     if options is None:
         options = FileCopyOptions()
 
+    _logger.debug("copy_file %s -> %s", src_path.path, dst_path.path)
     reader = None
     writer = None
     _failed = False
@@ -58,6 +62,7 @@ async def copy_file(
             dst_stat = dst_path.stat_or_none
             if dst_stat is not None:
                 if options.overwrite == "skip":
+                    _logger.debug("copy_file skip (exists) %s", dst_path.path)
                     return False
                 elif options.overwrite == "ask":
                     decision = await ctx.request_decision(
@@ -66,6 +71,7 @@ async def copy_file(
                         message=f"File '{dst_path.path}' already exists. Overwrite?",
                     )
                     if decision.is_negative:
+                        _logger.debug("copy_file skip (user declined) %s", dst_path.path)
                         return False
 
         writer = dst_path.filesystem.write(dst_path)
@@ -80,8 +86,10 @@ async def copy_file(
             ctx.status.update_step_progress(inc_completed=len(chunk))
 
         ctx.status.set_step_completed()
+        _logger.debug("copy_file done %s -> %s", src_path.path, dst_path.path)
     except BaseException:
         _failed = True
+        _logger.debug("copy_file failed %s -> %s", src_path.path, dst_path.path)
         raise
     finally:
         if reader:
@@ -250,6 +258,7 @@ async def _move_path(
         else:
             if actual_dst_stat is not None:
                 if options.overwrite == "skip":
+                    _logger.debug("move_path skip (exists) %s", actual_dst.path)
                     ctx.status.update_progress(inc_completed=1)
                     return
                 if options.overwrite == "ask":
@@ -259,6 +268,7 @@ async def _move_path(
                         message=f"'{actual_dst.path}' already exists. Overwrite?",
                     )
                     if decision.is_negative:
+                        _logger.debug("move_path skip (user declined) %s", actual_dst.path)
                         ctx.status.update_progress(inc_completed=1)
                         return
                 if actual_dst_stat.is_directory:
@@ -266,6 +276,7 @@ async def _move_path(
                 else:
                     actual_dst.filesystem.remove(actual_dst)
             src_path.filesystem.rename(src_path, actual_dst)
+            _logger.debug("move_path renamed %s -> %s", src_path.path, actual_dst.path)
     else:
         if src_path.stat.is_directory:
             await _move_dir_contents(ctx, src_path, actual_dst, options, same_device=False)
@@ -274,6 +285,7 @@ async def _move_path(
             if copied:
                 src_path.filesystem.remove(src_path)
 
+    _logger.debug("move_path done %s -> %s", src_path.path, actual_dst.path)
     ctx.status.update_progress(inc_completed=1)
 
 
@@ -314,6 +326,7 @@ async def _erase_path(
     overall completed counter by one when done (including when skipped).
     """
     ctx.status.check_cancelled()
+    _logger.debug("erase_path %s", path.path)
     if path.stat.is_directory:
         if len(path.iterdir()) > 0 and options.ask_before_erase:
             decision = await ctx.request_decision(
@@ -322,12 +335,14 @@ async def _erase_path(
                 message=f"Directory '{path.path}' is not empty. Delete it recursively?",
             )
             if decision.is_negative:
+                _logger.debug("erase_path skip (user declined) %s", path.path)
                 ctx.status.update_progress(inc_completed=1)
                 return
         await erase_files(ctx, list(path.iterdir()), EraseFilesOptions(ask_before_erase=False))
         path.filesystem.rmdir(path)
     else:
         path.filesystem.remove(path)
+    _logger.debug("erase_path done %s", path.path)
     ctx.status.update_progress(inc_completed=1)
 
 
