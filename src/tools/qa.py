@@ -26,6 +26,9 @@ def run_step(label: str, style: str, cmd: list[str]) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run QA checks (lint, format, typecheck, tests).")
+    parser.add_argument(
+        "--code-quality", action="store_true", help="Run only code quality checks (format, lint, type checks)."
+    )
     parser.add_argument("--fix", action="store_true", help="Apply autofixes where possible.")
     args = parser.parse_args()
 
@@ -33,8 +36,9 @@ def main() -> None:
         ("Ruff Lint", "blue", ["uv", "run", "ruff", "check", "."] + (["--fix"] if args.fix else [])),
         ("Ruff Format", "yellow", ["uv", "run", "ruff", "format", "."] + ([] if args.fix else ["--check"])),
         ("Type Check", "green", ["uv", "run", "ty", "check", "."]),
-        ("Tests", "magenta", ["uv", "run", "pytest", "tests/"]),
     ]
+    if not args.code_quality:
+        (steps.append(("Tests", "magenta", ["uv", "run", "pytest", "tests/"])),)
 
     failed = [label for label, style, cmd in steps if not run_step(label, style, cmd)]
 
