@@ -1054,3 +1054,202 @@ async def test_normal_send_after_pre_cmd_resets_drain_appears_on_screen() -> Non
             assert "VISIBLE_CONTENT" in rendered
         finally:
             await _stop_recv_only(terminal)
+
+
+# ---------------------------------------------------------------------------
+# has_input
+# ---------------------------------------------------------------------------
+
+
+def test_has_input_returns_false_when_cursor_at_prompt_position(terminal_instance: Terminal) -> None:
+    terminal_instance._prompt_cursor_x = 5
+    terminal_instance._screen.cursor.x = 5
+    assert terminal_instance.has_input() is False
+
+
+def test_has_input_returns_true_when_cursor_past_prompt_position(terminal_instance: Terminal) -> None:
+    terminal_instance._prompt_cursor_x = 5
+    terminal_instance._screen.cursor.x = 8
+    assert terminal_instance.has_input() is True
+
+
+def test_has_input_returns_false_on_fresh_terminal(terminal_instance: Terminal) -> None:
+    # Both _prompt_cursor_x and screen cursor start at 0
+    assert terminal_instance.has_input() is False
+
+
+@pytest.mark.asyncio
+async def test_has_input_false_after_pre_cmd_and_display_rebuild() -> None:
+    """After a pre_cmd + prompt stdout sequence, has_input() must return False."""
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            await recv_q.put(["pre_cmd", "/home/user\n"])
+            await recv_q.put(["stdout", "$ "])  # prompt drawn; cursor sits right after it
+            await pilot.pause(delay=0.15)
+            assert terminal.has_input() is False
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_has_input_true_after_prompt_and_user_input() -> None:
+    """After prompt + user input, cursor moves right and has_input() returns True."""
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            await recv_q.put(["pre_cmd", "/home/user\n"])
+            await recv_q.put(["stdout", "$ "])  # prompt
+            await pilot.pause(delay=0.15)
+            await recv_q.put(["stdout", "ls"])  # user typed "ls"
+            await pilot.pause(delay=0.15)
+            assert terminal.has_input() is True
+        finally:
+            await _stop_recv_only(terminal)
+
+
+# ---------------------------------------------------------------------------
+# set_terminal_directory
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_set_terminal_directory_sends_kill_line_and_cd_silently() -> None:
+    """set_terminal_directory enqueues KILL_LINE + cd command and sets _draining."""
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
+
+        await terminal.set_terminal_directory(PurePath("/tmp/test"))
+
+        assert terminal._draining is True
+        assert terminal.send_queue.qsize() == 1
+        item = terminal.send_queue.get_nowait()
+        assert item[0] == "stdin"
+        data = str(item[1])
+        assert data.startswith("\x15")  # KILL_LINE
+        assert "/tmp/test" in data
+        assert data.endswith("\n")
+
+
+@pytest.mark.asyncio
+async def test_set_terminal_directory_no_pending_yank_when_no_input() -> None:
+    """If the cursor is at the prompt position, no yank should be scheduled."""
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
+        terminal._prompt_cursor_x = 0
+        terminal._screen.cursor.x = 0  # no user input
+
+        await terminal.set_terminal_directory(PurePath("/tmp"))
+
+        assert terminal._pending_yank is False
+
+
+@pytest.mark.asyncio
+async def test_set_terminal_directory_sets_pending_yank_when_input_present() -> None:
+    """If the user has typed text, _pending_yank must be set so it is restored later."""
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
+        terminal._prompt_cursor_x = 2
+        terminal._screen.cursor.x = 6  # user has typed 4 chars
+
+        await terminal.set_terminal_directory(PurePath("/tmp"))
+
+        assert terminal._pending_yank is True
+
+
+# ---------------------------------------------------------------------------
+# Yank mechanism: _rebuild_display triggers yank after prompt snapshot
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_yank_and_end_of_line_sent_after_prompt_rebuild() -> None:
+    """When _pending_yank is True, the first _rebuild_display after a pre_cmd
+    must enqueue YANK + END_OF_LINE and clear _pending_yank."""
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        terminal.send_queue = asyncio.Queue()
+        try:
+            terminal._pending_yank = True
+            terminal._snapshot_prompt_cursor = True  # simulate pre_cmd already fired
+
+            # trigger a display rebuild with prompt stdout
+            await recv_q.put(["stdout", "$ "])
+            await pilot.pause(delay=0.15)
+
+            assert terminal._pending_yank is False
+            assert terminal.send_queue.qsize() == 1
+            item = terminal.send_queue.get_nowait()
+            assert item[0] == "stdin"
+            data = str(item[1])
+            assert "\x19" in data  # YANK
+            assert "\x05" in data  # END_OF_LINE
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_yank_not_sent_when_pending_yank_is_false() -> None:
+    """When _pending_yank is False, no yank must be enqueued after the prompt rebuild."""
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        terminal.send_queue = asyncio.Queue()
+        try:
+            terminal._pending_yank = False
+            terminal._snapshot_prompt_cursor = True
+
+            await recv_q.put(["stdout", "$ "])
+            await pilot.pause(delay=0.15)
+
+            assert terminal.send_queue.empty()
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_prompt_cursor_x_snapshotted_at_rebuild_not_at_pre_cmd() -> None:
+    """_prompt_cursor_x must be set during _rebuild_display (after prompt is drawn),
+    not immediately when pre_cmd fires."""
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            await recv_q.put(["pre_cmd", "/home/user\n"])
+            # At this point the flag is set but no rebuild has happened yet.
+            # cursor is still at 0 so _prompt_cursor_x should not have moved.
+            await asyncio.sleep(0.005)
+            assert terminal._prompt_cursor_x == 0
+
+            # Now send prompt text and wait for the rebuild.
+            await recv_q.put(["stdout", "$ "])
+            await pilot.pause(delay=0.15)
+            # After rebuild the snapshot should reflect the cursor after the prompt.
+            assert terminal._prompt_cursor_x == terminal._screen.cursor.x
+        finally:
+            await _stop_recv_only(terminal)
