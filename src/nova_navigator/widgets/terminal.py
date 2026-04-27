@@ -221,12 +221,8 @@ class Terminal(Widget, can_focus=True):
         self.ncol = 80
         self.nrow = 24
 
-        self.fd, self.fd_pre_cmd, self.fd_pre_cmd_child = self.open_terminal(command=self.command)
-        self._p_out = os.fdopen(self.fd, "w+b", 0)
-        self._p_out_pre_cmd = os.fdopen(self.fd_pre_cmd, "w+b", 0)
-        self.send_queue = asyncio.Queue()
         self.recv_queue = asyncio.Queue()
-        self._run_task = asyncio.create_task(self._run())
+        self._spawn_pty()
         self.recv_task_t = asyncio.create_task(self.recv())
         self._started = True
 
@@ -268,9 +264,6 @@ class Terminal(Widget, can_focus=True):
     # ------------------------------------------------------------------
     # Event handlers
     # ------------------------------------------------------------------
-
-    async def on_mount(self) -> None:
-        await self.send(shell_init_code(self.fd_pre_cmd_child))
 
     async def on_key(self, event: events.Key) -> None:
         if not self._started:
@@ -517,6 +510,10 @@ class Terminal(Widget, can_focus=True):
         self._stream = pyte.Stream(self._screen)
 
         # Open a fresh PTY and restart the send loop.
+        self._spawn_pty()
+
+    def _spawn_pty(self) -> None:
+        """Open a new PTY, start the send loop, and enqueue the shell init code."""
         self.fd, self.fd_pre_cmd, self.fd_pre_cmd_child = self.open_terminal(command=self.command)
         self._p_out = os.fdopen(self.fd, "w+b", 0)
         self._p_out_pre_cmd = os.fdopen(self.fd_pre_cmd, "w+b", 0)
