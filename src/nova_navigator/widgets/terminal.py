@@ -247,26 +247,12 @@ class Terminal(Widget, can_focus=True):
             self._rebuild_handle.cancel()
             self._rebuild_handle = None
 
-        if self._loop is not None:
-            with contextlib.suppress(Exception):
-                self._loop.remove_reader(self._p_out)
-            with contextlib.suppress(Exception):
-                self._loop.remove_reader(self._p_out_pre_cmd)
-
         if self.recv_task_t is not None:
             self.recv_task_t.cancel()
         if self._run_task is not None:
             self._run_task.cancel()
 
-        with contextlib.suppress(OSError):
-            os.kill(self.pid, signal.SIGTERM)
-        with contextlib.suppress(OSError):
-            os.waitpid(self.pid, os.WNOHANG)
-
-        with contextlib.suppress(OSError):
-            self._p_out.close()
-        with contextlib.suppress(OSError):
-            self._p_out_pre_cmd.close()
+        self._teardown_pty()
 
     def render(self) -> RenderResult:
         return self._display
@@ -326,26 +312,24 @@ class Terminal(Widget, can_focus=True):
         self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
         self._screen.resize(self.nrow, self.ncol)
 
+    def _mouse_ready(self) -> bool:
+        """Return True if the terminal is started and mouse tracking is active."""
+        return self._started and self.mouse_tracking
+
     async def on_click(self, event: events.Click) -> None:
-        if not self._started:
-            return
-        if not self.mouse_tracking:
+        if not self._mouse_ready():
             return
         assert self.send_queue is not None
         self.send_queue.put_nowait(["click", event.x, event.y, event.button])
 
     async def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
-        if not self._started:
-            return
-        if not self.mouse_tracking:
+        if not self._mouse_ready():
             return
         assert self.send_queue is not None
         self.send_queue.put_nowait(["scroll", "down", event.x, event.y])
 
     async def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
-        if not self._started:
-            return
-        if not self.mouse_tracking:
+        if not self._mouse_ready():
             return
         assert self.send_queue is not None
         self.send_queue.put_nowait(["scroll", "up", event.x, event.y])
@@ -488,27 +472,22 @@ class Terminal(Widget, can_focus=True):
             log.warning("color parse error:", error)
             return Style()
 
+    def _char_style_key(self, char: Char) -> tuple[str, str, bool, bool, bool, bool, bool, bool]:
+        """Return a tuple of visual style attributes for a pyte Char."""
+        return (
+            char.fg,
+            char.bg,
+            char.bold,
+            char.italics,
+            char.underscore,
+            char.strikethrough,
+            char.reverse,
+            char.blink,
+        )
+
     def char_style_cmp(self, given: Char, other: Char) -> bool:
         """Return True if two pyte Chars have identical visual style."""
-        return (
-            given.fg,
-            given.bg,
-            given.bold,
-            given.italics,
-            given.underscore,
-            given.strikethrough,
-            given.reverse,
-            given.blink,
-        ) == (
-            other.fg,
-            other.bg,
-            other.bold,
-            other.italics,
-            other.underscore,
-            other.strikethrough,
-            other.reverse,
-            other.blink,
-        )
+        return self._char_style_key(given) == self._char_style_key(other)
 
     def initial_display(self) -> TerminalDisplay:
         """Return the initial (empty single-line) display state."""
@@ -517,6 +496,22 @@ class Terminal(Widget, can_focus=True):
     # ------------------------------------------------------------------
     # Internal: PTY setup
     # ------------------------------------------------------------------
+
+    def _teardown_pty(self) -> None:
+        """Remove event-loop readers, terminate the shell process, and close PTY file objects."""
+        if self._loop is not None:
+            with contextlib.suppress(Exception):
+                self._loop.remove_reader(self._p_out)
+            with contextlib.suppress(Exception):
+                self._loop.remove_reader(self._p_out_pre_cmd)
+        with contextlib.suppress(OSError):
+            os.kill(self.pid, signal.SIGTERM)
+        with contextlib.suppress(OSError):
+            os.waitpid(self.pid, os.WNOHANG)
+        with contextlib.suppress(OSError):
+            self._p_out.close()
+        with contextlib.suppress(OSError):
+            self._p_out_pre_cmd.close()
 
     def respawn(self) -> None:
         """Tear down the current PTY and start a fresh shell, keeping ``recv_task_t`` alive.
@@ -530,23 +525,7 @@ class Terminal(Widget, can_focus=True):
             self._run_task.cancel()
             self._run_task = None
 
-        # Remove readers for the old FDs.
-        with contextlib.suppress(Exception):
-            self._loop.remove_reader(self._p_out)
-        with contextlib.suppress(Exception):
-            self._loop.remove_reader(self._p_out_pre_cmd)
-
-        # Terminate the old shell process.
-        with contextlib.suppress(OSError):
-            os.kill(self.pid, signal.SIGTERM)
-        with contextlib.suppress(OSError):
-            os.waitpid(self.pid, os.WNOHANG)
-
-        # Close old file objects.
-        with contextlib.suppress(OSError):
-            self._p_out.close()
-        with contextlib.suppress(OSError):
-            self._p_out_pre_cmd.close()
+        self._teardown_pty()
 
         # Reset the pyte screen.
         self._screen = TerminalPyteScreen(self.ncol, self.nrow)
