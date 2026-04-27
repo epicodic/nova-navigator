@@ -18,11 +18,12 @@ from textual.app import App, ComposeResult
 from textual.geometry import Size
 
 from nova_navigator.terminal.pty_backend import PtyBackend
-from nova_navigator.terminal.shell_driver import ZshDriver
+from nova_navigator.terminal.shell_driver import FallbackDriver, ZshDriver
 from nova_navigator.terminal.terminal import (
     Terminal,
     TerminalDisplay,
     TerminalPyteScreen,
+    _encode_mouse,
     _translate_terminal_color,
 )
 
@@ -35,6 +36,7 @@ class FakePtyBackend(PtyBackend):
         self.resume_count: int = 0
         self.opened: bool = False
         self.torn_down: bool = False
+        self.resize_calls: list[tuple[int, int]] = []
         self._attached: bool = False
 
     @property
@@ -49,7 +51,7 @@ class FakePtyBackend(PtyBackend):
         self.writes.append(data)
 
     def resize(self, rows: int, cols: int) -> None:
-        pass
+        self.resize_calls.append((rows, cols))
 
     def resume(self) -> None:
         self.resume_count += 1
@@ -110,6 +112,35 @@ def test_translate_terminal_color_default_passes_through() -> None:
 
 def test_translate_terminal_color_unknown_string_passes_through() -> None:
     assert _translate_terminal_color("xyzunknown") == "xyzunknown"
+
+
+# ---------------------------------------------------------------------------
+# _encode_mouse
+# ---------------------------------------------------------------------------
+
+
+def test_encode_mouse_click_button1_encodes_sgr_press_and_release() -> None:
+    result = _encode_mouse(["click", 4, 2, 1])
+    assert b"\x1b[<0;" in result
+    assert result.endswith(b"m")
+
+
+def test_encode_mouse_click_button2_returns_empty_bytes() -> None:
+    assert _encode_mouse(["click", 4, 2, 2]) == b""
+
+
+def test_encode_mouse_scroll_up_encodes_button64() -> None:
+    result = _encode_mouse(["scroll", "up", 4, 2])
+    assert b"\x1b[<64;" in result
+
+
+def test_encode_mouse_scroll_down_encodes_button65() -> None:
+    result = _encode_mouse(["scroll", "down", 4, 2])
+    assert b"\x1b[<65;" in result
+
+
+def test_encode_mouse_unknown_type_returns_empty_bytes() -> None:
+    assert _encode_mouse(["unknown_event"]) == b""
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +316,17 @@ def test_initial_display_cursor_at_origin(terminal_instance: Terminal) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Terminal message classes
+# ---------------------------------------------------------------------------
+
+
+def test_closed_message_stores_terminal_widget() -> None:
+    terminal = Terminal("/bin/sh")
+    closed = Terminal.Closed(terminal)
+    assert closed.terminal_widget is terminal
+
+
+# ---------------------------------------------------------------------------
 # Widget lifecycle: mount without starting
 # ---------------------------------------------------------------------------
 
@@ -377,6 +419,23 @@ async def test_terminal_stop_resets_display_to_initial() -> None:
         display = terminal.render()
         assert isinstance(display, TerminalDisplay)
         assert len(display.lines) == 1
+
+
+@pytest.mark.asyncio
+async def test_terminal_stop_cancels_and_clears_pending_rebuild_handle() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.start()
+        loop = asyncio.get_running_loop()
+        terminal._rebuild_handle = loop.call_later(100.0, lambda: None)
+        assert terminal._rebuild_handle is not None
+
+        terminal.stop()
+
+        assert terminal._rebuild_handle is None
 
 
 # ---------------------------------------------------------------------------
@@ -587,6 +646,32 @@ def test_feed_stdout_then_rebuild_is_equivalent_to_process_stdout() -> None:
     assert rendered1 == rendered2
 
 
+@pytest.mark.asyncio
+async def test_feed_stdout_handles_type_error_from_pyte_gracefully(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        def _raise_type_error(chars: str) -> None:
+            raise TypeError("bad feed")
+
+        monkeypatch.setattr(terminal._stream, "feed", _raise_type_error)
+        terminal._feed_stdout("some text")  # must not propagate TypeError
+
+
+def test_rebuild_display_handles_adjacent_chars_with_different_styles() -> None:
+    terminal = Terminal("/bin/sh")
+    # Red 'A' then green 'B': adjacent chars with different fg — triggers style-change path
+    terminal._feed_stdout("\x1b[31mA\x1b[32mB\x1b[0m")
+    terminal._rebuild_display()
+    rendered = "".join(line.plain for line in terminal._display.lines)
+    assert "A" in rendered
+    assert "B" in rendered
+
+
 # ---------------------------------------------------------------------------
 # recv() behavior: stdout updates the display
 # ---------------------------------------------------------------------------
@@ -612,6 +697,78 @@ async def test_stdout_message_updates_display_content() -> None:
 # ---------------------------------------------------------------------------
 # recv() behavior: pre_cmd posts Terminal.PreCmd message
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_recv_setup_puts_set_size_in_send_queue() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.send_queue = asyncio.Queue()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            await recv_q.put(["setup", {}])
+            await asyncio.sleep(0.02)
+
+            assert not terminal.send_queue.empty()
+            msg = terminal.send_queue.get_nowait()
+            assert msg[0] == "set_size"
+            assert msg[1] == terminal.nrow
+            assert msg[2] == terminal.ncol
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_recv_disconnect_posts_closed_and_stops_when_keep_alive_false() -> None:
+    received_closed: list[Terminal.Closed] = []
+
+    class ClosedCapturingApp(TerminalTestApp):
+        def on_terminal_closed(self, event: Terminal.Closed) -> None:
+            received_closed.append(event)
+
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver(), keep_alive=False)
+    app = ClosedCapturingApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._started = True
+        recv_q = await _start_recv_only(terminal)
+        try:
+            await recv_q.put(["disconnect"])
+            await pilot.pause(delay=0.15)
+
+            assert len(received_closed) == 1
+            assert received_closed[0].terminal_widget is terminal
+            assert terminal._started is False
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_recv_disconnect_calls_respawn_when_keep_alive_true() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver(), keep_alive=True)
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._started = True
+        respawn_called = False
+
+        def fake_respawn() -> None:
+            nonlocal respawn_called
+            respawn_called = True
+
+        terminal.respawn = fake_respawn  # type: ignore[method-assign]
+        recv_q = await _start_recv_only(terminal)
+        try:
+            await recv_q.put(["disconnect"])
+            await pilot.pause(delay=0.15)
+            assert respawn_called is True
+        finally:
+            await _stop_recv_only(terminal)
 
 
 @pytest.mark.asyncio
@@ -813,6 +970,36 @@ async def test_on_scroll_up_puts_scroll_message_in_send_queue() -> None:
         item = terminal.send_queue.get_nowait()
         assert item[0] == "scroll"
         assert item[1] == "up"
+
+
+@pytest.mark.asyncio
+async def test_on_scroll_up_ignored_when_not_started() -> None:
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await terminal.on_mouse_scroll_up(
+            events.MouseScrollUp(None, 5, 3, 0, 0, 1, shift=False, meta=False, ctrl=False)
+        )
+        assert terminal.send_queue is None
+
+
+@pytest.mark.asyncio
+async def test_on_scroll_up_ignored_when_mouse_tracking_disabled() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
+        terminal.mouse_tracking = False
+
+        await terminal.on_mouse_scroll_up(
+            events.MouseScrollUp(None, 5, 3, 0, 0, 1, shift=False, meta=False, ctrl=False)
+        )
+
+        assert terminal.send_queue.empty()
 
 
 # ---------------------------------------------------------------------------
@@ -1110,6 +1297,46 @@ async def test_has_input_true_after_prompt_and_user_input() -> None:
 
 
 @pytest.mark.asyncio
+async def test_set_terminal_directory_returns_given_path_when_not_started() -> None:
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        target = PurePath("/some/path")
+        result = await terminal.set_terminal_directory(target)
+        assert result == target
+
+
+@pytest.mark.asyncio
+async def test_set_terminal_directory_returns_cwd_with_fallback_driver() -> None:
+    """FallbackDriver has no nav_future, so _cwd or path is returned immediately."""
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=FallbackDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._started = True
+        terminal._cwd = PurePath("/existing/cwd")
+        result = await terminal.set_terminal_directory(PurePath("/target"))
+        assert result == PurePath("/existing/cwd")
+
+
+@pytest.mark.asyncio
+async def test_set_terminal_directory_returns_path_when_cwd_none_and_fallback() -> None:
+    """When _cwd is None and FallbackDriver, _cwd or path evaluates to path."""
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=FallbackDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._started = True
+        terminal._cwd = None
+        target = PurePath("/target")
+        result = await terminal.set_terminal_directory(target)
+        assert result == target
+
+
+@pytest.mark.asyncio
 async def test_set_terminal_directory_writes_cd_to_backend_and_sets_draining() -> None:
     """set_terminal_directory writes cd command to backend and sets _draining."""
     backend = FakePtyBackend()
@@ -1386,6 +1613,46 @@ async def test_race_c_two_navigations_first_pre_cmd_resumes_shell() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio
+async def test_request_cd_does_nothing_when_not_started() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert terminal._started is False
+        terminal.request_cd(PurePath("/some/path"))
+        assert len(backend.writes) == 0
+
+
+@pytest.mark.asyncio
+async def test_request_cd_skips_when_already_at_current_path() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._started = True
+        terminal._nav_pending = 0
+        terminal._cwd = PurePath("/current/path")
+        terminal.request_cd(PurePath("/current/path"))
+        assert len(backend.writes) == 0
+
+
+@pytest.mark.asyncio
+async def test_request_cd_fallback_driver_writes_cd_without_draining() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=FallbackDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._started = True
+        terminal.request_cd(PurePath("/target/path"))
+        assert len(backend.writes) >= 1
+        assert b"".join(backend.writes).endswith(b"\n")
+        assert terminal._draining is False
+
+
 class PathChangedCapturingApp(TerminalTestApp):
     def __init__(self, terminal: Terminal) -> None:
         super().__init__(terminal)
@@ -1475,3 +1742,114 @@ async def test_rapid_request_cd_only_last_fires_path_changed() -> None:
             assert app.path_changed_events[0].cwd == PurePath("/c")
         finally:
             await _stop_recv_only(terminal)
+
+
+# ---------------------------------------------------------------------------
+# respawn()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_respawn_tears_down_backend_and_starts_fresh() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.start()
+        await asyncio.sleep(0.01)
+
+        backend.torn_down = False
+        backend.opened = False
+
+        terminal.respawn()
+        await asyncio.sleep(0.01)
+
+        assert backend.torn_down is True
+        assert backend.opened is True
+        assert terminal._run_task is not None
+
+        terminal.stop()
+
+
+# ---------------------------------------------------------------------------
+# _run() send loop
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_processes_stdin_and_writes_to_backend() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.start()
+        await asyncio.sleep(0.02)
+
+        assert terminal.send_queue is not None
+        terminal.send_queue.put_nowait(["stdin", "hello"])
+        await asyncio.sleep(0.02)
+
+        assert any(b"hello" in w for w in backend.writes)
+
+        terminal.stop()
+
+
+@pytest.mark.asyncio
+async def test_run_processes_click_message_with_button1() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.start()
+        await asyncio.sleep(0.02)
+
+        assert terminal.send_queue is not None
+        terminal.send_queue.put_nowait(["click", 5, 3, 1])
+        await asyncio.sleep(0.02)
+
+        assert any(b"\x1b[<0;" in w for w in backend.writes)
+
+        terminal.stop()
+
+
+@pytest.mark.asyncio
+async def test_run_processes_scroll_message() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.start()
+        await asyncio.sleep(0.02)
+
+        assert terminal.send_queue is not None
+        terminal.send_queue.put_nowait(["scroll", "up", 5, 3])
+        await asyncio.sleep(0.02)
+
+        assert any(b"\x1b[<64;" in w for w in backend.writes)
+
+        terminal.stop()
+
+
+@pytest.mark.asyncio
+async def test_run_processes_set_size_message() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.start()
+        await asyncio.sleep(0.02)
+
+        initial_count = len(backend.resize_calls)
+        assert terminal.send_queue is not None
+        terminal.send_queue.put_nowait(["set_size", 30, 100])
+        await asyncio.sleep(0.02)
+
+        assert len(backend.resize_calls) > initial_count
+        assert backend.resize_calls[-1] == (30, 100)
+
+        terminal.stop()
