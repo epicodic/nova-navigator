@@ -179,7 +179,7 @@ class MainScreen(Screen[None]):
             self._right_panel,
         )
 
-        self._terminal = Terminal("/usr/bin/zsh", id="terminal")
+        self._terminal = Terminal("/usr/bin/zsh", id="terminal", keep_alive=True)
         self._terminal.styles.height = 1
         self._terminal.start()
 
