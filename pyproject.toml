@@ -34,6 +34,7 @@ dev = [
     "pre-commit-hooks>=6.0.0",
     "pytest>=8.4.2",
     "pytest-asyncio>=1.3.0",
+    "pytest-cov>=7.1.0",
     "ruff>=0.13.0",
     "textual-dev>=1.8.0",
     "ty>=0.0.26",
@@ -153,7 +154,17 @@ convention = "google"
 addopts = "--import-mode=importlib"
 cache_dir = ".cache/pytest"
 asyncio_mode = "strict"
+markers = [
+    "integration: full-stack tests that launch a real NovaNavigator app and use the real local filesystem",
+]
 
+[tool.coverage.run]
+source = ["."]
+omit = ["*/tests/*", "*/.venv/*", "*/site-packages/*", "setup.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
 
 #######################################
 # ty
