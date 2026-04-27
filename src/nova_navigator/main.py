@@ -365,6 +365,7 @@ class MainScreen(Screen[None]):
 
     def on_bookmarks_dialog_bookmark_selected(self, event: BookmarksDialog.BookmarkSelected) -> None:
         vpath = vfspath_from_uri(event.bookmark_path)
+        _logger.info("Bookmark selected: %s", vpath)
         self.active_panel().set_path(vpath)
         # self._last_active_pane.focus()
 
