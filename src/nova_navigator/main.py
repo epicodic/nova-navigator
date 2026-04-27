@@ -34,7 +34,7 @@ from nova_navigator.uri import register_common_schemes, vfspath_from_uri
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import ArchiveFilesystem, LocalFilesystem
 from nova_navigator.widgets import DirectoryBrowser, Footer
-from nova_navigator.widgets.terminal import Terminal, shell_clear_prompt, shell_cmd_cd
+from nova_navigator.widgets.terminal import Terminal
 from nova_widgets.menu import SYMBOL_TABLE, Action, Menu, MenuBar, set_icon_provider
 from nova_widgets.menu import constructor as mc
 
@@ -74,7 +74,6 @@ class MainScreen(Screen[None]):
     _left_panel: DirectoryBrowser
     _right_panel: DirectoryBrowser
     _terminal: Terminal
-    _terminal_waits_for_enter: bool = False
     _terminal_mode: _TerminalMode
     _last_active_panel: DirectoryBrowser
 
@@ -240,8 +239,7 @@ class MainScreen(Screen[None]):
                 return True
 
             case "enter":
-                if self._terminal_waits_for_enter:
-                    self._terminal_waits_for_enter = False
+                if self._terminal.has_input():
                     await self._terminal.on_key(event)
                     return True
 
@@ -271,7 +269,6 @@ class MainScreen(Screen[None]):
             return True
 
         if event.is_printable:
-            self._terminal_waits_for_enter = True
             await self._terminal.on_key(event)
             return True
 
@@ -316,10 +313,9 @@ class MainScreen(Screen[None]):
                 self._terminal.styles.height = self.size.height - 2
 
     async def _set_terminal_directory(self, path: VPath) -> None:
-        # assert isinstance(path, LocalPath), "Only local paths are supported at the moment"
         if not isinstance(path.filesystem, LocalFilesystem):
             return
-        await self._terminal.send(shell_clear_prompt() + " " + shell_cmd_cd(path.path) + "\n", mode="silent")
+        await self._terminal.set_terminal_directory(path.path)
 
     async def _on_directory_browser_path_selected(self, event: DirectoryBrowser.PathSelected) -> None:
         vpath = event.path
