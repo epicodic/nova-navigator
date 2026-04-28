@@ -13,6 +13,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Tree
 
 from nova_navigator.config.bookmarks import Bookmark, BookmarkConfig, Group
+from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.icons import ICONS
 
 
@@ -130,6 +131,12 @@ class ManageBookmarksDialog(ModalScreen[None]):
             width: 10;
         }
 
+        #btn_pick_icon {
+            width: auto;
+            min-width: 3;
+            margin: 0 0 0 1;
+        }
+
         #form_row_path {
             height: auto;
         }
@@ -192,6 +199,7 @@ class ManageBookmarksDialog(ModalScreen[None]):
                     yield Input(placeholder="Name", id="input_name", compact=True)
                     yield Label("  Icon: ")
                     yield Input(placeholder="Icon", id="input_icon", compact=True)
+                    yield Button("…", id="btn_pick_icon", flat=True)
                 with Horizontal(id="form_row_path"):
                     yield Label("Path: ")
                     yield Input(placeholder="Path", id="input_path", compact=True)
@@ -262,11 +270,13 @@ class ManageBookmarksDialog(ModalScreen[None]):
             input_name.disabled = True
             input_icon.disabled = True
             input_path.disabled = True
+            self.query_one("#btn_pick_icon", Button).disabled = True
             self.query_one("#form_row_path", Horizontal).display = True
             return
 
         input_name.disabled = False
         input_icon.disabled = False
+        self.query_one("#btn_pick_icon", Button).disabled = False
 
         if tag[0] == "group":
             gi = tag[1]
@@ -379,6 +389,8 @@ class ManageBookmarksDialog(ModalScreen[None]):
                 self.action_move_down()
             case "btn_move_to_group":
                 self._run_move_to_group()
+            case "btn_pick_icon":
+                self._run_pick_icon()
 
     def _action_ok(self) -> None:
         self._config.groups = self._working.groups
@@ -460,6 +472,19 @@ class ManageBookmarksDialog(ModalScreen[None]):
         self._rebuild_tree(select_tag=new_tag)
         self._sync_form_to_selection(new_tag)
         self._update_button_states(new_tag)
+
+    def _run_pick_icon(self) -> None:
+        current = self.query_one("#input_icon", Input).value or None
+        self.app.push_screen(
+            IconPickerDialog(initial_icon=current),
+            callback=self._on_icon_picked,
+        )
+
+    def _on_icon_picked(self, result: str | None) -> None:
+        if result is None or result == "CANCEL":
+            return
+        input_icon = self.query_one("#input_icon", Input)
+        input_icon.value = result
 
     def _run_move_to_group(self) -> None:
         tag = self._selected_tag()
