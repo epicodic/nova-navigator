@@ -198,6 +198,10 @@ def _make_dialog_app(cfg: BookmarkConfig) -> tuple[ManageBookmarksDialog, type[A
         async def on_mount(self) -> None:
             await self.push_screen(dialog)
 
+    # The dialog has 6 action buttons (~18 rows) so the test terminal must be
+    # tall enough that they don't visually overlap the form input rows below.
+    _App.run_test = lambda self, **kw: App.run_test(self, size=kw.pop("size", (80, 40)), **kw)  # type: ignore[method-assign]
+
     return dialog, _App
 
 
@@ -386,3 +390,37 @@ async def test_cancel_does_not_modify_config() -> None:
     # original cfg must be unchanged
     assert len(cfg.groups) == original_group_count
     assert [g.name for g in cfg.groups] == original_names
+
+
+@pytest.mark.asyncio
+async def test_tree_updates_after_name_input_loses_focus() -> None:
+    """Editing the name input and tabbing away should update the tree label."""
+    cfg = BookmarkConfig(groups=[Group(name="Computer", bookmarks=[Bookmark(name="Home", path="/home/user")])])
+    dialog, _App = _make_dialog_app(cfg)
+    app = _App()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        tree = app.screen.query_one(Tree)
+        tree.focus()
+        await pilot.press("down")  # select group
+        await pilot.press("down")  # select entry
+        await pilot.pause()
+
+        # type a new name into the name input
+        inp = app.screen.query_one("#input_name", Input)
+        inp.focus()
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        for _ in inp.value:
+            await pilot.press("backspace")
+        for ch in "My Home":
+            await pilot.press(ch)
+        await pilot.pause()
+
+        # blur the input by pressing Tab
+        await pilot.press("tab")
+        await pilot.pause()
+
+        # tree label should reflect the new name
+        entry_node = list(list(tree.root.children)[0].children)[0]
+        assert "My Home" in str(entry_node.label)

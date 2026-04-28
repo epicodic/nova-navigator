@@ -96,16 +96,22 @@ class ManageBookmarksDialog(Dialog):
             height: 80%;
         }
 
-        #tree_container {
-            height: 1fr;
-            border: inner $surface;
+        #bookmark_tree {
+            width: 1fr;
         }
 
         #action_row {
-            height: auto;
-            margin-top: 1;
+            width: auto;
+            height: 1fr;
         }
 
+        #tree_row {
+            height: 1fr;
+        }
+
+        #tree_row {
+            height: 1fr;
+        }
 
         #form_container {
             height: auto;
@@ -161,28 +167,30 @@ class ManageBookmarksDialog(Dialog):
     _config: BookmarkConfig
     _working: BookmarkConfig
     _current_tag: _NodeTag | None
+    _syncing: bool
 
     def __init__(self, config: BookmarkConfig) -> None:
         super().__init__("Edit Bookmarks", buttons=[Decision.OK, Decision.CANCEL])
         self._config = config
         self._working = copy.deepcopy(config)
         self._current_tag = None
+        self._syncing = False
 
     # ------------------------------------------------------------------ compose
 
     def compose_content(self) -> ComposeResult:
-        yield Vertical(
-            Tree("Bookmarks", id="bookmark_tree"),
-            id="tree_container",
-        )
         yield Horizontal(
-            Button("Add Group", id="btn_add_group", flat=True),
-            Button("Add Entry", id="btn_add_entry", disabled=True, flat=True),
-            Button("Remove", id="btn_remove", disabled=True, flat=True),
-            Button("↑ Move Up", id="btn_move_up", disabled=True, flat=True),
-            Button("↓ Move Down", id="btn_move_down", disabled=True, flat=True),
-            Button("Move to…", id="btn_move_to_group", disabled=True, flat=True),
-            id="action_row",
+            Tree("Bookmarks", id="bookmark_tree"),
+            Vertical(
+                Button("Add Group", id="btn_add_group", flat=True),
+                Button("Add Entry", id="btn_add_entry", disabled=True, flat=True),
+                Button("Remove", id="btn_remove", disabled=True, flat=True),
+                Button("↑ Move Up", id="btn_move_up", disabled=True, flat=True),
+                Button("↓ Move Down", id="btn_move_down", disabled=True, flat=True),
+                Button("Move to…", id="btn_move_to_group", disabled=True, flat=True),
+                id="action_row",
+            ),
+            id="tree_row",
         )
         yield Vertical(
             Horizontal(
@@ -256,38 +264,41 @@ class ManageBookmarksDialog(Dialog):
         input_name = self.query_one("#input_name", Input)
         input_icon = self.query_one("#input_icon", Input)
         input_path = self.query_one("#input_path", Input)
+        self._syncing = True
+        try:
+            if tag is None:
+                input_name.value = ""
+                input_icon.value = ""
+                input_path.value = ""
+                input_name.disabled = True
+                input_icon.disabled = True
+                input_path.disabled = True
+                self.query_one("#btn_pick_icon", Button).disabled = True
+                self.query_one("#form_row_path", Horizontal).display = True
+                return
 
-        if tag is None:
-            input_name.value = ""
-            input_icon.value = ""
-            input_path.value = ""
-            input_name.disabled = True
-            input_icon.disabled = True
-            input_path.disabled = True
-            self.query_one("#btn_pick_icon", Button).disabled = True
-            self.query_one("#form_row_path", Horizontal).display = True
-            return
+            input_name.disabled = False
+            input_icon.disabled = False
+            self.query_one("#btn_pick_icon", Button).disabled = False
 
-        input_name.disabled = False
-        input_icon.disabled = False
-        self.query_one("#btn_pick_icon", Button).disabled = False
-
-        if tag[0] == "group":
-            gi = tag[1]
-            group = self._working.groups[gi]
-            input_name.value = group.name
-            input_icon.value = group.icon or ""
-            input_path.value = ""
-            self.query_one("#form_row_path", Horizontal).display = False
-        else:
-            entry_tag = cast("_EntryTag", tag)
-            gi, ei = entry_tag[1], entry_tag[2]
-            entry = self._working.groups[gi].bookmarks[ei]
-            input_name.value = entry.name
-            input_icon.value = entry.icon or ""
-            input_path.value = entry.path
-            self.query_one("#form_row_path", Horizontal).display = True
-            input_path.disabled = False
+            if tag[0] == "group":
+                gi = tag[1]
+                group = self._working.groups[gi]
+                input_name.value = group.name
+                input_icon.value = group.icon or ""
+                input_path.value = ""
+                self.query_one("#form_row_path", Horizontal).display = False
+            else:
+                entry_tag = cast("_EntryTag", tag)
+                gi, ei = entry_tag[1], entry_tag[2]
+                entry = self._working.groups[gi].bookmarks[ei]
+                input_name.value = entry.name
+                input_icon.value = entry.icon or ""
+                input_path.value = entry.path
+                self.query_one("#form_row_path", Horizontal).display = True
+                input_path.disabled = False
+        finally:
+            self._syncing = False
 
     def _update_button_states(self, tag: _NodeTag | None) -> None:
         has_groups = len(self._working.groups) > 0
@@ -331,6 +342,8 @@ class ManageBookmarksDialog(Dialog):
 
     @on(Input.Changed, "#input_name")
     def _on_name_changed(self, event: Input.Changed) -> None:
+        if self._syncing:
+            return
         tag = self._current_tag
         if tag is None:
             return
@@ -340,9 +353,12 @@ class ManageBookmarksDialog(Dialog):
             entry_tag = cast("_EntryTag", tag)
             gi, ei = entry_tag[1], entry_tag[2]
             self._working.groups[gi].bookmarks[ei].name = event.value
+        self._update_current_node_label()
 
     @on(Input.Changed, "#input_icon")
     def _on_icon_changed(self, event: Input.Changed) -> None:
+        if self._syncing:
+            return
         tag = self._current_tag
         if tag is None:
             return
@@ -353,15 +369,40 @@ class ManageBookmarksDialog(Dialog):
             entry_tag = cast("_EntryTag", tag)
             gi, ei = entry_tag[1], entry_tag[2]
             self._working.groups[gi].bookmarks[ei].icon = icon_val
+        self._update_current_node_label()
 
     @on(Input.Changed, "#input_path")
     def _on_path_changed(self, event: Input.Changed) -> None:
+        if self._syncing:
+            return
         tag = self._current_tag
         if tag is None or tag[0] != "entry":
             return
         entry_tag = cast("_EntryTag", tag)
         gi, ei = entry_tag[1], entry_tag[2]
         self._working.groups[gi].bookmarks[ei].path = event.value
+        self._update_current_node_label()
+
+    def _update_current_node_label(self) -> None:
+        """Update the currently-selected tree node's label in-place from _working."""
+        tag = self._current_tag
+        if tag is None:
+            return
+        tree: Tree[_NodeTag] = self.query_one(Tree)
+        node = tree.cursor_node
+        if node is None or node.data != tag:
+            return
+        if tag[0] == "group":
+            gi = tag[1]
+            group = self._working.groups[gi]
+            icon = ICONS.get_icon(group.icon) + " " if group.icon else ""
+            node.set_label(f"{icon}{group.name}")
+        else:
+            entry_tag = cast("_EntryTag", tag)
+            gi, ei = entry_tag[1], entry_tag[2]
+            entry = self._working.groups[gi].bookmarks[ei]
+            eicon = ICONS.get_icon(entry.icon) + " " if entry.icon else ""
+            node.set_label(f"{eicon}{entry.name}  {entry.path}")
 
     # ------------------------------------------------------------------ button actions
 
@@ -404,7 +445,7 @@ class ManageBookmarksDialog(Dialog):
         self._update_button_states(new_tag)
 
     def action_add_entry(self) -> None:
-        tag = self._selected_tag()
+        tag = self._current_tag
         if tag is None:
             gi = 0
         else:
@@ -417,7 +458,7 @@ class ManageBookmarksDialog(Dialog):
         self._update_button_states(new_tag)
 
     def action_remove_item(self) -> None:
-        tag = self._selected_tag()
+        tag = self._current_tag
         if tag is None:
             return
         if tag[0] == "group":
@@ -431,7 +472,7 @@ class ManageBookmarksDialog(Dialog):
         self._update_button_states(None)
 
     def action_move_up(self) -> None:
-        tag = self._selected_tag()
+        tag = self._current_tag
         if tag is None or not self._can_move_up(tag):
             return
         if tag[0] == "group":
@@ -450,7 +491,7 @@ class ManageBookmarksDialog(Dialog):
         self._update_button_states(new_tag)
 
     def action_move_down(self) -> None:
-        tag = self._selected_tag()
+        tag = self._current_tag
         if tag is None or not self._can_move_down(tag):
             return
         if tag[0] == "group":
@@ -482,7 +523,7 @@ class ManageBookmarksDialog(Dialog):
         input_icon.value = result
 
     def _run_move_to_group(self) -> None:
-        tag = self._selected_tag()
+        tag = self._current_tag
         if tag is None or tag[0] != "entry":
             return
         gi = tag[1]
