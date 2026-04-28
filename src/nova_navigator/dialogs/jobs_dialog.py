@@ -8,6 +8,7 @@ from textual.widgets import Button, Label, ProgressBar
 from nova_navigator.scheduler import Job
 
 from ..widgets.overlay_widget import OverlayWidget
+from ..widgets.separator import Separator
 from .job_registry import JobRegistry
 
 
@@ -18,7 +19,7 @@ class JobRow(Widget):
     JobRow {
         height: auto;
         padding: 0 1;
-        margin-bottom: 1;
+        margin: 0;
     }
     JobRow.-running {
         background: $panel;
@@ -48,6 +49,9 @@ class JobRow(Widget):
         border: none;
         padding: 0 0;
     }
+    JobRow ProgressBar {
+        margin: 0;
+    }
     """
 
     _job: Job
@@ -64,7 +68,7 @@ class JobRow(Widget):
         self._step_bar = ProgressBar(total=1, show_eta=False)
         self._overall_bar = ProgressBar(total=1, show_eta=False)
         self._title_label = Label(self._display_title(job))
-        self._action_button = Button(self._button_icon(job.state), id="action")
+        self._action_button = Button(self._button_icon(job.state), id="action", flat=True)
 
     @staticmethod
     def _display_title(job: Job) -> str:
@@ -128,6 +132,7 @@ class JobsDialog(OverlayWidget, can_focus=True):
     JobsDialog VerticalScroll {
         height: auto;
         max-height: 28;
+        padding: 0;
     }
     JobsDialog #no-jobs {
         width: 1fr;
@@ -139,6 +144,7 @@ class JobsDialog(OverlayWidget, can_focus=True):
 
     _registry: JobRegistry
     _rows: dict[int, JobRow]
+    _rules: dict[int, Separator]
     _scroll: VerticalScroll
     _no_jobs_label: Label | None
 
@@ -152,6 +158,7 @@ class JobsDialog(OverlayWidget, can_focus=True):
         )
         self._registry = registry
         self._rows = {}
+        self._rules = {}
         self._no_jobs_label = None
         self._scroll = VerticalScroll()
 
@@ -172,8 +179,11 @@ class JobsDialog(OverlayWidget, can_focus=True):
             if id(job) not in self._rows:
                 row = JobRow(job, self._handle_action)
                 row.add_class(f"-{job.state.name.lower()}")
+                rule = Separator()
                 self._rows[id(job)] = row
+                self._rules[id(job)] = rule
                 await self._scroll.mount(row)
+                await self._scroll.mount(rule)
 
         # refresh existing rows
         for job in desired:
@@ -185,6 +195,9 @@ class JobsDialog(OverlayWidget, can_focus=True):
         stale = [jid for jid in self._rows if jid not in desired_ids]
         for jid in stale:
             self._rows.pop(jid).remove()
+            rule = self._rules.pop(jid, None)
+            if rule is not None:
+                rule.remove()
 
         # empty state label
         if not desired:
@@ -204,3 +217,6 @@ class JobsDialog(OverlayWidget, can_focus=True):
             row = self._rows.pop(id(job), None)
             if row is not None:
                 row.remove()
+            rule = self._rules.pop(id(job), None)
+            if rule is not None:
+                rule.remove()
