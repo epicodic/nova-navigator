@@ -14,18 +14,28 @@ _logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 64 * 1024  # 64 KB
 
-_DUMMY_ITEMS = 10
+_DUMMY_ITEMS = 3
 _DUMMY_ITEM_STEPS = 10
+_DUMMY_FAIL_INTERVAL = 3 * _DUMMY_ITEMS - 2
+_DUMMY_NEXT_FAIL = _DUMMY_FAIL_INTERVAL
 
 
 async def dummy_task(ctx: TaskContext) -> None:
     """Simulate processing 10 items, each taking 10 seconds with per-second step updates."""
+    global _DUMMY_NEXT_FAIL  # noqa: PLW0603
     ctx.status.set_progress(0, _DUMMY_ITEMS)
     for item in range(_DUMMY_ITEMS):
         ctx.status.check_cancelled()
         ctx.status.set_step_progress(0, _DUMMY_ITEM_STEPS)
+
+        _DUMMY_NEXT_FAIL -= 1
+        if _DUMMY_NEXT_FAIL == 0:
+            _DUMMY_NEXT_FAIL = _DUMMY_FAIL_INTERVAL
+            raise RuntimeError("simulated failure")
+
         for step in range(_DUMMY_ITEM_STEPS):
             ctx.status.check_cancelled()
+
             await asyncio.sleep(1)
             ctx.status.set_step_progress(step + 1, _DUMMY_ITEM_STEPS)
         ctx.status.set_progress(item + 1, _DUMMY_ITEMS)
