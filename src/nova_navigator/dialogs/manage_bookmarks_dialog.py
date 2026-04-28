@@ -13,6 +13,8 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Tree
 
 from nova_navigator.config.bookmarks import Bookmark, BookmarkConfig, Group
+from nova_navigator.decision import Decision
+from nova_navigator.dialogs.dialog import Dialog
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.icons import ICONS
 
@@ -83,18 +85,15 @@ _EntryTag = tuple[str, int, int]  # ("entry", group_index, entry_index)
 _NodeTag = _GroupTag | _EntryTag
 
 
-class ManageBookmarksDialog(ModalScreen[None]):
+class ManageBookmarksDialog(Dialog):
     """Full-screen modal for editing bookmark groups and entries."""
 
     DEFAULT_CSS = """
     ManageBookmarksDialog {
-        align: center middle;
 
-        #editor_box {
-            border: round $accent;
+        #dialog_box {
             width: 80%;
             height: 80%;
-            padding: 1;
         }
 
         #tree_container {
@@ -107,15 +106,10 @@ class ManageBookmarksDialog(ModalScreen[None]):
             margin-top: 1;
         }
 
-        #action_row Button {
-            width: auto;
-            margin-right: 1;
-        }
 
         #form_container {
             height: auto;
             margin-top: 1;
-            border: inner $surface;
             padding: 0 1;
         }
 
@@ -125,15 +119,22 @@ class ManageBookmarksDialog(ModalScreen[None]):
 
         #input_name {
             width: 1fr;
+            border: inner $surface;
+        }
+
+        #input_path {
+            width: 1fr;
+            border: inner $surface;
         }
 
         #input_icon {
-            width: 10;
+            width: 20;
+            border: inner $surface;
         }
 
         #btn_pick_icon {
-            width: auto;
-            min-width: 3;
+            width: 5;
+            max-width: 5;
             margin: 0 0 0 1;
         }
 
@@ -141,28 +142,16 @@ class ManageBookmarksDialog(ModalScreen[None]):
             height: auto;
         }
 
-        #ok_cancel_row {
-            height: auto;
-            align-horizontal: right;
-            margin-top: 1;
+        .form_label {
+            width: auto;
+            border: inner transparent;
         }
 
-        #ok_cancel_row Button {
-            width: auto;
-            margin-left: 1;
-        }
 
-        Button {
-            width: auto;
-            max-width: 15;
-            min-width: 1;
-            margin: 0 2;
-        }
     }
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("escape", "cancel", "Cancel", priority=True),
         Binding("alt+up", "move_up", "Move Up", show=False),
         Binding("alt+down", "move_down", "Move Down", show=False),
         Binding("delete", "remove_item", "Remove", show=False),
@@ -174,38 +163,43 @@ class ManageBookmarksDialog(ModalScreen[None]):
     _current_tag: _NodeTag | None
 
     def __init__(self, config: BookmarkConfig) -> None:
-        super().__init__()
+        super().__init__("Edit Bookmarks", buttons=[Decision.OK, Decision.CANCEL])
         self._config = config
         self._working = copy.deepcopy(config)
         self._current_tag = None
 
     # ------------------------------------------------------------------ compose
 
-    def compose(self) -> ComposeResult:
-        with Vertical(id="editor_box"):
-            yield Label("Edit Bookmarks", id="editor_title")
-            with Vertical(id="tree_container"):
-                yield Tree("Bookmarks", id="bookmark_tree")
-            with Horizontal(id="action_row"):
-                yield Button("Add Group", id="btn_add_group", flat=True)
-                yield Button("Add Entry", id="btn_add_entry", disabled=True, flat=True)
-                yield Button("Remove", id="btn_remove", disabled=True, flat=True)
-                yield Button("↑ Move Up", id="btn_move_up", disabled=True, flat=True)
-                yield Button("↓ Move Down", id="btn_move_down", disabled=True, flat=True)
-                yield Button("Move to…", id="btn_move_to_group", disabled=True, flat=True)
-            with Vertical(id="form_container"):
-                with Horizontal(id="form_row_name"):
-                    yield Label("Name: ")
-                    yield Input(placeholder="Name", id="input_name", compact=True)
-                    yield Label("  Icon: ")
-                    yield Input(placeholder="Icon", id="input_icon", compact=True)
-                    yield Button("…", id="btn_pick_icon", flat=True)
-                with Horizontal(id="form_row_path"):
-                    yield Label("Path: ")
-                    yield Input(placeholder="Path", id="input_path", compact=True)
-            with Horizontal(id="ok_cancel_row"):
-                yield Button("Cancel", id="btn_cancel", variant="default", flat=True)
-                yield Button("OK", id="btn_ok", variant="primary", flat=True)
+    def compose_content(self) -> ComposeResult:
+        yield Vertical(
+            Tree("Bookmarks", id="bookmark_tree"),
+            id="tree_container",
+        )
+        yield Horizontal(
+            Button("Add Group", id="btn_add_group", flat=True),
+            Button("Add Entry", id="btn_add_entry", disabled=True, flat=True),
+            Button("Remove", id="btn_remove", disabled=True, flat=True),
+            Button("↑ Move Up", id="btn_move_up", disabled=True, flat=True),
+            Button("↓ Move Down", id="btn_move_down", disabled=True, flat=True),
+            Button("Move to…", id="btn_move_to_group", disabled=True, flat=True),
+            id="action_row",
+        )
+        yield Vertical(
+            Horizontal(
+                Label("Name: ", classes="form_label"),
+                Input(placeholder="Name", id="input_name"),
+                Label("  Icon: ", classes="form_label"),
+                Input(placeholder="Icon", id="input_icon"),
+                Button("…", id="btn_pick_icon", flat=True),
+                id="form_row_name",
+            ),
+            Horizontal(
+                Label("Path: ", classes="form_label"),
+                Input(placeholder="Path", id="input_path"),
+                id="form_row_path",
+            ),
+            id="form_container",
+        )
 
     def on_mount(self) -> None:
         tree: Tree[_NodeTag] = self.query_one(Tree)
@@ -372,11 +366,12 @@ class ManageBookmarksDialog(ModalScreen[None]):
     # ------------------------------------------------------------------ button actions
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.prevent_default()
         match event.button.id:
-            case "btn_ok":
+            case "OK":
                 self._action_ok()
-            case "btn_cancel":
-                self.dismiss(None)
+            case "CANCEL":
+                self.dismiss("CANCEL")
             case "btn_add_group":
                 self.action_add_group()
             case "btn_add_entry":
@@ -392,13 +387,13 @@ class ManageBookmarksDialog(ModalScreen[None]):
             case "btn_pick_icon":
                 self._run_pick_icon()
 
+    def action_accept_dialog(self) -> None:
+        self._action_ok()
+
     def _action_ok(self) -> None:
         self._config.groups = self._working.groups
         self._config.save()
-        self.dismiss(None)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
+        self.dismiss("OK")
 
     def action_add_group(self) -> None:
         new_group = Group(name="New Group")

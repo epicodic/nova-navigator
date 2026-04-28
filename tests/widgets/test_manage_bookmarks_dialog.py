@@ -356,7 +356,7 @@ async def test_ok_saves_to_config() -> None:
             await pilot.click(app.screen.query_one("#btn_add_group", Button))
             await pilot.pause()
             # press OK
-            await pilot.click(app.screen.query_one("#btn_ok", Button))
+            await pilot.click(app.screen.query_one("#OK", Button))
             await pilot.pause(0.1)
 
     assert save_called, "save() was not called"
@@ -380,7 +380,7 @@ async def test_cancel_does_not_modify_config() -> None:
         await pilot.click(app.screen.query_one("#btn_add_group", Button))
         await pilot.pause()
         # press Cancel
-        await pilot.click(app.screen.query_one("#btn_cancel", Button))
+        await pilot.click(app.screen.query_one("#CANCEL", Button))
         await pilot.pause(0.1)
 
     # original cfg must be unchanged

@@ -510,8 +510,10 @@ class MainScreen(Screen[None]):
         await self.mount(self._bookmark_dialog)
         self._bookmark_dialog.focus()
 
+    @work
     async def _action_edit_bookmarks(self) -> None:
-        await self.app.push_screen_wait(ManageBookmarksDialog(conf_.bookmarks))
+        dialog = ManageBookmarksDialog(conf_.bookmarks)
+        await dialog.run()
 
     async def _action_filter(self) -> None:
         await self.active_panel().action_filter()
