@@ -22,7 +22,7 @@ from textual.widgets import Input
 from nova_navigator import archive, debug_analytics
 from nova_navigator.config import conf_, get_config_file_path
 from nova_navigator.decision import Decision
-from nova_navigator.dialogs import BookmarksDialog
+from nova_navigator.dialogs import BookmarksDialog, ManageBookmarksDialog
 from nova_navigator.dialogs.decision_dialog import DecisionDialog
 from nova_navigator.editor import Editor
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
@@ -60,6 +60,7 @@ class MainScreen(Screen[None]):
         Binding("f6", "copy_or_move_files(True)", "Move"),
         Binding("f8", "delete_files", "Delete"),
         Binding("ctrl+b", "show_bookmarks", "Bookmark"),
+        Binding("ctrl+shift+b", "edit_bookmarks", "Edit Bookmarks"),
         Binding("ctrl+h", "toggle_hidden", description="Show/Hide Hidden Files", show=False),
         # Binding("ctrl+s", "suspend", "Suspend"),
         Binding("ctrl+k", "show_processes", "Processes"),
@@ -117,6 +118,9 @@ class MainScreen(Screen[None]):
             mc.action("Rename", name="rename"),
             mc.separator(),
             mc.action("Filter", shortcut="Ctrl+F", action="filter", name="filter"),
+            mc.separator(),
+            mc.action("Bookmarks", shortcut="Ctrl+B", action="show_bookmarks", name="bookmarks"),
+            mc.action("Edit Bookmarks\u2026", shortcut="Ctrl+Shift+B", action="edit_bookmarks", name="edit_bookmarks"),
         )
 
         self._menu_bar.add_menu("Selection", name="selection").add(
@@ -505,6 +509,9 @@ class MainScreen(Screen[None]):
         self._bookmark_dialog = BookmarksDialog(position=(2, 2))
         await self.mount(self._bookmark_dialog)
         self._bookmark_dialog.focus()
+
+    async def _action_edit_bookmarks(self) -> None:
+        await self.app.push_screen_wait(ManageBookmarksDialog(conf_.bookmarks))
 
     async def _action_filter(self) -> None:
         await self.active_panel().action_filter()
