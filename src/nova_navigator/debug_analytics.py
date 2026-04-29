@@ -4,6 +4,7 @@ import datetime
 import logging
 import os
 import pdb  # noqa: T100
+import shutil
 import subprocess
 import sys
 import types
@@ -19,8 +20,7 @@ from rich.text import Text
 _logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Toggle
-# Hand-editable constants. Also overridden by environment variables.
+# Toggle — controlled via environment variables
 # ---------------------------------------------------------------------------
 DEBUG_ANALYTICS: bool = os.environ.get("NN_DEBUG_ANALYTICS", "0") != "0"
 
@@ -243,3 +243,10 @@ def install() -> None:
     sys.excepthook = _crash_handler
 
     _logger.info("Debug analytics enabled. Log dir: %s", _log_dir)
+
+
+def cleanup() -> None:
+    """Delete the debug log directory on normal exit. No-op when DEBUG_ANALYTICS is False."""
+    if not DEBUG_ANALYTICS or _log_dir is None:
+        return
+    shutil.rmtree(_log_dir, ignore_errors=True)
