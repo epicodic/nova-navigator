@@ -159,13 +159,29 @@ class ManageBookmarksDialog(Dialog):
     _working: BookmarkConfig
     _current_tag: _NodeTag | None
     _syncing: bool
+    _prefill_tag: _NodeTag | None
 
-    def __init__(self, config: BookmarkConfig) -> None:
+    def __init__(
+        self,
+        config: BookmarkConfig,
+        *,
+        prefill: tuple[str, str, str] | None = None,
+    ) -> None:
         super().__init__("Edit Bookmarks", buttons=[Decision.OK, Decision.CANCEL])
         self._config = config
         self._working = copy.deepcopy(config)
         self._current_tag = None
         self._syncing = False
+        self._prefill_tag = None
+        if prefill is not None:
+            group_name, entry_name, entry_path = prefill
+            groups = self._working.groups
+            gi = next((i for i, g in enumerate(groups) if g.name == group_name), None)
+            if gi is None:
+                groups.append(Group(name=group_name))
+                gi = len(groups) - 1
+            groups[gi].bookmarks.append(Bookmark(name=entry_name, path=entry_path))
+            self._prefill_tag = ("entry", gi, len(groups[gi].bookmarks) - 1)
 
     # ------------------------------------------------------------------ compose
 
@@ -206,9 +222,10 @@ class ManageBookmarksDialog(Dialog):
         self.mount(_MoveToGroupOverlay(on_selected=self._on_group_selected))
         tree: Tree[_NodeTag] = self.query_one(Tree)
         tree.show_root = False
-        self._rebuild_tree(select_tag=None)
-        self._sync_form_to_selection(None)
-        tree.unselect()  # reset cursor to -1: show_root change clamps cursor to 0 via stale cache
+        self._rebuild_tree(select_tag=self._prefill_tag)
+        if self._prefill_tag is None:
+            self._sync_form_to_selection(None)
+            tree.unselect()  # reset cursor to -1: show_root change clamps cursor to 0 via stale cache
         tree.focus()
 
     # ------------------------------------------------------------------ tree
@@ -235,6 +252,10 @@ class ManageBookmarksDialog(Dialog):
 
     def _select_node_by_tag(self, tag: _NodeTag) -> None:
         tree: Tree[_NodeTag] = self.query_one(Tree)
+        # After tree.clear() + node additions the internal line cache is stale and
+        # every new node has _line=0 by default.  Accessing _tree_lines forces
+        # _build() to run, assigning correct _line values before select_node uses them.
+        tree._tree_lines  # noqa: B018, RUF100, SLF001
         for node in tree.root.children:
             if node.data == tag:
                 tree.select_node(node)

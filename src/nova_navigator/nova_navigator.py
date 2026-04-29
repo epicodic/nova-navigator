@@ -124,6 +124,7 @@ class MainScreen(Screen[None]):
             mc.separator(),
             mc.action("Bookmarks", shortcut="Ctrl+B", action="show_bookmarks", name="bookmarks"),
             mc.action("Edit Bookmarks\u2026", shortcut="Ctrl+Shift+B", action="edit_bookmarks", name="edit_bookmarks"),
+            mc.action("Add to Bookmarks", action="add_to_bookmarks", name="add_to_bookmarks"),
         )
 
         self._menu_bar.add_menu("Selection", name="selection").add(
@@ -458,7 +459,8 @@ class MainScreen(Screen[None]):
                 ("file.paste", 4),
                 ("file.delete", 5),
                 ("file.rename", 5),
-                ("view.show_hidden_files", 6),
+                ("file.add_to_bookmarks", 6),
+                ("view.show_hidden_files", 7),
             ]
 
         menu = Menu()
@@ -519,6 +521,17 @@ class MainScreen(Screen[None]):
     @work
     async def _action_edit_bookmarks(self) -> None:
         dialog = ManageBookmarksDialog(conf_.bookmarks)
+        await dialog.run()
+
+    @work
+    async def _action_add_to_bookmarks(self) -> None:
+        path = self.active_panel().path_item_under_cursor
+        if path is None:
+            return
+        dialog = ManageBookmarksDialog(
+            conf_.bookmarks,
+            prefill=("Bookmarks", path.name, str(path.path)),
+        )
         await dialog.run()
 
     async def _action_filter(self) -> None:
