@@ -3,86 +3,76 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable
 from typing import ClassVar, cast
 
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
-from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, ListItem, ListView, Tree
+from textual.widgets import Button, Input, Label, Select, Tree
+from textual.widgets.select import NoSelection
 
 from nova_navigator.config.bookmarks import Bookmark, BookmarkConfig, Group
 from nova_navigator.decision import Decision
 from nova_navigator.dialogs.dialog import Dialog
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.icons import ICONS
-
-
-class MoveToGroupDialog(ModalScreen[int | None]):
-    """Modal dialog that lists group names and returns the index of the chosen one."""
-
-    DEFAULT_CSS = """
-    MoveToGroupDialog {
-        align: center middle;
-
-        #mtg_box {
-            border: round $accent;
-            width: 40;
-            height: auto;
-            padding: 1;
-        }
-
-        #mtg_buttons {
-            height: auto;
-            align-horizontal: center;
-            margin-top: 1;
-        }
-
-        #mtg_buttons Button {
-            width: auto;
-            margin: 0 1;
-        }
-    }
-    """
-
-    BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("escape", "cancel", "Cancel", priority=True),
-    ]
-
-    _group_names: list[str]
-
-    def __init__(self, group_names: list[str]) -> None:
-        super().__init__()
-        self._group_names = group_names
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="mtg_box"):
-            yield Label("Move to Group")
-            yield ListView(
-                *[ListItem(Label(name)) for name in self._group_names],
-                id="group_list",
-            )
-            with Horizontal(id="mtg_buttons"):
-                yield Button("Cancel", id="mtg_cancel", variant="default", flat=True)
-                yield Button("OK", id="mtg_ok", variant="primary", flat=True)
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "mtg_ok":
-            idx = self.query_one(ListView).index
-            if idx is not None:
-                self.dismiss(idx)
-        else:
-            self.dismiss(None)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
+from nova_navigator.widgets.popup_widget import PopupWidget
 
 # Tag types stored in tree node data
 _GroupTag = tuple[str, int]  # ("group", group_index)
 _EntryTag = tuple[str, int, int]  # ("entry", group_index, entry_index)
 _NodeTag = _GroupTag | _EntryTag
+
+
+class _MoveToGroupOverlay(PopupWidget, can_focus=True):
+    """Inline overlay showing a Select dropdown for moving an entry to another group.
+
+    Always present in the DOM.
+    Uses CSS `visibility` (not `display`) to show/hide so that no layout event
+    is fired on the parent ModalScreen — preventing the dialog from jumping.
+    """
+
+    DEFAULT_CSS = """
+    _MoveToGroupOverlay {
+        width: 30;
+        height: auto;
+        border: none;
+    }
+    """
+
+    _on_selected: Callable[[int], None]
+
+    def __init__(self, on_selected: Callable[[int], None]) -> None:
+        # CloseAction.KEEP: base close() leaves display/DOM untouched; we manage visibility.
+        super().__init__("", (0, 0), close_action=PopupWidget.CloseAction.KEEP)
+        self._on_selected = on_selected
+        self.visible = False
+
+    def compose(self) -> ComposeResult:
+        yield Select([], prompt="Select group\u2026")
+
+    def open(self, options: list[tuple[str, int]], position: tuple[int, int]) -> None:
+        """Populate the dropdown, reposition, and show without triggering layout."""
+        self._saved_focus = self.app.focused
+        self.query_one(Select).set_options(options)
+        self.offset = position
+        self.visible = True
+        self.query_one(Select).focus()
+
+    def close(self) -> None:
+        """Restore focus and hide via visibility to avoid layout reflow on the parent."""
+        if self._saved_focus:
+            self._saved_focus.focus()
+        self.visible = False
+
+    @on(Select.Changed)
+    def _on_select_changed(self, event: Select.Changed) -> None:
+        if isinstance(event.value, NoSelection):
+            return
+        self._on_selected(cast("int", event.value))
+        self.close()
 
 
 class ManageBookmarksDialog(Dialog):
@@ -153,7 +143,6 @@ class ManageBookmarksDialog(Dialog):
             border: inner transparent;
         }
 
-
     }
     """
 
@@ -210,6 +199,9 @@ class ManageBookmarksDialog(Dialog):
         )
 
     def on_mount(self) -> None:
+        # Mount the overlay as a direct child of the ModalScreen (not inside #dialog_box)
+        # so that overlay: screen positions it relative to the actual screen origin.
+        self.mount(_MoveToGroupOverlay(on_selected=self._on_group_selected))
         tree: Tree[_NodeTag] = self.query_one(Tree)
         tree.show_root = False
         self._rebuild_tree(select_tag=None)
@@ -308,9 +300,8 @@ class ManageBookmarksDialog(Dialog):
         self.query_one("#btn_remove", Button).disabled = not something_selected
         self.query_one("#btn_move_up", Button).disabled = not self._can_move_up(tag)
         self.query_one("#btn_move_down", Button).disabled = not self._can_move_down(tag)
-        self.query_one("#btn_move_to_group", Button).disabled = not (
-            tag is not None and tag[0] == "entry" and len(self._working.groups) >= 2  # noqa: PLR2004
-        )
+        can_move_to = tag is not None and tag[0] == "entry" and len(self._working.groups) >= 2  # noqa: PLR2004
+        self.query_one("#btn_move_to_group", Button).disabled = not can_move_to
 
     def _can_move_up(self, tag: _NodeTag | None) -> bool:
         if tag is None:
@@ -527,25 +518,18 @@ class ManageBookmarksDialog(Dialog):
         if tag is None or tag[0] != "entry":
             return
         gi = tag[1]
-        candidate_names = [g.name for idx, g in enumerate(self._working.groups) if idx != gi]
-        candidate_indices = [idx for idx in range(len(self._working.groups)) if idx != gi]
-        self.app.push_screen(
-            MoveToGroupDialog(group_names=candidate_names),
-            callback=lambda result: self._on_move_to_group_result(result, tag, candidate_indices),
-        )
+        options = [(g.name, idx) for idx, g in enumerate(self._working.groups) if idx != gi]
+        btn = self.query_one("#btn_move_to_group", Button)
+        pos = (btn.region.x, btn.region.y + btn.region.height)
+        self.query_one(_MoveToGroupOverlay).open(options, pos)
 
-    def _on_move_to_group_result(
-        self,
-        result: int | None,
-        tag: _NodeTag,
-        candidate_indices: list[int],
-    ) -> None:
-        if result is None:
+    def _on_group_selected(self, target_gi: int) -> None:
+        tag = self._current_tag
+        if tag is None or tag[0] != "entry":
             return
         entry_tag = cast("_EntryTag", tag)
         gi, ei = entry_tag[1], entry_tag[2]
         entry = self._working.groups[gi].bookmarks.pop(ei)
-        target_gi = candidate_indices[result]
         self._working.groups[target_gi].bookmarks.append(entry)
         new_tag: _NodeTag = (
             "entry",
@@ -555,3 +539,4 @@ class ManageBookmarksDialog(Dialog):
         self._rebuild_tree(select_tag=new_tag)
         self._sync_form_to_selection(new_tag)
         self._update_button_states(new_tag)
+        self.query_one(Tree).focus()

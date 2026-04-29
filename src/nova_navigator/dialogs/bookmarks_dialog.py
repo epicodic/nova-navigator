@@ -5,10 +5,10 @@ from textual.widgets import Tree
 
 from ..config import conf_
 from ..icons import ICONS
-from ..widgets.overlay_widget import OverlayWidget
+from ..widgets.popup_widget import PopupWidget
 
 
-class BookmarksDialog(OverlayWidget, can_focus=True):
+class BookmarksDialog(PopupWidget, can_focus=True):
     """Bookmarks dialog overlay widget."""
 
     DEFAULT_CSS = """
@@ -26,7 +26,7 @@ class BookmarksDialog(OverlayWidget, can_focus=True):
     _tree_widget: Tree[str]
 
     def __init__(self, position: tuple[int, int]) -> None:
-        super().__init__("Bookmarks", position, close_action=OverlayWidget.CloseAction.REMOVE)
+        super().__init__("Bookmarks", position, close_action=PopupWidget.CloseAction.REMOVE)
         self._tree_widget = Tree("Bookmarks")
         self._tree_widget.show_root = False
 

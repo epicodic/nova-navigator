@@ -6,11 +6,15 @@ from textual.binding import Binding, BindingType
 from textual.widget import Widget
 
 
-class OverlayWidget(Widget):
-    """Custom widget for the overlay."""
+class PopupWidget(Widget):
+    """Base class for popup panels that float over the screen.
+
+    Subclass this and implement `compose()` to add content.
+    The widget uses `overlay: screen` to position itself in front of all other content.
+    """
 
     DEFAULT_CSS = """
-    OverlayWidget {
+    PopupWidget {
         overlay: screen;
         position: absolute;
         offset: 0 0;
@@ -23,18 +27,23 @@ class OverlayWidget(Widget):
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "close_popup", "Close Popup", show=False),
+        Binding("escape", "close_popup", "Close Popup", show=False),
     ]
 
     class CloseAction(Enum):
-        NONE = auto()
-        HIDE = auto()
-        REMOVE = auto()
+        """Controls what happens to the widget when `close()` is called.
+
+        In all cases focus is restored to the previously focused widget first.
+        """
+
+        KEEP = auto()  # Leave widget visible and in the DOM.
+        HIDE = auto()  # Set display=False; widget stays in the DOM.
+        REMOVE = auto()  # Remove the widget from the DOM entirely.
 
     _close_action: CloseAction
     _close_on_escape: bool
     _close_on_blur: bool
-    _saved_focus: Widget | None
+    _saved_focus: Widget | None  # Widget to restore focus to on close.
 
     def __init__(
         self,
@@ -54,26 +63,19 @@ class OverlayWidget(Widget):
         self._saved_focus = None
 
     def _on_mount(self, event: events.Mount) -> None:
+        # Capture focus at mount so close() can restore it after first open.
         self._saved_focus = self.app.focused
 
-    def _on_focus(self, event: events.Focus) -> None:
-        # self.log("HERE", self.app.screen.focus_chain)
-        # self._saved_focus = self.app.screen.focus_chain[0]
-        return super()._on_focus(event)
-
-    @property
-    def parent_widget(self) -> Widget:
-        assert isinstance(self.parent, Widget)
-        return self.parent
-
     def show(self) -> None:
+        # Refresh saved focus each time the popup is shown, not just on first mount.
+        self._saved_focus = self.app.focused
         self.display = True
 
     def hide(self) -> None:
         self.display = False
 
     def close(self) -> None:
-        print("CLOSE", self.app.screen.focus_chain)
+        """Restore focus and apply the configured close action."""
         if self._saved_focus:
             self._saved_focus.focus()
 
@@ -92,8 +94,11 @@ class OverlayWidget(Widget):
 
     @on(events.DescendantBlur)
     def _on_descendant_blur(self, event: events.Blur) -> None:
+        # Also fires when a child widget loses focus, e.g. an input inside the popup.
         self._check_action_on_blur()
 
     def _check_action_on_blur(self) -> None:
+        # Only close if neither this widget nor any of its children has focus.
+        # This keeps the popup open while the user interacts with child widgets.
         if self._close_on_blur and not self.has_focus and not self.has_focus_within:
             self.close()
