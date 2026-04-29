@@ -1,7 +1,8 @@
 from textual.app import ComposeResult
+from textual.containers import Vertical
 from textual.events import Focus
 from textual.message import Message
-from textual.widgets import Tree
+from textual.widgets import Button, Tree
 
 from ..config import conf_
 from ..icons import ICONS
@@ -16,6 +17,19 @@ class BookmarksDialog(PopupWidget, can_focus=True):
             width: 40;
             height: 20;
         }
+
+        BookmarksDialog #btn_edit {
+            width: 100%;
+            height: 1;
+            border: none;
+            background: $panel-lighten-1;
+            color: $text-muted;
+
+            &:hover {
+                background: $accent;
+                color: $text;
+            }
+        }
     """
 
     class BookmarkSelected(Message):
@@ -23,28 +37,47 @@ class BookmarksDialog(PopupWidget, can_focus=True):
             super().__init__()
             self.bookmark_path = bookmark_path
 
-    _tree_widget: Tree[str]
-
     def __init__(self, position: tuple[int, int]) -> None:
         super().__init__("Bookmarks", position, close_action=PopupWidget.CloseAction.REMOVE)
-        self._tree_widget = Tree("Bookmarks")
-        self._tree_widget.show_root = False
-
-        for group in conf_.bookmarks.groups:
-            group_node = self._tree_widget.root.add(ICONS.get_icon(group.icon) + " " + group.name, expand=True)
-            for bookmark in group.bookmarks:
-                group_node.add_leaf(ICONS.get_icon(name=bookmark.icon) + " " + bookmark.name, bookmark.path)
 
     def compose(self) -> ComposeResult:
-        yield self._tree_widget
+        tree: Tree[str] = Tree("Bookmarks", id="bookmark_tree")
+        tree.show_root = False
+        yield Vertical(
+            tree,
+            Button("Edit bookmarks…", id="btn_edit", flat=True),
+        )
+
+    def on_mount(self) -> None:
+        self._rebuild_tree()
+        self.query_one(Tree).focus()
 
     def on_focus(self, event: Focus) -> None:
-        self._tree_widget.focus()
+        self.query_one(Tree).focus()
+
+    def _rebuild_tree(self) -> None:
+        tree: Tree[str] = self.query_one(Tree)
+        tree.clear()
+        for group in conf_.bookmarks.groups:
+            group_node = tree.root.add(ICONS.get_icon(group.icon) + " " + group.name, expand=True)
+            for bookmark in group.bookmarks:
+                group_node.add_leaf(ICONS.get_icon(name=bookmark.icon) + " " + bookmark.name, bookmark.path)
 
     def on_tree_node_selected(self, event: Tree.NodeSelected[str]) -> None:
         bookmark_path = event.node.data
         if bookmark_path is None:
             return
-
         self.post_message(self.BookmarkSelected(bookmark_path))
         self.close()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id != "btn_edit":
+            return
+        from nova_navigator.dialogs.manage_bookmarks_dialog import ManageBookmarksDialog  # noqa: PLC0415
+
+        async def _after_edit(result: str) -> None:
+            if result == "OK":
+                self._rebuild_tree()
+                self.query_one(Tree).focus()
+
+        self.app.push_screen(ManageBookmarksDialog(conf_.bookmarks), callback=_after_edit)

@@ -92,13 +92,10 @@ class ModelConfig(ConfigBase):
         """Write the current field values back to the config file."""
         config_dir: Path = _APP_CONFIG_DIR
         file_path = config_dir / f"{self.CONFIG_NAME}.toml"
-        doc: TOMLDocument | None = getattr(self, "_toml_doc", None)
-        if doc is not None:
-            update_toml_doc(doc, self)  # type: ignore
-            file_path.write_text(tomlkit.dumps(doc))
-        else:
-            new_doc = to_toml(self)  # type: ignore
-            file_path.write_text(tomlkit.dumps(new_doc))
+        # Always use to_toml for a full serialisation — update_toml_doc skips
+        # list[ConfigModel] fields (e.g. groups), so it cannot be used here.
+        new_doc = to_toml(self)  # type: ignore
+        file_path.write_text(tomlkit.dumps(new_doc))
 
 
 class ListConfig(ConfigBase):

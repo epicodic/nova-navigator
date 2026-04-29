@@ -56,10 +56,12 @@ class _MoveToGroupOverlay(PopupWidget, can_focus=True):
     def open(self, options: list[tuple[str, int]], position: tuple[int, int]) -> None:
         """Populate the dropdown, reposition, and show without triggering layout."""
         self._saved_focus = self.app.focused
-        self.query_one(Select).set_options(options)
+        select = self.query_one(Select)
+        select.set_options(options)
         self.offset = position
         self.visible = True
-        self.query_one(Select).focus()
+        select.focus()
+        select.expanded = True
 
     def close(self) -> None:
         """Restore focus and hide via visibility to avoid layout reflow on the parent."""
