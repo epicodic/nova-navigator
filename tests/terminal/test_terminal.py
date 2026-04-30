@@ -655,7 +655,7 @@ async def test_feed_stdout_handles_type_error_from_pyte_gracefully(
     async with app.run_test() as pilot:
         await pilot.pause()
 
-        def _raise_type_error(chars: str) -> None:
+        def _raise_type_error(_chars: str) -> None:
             raise TypeError("bad feed")
 
         monkeypatch.setattr(terminal._stream, "feed", _raise_type_error)
@@ -761,7 +761,7 @@ async def test_recv_disconnect_calls_respawn_when_keep_alive_true() -> None:
             nonlocal respawn_called
             respawn_called = True
 
-        terminal.respawn = fake_respawn  # type: ignore[method-assign]
+        terminal.respawn = fake_respawn  # type: ignore
         recv_q = await _start_recv_only(terminal)
         try:
             await recv_q.put(["disconnect"])
