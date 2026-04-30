@@ -14,6 +14,7 @@ from textual.widgets import Button, Input, Label, ListItem, ListView, Tree
 
 from nova_navigator.config.bookmarks import Bookmark, BookmarkConfig, Group
 from nova_navigator.decision import Decision
+from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
 from nova_navigator.dialogs.dialog import Dialog
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.icons import ICONS
@@ -230,8 +231,16 @@ class EditBookmarksDialog(Dialog):
         self.mount(_MoveToGroupOverlay(on_selected=self._on_group_selected))
         tree: Tree[_NodeTag] = self.query_one(Tree)
         tree.show_root = False
-        self._rebuild_tree(select_tag=self._prefill_tag)
-        if self._prefill_tag is None:
+        select_tag = self._prefill_tag
+        if select_tag is None:
+            gi = next(
+                (i for i, g in enumerate(self._working.groups) if g.name == DEFAULT_BOOKMARKS_GROUP),
+                None,
+            )
+            if gi is not None:
+                select_tag = ("group", gi)
+        self._rebuild_tree(select_tag=select_tag)
+        if select_tag is None:
             self._sync_form_to_selection(None)
             tree.unselect()  # reset cursor to -1: show_root change clamps cursor to 0 via stale cache
         tree.focus()
@@ -264,6 +273,10 @@ class EditBookmarksDialog(Dialog):
         # every new node has _line=0 by default.  Accessing _tree_lines forces
         # _build() to run, assigning correct _line values before select_node uses them.
         tree._tree_lines  # noqa: B018, RUF100, SLF001
+        # validate_cursor_line clamps -1 to 0, so the cursor may already sit at line 0.
+        # watch_cursor_line then sees previous==new and skips NodeHighlighted for the first
+        # node.  set_reactive bypasses validation, giving a true -1 so the watcher fires.
+        tree.set_reactive(Tree.cursor_line, -1)  # ty: ignore[invalid-argument-type]
         for node in tree.root.children:
             if node.data == tag:
                 tree.select_node(node)
@@ -327,8 +340,11 @@ class EditBookmarksDialog(Dialog):
         has_groups = len(self._working.groups) > 0
         something_selected = tag is not None
 
+        is_protected = (
+            tag is not None and tag[0] == "group" and self._working.groups[tag[1]].name == DEFAULT_BOOKMARKS_GROUP
+        )
         self.query_one("#btn_add_entry", Button).disabled = not has_groups
-        self.query_one("#btn_remove", Button).disabled = not something_selected
+        self.query_one("#btn_remove", Button).disabled = not something_selected or is_protected
         self.query_one("#btn_move_up", Button).disabled = not self._can_move_up(tag)
         self.query_one("#btn_move_down", Button).disabled = not self._can_move_down(tag)
         can_move_to = tag is not None and tag[0] == "entry" and len(self._working.groups) >= 2  # noqa: PLR2004

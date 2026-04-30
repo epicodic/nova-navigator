@@ -9,6 +9,8 @@ from textual.containers import Horizontal
 from textual.widgets import Button, Input, Tree
 
 from nova_navigator.config.bookmarks import Bookmark, BookmarkConfig, Group
+from nova_navigator.dialogs.bookmarks_dialog import BookmarksDialog
+from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
 from nova_navigator.dialogs.edit_bookmarks_dialog import EditBookmarksDialog
 
 # ---------------------------------------------------------------------------
@@ -408,3 +410,131 @@ async def test_prefill_creates_new_group_if_missing() -> None:
 
         assert app.screen.query_one("#input_name", Input).value == "Server"
         assert app.screen.query_one("#input_path", Input).value == "/mnt/server"
+
+
+# ---------------------------------------------------------------------------
+# Default-group auto-select tests (EditBookmarksDialog)
+# ---------------------------------------------------------------------------
+
+
+def _make_bookmarks_config_with_default_group() -> BookmarkConfig:
+    """Config that has a non-default group first, then the protected Bookmarks group."""
+    return BookmarkConfig(
+        groups=[
+            Group(name="Work", icon=None, bookmarks=[]),
+            Group(name=DEFAULT_BOOKMARKS_GROUP, icon=None, bookmarks=[]),
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_default_selection_is_bookmarks_group() -> None:
+    """EditBookmarksDialog selects the Bookmarks group by default when no prefill given."""
+    cfg = _make_bookmarks_config_with_default_group()
+    dialog, _App = _make_dialog_app(cfg)
+    app = _App()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        assert dialog._current_tag == ("group", 1)
+        assert app.screen.query_one("#input_name", Input).value == DEFAULT_BOOKMARKS_GROUP
+
+
+@pytest.mark.asyncio
+async def test_default_selection_skipped_when_bookmarks_group_absent() -> None:
+    """When no group named Bookmarks exists, nothing is auto-selected."""
+    cfg = BookmarkConfig(groups=[Group(name="Work", icon=None, bookmarks=[])])
+    dialog, _App = _make_dialog_app(cfg)
+    app = _App()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        assert dialog._current_tag is None
+
+
+@pytest.mark.asyncio
+async def test_remove_disabled_for_bookmarks_group() -> None:
+    """Remove button is disabled when the protected Bookmarks group is selected."""
+    cfg = _make_bookmarks_config_with_default_group()
+    dialog, _App = _make_dialog_app(cfg)
+    app = _App()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        assert dialog._current_tag == ("group", 1)
+        assert app.screen.query_one("#btn_remove", Button).disabled
+
+
+@pytest.mark.asyncio
+async def test_remove_enabled_for_non_protected_group() -> None:
+    """Remove button is enabled for any group that is not the protected Bookmarks group."""
+    cfg = _make_bookmarks_config_with_default_group()
+    dialog, _App = _make_dialog_app(cfg)
+    app = _App()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        tree = app.screen.query_one(Tree)
+        tree.focus()
+        await pilot.press("up")  # move to Work group (index 0)
+        await pilot.pause()
+
+        assert dialog._current_tag == ("group", 0)
+        assert not app.screen.query_one("#btn_remove", Button).disabled
+
+
+# ---------------------------------------------------------------------------
+# BookmarksDialog auto-select tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bookmarks_dialog_auto_selects_bookmarks_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BookmarksDialog highlights the Bookmarks group by default."""
+    from nova_navigator.config import conf_
+
+    cfg = BookmarkConfig(
+        groups=[
+            Group(name="Computer", icon=None, bookmarks=[]),
+            Group(name=DEFAULT_BOOKMARKS_GROUP, icon=None, bookmarks=[]),
+        ]
+    )
+    monkeypatch.setattr(conf_, "bookmarks", cfg)
+
+    class _App(App[None]):
+        def compose(self) -> ComposeResult:
+            return iter([])
+
+        async def on_mount(self) -> None:
+            await self.mount(BookmarksDialog(position=(0, 0)))
+
+    app = _App()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        tree = app.query_one(Tree)
+        assert tree.cursor_node is not None
+        assert DEFAULT_BOOKMARKS_GROUP in str(tree.cursor_node.label)
+
+
+@pytest.mark.asyncio
+async def test_bookmarks_dialog_no_auto_select_when_group_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BookmarksDialog does not crash when no Bookmarks group exists."""
+    from nova_navigator.config import conf_
+
+    cfg = BookmarkConfig(groups=[Group(name="Work", icon=None, bookmarks=[])])
+    monkeypatch.setattr(conf_, "bookmarks", cfg)
+
+    class _App(App[None]):
+        def compose(self) -> ComposeResult:
+            return iter([])
+
+        async def on_mount(self) -> None:
+            await self.mount(BookmarksDialog(position=(0, 0)))
+
+    app = _App()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        # cursor may be anywhere (or -1); just confirm no crash
+        tree = app.query_one(Tree)
+        assert tree is not None

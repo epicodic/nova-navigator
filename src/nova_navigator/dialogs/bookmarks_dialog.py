@@ -7,6 +7,7 @@ from textual.widgets import Button, Tree
 from nova_navigator.dialogs.edit_bookmarks_dialog import EditBookmarksDialog
 
 from ..config import conf_
+from ..dialogs.constants import DEFAULT_BOOKMARKS_GROUP
 from ..icons import ICONS
 from ..widgets.popup_widget import PopupWidget
 
@@ -52,6 +53,7 @@ class BookmarksDialog(PopupWidget, can_focus=True):
 
     def on_mount(self) -> None:
         self._rebuild_tree()
+        self._select_default_group()
         self.query_one(Tree).focus()
 
     def on_focus(self, event: Focus) -> None:
@@ -64,6 +66,19 @@ class BookmarksDialog(PopupWidget, can_focus=True):
             group_node = tree.root.add(ICONS.get_icon(group.icon) + " " + group.name, expand=True)
             for bookmark in group.bookmarks:
                 group_node.add_leaf(ICONS.get_icon(name=bookmark.icon) + " " + bookmark.name, bookmark.path)
+
+    def _select_default_group(self) -> None:
+        """Move the tree cursor to the default Bookmarks group, if present."""
+        tree: Tree[str] = self.query_one(Tree)
+        # Force _build() so all nodes have correct _line values.
+        tree._tree_lines  # noqa: B018, RUF100, SLF001
+        # Bypass validate_cursor_line (which clamps -1 to 0) so that
+        # watch_cursor_line fires even when the target is line 0.
+        tree.set_reactive(Tree.cursor_line, -1)  # ty: ignore[invalid-argument-type]
+        for node, group in zip(tree.root.children, conf_.bookmarks.groups, strict=False):
+            if group.name == DEFAULT_BOOKMARKS_GROUP:
+                tree.select_node(node)
+                return
 
     def on_tree_node_selected(self, event: Tree.NodeSelected[str]) -> None:
         bookmark_path = event.node.data

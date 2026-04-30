@@ -20,6 +20,7 @@ from nova_navigator import debug_analytics
 from nova_navigator.config import conf_
 from nova_navigator.decision import Decision
 from nova_navigator.dialogs import BookmarksDialog, EditBookmarksDialog, JobsDialog
+from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
 from nova_navigator.dialogs.decision_dialog import DecisionDialog
 from nova_navigator.editor import Editor
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
@@ -535,7 +536,7 @@ class MainScreen(Screen[None]):
             return
         dialog = EditBookmarksDialog(
             conf_.bookmarks,
-            prefill=("Bookmarks", path.name, str(path.path)),
+            prefill=(DEFAULT_BOOKMARKS_GROUP, path.name, str(path.path)),
         )
         await dialog.run()
 
