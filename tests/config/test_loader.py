@@ -25,6 +25,7 @@ class NestedSettings(BaseModel):
     title: str = "default"
     tags: list[Tag] = dataclasses.field(default_factory=list)
 
+
 # ── Helpers — import loader under test after patching config dir ───────────────
 # We patch _APP_CONFIG_DIR via monkeypatch on the loader module.
 

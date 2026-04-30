@@ -19,6 +19,7 @@ from nova_navigator.config.model import (
     list_from_toml,
     list_to_toml,
     to_toml,
+    update_toml_doc,
 )
 
 _APP_CONFIG_DIR: Path = Path.home() / ".config" / "nova_navigator"
@@ -90,10 +91,12 @@ class ModelConfig(ConfigBase):
         """Write the current field values back to the config file."""
         config_dir: Path = _APP_CONFIG_DIR
         file_path = config_dir / f"{self.CONFIG_NAME}.toml"
-        # Always use to_toml for a full serialisation — update_toml_doc skips
-        # list[ConfigModel] fields (e.g. groups), so it cannot be used here.
-        new_doc = to_toml(self)  # type: ignore
-        file_path.write_text(tomlkit.dumps(new_doc))
+        doc = getattr(self, "_toml_doc", None)
+        if doc is None:
+            doc = to_toml(self)  # type: ignore
+        else:
+            update_toml_doc(doc, self)  # type: ignore
+        file_path.write_text(tomlkit.dumps(doc))
 
 
 class ListConfig(ConfigBase):

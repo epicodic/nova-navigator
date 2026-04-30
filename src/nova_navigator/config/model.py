@@ -294,9 +294,6 @@ def _update_toml_container(container: Any, obj: BaseModel) -> None:
         _, inner_type = _unwrap_optional(field_type)
         value = getattr(obj, f.name)
 
-        if _is_list_of_config_model(inner_type):
-            continue
-
         if _is_list_of_config_model(inner_type) and isinstance(value, list):
             aot = tomlkit.aot()
             for item in value:
