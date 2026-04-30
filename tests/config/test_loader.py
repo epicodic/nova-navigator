@@ -1,11 +1,29 @@
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from nova_navigator.config.model import BaseModel, key_field
+
+# ── Nested-model helper ───────────────────────────────────────────────────────
+
+
+@dataclass
+class Tag(BaseModel):
+    """A tag."""
+
+    label: str = ""
+
+
+@dataclass
+class NestedSettings(BaseModel):
+    """Settings with a nested list of models."""
+
+    title: str = "default"
+    tags: list[Tag] = dataclasses.field(default_factory=list)
 
 # ── Helpers — import loader under test after patching config dir ───────────────
 # We patch _APP_CONFIG_DIR via monkeypatch on the loader module.
@@ -81,7 +99,8 @@ def test_model_config_save_updates_file(tmp_path: Path, monkeypatch: pytest.Monk
     assert "updated" in content
 
 
-def test_model_config_save_preserves_comments(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_model_config_save_updates_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """save() rewrites the file from scratch; updated values must be present."""
     from nova_navigator.config import loader
 
     monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
@@ -99,11 +118,11 @@ def test_model_config_save_preserves_comments(tmp_path: Path, monkeypatch: pytes
     instance.save()
 
     content = (tmp_path / "test_simple4.toml").read_text()
-    assert "# user comment" in content
     assert "new" in content
 
 
-def test_model_config_save_preserves_inline_comments(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_model_config_save_updates_count(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """save() rewrites the file; the updated field value must be present."""
     from nova_navigator.config import loader
 
     monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
@@ -121,7 +140,6 @@ def test_model_config_save_preserves_inline_comments(tmp_path: Path, monkeypatch
     instance.save()
 
     content = (tmp_path / "test_inline_comment.toml").read_text()
-    assert "inline comment" in content
     assert "99" in content
 
 
@@ -144,12 +162,10 @@ def test_model_config_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     instance.count = 42
     instance.save()
 
-    # reload from disk and verify persisted values and comment
+    # reload from disk and verify persisted values
     instance2 = TConfig.load()
     assert instance2.name == "changed"
     assert instance2.count == 42
-    content = (tmp_path / "test_round_trip.toml").read_text()
-    assert "# preserved" in content
 
 
 def test_model_config_save_without_prior_load_creates_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -184,6 +200,58 @@ def test_model_config_creates_parent_directories(tmp_path: Path, monkeypatch: py
 
     TConfig.load()
     assert (nested_dir / "test_nested.toml").exists()
+
+
+def test_model_config_save_preserves_user_comments(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """save() must preserve comments the user wrote in the config file.
+
+    This test documents the desired behaviour.  It currently FAILS because
+    save() rewrites the document from scratch (to_toml), discarding comments.
+    """
+    from nova_navigator.config import loader
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    from nova_navigator.config.loader import ModelConfig
+
+    class TConfig(SimpleSettings, ModelConfig):
+        CONFIG_NAME = "test_comments_preserved"
+
+    config_file = tmp_path / "test_comments_preserved.toml"
+    config_file.write_text("# user comment\nname = 'old'\ncount = 0\n")
+
+    instance = TConfig.load()
+    instance.name = "new"
+    instance.save()
+
+    content = (tmp_path / "test_comments_preserved.toml").read_text()
+    assert "# user comment" in content, "user comments must survive save()"
+    assert "new" in content
+
+
+def test_model_config_save_serialises_list_of_models(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """save() must persist list[ConfigModel] fields.
+
+    This test documents the bug present when save() used update_toml_doc,
+    which silently skipped list[ConfigModel] fields (e.g. bookmark groups).
+    """
+    from nova_navigator.config import loader
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    from nova_navigator.config.loader import ModelConfig
+
+    class TConfig(NestedSettings, ModelConfig):
+        CONFIG_NAME = "test_nested_list"
+
+    instance = TConfig.load()
+    instance.tags = [Tag(label="alpha"), Tag(label="beta")]
+    instance.save()
+
+    instance2 = TConfig.load()
+    assert len(instance2.tags) == 2  # noqa: PLR2004
+    assert instance2.tags[0].label == "alpha"
+    assert instance2.tags[1].label == "beta"
 
 
 # ── ListConfig ────────────────────────────────────────────────────────────────
