@@ -224,8 +224,8 @@ class JobsDialog(PopupWidget, can_focus=True):
     """Floating overlay that shows running and finished jobs."""
 
     _DIALOG_WIDTH: int = 62
-    _DIALOG_MARGIN_TOP: int = 2
-    _DIALOG_MARGIN_RIGHT: int = 1
+    _DIALOG_MARGIN_TOP: int = 1
+    _DIALOG_MARGIN_RIGHT: int = 0
 
     DEFAULT_CSS = """
     JobsDialog {
@@ -258,6 +258,7 @@ class JobsDialog(PopupWidget, can_focus=True):
             position,
             close_on_escape=True,
             close_on_blur=False,
+            close_button=True,
             close_action=PopupWidget.CloseAction.HIDE,
         )
         self._registry = registry

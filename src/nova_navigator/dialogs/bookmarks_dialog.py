@@ -46,7 +46,7 @@ class BookmarksDialog(PopupWidget, can_focus=True):
             self.bookmark_path = bookmark_path
 
     def __init__(self, position: tuple[int, int]) -> None:
-        super().__init__("Bookmarks", position, close_action=PopupWidget.CloseAction.REMOVE)
+        super().__init__("Bookmarks", position, close_button=True, close_action=PopupWidget.CloseAction.REMOVE)
 
     def compose(self) -> ComposeResult:
         tree: Tree[str] = Tree("Bookmarks", id="bookmark_tree")
