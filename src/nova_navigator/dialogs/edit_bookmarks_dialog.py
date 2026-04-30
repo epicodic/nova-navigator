@@ -85,11 +85,11 @@ class _MoveToGroupOverlay(PopupWidget, can_focus=True):
         self.close()
 
 
-class ManageBookmarksDialog(Dialog):
+class EditBookmarksDialog(Dialog):
     """Full-screen modal for editing bookmark groups and entries."""
 
     DEFAULT_CSS = """
-    ManageBookmarksDialog {
+    EditBookmarksDialog {
 
         #dialog_box {
             width: 80%;

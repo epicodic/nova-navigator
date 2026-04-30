@@ -12,7 +12,6 @@ from types import SimpleNamespace
 from typing import Any, ClassVar, Self
 
 import tomlkit
-from tomlkit import TOMLDocument
 
 from nova_navigator.config.model import (
     BaseModel,
@@ -20,7 +19,6 @@ from nova_navigator.config.model import (
     list_from_toml,
     list_to_toml,
     to_toml,
-    update_toml_doc,
 )
 
 _APP_CONFIG_DIR: Path = Path.home() / ".config" / "nova_navigator"

@@ -9,10 +9,10 @@ from textual.containers import Horizontal
 from textual.widgets import Button, Input, Tree
 
 from nova_navigator.config.bookmarks import Bookmark, BookmarkConfig, Group
-from nova_navigator.dialogs.manage_bookmarks_dialog import ManageBookmarksDialog
+from nova_navigator.dialogs.edit_bookmarks_dialog import EditBookmarksDialog
 
 # ---------------------------------------------------------------------------
-# ManageBookmarksDialog tests
+# EditBookmarksDialog tests
 # ---------------------------------------------------------------------------
 
 
@@ -35,7 +35,7 @@ def _fixture_config() -> BookmarkConfig:
 @pytest.mark.asyncio
 async def test_tree_shows_groups_and_entries() -> None:
     cfg = _fixture_config()
-    dialog = ManageBookmarksDialog(cfg)
+    dialog = EditBookmarksDialog(cfg)
 
     class _App(App[None]):
         def compose(self) -> ComposeResult:
@@ -58,7 +58,7 @@ async def test_tree_shows_groups_and_entries() -> None:
 @pytest.mark.asyncio
 async def test_form_path_hidden_for_group_selection() -> None:
     cfg = _fixture_config()
-    dialog = ManageBookmarksDialog(cfg)
+    dialog = EditBookmarksDialog(cfg)
 
     class _App(App[None]):
         def compose(self) -> ComposeResult:
@@ -82,7 +82,7 @@ async def test_form_path_hidden_for_group_selection() -> None:
 @pytest.mark.asyncio
 async def test_form_path_visible_for_entry_selection() -> None:
     cfg = _fixture_config()
-    dialog = ManageBookmarksDialog(cfg)
+    dialog = EditBookmarksDialog(cfg)
 
     class _App(App[None]):
         def compose(self) -> ComposeResult:
@@ -109,8 +109,8 @@ async def test_form_path_visible_for_entry_selection() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_dialog_app(cfg: BookmarkConfig) -> tuple[ManageBookmarksDialog, type[App[None]]]:
-    dialog = ManageBookmarksDialog(cfg)
+def _make_dialog_app(cfg: BookmarkConfig) -> tuple[EditBookmarksDialog, type[App[None]]]:
+    dialog = EditBookmarksDialog(cfg)
 
     class _App(App[None]):
         def compose(self) -> ComposeResult:
@@ -356,7 +356,7 @@ async def test_tree_updates_after_name_input_loses_focus() -> None:
 async def test_prefill_adds_entry_to_existing_group() -> None:
     """prefill= appends an entry to the named group and pre-fills the form on mount."""
     cfg = _fixture_config()
-    dialog = ManageBookmarksDialog(cfg, prefill=("Computer", "Desktop", "/home/user/Desktop"))
+    dialog = EditBookmarksDialog(cfg, prefill=("Computer", "Desktop", "/home/user/Desktop"))
 
     class _App(App[None]):
         def compose(self) -> ComposeResult:
@@ -384,7 +384,7 @@ async def test_prefill_adds_entry_to_existing_group() -> None:
 async def test_prefill_creates_new_group_if_missing() -> None:
     """prefill= creates the named group when it does not exist."""
     cfg = _fixture_config()
-    dialog = ManageBookmarksDialog(cfg, prefill=("New Group", "Server", "/mnt/server"))
+    dialog = EditBookmarksDialog(cfg, prefill=("New Group", "Server", "/mnt/server"))
 
     class _App(App[None]):
         def compose(self) -> ComposeResult:

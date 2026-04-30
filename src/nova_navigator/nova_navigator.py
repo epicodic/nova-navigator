@@ -19,7 +19,7 @@ from textual.widgets import Input
 from nova_navigator import debug_analytics
 from nova_navigator.config import conf_
 from nova_navigator.decision import Decision
-from nova_navigator.dialogs import BookmarksDialog, JobsDialog, ManageBookmarksDialog
+from nova_navigator.dialogs import BookmarksDialog, EditBookmarksDialog, JobsDialog
 from nova_navigator.dialogs.decision_dialog import DecisionDialog
 from nova_navigator.editor import Editor
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
@@ -391,7 +391,7 @@ class MainScreen(Screen[None]):
             is_path_in_clipboard: bool | None = None
 
             def matches(self, other: AKey) -> bool:
-                if self.is_empty is not None and self.is_empty == other.is_empty:
+                if self.is_empty == other.is_empty:
                     return True
                 if self.is_directory is not None and self.is_directory == other.is_directory:
                     return True
@@ -426,7 +426,7 @@ class MainScreen(Screen[None]):
             (AKey(is_path_in_clipboard=True), "file.paste"),
             (AKey(is_directory=True, is_file=True), "file.delete"),
             (AKey(is_directory=True, is_file=True), "file.rename"),
-            (AKey(is_directory=True, is_file=False), "file.add_to_bookmarks"),
+            (AKey(is_directory=True, is_file=False, is_empty=True), "file.add_to_bookmarks"),
         ]
 
         for key, action_name in actions:
@@ -446,25 +446,27 @@ class MainScreen(Screen[None]):
     async def on_directory_browser_context_menu(self, event: DirectoryBrowser.ContextMenu) -> None:
         items: list[tuple[str, int]]
 
-        if event.path is None:
-            items = [
-                ("file.new", 0),
-                ("view.show_hidden_files", 6),
-            ]
-        else:
-            items = [
-                ("file.open", 2),
-                ("file.open_in_other_panel", 2),
-                ("file.edit", 2),
-                ("file.cut", 3),
-                ("file.copy", 3),
-                ("file.copy_names", 4),
-                ("file.paste", 4),
-                ("file.delete", 5),
-                ("file.rename", 5),
-                ("file.add_to_bookmarks", 6),
-                ("view.show_hidden_files", 7),
-            ]
+        self._update_actions(event.path)
+        # if event.path is None:
+        #     items = [
+        #         ("file.new", 0),
+        #         ("view.show_hidden_files", 6),
+        #     ]
+        # else:
+        items = [
+            ("file.new", 0),
+            ("file.open", 2),
+            ("file.open_in_other_panel", 2),
+            ("file.edit", 2),
+            ("file.cut", 3),
+            ("file.copy", 3),
+            ("file.copy_names", 4),
+            ("file.paste", 4),
+            ("file.delete", 5),
+            ("file.rename", 5),
+            ("file.add_to_bookmarks", 6),
+            ("view.show_hidden_files", 7),
+        ]
 
         menu = Menu()
         last_group = None
@@ -523,7 +525,7 @@ class MainScreen(Screen[None]):
 
     @work
     async def _action_edit_bookmarks(self) -> None:
-        dialog = ManageBookmarksDialog(conf_.bookmarks)
+        dialog = EditBookmarksDialog(conf_.bookmarks)
         await dialog.run()
 
     @work
@@ -531,7 +533,7 @@ class MainScreen(Screen[None]):
         path = self.active_panel().path_item_under_cursor
         if path is None:
             return
-        dialog = ManageBookmarksDialog(
+        dialog = EditBookmarksDialog(
             conf_.bookmarks,
             prefill=("Bookmarks", path.name, str(path.path)),
         )

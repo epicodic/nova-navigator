@@ -4,6 +4,8 @@ from textual.events import Focus
 from textual.message import Message
 from textual.widgets import Button, Tree
 
+from nova_navigator.dialogs.edit_bookmarks_dialog import EditBookmarksDialog
+
 from ..config import conf_
 from ..icons import ICONS
 from ..widgets.popup_widget import PopupWidget
@@ -73,11 +75,10 @@ class BookmarksDialog(PopupWidget, can_focus=True):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id != "btn_edit":
             return
-        from nova_navigator.dialogs.manage_bookmarks_dialog import ManageBookmarksDialog  # noqa: PLC0415
 
         async def _after_edit(result: str) -> None:
             if result == "OK":
                 self._rebuild_tree()
                 self.query_one(Tree).focus()
 
-        self.app.push_screen(ManageBookmarksDialog(conf_.bookmarks), callback=_after_edit)
+        self.app.push_screen(EditBookmarksDialog(conf_.bookmarks), callback=_after_edit)
