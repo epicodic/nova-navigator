@@ -33,7 +33,7 @@ from nova_navigator.scheduler import DecisionRequest, Job
 from nova_navigator.uri import vfspath_from_uri
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
-from nova_navigator.widgets import DirectoryBrowser, Footer
+from nova_navigator.widgets import DirectoryBrowser, Footer, JobStatusIcon
 from nova_navigator.widgets.terminal import Terminal
 from nova_widgets.menu import Action, Menu, MenuBar
 from nova_widgets.menu import constructor as mc
@@ -79,6 +79,7 @@ class MainScreen(Screen[None]):
 
     _bookmark_dialog: BookmarksDialog
     _jobs_dialog: JobsDialog
+    _job_status_icon: JobStatusIcon
 
     def __init__(self) -> None:
         super().__init__()
@@ -172,6 +173,12 @@ class MainScreen(Screen[None]):
         self._menu_bar.add_menu("Settings", name="settings").add(
             mc.action("Edit Bookmarks…", action="edit_bookmarks", name="edit_bookmarks"),
         )
+
+        self._job_status_icon = JobStatusIcon(
+            registry=self.app.job_registry,
+            action="show_processes",
+        )
+        self._menu_bar.add_right_widget(self._job_status_icon)
 
         yield self._menu_bar
 
