@@ -64,6 +64,8 @@ class MainScreen(Screen[None]):
         Binding("ctrl+h", "toggle_hidden", description="Show/Hide Hidden Files", show=False),
         Binding("ctrl+k", "show_processes", "Jobs"),
         Binding("ctrl+d", "start_dummy_operation", "Start Dummy Operation"),
+        Binding("ctrl+g", "go_to_path", "Go to Path", show=False),
+        Binding("ctrl+shift+g", "connect_to_server", "Connect to Server", show=False),
     ]
 
     class _TerminalMode(Enum):
@@ -122,8 +124,6 @@ class MainScreen(Screen[None]):
             mc.action("Rename", name="rename"),
             mc.separator(),
             mc.action("Filter", shortcut="Ctrl+F", action="filter", name="filter"),
-            mc.separator(),
-            mc.action("Add to Bookmarks", action="add_to_bookmarks", name="add_to_bookmarks"),
         )
 
         self._menu_bar.add_menu("Selection", name="selection").add(
@@ -141,6 +141,24 @@ class MainScreen(Screen[None]):
             mc.action("Select By Pattern…", name="select_by_pattern"),
         )
 
+        self._menu_bar.add_menu("Go", name="go").add(
+            mc.action("Go to Path…", shortcut="Ctrl+G", action="go_to_path", name="go_to_path"),
+            mc.separator(),
+            mc.action("Go Back", action="go_back", name="go_back"),
+            mc.action("Go Forward", action="go_forward", name="go_forward"),
+            mc.action("Go Up", action="go_up", name="go_up"),
+            mc.separator(),
+            mc.action(
+                "Connect to Server…", shortcut="Ctrl+Shift+G", action="connect_to_server", name="connect_to_server"
+            ),
+        )
+
+        self._menu_bar.add_menu("Bookmarks", name="bookmarks").add(
+            mc.action("Show Bookmarks", shortcut="Ctrl+B", action="show_bookmarks", name="show_bookmarks"),
+            mc.separator(),
+            mc.action("Add to Bookmarks", action="add_to_bookmarks", name="add_to_bookmarks"),
+            mc.action("Manage Bookmarks", action="edit_bookmarks", name="edit_bookmarks"),
+        )
         self._menu_bar.add_menu("View", name="view").add(
             mc.action("Refresh", name="refresh"),
             mc.separator(),
@@ -165,12 +183,6 @@ class MainScreen(Screen[None]):
                 mc.separator(),
                 mc.action("Hide Identical Files", checkable=True),
             ),
-            mc.separator(),
-            mc.action("Bookmarks", shortcut="Ctrl+B", action="show_bookmarks", name="bookmarks"),
-        )
-
-        self._menu_bar.add_menu("Settings", name="settings").add(
-            mc.action("Edit Bookmarks…", action="edit_bookmarks", name="edit_bookmarks"),
         )
 
         yield self._menu_bar
@@ -427,7 +439,7 @@ class MainScreen(Screen[None]):
             (AKey(is_path_in_clipboard=True), "file.paste"),
             (AKey(is_directory=True, is_file=True), "file.delete"),
             (AKey(is_directory=True, is_file=True), "file.rename"),
-            (AKey(is_directory=True, is_file=False, is_empty=True), "file.add_to_bookmarks"),
+            (AKey(is_directory=True, is_file=False, is_empty=True), "bookmarks.add_to_bookmarks"),
         ]
 
         for key, action_name in actions:
