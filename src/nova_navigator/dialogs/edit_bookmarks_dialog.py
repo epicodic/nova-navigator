@@ -34,6 +34,8 @@ class _MoveToGroupOverlay(PopupWidget, can_focus=True):
     is fired on the parent ModalScreen — preventing the dialog from jumping.
     """
 
+    CLOSE_ACTION = PopupWidget.CloseAction.KEEP
+
     DEFAULT_CSS = """
     _MoveToGroupOverlay {
         width: 30;
@@ -50,7 +52,7 @@ class _MoveToGroupOverlay(PopupWidget, can_focus=True):
 
     def __init__(self, on_selected: Callable[[int], None]) -> None:
         # CloseAction.KEEP: base close() leaves display/DOM untouched; we manage visibility.
-        super().__init__("", (0, 0), close_action=PopupWidget.CloseAction.KEEP)
+        super().__init__("", (0, 0))
         self._on_selected = on_selected
         self._options = []
         self.visible = False

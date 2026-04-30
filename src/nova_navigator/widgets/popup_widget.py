@@ -49,10 +49,10 @@ class PopupWidget(Widget):
         HIDE = auto()  # Set display=False; widget stays in the DOM.
         REMOVE = auto()  # Remove the widget from the DOM entirely.
 
-    _close_action: CloseAction
-    _close_on_escape: bool
-    _close_on_blur: bool
-    _show_close_button: bool
+    CLOSE_ACTION: ClassVar[CloseAction] = CloseAction.HIDE
+    CLOSE_ON_BLUR: ClassVar[bool] = True
+    SHOW_CLOSE_BUTTON: ClassVar[bool] = False
+
     _close_btn_hovered: bool
     _saved_focus: Widget | None  # Widget to restore focus to on close.
 
@@ -60,19 +60,10 @@ class PopupWidget(Widget):
         self,
         title: str,
         position: tuple[int, int],
-        *,
-        close_button: bool = False,
-        close_on_escape: bool = True,
-        close_on_blur: bool = True,
-        close_action: CloseAction = CloseAction.HIDE,
     ) -> None:
         super().__init__()
         self.offset = position
         self.border_title = title
-        self._close_action = close_action
-        self._close_on_escape = close_on_escape
-        self._close_on_blur = close_on_blur
-        self._show_close_button = close_button
         self._close_btn_hovered = False
         self._saved_focus = None
 
@@ -82,7 +73,7 @@ class PopupWidget(Widget):
 
     def render_lines(self, crop: Region) -> list[Strip]:
         strips = super().render_lines(crop)
-        if not self._show_close_button:
+        if not self.SHOW_CLOSE_BUTTON:
             return strips
         # The top border is at outer y=0. Check if it falls within this crop.
         border_y = 0
@@ -123,26 +114,25 @@ class PopupWidget(Widget):
         if self._saved_focus:
             self._saved_focus.focus()
 
-        if self._close_action == self.CloseAction.HIDE:
+        if self.CLOSE_ACTION == self.CloseAction.HIDE:
             self.hide()
-        elif self._close_action == self.CloseAction.REMOVE:
+        elif self.CLOSE_ACTION == self.CloseAction.REMOVE:
             self.remove()
 
     def action_close_popup(self) -> None:
-        if self._close_on_escape:
-            self.close()
+        self.close()
 
     def _is_close_btn(self, x: int, y: int) -> bool:
         w = self.outer_size.width
         return y == 0 and w - 4 <= x <= w - 2
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
-        if self._show_close_button and self._is_close_btn(event.x, event.y):
+        if self.SHOW_CLOSE_BUTTON and self._is_close_btn(event.x, event.y):
             event.stop()
             self.close()
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
-        if self._show_close_button:
+        if self.SHOW_CLOSE_BUTTON:
             hovered = self._is_close_btn(event.x, event.y)
             if hovered != self._close_btn_hovered:
                 self._close_btn_hovered = hovered
@@ -165,5 +155,5 @@ class PopupWidget(Widget):
     def _check_action_on_blur(self) -> None:
         # Only close if neither this widget nor any of its children has focus.
         # This keeps the popup open while the user interacts with child widgets.
-        if self._close_on_blur and not self.has_focus and not self.has_focus_within:
+        if self.CLOSE_ON_BLUR and not self.has_focus and not self.has_focus_within:
             self.close()

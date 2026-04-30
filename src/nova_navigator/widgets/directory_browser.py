@@ -203,6 +203,12 @@ class Column:
 class FilterWidget(PopupWidget, can_focus=True):
     """Widget for finding files in the directory browser."""
 
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "dismiss", "Dismiss", show=False),
+    ]
+    CLOSE_ACTION = PopupWidget.CloseAction.KEEP
+    CLOSE_ON_BLUR = False
+
     DEFAULT_CSS = """
     FilterWidget {
         width: 40;
@@ -227,16 +233,10 @@ class FilterWidget(PopupWidget, can_focus=True):
     }
     """
 
-    BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("escape", "dismiss", "Dismiss", show=False),
-    ]
-
     input: Input
 
     def __init__(self, title: str, position: tuple[int, int], browser: DirectoryBrowser) -> None:
-        super().__init__(
-            title, position, close_on_escape=False, close_on_blur=False, close_action=self.CloseAction.KEEP
-        )
+        super().__init__(title, position)
         self.browser = browser
         self.input = Input(placeholder="Type to filter ...", compact=True)
         self.display = False

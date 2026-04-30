@@ -15,6 +15,9 @@ from ..widgets.popup_widget import PopupWidget
 class BookmarksDialog(PopupWidget, can_focus=True):
     """Bookmarks dialog overlay widget."""
 
+    CLOSE_ACTION = PopupWidget.CloseAction.REMOVE
+    SHOW_CLOSE_BUTTON = True
+
     DEFAULT_CSS = """
         BookmarksDialog {
             width: 40;
@@ -46,7 +49,7 @@ class BookmarksDialog(PopupWidget, can_focus=True):
             self.bookmark_path = bookmark_path
 
     def __init__(self, position: tuple[int, int]) -> None:
-        super().__init__("Bookmarks", position, close_button=True, close_action=PopupWidget.CloseAction.REMOVE)
+        super().__init__("Bookmarks", position)
 
     def compose(self) -> ComposeResult:
         tree: Tree[str] = Tree("Bookmarks", id="bookmark_tree")

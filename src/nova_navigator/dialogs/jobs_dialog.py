@@ -227,6 +227,9 @@ class JobsDialog(PopupWidget, can_focus=True):
     _DIALOG_MARGIN_TOP: int = 1
     _DIALOG_MARGIN_RIGHT: int = 0
 
+    CLOSE_ON_BLUR = False
+    SHOW_CLOSE_BUTTON = True
+
     DEFAULT_CSS = """
     JobsDialog {
         width: 62;
@@ -256,10 +259,6 @@ class JobsDialog(PopupWidget, can_focus=True):
         super().__init__(
             "Jobs",
             position,
-            close_on_escape=True,
-            close_on_blur=False,
-            close_button=True,
-            close_action=PopupWidget.CloseAction.HIDE,
         )
         self._registry = registry
         self._rows = {}
