@@ -19,7 +19,12 @@ class BookmarksDialog(PopupWidget, can_focus=True):
         BookmarksDialog {
             width: 40;
             height: 20;
+
+            Tree {
+                background: transparent;
+            }
         }
+
 
         BookmarksDialog #btn_edit {
             width: 100%;

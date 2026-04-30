@@ -520,7 +520,9 @@ class MainScreen(Screen[None]):
         self.other_panel().set_path(path)
 
     async def _action_show_bookmarks(self) -> None:
-        self._bookmark_dialog = BookmarksDialog(position=(2, 2))
+        panel = self.active_panel()
+        region = panel.region
+        self._bookmark_dialog = BookmarksDialog(position=(region.x + 1, region.y + 1))
         await self.mount(self._bookmark_dialog)
         self._bookmark_dialog.focus()
 
