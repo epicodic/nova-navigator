@@ -103,6 +103,74 @@ def test_model_config_save_preserves_comments(tmp_path: Path, monkeypatch: pytes
     assert "new" in content
 
 
+def test_model_config_save_preserves_inline_comments(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    from nova_navigator.config.loader import ModelConfig
+
+    class TConfig(SimpleSettings, ModelConfig):
+        CONFIG_NAME = "test_inline_comment"
+
+    config_file = tmp_path / "test_inline_comment.toml"
+    config_file.write_text('name = "old"  # inline comment\ncount = 3\n')
+
+    instance = TConfig.load()
+    instance.count = 99
+    instance.save()
+
+    content = (tmp_path / "test_inline_comment.toml").read_text()
+    assert "inline comment" in content
+    assert "99" in content
+
+
+def test_model_config_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    from nova_navigator.config.loader import ModelConfig
+
+    class TConfig(SimpleSettings, ModelConfig):
+        CONFIG_NAME = "test_round_trip"
+
+    config_file = tmp_path / "test_round_trip.toml"
+    config_file.write_text("# preserved\nname = 'original'\ncount = 1\n")
+
+    instance = TConfig.load()
+    assert instance.name == "original"
+    instance.name = "changed"
+    instance.count = 42
+    instance.save()
+
+    # reload from disk and verify persisted values and comment
+    instance2 = TConfig.load()
+    assert instance2.name == "changed"
+    assert instance2.count == 42
+    content = (tmp_path / "test_round_trip.toml").read_text()
+    assert "# preserved" in content
+
+
+def test_model_config_save_without_prior_load_creates_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """save() should work even when _toml_doc is absent (no prior load call)."""
+    from nova_navigator.config import loader
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    from nova_navigator.config.loader import ModelConfig
+
+    class TConfig(SimpleSettings, ModelConfig):
+        CONFIG_NAME = "test_save_no_load"
+
+    instance = TConfig()
+    instance.name = "direct"
+    instance.save()
+
+    content = (tmp_path / "test_save_no_load.toml").read_text()
+    assert "direct" in content
+
+
 def test_model_config_creates_parent_directories(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from nova_navigator.config import loader
 
