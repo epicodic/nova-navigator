@@ -105,12 +105,12 @@ def column_formatter_icon(path: VPath) -> str:
         icon = ico_("executable")
 
     if stat.is_symlink:
-        icon_str = icon + "~"
+        icon_str = icon.glyph + "~"
     else:
-        icon_str = icon + " "
+        icon_str = icon.glyph + " "
 
     if stat.is_symlink and stat.is_broken_symlink:
-        icon_str = ico_("broken link") + "!"
+        icon_str = ico_("broken link").glyph + "!"
     return icon_str
 
 
@@ -245,7 +245,7 @@ class FilterWidget(PopupWidget, can_focus=True):
         yield Horizontal(
             Static("Filter:"),
             self.input,
-            Button(ico_("xmark"), id="close-button", compact=True),
+            Button(ico_("xmark").glyph, id="close-button", compact=True),
         )
 
     def on_focus(self, event: events.Focus) -> None:

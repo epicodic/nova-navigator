@@ -196,7 +196,7 @@ class MainScreen(Screen[None]):
         self._terminal.start()
 
         yield self._terminal
-        self._jobs_dialog = JobsDialog(position=(4, 2), registry=self.app.job_registry)
+        self._jobs_dialog = JobsDialog(position=(0, 0), registry=self.app.job_registry)
         yield self._jobs_dialog
         yield Footer()
 
@@ -224,6 +224,8 @@ class MainScreen(Screen[None]):
 
     def on_resize(self, event: events.Resize) -> None:
         self._resize_terminal()
+        if self._jobs_dialog.display:
+            self._jobs_dialog._update_position()
 
     def _action_quit(self) -> None:
         self.app.exit()

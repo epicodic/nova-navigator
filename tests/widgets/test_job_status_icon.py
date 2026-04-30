@@ -4,8 +4,10 @@ import pytest
 from textual.app import App, ComposeResult
 
 from nova_navigator.dialogs.job_registry import JobRegistry
+from nova_navigator.icons import ico_
 from nova_navigator.scheduler import Job
 from nova_navigator.widgets.job_status_icon import JobStatusIcon, _State
+from nova_widgets.icon import Icon
 
 
 class _TestApp(App[None]):
@@ -105,5 +107,6 @@ async def test_job_status_icon_idle_glyph_restored_after_failed_cleared() -> Non
         registry.remove_job(failed_job)
         icon._update()
         assert icon._current_state == _State.IDLE
-        # The displayed glyph must be the idle icon markup, NOT the failed icon
-        assert icon._animated_icon.renderable == icon._idle_icon.markup
+        # The displayed glyph must be the idle icon (spinner_full), not a coloured failed frame
+        idle_icon = ico_("job-spinner_full", default=Icon.of("●"))
+        assert icon._animated_icon.renderable == idle_icon.markup

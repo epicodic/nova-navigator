@@ -59,7 +59,7 @@ class JobStatusIcon(Widget):
 
     def compose(self) -> ComposeResult:
         self._animated_icon = AnimatedIcon(
-            ico_("circle_full", default=Icon("●")),
+            ico_("job-spinner_full", default=Icon.of("●")),
             action=self._action,
         )
         yield self._animated_icon
@@ -87,21 +87,15 @@ class JobStatusIcon(Widget):
         self._current_state = new_state
         match new_state:
             case _State.IDLE:
-                self._animated_icon.icon_static(ico_("circle_full", default=Icon("●")))
+                self._animated_icon.icon_static(ico_("job-spinner_full", default=Icon.of("●")))
             case _State.RUNNING:
                 self._animated_icon.icon_animate(
-                    [
-                        ico_("circle_empty", default=Icon("○")),
-                        ico_("circle_quarter", default=Icon("◔")),
-                        ico_("circle_half", default=Icon("◑")),
-                        ico_("circle_three_quarter", default=Icon("◕")),
-                        ico_("circle_full", default=Icon("●")),
-                    ],
+                    ico_("job-spinner", default=Icon.from_glyphs(["○", "◔", "◑", "◕", "●"])),
                     _RUNNING_INTERVAL,
                 )
             case _State.FAILED:
                 self._animated_icon.icon_pulse(
-                    ico_("circle_full", default=Icon("●")),
+                    ico_("job-error", default=Icon.of("⚠")),
                     bright=_FAILED_BRIGHT,
                     dim=_FAILED_DIM,
                     n=_FAILED_N,

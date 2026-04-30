@@ -68,9 +68,9 @@ class BookmarksDialog(PopupWidget, can_focus=True):
         tree: Tree[str] = self.query_one(Tree)
         tree.clear()
         for group in conf_.bookmarks.groups:
-            group_node = tree.root.add(ICONS.get_icon(group.icon) + " " + group.name, expand=True)
+            group_node = tree.root.add(ICONS.get_icon(group.icon).glyph + " " + group.name, expand=True)
             for bookmark in group.bookmarks:
-                group_node.add_leaf(ICONS.get_icon(name=bookmark.icon) + " " + bookmark.name, bookmark.path)
+                group_node.add_leaf(ICONS.get_icon(name=bookmark.icon).glyph + " " + bookmark.name, bookmark.path)
 
     def _select_default_group(self) -> None:
         """Move the tree cursor to the default Bookmarks group, if present."""

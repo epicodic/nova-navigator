@@ -17,41 +17,41 @@ class _TestApp(App[None]):
 
 @pytest.mark.asyncio
 async def test_animated_icon_renders_static_glyph() -> None:
-    icon = AnimatedIcon(Icon("A"))
+    icon = AnimatedIcon(Icon.of("A"))
     app = _TestApp(icon)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert icon.renderable == str(Icon("A"))
+        assert icon.renderable == Icon.of("A").markup
 
 
 @pytest.mark.asyncio
 async def test_animated_icon_set_glyph_updates_display() -> None:
-    icon = AnimatedIcon(Icon("A"))
+    icon = AnimatedIcon(Icon.of("A"))
     app = _TestApp(icon)
     async with app.run_test() as pilot:
         await pilot.pause()
-        icon.icon_static(Icon("B"))
+        icon.icon_static(Icon.of("B"))
         await pilot.pause()
-        assert icon.renderable == str(Icon("B"))
+        assert icon.renderable == Icon.of("B").markup
 
 
 @pytest.mark.asyncio
 async def test_animated_icon_stop_animation_restores_static_glyph() -> None:
-    icon = AnimatedIcon(Icon("A"))
+    icon = AnimatedIcon(Icon.of("A"))
     app = _TestApp(icon)
     async with app.run_test() as pilot:
         await pilot.pause()
-        icon.icon_animate([Icon("X"), Icon("Y")], interval=0.05)
+        icon.icon_animate(Icon.from_glyphs(["X", "Y"]), interval=0.05)
         await pilot.pause(delay=0.15)
         icon.stop_icon_animation()
         await pilot.pause()
-        assert icon.renderable == str(Icon("A"))
+        assert icon.renderable == Icon.of("A").markup
 
 
 @pytest.mark.asyncio
 async def test_animated_icon_click_calls_action() -> None:
     triggered: list[str] = []
-    icon = AnimatedIcon(Icon("A"), action="test_action")
+    icon = AnimatedIcon(Icon.of("A"), action="test_action")
 
     class _ActionScreen(Screen[None]):
         def compose(self) -> ComposeResult:
@@ -75,7 +75,7 @@ async def test_animated_icon_click_calls_action() -> None:
 
 @pytest.mark.asyncio
 async def test_animated_icon_no_action_click_is_noop() -> None:
-    icon = AnimatedIcon(Icon("A"), action=None)
+    icon = AnimatedIcon(Icon.of("A"), action=None)
     app = _TestApp(icon)
     async with app.run_test() as pilot:
         await pilot.pause()

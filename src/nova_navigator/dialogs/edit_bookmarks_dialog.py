@@ -251,14 +251,14 @@ class EditBookmarksDialog(Dialog):
         tree: Tree[_NodeTag] = self.query_one(Tree)
         tree.clear()
         for gi, group in enumerate(self._working.groups):
-            icon = ICONS.get_icon(group.icon) + " " if group.icon else ""
+            icon = ICONS.get_icon(group.icon).glyph + " " if group.icon else ""
             group_node = tree.root.add(
                 f"{icon}{group.name}",
                 data=("group", gi),
                 expand=True,
             )
             for ei, entry in enumerate(group.bookmarks):
-                eicon = ICONS.get_icon(entry.icon) + " " if entry.icon else ""
+                eicon = ICONS.get_icon(entry.icon).glyph + " " if entry.icon else ""
                 group_node.add_leaf(
                     f"{eicon}{entry.name}  {entry.path}",
                     data=("entry", gi, ei),
@@ -434,13 +434,13 @@ class EditBookmarksDialog(Dialog):
         if tag[0] == "group":
             gi = tag[1]
             group = self._working.groups[gi]
-            icon = ICONS.get_icon(group.icon) + " " if group.icon else ""
+            icon = ICONS.get_icon(group.icon).glyph + " " if group.icon else ""
             node.set_label(f"{icon}{group.name}")
         else:
             entry_tag = cast("_EntryTag", tag)
             gi, ei = entry_tag[1], entry_tag[2]
             entry = self._working.groups[gi].bookmarks[ei]
-            eicon = ICONS.get_icon(entry.icon) + " " if entry.icon else ""
+            eicon = ICONS.get_icon(entry.icon).glyph + " " if entry.icon else ""
             node.set_label(f"{eicon}{entry.name}  {entry.path}")
 
     # ------------------------------------------------------------------ button actions

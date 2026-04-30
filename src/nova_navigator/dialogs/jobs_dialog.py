@@ -223,6 +223,10 @@ class JobRow(Widget):
 class JobsDialog(PopupWidget, can_focus=True):
     """Floating overlay that shows running and finished jobs."""
 
+    _DIALOG_WIDTH: int = 62
+    _DIALOG_MARGIN_TOP: int = 2
+    _DIALOG_MARGIN_RIGHT: int = 1
+
     DEFAULT_CSS = """
     JobsDialog {
         width: 62;
@@ -264,6 +268,14 @@ class JobsDialog(PopupWidget, can_focus=True):
 
     def compose(self) -> ComposeResult:
         yield self._scroll
+
+    def _update_position(self) -> None:
+        x = self.screen.size.width - self._DIALOG_WIDTH - self._DIALOG_MARGIN_RIGHT
+        self.offset = (max(0, x), self._DIALOG_MARGIN_TOP)
+
+    def show(self) -> None:
+        self._update_position()
+        super().show()
 
     def on_mount(self) -> None:
         self.display = False
