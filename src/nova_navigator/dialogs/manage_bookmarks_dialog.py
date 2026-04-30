@@ -10,8 +10,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Input, Label, Select, Tree
-from textual.widgets.select import NoSelection
+from textual.widgets import Button, Input, Label, ListItem, ListView, Tree
 
 from nova_navigator.config.bookmarks import Bookmark, BookmarkConfig, Group
 from nova_navigator.decision import Decision
@@ -27,7 +26,7 @@ _NodeTag = _GroupTag | _EntryTag
 
 
 class _MoveToGroupOverlay(PopupWidget, can_focus=True):
-    """Inline overlay showing a Select dropdown for moving an entry to another group.
+    """Inline overlay showing a list for moving an entry to another group.
 
     Always present in the DOM.
     Uses CSS `visibility` (not `display`) to show/hide so that no layout event
@@ -38,30 +37,38 @@ class _MoveToGroupOverlay(PopupWidget, can_focus=True):
     _MoveToGroupOverlay {
         width: 30;
         height: auto;
-        border: none;
+
+        ListView {
+            height: 10
+        }
     }
     """
 
     _on_selected: Callable[[int], None]
+    _options: list[tuple[str, int]]
 
     def __init__(self, on_selected: Callable[[int], None]) -> None:
         # CloseAction.KEEP: base close() leaves display/DOM untouched; we manage visibility.
         super().__init__("", (0, 0), close_action=PopupWidget.CloseAction.KEEP)
         self._on_selected = on_selected
+        self._options = []
         self.visible = False
 
     def compose(self) -> ComposeResult:
-        yield Select([], prompt="Select group\u2026")
+        yield ListView()
 
     def open(self, options: list[tuple[str, int]], position: tuple[int, int]) -> None:
-        """Populate the dropdown, reposition, and show without triggering layout."""
+        """Populate the list, reposition, and show without triggering layout."""
         self._saved_focus = self.app.focused
-        select = self.query_one(Select)
-        select.set_options(options)
+        self._options = options
+        lv = self.query_one(ListView)
+        lv.clear()
+        for label, _ in options:
+            lv.append(ListItem(Label(label)))
         self.offset = position
         self.visible = True
-        select.focus()
-        select.expanded = True
+        lv.focus()
+        lv.index = 0
 
     def close(self) -> None:
         """Restore focus and hide via visibility to avoid layout reflow on the parent."""
@@ -69,11 +76,12 @@ class _MoveToGroupOverlay(PopupWidget, can_focus=True):
             self._saved_focus.focus()
         self.visible = False
 
-    @on(Select.Changed)
-    def _on_select_changed(self, event: Select.Changed) -> None:
-        if isinstance(event.value, NoSelection):
+    @on(ListView.Selected)
+    def _on_list_selected(self, event: ListView.Selected) -> None:
+        index = event.list_view.index
+        if index is None or index >= len(self._options):
             return
-        self._on_selected(cast("int", event.value))
+        self._on_selected(self._options[index][1])
         self.close()
 
 

@@ -122,8 +122,6 @@ class MainScreen(Screen[None]):
             mc.separator(),
             mc.action("Filter", shortcut="Ctrl+F", action="filter", name="filter"),
             mc.separator(),
-            mc.action("Bookmarks", shortcut="Ctrl+B", action="show_bookmarks", name="bookmarks"),
-            mc.action("Edit Bookmarks\u2026", shortcut="Ctrl+Shift+B", action="edit_bookmarks", name="edit_bookmarks"),
             mc.action("Add to Bookmarks", action="add_to_bookmarks", name="add_to_bookmarks"),
         )
 
@@ -139,7 +137,7 @@ class MainScreen(Screen[None]):
                 shortcut="Ctrl+Click/Ins",
             ),
             mc.separator(),
-            mc.action("Select By Pattern...", name="select_by_pattern"),
+            mc.action("Select By Pattern…", name="select_by_pattern"),
         )
 
         self._menu_bar.add_menu("View", name="view").add(
@@ -166,9 +164,13 @@ class MainScreen(Screen[None]):
                 mc.separator(),
                 mc.action("Hide Identical Files", checkable=True),
             ),
+            mc.separator(),
+            mc.action("Bookmarks", shortcut="Ctrl+B", action="show_bookmarks", name="bookmarks"),
         )
 
-        self.action_processes = self._menu_bar.add_menu("Processes")
+        self._menu_bar.add_menu("Settings", name="settings").add(
+            mc.action("Edit Bookmarks…", action="edit_bookmarks", name="edit_bookmarks"),
+        )
 
         yield self._menu_bar
 
@@ -424,6 +426,7 @@ class MainScreen(Screen[None]):
             (AKey(is_path_in_clipboard=True), "file.paste"),
             (AKey(is_directory=True, is_file=True), "file.delete"),
             (AKey(is_directory=True, is_file=True), "file.rename"),
+            (AKey(is_directory=True, is_file=False), "file.add_to_bookmarks"),
         ]
 
         for key, action_name in actions:
