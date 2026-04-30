@@ -31,11 +31,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
+from textual.pilot import Pilot
 
 from nova_navigator.nova_navigator import MainScreen, NovaNavigator
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
-
 
 # ---------------------------------------------------------------------------
 # --headed CLI option
@@ -55,6 +55,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 def headed(request: pytest.FixtureRequest) -> bool:
     return bool(request.config.getoption("--headed"))
 
+
 # ---------------------------------------------------------------------------
 # AppCtx — bundles everything a test needs
 # ---------------------------------------------------------------------------
@@ -64,7 +65,7 @@ def headed(request: pytest.FixtureRequest) -> bool:
 class AppCtx:
     """Context object passed to every integration test."""
 
-    pilot: object  # textual.pilot.Pilot[None] — kept as `object` to avoid import
+    pilot: Pilot[None]
     screen: MainScreen
     src_dir: Path
     dst_dir: Path
@@ -116,9 +117,9 @@ async def set_panels(ctx: AppCtx) -> None:
     ctx.screen._left_panel.set_path(VPath(ctx.src_dir, ctx.fs))
     ctx.screen._right_panel.set_path(VPath(ctx.dst_dir, ctx.fs))
     ctx.screen._left_panel.focus()
-    await ctx.pilot.pause()  # type: ignore[union-attr]  # let the directory scan complete
-    await ctx.pilot.press("down")  # type: ignore[union-attr]  # skip past ".." to first file
-    await ctx.pilot.pause()  # type: ignore[union-attr]
+    await ctx.pilot.pause()  # let the directory scan complete
+    await ctx.pilot.press("down")  # skip past ".." to first file
+    await ctx.pilot.pause()
 
 
 # ---------------------------------------------------------------------------

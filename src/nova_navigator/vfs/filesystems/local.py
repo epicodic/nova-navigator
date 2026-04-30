@@ -167,3 +167,7 @@ class LocalFilesystem(Filesystem):
     def readlink(self, path: VPath) -> str:
         self._assert_vpath(path)
         return os.readlink(path.path)
+
+    @override
+    def refresh(self, path: VPath | None = None) -> None:
+        pass  # no caching in LocalFilesystem

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -45,7 +46,7 @@ def _make_app(dialog: DecisionDialog) -> App[None]:
 
 
 @pytest.fixture(autouse=True)
-def patch_format_size() -> None:
+def patch_format_size() -> Generator[None, None, None]:
     """Avoid GlobalConfig dependency inside OverwriteDecisionDialog._details_content."""
     with patch("nova_navigator.dialogs.decision_dialog.format_size", side_effect=lambda n: f"{n}B"):
         yield
@@ -145,7 +146,7 @@ async def test_on_button_pressed_dismisses_with_corresponding_decision() -> None
     async with _make_app(dialog).run_test(size=(80, 20)) as pilot:
         await pilot.pause()
         original_dismiss = dialog.dismiss
-        dialog.dismiss = lambda v: dismissed_with.append(v) or original_dismiss(v)  # type: ignore[method-assign]
+        dialog.dismiss = lambda v: dismissed_with.append(v) or original_dismiss(v)  # type: ignore
 
         event = MagicMock()
         event.button.id = "YES"
@@ -163,7 +164,7 @@ async def test_on_button_pressed_no_dismisses_with_no() -> None:
     async with _make_app(dialog).run_test(size=(80, 20)) as pilot:
         await pilot.pause()
         original_dismiss = dialog.dismiss
-        dialog.dismiss = lambda v: dismissed_with.append(v) or original_dismiss(v)  # type: ignore[method-assign]
+        dialog.dismiss = lambda v: dismissed_with.append(v) or original_dismiss(v)  # type: ignore
 
         event = MagicMock()
         event.button.id = "NO"
@@ -184,7 +185,7 @@ async def test_action_abort_dismisses_with_decision_no() -> None:
     async with _make_app(dialog).run_test(size=(80, 20)) as pilot:
         await pilot.pause()
         original_dismiss = dialog.dismiss
-        dialog.dismiss = lambda v: dismissed_with.append(v) or original_dismiss(v)  # type: ignore[method-assign]
+        dialog.dismiss = lambda v: dismissed_with.append(v) or original_dismiss(v)  # type: ignore
 
         dialog.action_abort()
         await pilot.pause()

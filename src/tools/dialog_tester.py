@@ -1,7 +1,7 @@
 """Dialog tester — launch and visually test Nova Navigator dialogs in isolation.
 
 CLI usage:
-  uv run dialog_tester --list                       # print all dialogs as JSON
+  uv run dialog_tester --list                       # list all available dialogs
   uv run dialog_tester DecisionDialog               # launch dialog interactively
   uv run dialog_tester DecisionDialog --screenshot  # render headlessly, print SVG to stdout
 """
@@ -11,25 +11,29 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import json
 import sys
 from collections.abc import Callable, Coroutine
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from rich.console import Console
 from textual import work
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
 from nova_navigator.config import conf_
 from nova_navigator.decision import Decision
+from nova_navigator.dialogs.connect_to_dialog import ConnectToDialog
+from nova_navigator.dialogs.credentials_dialog import CredentialsDialog
 from nova_navigator.dialogs.decision_dialog import DecisionDialog, OverwriteDecisionDialog
+from nova_navigator.dialogs.dialog import Dialog
 from nova_navigator.dialogs.edit_bookmarks_dialog import EditBookmarksDialog
 from nova_navigator.dialogs.edit_remotes_dialog import EditRemotesDialog
 from nova_navigator.dialogs.file_dialog import FileDialog, FileDialogMode, FileTypeFilter
 from nova_navigator.dialogs.files_dialog import CopyMoveFilesDialog, DeleteFilesDialog
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
+from nova_navigator.dialogs.message_box import MessageBox
 from nova_navigator.nova_navigator_core import NovaNavigatorCore
 from nova_navigator.scheduler.context import DecisionRequest
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
@@ -40,129 +44,172 @@ _fs = LocalFilesystem.singleton()
 # Absolute path so CSS_PATH resolves regardless of cwd.
 _TCSS = str(Path(__file__).parent.parent / "nova_navigator" / "nn.tcss")
 
-_LauncherFn = Callable[[App[Any]], Coroutine[Any, Any, str]]
+_LauncherFn = Callable[[], Coroutine[Any, Any, str]]
+_DialogFactory = Callable[[], Dialog]
+_ResultFn = Callable[[Any, str], str]
+
+
+def _fmt(_dialog: Any, result: str) -> str:
+    return f"Result: {result}"
 
 
 @dataclass
 class DialogEntry:
     name: str
     description: str
-    launcher: _LauncherFn
+    factory: _DialogFactory
+    result_fn: _ResultFn = field(default=_fmt)
 
+    @property
+    def launcher(self) -> _LauncherFn:
+        async def _run() -> str:
+            dialog = self.factory()
+            result = await dialog.run()
+            return self.result_fn(dialog, result)
 
-# ── launcher functions ────────────────────────────────────────────────────────
-
-
-async def _launch_decision(app: App[Any]) -> str:
-    request = DecisionRequest(
-        title="Confirm action",
-        expected_decisions=[Decision.YES, Decision.NO],
-        message="Do you want to proceed with this action?",
-    )
-    result = await app.push_screen_wait(DecisionDialog(request))
-    return f"Result: {result}"
-
-
-async def _launch_overwrite(app: App[Any]) -> str:
-    request = DecisionRequest(
-        title="File already exists",
-        expected_decisions=[Decision.YES, Decision.ALL, Decision.NO, Decision.NONE],
-        message="The destination file already exists.",
-        dialog_type="overwrite",
-        details={
-            "src_name": "document.pdf",
-            "src_size": 2_048_000,
-            "dst_name": "document.pdf",
-            "dst_size": 1_024_000,
-        },
-    )
-    result = await app.push_screen_wait(OverwriteDecisionDialog(request))
-    return f"Result: {result}"
-
-
-async def _launch_icon_picker(app: App[Any]) -> str:
-    result = await app.push_screen_wait(IconPickerDialog(title="Pick an Icon"))
-    return f"Result: {result}"
-
-
-async def _launch_edit_bookmarks(app: App[Any]) -> str:
-    result = await app.push_screen_wait(EditBookmarksDialog(conf_.bookmarks))
-    return f"Result: {result}"
-
-
-async def _launch_edit_remotes(app: App[Any]) -> str:
-    result = await app.push_screen_wait(EditRemotesDialog(conf_.remotes))
-    return f"Result: {result}"
-
-
-async def _launch_copy_files(app: App[Any]) -> str:
-    src = [VPath("/home/user/Documents/report.pdf", _fs), VPath("/home/user/Documents/notes.txt", _fs)]
-    dst = VPath("/home/user/Downloads", _fs)
-    result = await app.push_screen_wait(CopyMoveFilesDialog(source_paths=src, destination_path=dst, move=False))
-    return f"Result: {result}"
-
-
-async def _launch_move_file(app: App[Any]) -> str:
-    src = [VPath("/home/user/Documents/report.pdf", _fs)]
-    dst = VPath("/home/user/Downloads", _fs)
-    result = await app.push_screen_wait(CopyMoveFilesDialog(source_paths=src, destination_path=dst, move=True))
-    return f"Result: {result}"
-
-
-async def _launch_delete_files(app: App[Any]) -> str:
-    paths = [VPath("/home/user/Documents/old_report.pdf", _fs), VPath("/home/user/Downloads/archive.zip", _fs)]
-    result = await app.push_screen_wait(DeleteFilesDialog(paths=paths))
-    return f"Result: {result}"
-
-
-async def _launch_file_open(app: App[Any]) -> str:
-    dialog = FileDialog(mode=FileDialogMode.OPEN, start_path=Path.home(), title="Open File")
-    result = await app.push_screen_wait(dialog)
-    path = dialog.selected_path
-    return f"Result: {result}  path={path}"
-
-
-async def _launch_file_save(app: App[Any]) -> str:
-    filters = [
-        FileTypeFilter("Python files", ["*.py", "*.pyi"]),
-        FileTypeFilter("Text files", ["*.txt", "*.md"]),
-        FileTypeFilter("All files", ["*"]),
-    ]
-    dialog = FileDialog(mode=FileDialogMode.SAVE, start_path=Path.home(), title="Save File As", filters=filters)
-    result = await app.push_screen_wait(dialog)
-    path = dialog.selected_path
-    return f"Result: {result}  path={path}"
-
-
-async def _launch_file_dir(app: App[Any]) -> str:
-    dialog = FileDialog(mode=FileDialogMode.DIR, start_path=Path.home(), title="Select Directory")
-    result = await app.push_screen_wait(dialog)
-    path = dialog.selected_path
-    return f"Result: {result}  path={path}"
+        return _run
 
 
 # ── dialog registry ───────────────────────────────────────────────────────────
 
 _ENTRIES: list[DialogEntry] = [
-    DialogEntry("DecisionDialog", "Simple yes/no decision prompt.", _launch_decision),
+    DialogEntry(
+        "ConnectToDialog",
+        "Pick a saved remote connection (uses real config).",
+        lambda: ConnectToDialog(conf_.remotes),
+    ),
+    DialogEntry(
+        "CredentialsDialog",
+        "Username + password prompt for SSH authentication.",
+        lambda: CredentialsDialog(hostname="example.com", username="admin"),
+        result_fn=lambda d, r: f"Result: {r}  creds={d.credentials if r == 'OK' else None}",
+    ),
+    DialogEntry(
+        "MessageBox (default)",
+        "Simple informational message with OK button.",
+        lambda: MessageBox("Operation completed successfully.", title="Info"),
+    ),
+    DialogEntry(
+        "MessageBox (success)",
+        "Success message with green background.",
+        lambda: MessageBox("File copied successfully.", title="Success", variant="success"),
+    ),
+    DialogEntry(
+        "MessageBox (warning)",
+        "Warning message with yellow background.",
+        lambda: MessageBox("Disk space is running low.", title="Warning", variant="warning"),
+    ),
+    DialogEntry(
+        "MessageBox (error)",
+        "Error message with red background.",
+        lambda: MessageBox("Operation failed: permission denied.", title="Error", variant="error"),
+    ),
+    DialogEntry(
+        "MessageBox (confirm)",
+        "Confirmation message with OK/Cancel — styled like the unknown-host prompt.",
+        lambda: MessageBox(
+            "The authenticity of host 'example.com' can't be established.\n"
+            "ED25519 key fingerprint is SHA256:abc123xyz\n\nAdd to known hosts?",
+            title="Unknown Host",
+            buttons=[Decision.OK, Decision.CANCEL],
+        ),
+    ),
+    DialogEntry(
+        "DecisionDialog",
+        "Simple yes/no decision prompt.",
+        lambda: DecisionDialog(
+            DecisionRequest(
+                title="Confirm action",
+                expected_decisions=[Decision.YES, Decision.NO],
+                message="Do you want to proceed with this action?",
+            )
+        ),
+    ),
     DialogEntry(
         "OverwriteDecisionDialog",
         "File overwrite confirmation with source/destination info.",
-        _launch_overwrite,
+        lambda: OverwriteDecisionDialog(
+            DecisionRequest(
+                title="File already exists",
+                expected_decisions=[Decision.YES, Decision.ALL, Decision.NO, Decision.NONE],
+                message="The destination file already exists.",
+                dialog_type="overwrite",
+                details={
+                    "src_name": "document.pdf",
+                    "src_size": 2_048_000,
+                    "dst_name": "document.pdf",
+                    "dst_size": 1_024_000,
+                },
+            )
+        ),
     ),
-    DialogEntry("IconPickerDialog", "Grid-based icon selection dialog.", _launch_icon_picker),
+    DialogEntry(
+        "IconPickerDialog",
+        "Grid-based icon selection dialog.",
+        lambda: IconPickerDialog(title="Pick an Icon"),
+    ),
     DialogEntry(
         "EditBookmarksDialog",
         "Full-screen bookmark editor (uses real user bookmarks).",
-        _launch_edit_bookmarks,
+        lambda: EditBookmarksDialog(conf_.bookmarks),
     ),
-    DialogEntry("EditRemotesDialog", "Remote connection editor with real config.", _launch_edit_remotes),
-    DialogEntry("CopyMoveFilesDialog (copy)", "Copy multiple files to a destination.", _launch_copy_files),
-    DialogEntry("CopyMoveFilesDialog (move)", "Move a single file — shows rename input.", _launch_move_file),
-    DialogEntry("DeleteFilesDialog", "Delete confirmation for multiple files.", _launch_delete_files),
-    DialogEntry("FileDialog (open)", "File picker in open mode — select an existing file.", _launch_file_open),
-    DialogEntry("FileDialog (save)", "File picker in save mode — with file-type filters.", _launch_file_save),
-    DialogEntry("FileDialog (dir)", "Directory picker mode — select a folder.", _launch_file_dir),
+    DialogEntry(
+        "EditRemotesDialog",
+        "Remote connection editor with real config.",
+        lambda: EditRemotesDialog(conf_.remotes),
+    ),
+    DialogEntry(
+        "CopyMoveFilesDialog (copy)",
+        "Copy multiple files to a destination.",
+        lambda: CopyMoveFilesDialog(
+            source_paths=[VPath("/home/user/Documents/report.pdf", _fs), VPath("/home/user/Documents/notes.txt", _fs)],
+            destination_path=VPath("/home/user/Downloads", _fs),
+            move=False,
+        ),
+    ),
+    DialogEntry(
+        "CopyMoveFilesDialog (move)",
+        "Move a single file — shows rename input.",
+        lambda: CopyMoveFilesDialog(
+            source_paths=[VPath("/home/user/Documents/report.pdf", _fs)],
+            destination_path=VPath("/home/user/Downloads", _fs),
+            move=True,
+        ),
+    ),
+    DialogEntry(
+        "DeleteFilesDialog",
+        "Delete confirmation for multiple files.",
+        lambda: DeleteFilesDialog(
+            paths=[VPath("/home/user/Documents/old_report.pdf", _fs), VPath("/home/user/Downloads/archive.zip", _fs)]
+        ),
+    ),
+    DialogEntry(
+        "FileDialog (open)",
+        "File picker in open mode — select an existing file.",
+        lambda: FileDialog(mode=FileDialogMode.OPEN, start_path=Path.home(), title="Open File"),
+        result_fn=lambda d, r: f"Result: {r}  path={d.selected_path}",
+    ),
+    DialogEntry(
+        "FileDialog (save)",
+        "File picker in save mode — with file-type filters.",
+        lambda: FileDialog(
+            mode=FileDialogMode.SAVE,
+            start_path=Path.home(),
+            title="Save File As",
+            filters=[
+                FileTypeFilter("Python files", ["*.py", "*.pyi"]),
+                FileTypeFilter("Text files", ["*.txt", "*.md"]),
+                FileTypeFilter("All files", ["*"]),
+            ],
+        ),
+        result_fn=lambda d, r: f"Result: {r}  path={d.selected_path}",
+    ),
+    DialogEntry(
+        "FileDialog (dir)",
+        "Directory picker mode — select a folder.",
+        lambda: FileDialog(mode=FileDialogMode.DIR, start_path=Path.home(), title="Select Directory"),
+        result_fn=lambda d, r: f"Result: {r}  path={d.selected_path}",
+    ),
 ]
 
 _ENTRY_MAP: dict[str, DialogEntry] = {e.name.lower(): e for e in _ENTRIES}
@@ -196,7 +243,7 @@ class _RunnerApp(App[str | None]):
     async def _run(self) -> None:
         await asyncio.sleep(0.05)  # let the app settle before pushing a modal
         try:
-            result = await self._entry.launcher(self)
+            result = await self._entry.launcher()
         except Exception as exc:  # noqa: BLE001
             result = f"Error: {exc}"
         self.exit(result)
@@ -225,7 +272,7 @@ class _ScreenshotApp(App[str]):
     async def _run(self) -> None:
         await asyncio.sleep(0.1)  # let the app settle
         with contextlib.suppress(Exception):
-            await self._entry.launcher(self)
+            await self._entry.launcher()
         self._svg = self.export_screenshot()
         self.exit(self._svg)
 
@@ -237,8 +284,11 @@ class _ScreenshotApp(App[str]):
 
 
 def _cmd_list() -> None:
-    entries = [{"name": e.name, "description": e.description} for e in _ENTRIES]
-    print(json.dumps(entries, indent=2))
+    console = Console()
+    for entry in _ENTRIES:
+        console.print(entry.name)
+        console.print(f"  [grey50]{entry.description}[/grey50]")
+        console.print()
 
 
 def _cmd_run(name: str) -> None:
@@ -272,7 +322,7 @@ def main() -> None:
             "  uv run dialog_tester DecisionDialog --screenshot\n"
         ),
     )
-    parser.add_argument("--list", action="store_true", help="Print all dialogs as JSON and exit.")
+    parser.add_argument("--list", action="store_true", help="List all available dialogs and exit.")
     parser.add_argument("name", nargs="?", metavar="NAME", help="Dialog name to launch.")
     parser.add_argument("--screenshot", action="store_true", help="Render headlessly and print SVG to stdout.")
     args = parser.parse_args()

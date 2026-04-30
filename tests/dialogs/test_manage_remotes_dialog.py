@@ -37,7 +37,7 @@ def _make_app(cfg: RemoteConfig) -> tuple[EditRemotesDialog, type[App[None]]]:
         async def on_mount(self) -> None:
             await self.push_screen(dialog)
 
-    _App.run_test = lambda self, **kw: App.run_test(self, size=kw.pop("size", (120, 50)), **kw)  # type: ignore[method-assign]
+    _App.run_test = lambda self, **kw: App.run_test(self, size=kw.pop("size", (120, 50)), **kw)
 
     return dialog, _App
 

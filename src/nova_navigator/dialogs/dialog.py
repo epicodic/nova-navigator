@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
-from textual import widgets
+from textual import events, widgets
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -55,7 +55,7 @@ class Dialog(ModalScreen[str]):
 
     BINDINGS: ClassVar = [
         Binding(key="escape", action="dismiss_dialog", description="Close", priority=True),
-        Binding(key="enter", action="accept_dialog", description="Accept", priority=True),
+        Binding(key="enter", action="accept_dialog", description="Accept"),
     ]
 
     _title: str = ""
@@ -121,6 +121,22 @@ class Dialog(ModalScreen[str]):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id)
+
+    async def _on_key(self, event: events.Key) -> None:
+        """Handle Enter before non-priority bindings are checked.
+
+        If a Button has focus, press it (so a focused Cancel button cancels,
+        not the default accept button).  For every other focus state, accept
+        the dialog with the default accept button.
+        """
+        if event.key != "enter":
+            return
+        focused = self.focused
+        if isinstance(focused, Button):
+            focused.press()
+        else:
+            self.action_accept_dialog()
+        event.stop()
 
     def action_accept_dialog(self) -> None:
         if self._button_accept:

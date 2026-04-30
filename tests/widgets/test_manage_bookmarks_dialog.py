@@ -123,7 +123,7 @@ def _make_dialog_app(cfg: BookmarkConfig) -> tuple[EditBookmarksDialog, type[App
 
     # The dialog has 6 action buttons (~18 rows) so the test terminal must be
     # tall enough that they don't visually overlap the form input rows below.
-    _App.run_test = lambda self, **kw: App.run_test(self, size=kw.pop("size", (80, 40)), **kw)  # type: ignore[method-assign]
+    _App.run_test = lambda self, **kw: App.run_test(self, size=kw.pop("size", (80, 40)), **kw)
 
     return dialog, _App
 
@@ -367,7 +367,7 @@ async def test_prefill_adds_entry_to_existing_group() -> None:
         async def on_mount(self) -> None:
             await self.push_screen(dialog)
 
-    _App.run_test = lambda self, **kw: App.run_test(self, size=kw.pop("size", (80, 40)), **kw)  # type: ignore[method-assign]
+    _App.run_test = lambda self, **kw: App.run_test(self, size=kw.pop("size", (80, 40)), **kw)
 
     app = _App()
     async with app.run_test() as pilot:
@@ -395,7 +395,7 @@ async def test_prefill_creates_new_group_if_missing() -> None:
         async def on_mount(self) -> None:
             await self.push_screen(dialog)
 
-    _App.run_test = lambda self, **kw: App.run_test(self, size=kw.pop("size", (80, 40)), **kw)  # type: ignore[method-assign]
+    _App.run_test = lambda self, **kw: App.run_test(self, size=kw.pop("size", (80, 40)), **kw)
 
     app = _App()
     async with app.run_test() as pilot:

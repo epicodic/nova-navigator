@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import pathlib
 from typing import ClassVar
 
 from textual import on
@@ -14,6 +15,7 @@ from textual.widgets import Label, ListItem, ListView
 from nova_navigator.config.remotes import ProxySettings, RemoteConfig, RemoteConnection, SshSettings
 from nova_navigator.decision import Decision
 from nova_navigator.dialogs.dialog import Dialog
+from nova_navigator.dialogs.file_dialog import FileDialog, FileDialogMode
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.icons import ICONS
 from nova_widgets import Button, Checkbox, Input, Select
@@ -74,6 +76,12 @@ class EditRemotesDialog(Dialog):
         }
 
         #btn_pick_icon {
+            width: 5;
+            max-width: 5;
+            margin: 0 0 0 1;
+        }
+
+        #btn_pick_identity_file {
             width: 5;
             max-width: 5;
             margin: 0 0 0 1;
@@ -185,6 +193,7 @@ class EditRemotesDialog(Dialog):
                 Horizontal(
                     Label("Identity File: ", classes="form_label form_label-main"),
                     Input(id="input_identity_file", disabled=True),
+                    Button("…", id="btn_pick_identity_file", disabled=True),
                     classes="form_row",
                 ),
                 id="ssh_section",
@@ -248,6 +257,7 @@ class EditRemotesDialog(Dialog):
             "#input_port",
             "#input_username",
             "#input_identity_file",
+            "#btn_pick_identity_file",
             "#check_proxy",
             "#input_proxy_host",
             "#input_proxy_port",
@@ -350,6 +360,8 @@ class EditRemotesDialog(Dialog):
                 self._on_remove()
             case "btn_pick_icon":
                 self._run_pick_icon()
+            case "btn_pick_identity_file":
+                self._run_pick_identity_file()
 
     def _on_add(self) -> None:
         new_entry = RemoteConnection(name="new-connection", ssh=SshSettings())
@@ -376,6 +388,23 @@ class EditRemotesDialog(Dialog):
         if result is None or result == Decision.CANCEL.name:
             return
         self.query_one("#input_icon", Input).value = result
+
+    def _run_pick_identity_file(self) -> None:
+        current = self.query_one("#input_identity_file", Input).value.strip()
+        _ssh_dir = pathlib.Path.home() / ".ssh"
+        if current:
+            start = pathlib.Path(current).parent
+        elif _ssh_dir.is_dir():
+            start = _ssh_dir
+        else:
+            start = pathlib.Path.home()
+        dialog = FileDialog(mode=FileDialogMode.OPEN, start_path=start, title="Select Identity File")
+
+        def _on_picked(result: str | None) -> None:
+            if result != Decision.CANCEL.name and dialog.selected_path is not None:
+                self.query_one("#input_identity_file", Input).value = str(dialog.selected_path)
+
+        self.app.push_screen(dialog, callback=_on_picked)
 
     @on(Input.Changed, "#input_name")
     def _on_name_changed(self, event: Input.Changed) -> None:

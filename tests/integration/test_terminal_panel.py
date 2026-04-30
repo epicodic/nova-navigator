@@ -41,7 +41,7 @@ async def test_panel_navigation_triggers_terminal_request_cd(app_ctx: AppCtx) ->
 
     with patch.object(app_ctx.screen._terminal, "request_cd") as mock_cd:
         app_ctx.screen._left_panel.set_path(VPath(subdir, app_ctx.fs))
-        await app_ctx.pilot.pause()  # type: ignore[union-attr]
+        await app_ctx.pilot.pause()
 
     mock_cd.assert_called_once_with(PurePosixPath(subdir))
 
@@ -65,7 +65,7 @@ async def test_user_cd_in_terminal_updates_active_panel(app_ctx: AppCtx) -> None
     app_ctx.screen._terminal.post_message(
         Terminal.PathChanged(app_ctx.screen._terminal, PurePosixPath(target), user_initiated=True)
     )
-    await app_ctx.pilot.pause(delay=0.2)  # type: ignore[union-attr]
+    await app_ctx.pilot.pause(delay=0.2)
 
     assert app_ctx.screen.active_panel().path.path == PurePosixPath(target)
 
@@ -88,6 +88,6 @@ async def test_programmatic_cd_does_not_update_panel(app_ctx: AppCtx) -> None:
             user_initiated=False,
         )
     )
-    await app_ctx.pilot.pause(delay=0.2)  # type: ignore[union-attr]
+    await app_ctx.pilot.pause(delay=0.2)
 
     assert app_ctx.screen.active_panel().path.path == original_path

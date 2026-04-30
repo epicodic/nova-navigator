@@ -87,6 +87,14 @@ class ArchiveFilesystem(Filesystem):
     def mkdir(self, path: VPath) -> None:
         raise NotImplementedError("ArchiveFilesystem is read-only")
 
+    @override
+    def copy_stat(self, path: VPath, stat: Stat) -> None:
+        raise NotImplementedError("ArchiveFilesystem is read-only")
+
+    @override
+    def refresh(self, path: VPath | None = None) -> None:
+        pass  # no caching in ArchiveFilesystem
+
     def __eq__(self, value: object) -> bool:
         return (
             isinstance(value, ArchiveFilesystem)

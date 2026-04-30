@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import os
+from collections.abc import Callable
 from dataclasses import dataclass
-from functools import lru_cache
-from typing import cast, override
+from typing import override
 
 import paramiko
 
@@ -53,22 +56,106 @@ def _parse_stat_output(output: str) -> dict[str, StatEntry]:
     return entries
 
 
+_KEY_TYPE_NAMES: dict[str, str] = {
+    "ssh-rsa": "RSA",
+    "ssh-dss": "DSA",
+    "ssh-ed25519": "ED25519",
+    "ssh-ed448": "ED448",
+    "ecdsa-sha2-nistp256": "ECDSA-256",
+    "ecdsa-sha2-nistp384": "ECDSA-384",
+    "ecdsa-sha2-nistp521": "ECDSA-521",
+}
+
+
+class UnknownHostKeyError(Exception):
+    """Raised when the server's host key is not in known_hosts."""
+
+    def __init__(self, hostname: str, key: paramiko.PKey) -> None:
+        super().__init__(f"Server {hostname!r} not found in known_hosts")
+        self.hostname = hostname
+        self.key = key
+
+    @property
+    def fingerprint(self) -> str:
+        """SHA-256 fingerprint of the host key in OpenSSH display format."""
+        digest = hashlib.sha256(self.key.asbytes()).digest()
+        return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
+
+    @property
+    def key_type(self) -> str:
+        """Normalised key-type name, e.g. ``'ED25519'`` or ``'RSA'``."""
+        return _KEY_TYPE_NAMES.get(self.key.get_name(), self.key.get_name().upper())
+
+
+class _CaptureUnknownHostPolicy(paramiko.MissingHostKeyPolicy):
+    """Host-key policy that raises :class:`UnknownHostKeyError` for unknown hosts."""
+
+    def missing_host_key(self, client: paramiko.SSHClient, hostname: str, key: paramiko.PKey) -> None:
+        raise UnknownHostKeyError(hostname, key)
+
+
 class SSHFilesystem(Filesystem):
     """Filesystem implementation for remote hosts accessed over SSH/SFTP."""
+
+    class _PipelinedWriter:
+        """Wraps a paramiko SFTPFile for pipelined writes with a close callback."""
+
+        def __init__(self, f: paramiko.SFTPFile, on_close: Callable[[], None]) -> None:
+            self._f = f
+            self._on_close = on_close
+
+        def write(self, data: bytes) -> int:
+            result = self._f.write(data)
+            return result if isinstance(result, int) else len(data)
+
+        def close(self) -> None:
+            self._f.close()
+            self._on_close()
 
     _ssh_client: paramiko.SSHClient
     _sftp_client: paramiko.SFTPClient
 
-    def __init__(self, hostname: str, port: int = 22, ssh_client: paramiko.SSHClient | None = None) -> None:
-        """Connect to *hostname*:*port* over SSH, reusing *ssh_client* if provided."""
+    def __init__(
+        self,
+        hostname: str,
+        port: int = 22,
+        username: str | None = None,
+        key_filename: str | None = None,
+        password: str | None = None,
+        ssh_client: paramiko.SSHClient | None = None,
+        accept_host_key: bool = False,
+    ) -> None:
+        """Connect to *hostname*:*port* over SSH, reusing *ssh_client* if provided.
+
+        Args:
+            hostname: Remote host to connect to.
+            port: SSH port (default 22).
+            username: Remote username, or ``None`` to use the local username.
+            key_filename: Path to private key file, or ``None`` for default discovery.
+            password: Password for password-based or key passphrase authentication.
+            ssh_client: Pre-configured :class:`paramiko.SSHClient` to reuse.
+            accept_host_key: If ``True``, accept and persist unknown host keys to
+                ``~/.ssh/known_hosts``.  If ``False`` (default), raise
+                :class:`UnknownHostKeyError` for unknown hosts.
+        """
         if ssh_client is None:
             self._ssh_client = paramiko.SSHClient()
             self._ssh_client.load_system_host_keys()
+            if accept_host_key:
+                known_hosts = os.path.expanduser("~/.ssh/known_hosts")
+                if os.path.exists(known_hosts):
+                    self._ssh_client.load_host_keys(known_hosts)
+                self._ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            else:
+                self._ssh_client.set_missing_host_key_policy(_CaptureUnknownHostPolicy())
         else:
             self._ssh_client = ssh_client
 
-        self._ssh_client.connect(hostname, port=port)
+        self._ssh_client.connect(hostname, port=port, username=username, key_filename=key_filename, password=password)
+        if accept_host_key and ssh_client is None:
+            self._ssh_client.save_host_keys(os.path.expanduser("~/.ssh/known_hosts"))
         self._sftp_client = self._ssh_client.open_sftp()
+        self._stat_cache: dict[tuple[str, bool], dict[str, StatEntry]] = {}
 
     def __eq__(self, value: object) -> bool:
         return isinstance(value, SSHFilesystem) and self._ssh_client == value._ssh_client
@@ -99,13 +186,22 @@ class SSHFilesystem(Filesystem):
         # TODO
         return VPath("/home", self)
 
-    @lru_cache(maxsize=64)  # noqa: B019
     def _dir_stat(self, path: str, follow_symlinks: bool) -> dict[str, StatEntry]:
-        command = _STAT_COMMAND_FOLLOW_LINKS if follow_symlinks else _STAT_COMMAND
-        _, stdout, _ = self._ssh_client.exec_command(f"cd {path} && {command}")
-        output = stdout.read().decode()
+        key = (path, follow_symlinks)
+        if key not in self._stat_cache:
+            command = _STAT_COMMAND_FOLLOW_LINKS if follow_symlinks else _STAT_COMMAND
+            _, stdout, _ = self._ssh_client.exec_command(f"cd {path} && {command}")
+            self._stat_cache[key] = _parse_stat_output(stdout.read().decode())
+        return self._stat_cache[key]
 
-        return _parse_stat_output(output)
+    @override
+    def refresh(self, path: VPath | None = None) -> None:
+        if path is None:
+            self._stat_cache.clear()
+        else:
+            p = str(path)
+            self._stat_cache.pop((p, True), None)
+            self._stat_cache.pop((p, False), None)
 
     @override
     def iterdir(self, path: VPath) -> list[VPath]:
@@ -127,7 +223,7 @@ class SSHFilesystem(Filesystem):
         stat = file_list_stat.get(path.path.name)
         lstat = file_list_lstat.get(path.path.name)
         if stat is None or lstat is None:
-            return Stat()
+            raise FileNotFoundError(f"No such file or directory: {path.path!r}")
 
         is_hidden = path.name.startswith(".")
 
@@ -155,32 +251,41 @@ class SSHFilesystem(Filesystem):
 
     @override
     def read(self, path: VPath) -> StreamReaderLike:
-        return self._sftp_client.open(path.path.as_posix(), "rb")
+        f = self._sftp_client.open(path.path.as_posix(), "rb")
+        f.prefetch()
+        return f
 
     @override
     def write(self, path: VPath) -> StreamWriterLike:
-        return cast("StreamWriterLike", self._sftp_client.open(path.path.as_posix(), "wb"))
+        f = self._sftp_client.open(path.path.as_posix(), "wb")
+        f.set_pipelined(True)
+        return self._PipelinedWriter(f, lambda: self.refresh(self.parent(path)))
 
     @override
     def remove(self, path: VPath) -> None:
         self._assert_vpath(path)
         self._sftp_client.remove(path.path.as_posix())
+        self.refresh(self.parent(path))
 
     @override
     def rename(self, src_path: VPath, dst_path: VPath) -> None:
         self._assert_vpath(src_path)
         self._assert_vpath(dst_path)
         self._sftp_client.rename(src_path.path.as_posix(), dst_path.path.as_posix())
+        self.refresh(self.parent(src_path))
+        self.refresh(self.parent(dst_path))
 
     @override
     def rmdir(self, path: VPath) -> None:
         self._assert_vpath(path)
         self._sftp_client.rmdir(path.path.as_posix())
+        self.refresh(self.parent(path))
 
     @override
     def mkdir(self, path: VPath) -> None:
         self._assert_vpath(path)
         self._sftp_client.mkdir(path.path.as_posix())
+        self.refresh(self.parent(path))
 
     @override
     def copy_stat(self, path: VPath, stat: Stat) -> None:

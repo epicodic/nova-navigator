@@ -19,7 +19,7 @@ class _FakeIconSet:
     def __iter__(self) -> Any:
         return iter((name, None) for name, _ in _FAKE_ICONS)
 
-    def get_icon(self, name: str) -> str:  # type: ignore[override]
+    def get_icon(self, name: str) -> str:
         return next((g for n, g in _FAKE_ICONS if n == name), "?")
 
 
@@ -174,7 +174,7 @@ async def test_action_accept_dismisses_with_icon_name() -> None:
     dialog, _App = _make_dialog_app(initial_icon="home")
     dismissed_with: list[str] = []
 
-    class _TrackedApp(_App):  # type: ignore[valid-type]
+    class _TrackedApp(_App):  # type: ignore
         pass
 
     app = _App()
@@ -182,7 +182,7 @@ async def test_action_accept_dismisses_with_icon_name() -> None:
         await pilot.pause()
         # intercept dismiss
         original_dismiss = dialog.dismiss
-        dialog.dismiss = lambda v: dismissed_with.append(v) or original_dismiss(v)  # type: ignore[method-assign]
+        dialog.dismiss = lambda v: dismissed_with.append(v) or original_dismiss(v)  # type: ignore
         dialog.action_accept_dialog()
         await pilot.pause()
         assert dismissed_with == ["home"]
@@ -191,13 +191,12 @@ async def test_action_accept_dismisses_with_icon_name() -> None:
 @pytest.mark.asyncio
 async def test_action_accept_does_nothing_without_selection() -> None:
     dialog, _App = _make_dialog_app(initial_icon=None)
-    dismiss_called = False
 
     app = _App()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         original_dismiss = dialog.dismiss
-        dialog.dismiss = lambda v: setattr(pilot, "_dismissed", True) or original_dismiss(v)  # type: ignore[method-assign]
+        dialog.dismiss = lambda v: setattr(pilot, "_dismissed", True) or original_dismiss(v)  # type: ignore
         dialog.action_accept_dialog()
         await pilot.pause()
         assert dialog._selected_icon is None

@@ -46,7 +46,7 @@ async def test_context_menu_dismiss_leaves_directory_unchanged(app_ctx: AppCtx) 
     file_vpath = VPath(app_ctx.src_dir / "untouched.txt", app_ctx.fs)
     with patch.object(Menu, "exec", new=AsyncMock(return_value=None)):
         _post_context_menu(app_ctx, file_vpath)
-        await app_ctx.pilot.pause(delay=0.3)  # type: ignore[union-attr]
+        await app_ctx.pilot.pause(delay=0.3)
 
     assert (app_ctx.src_dir / "untouched.txt").exists()
 
@@ -66,10 +66,11 @@ async def test_context_menu_selected_action_is_dispatched_to_run_action(app_ctx:
     file_vpath = VPath(app_ctx.src_dir / "file.txt", app_ctx.fs)
     delete_action = app_ctx.screen._act("file.delete")
 
-    with patch.object(Menu, "exec", new=AsyncMock(return_value=delete_action)):
-        with patch.object(app_ctx.screen, "_run_action", new=AsyncMock()) as spy_run_action:
-            _post_context_menu(app_ctx, file_vpath)
-            await app_ctx.pilot.pause(delay=0.3)  # type: ignore[union-attr]
+    p_exec = patch.object(Menu, "exec", new=AsyncMock(return_value=delete_action))
+    p_action = patch.object(app_ctx.screen, "_run_action", new=AsyncMock())
+    with p_exec, p_action as spy_run_action:
+        _post_context_menu(app_ctx, file_vpath)
+        await app_ctx.pilot.pause(delay=0.3)
 
     spy_run_action.assert_awaited_once_with(delete_action)
 
@@ -95,7 +96,7 @@ async def test_context_menu_show_hidden_files_syncs_both_panels(app_ctx: AppCtx)
 
     with patch.object(Menu, "exec", new=AsyncMock(return_value=show_hidden_action)):
         _post_context_menu(app_ctx, None)
-        await app_ctx.pilot.pause(delay=0.3)  # type: ignore[union-attr]
+        await app_ctx.pilot.pause(delay=0.3)
 
     assert app_ctx.screen._left_panel.show_hidden_files
     assert app_ctx.screen._right_panel.show_hidden_files
