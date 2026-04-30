@@ -105,7 +105,5 @@ async def test_job_status_icon_idle_glyph_restored_after_failed_cleared() -> Non
         registry.remove_job(failed_job)
         icon._update()
         assert icon._current_state == _State.IDLE
-        # The displayed glyph must be the idle icon, NOT the failed icon
-        from nova_widgets.icon import Icon  # noqa: F401
-
-        assert icon._animated_icon.renderable == str(icon._idle_icon)
+        # The displayed glyph must be the idle icon markup, NOT the failed icon
+        assert icon._animated_icon.renderable == icon._idle_icon.markup

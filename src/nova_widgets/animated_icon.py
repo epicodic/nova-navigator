@@ -1,3 +1,5 @@
+import math
+
 from textual.events import MouseDown
 from textual.timer import Timer
 from textual.widgets import Static
@@ -39,7 +41,7 @@ class AnimatedIcon(Static):
         action: str | None = None,
         tooltip: str | None = None,
     ) -> None:
-        super().__init__(str(glyph))
+        super().__init__(glyph.markup)
         self._static_glyph = glyph
         self._action = action
         self._timer = None
@@ -53,26 +55,46 @@ class AnimatedIcon(Static):
         """Return the currently displayed content as a string."""
         return str(self.content)
 
-    def set_glyph(self, glyph: Icon) -> None:
+    def icon_static(self, glyph: Icon) -> None:
         """Display *glyph* statically; stop any running animation."""
         self._stop_timer()
         self._static_glyph = glyph
-        self.update(str(glyph))
+        self.update(glyph.markup)
         self._frames = []
 
-    def set_animation(self, frames: list[Icon], interval: float) -> None:
+    def icon_animate(self, frames: list[Icon], interval: float) -> None:
         """Cycle through *frames* at *interval* seconds per frame."""
         self._stop_timer()
         self._frames = frames
         self._frame_index = 0
         if frames:
-            self.update(str(frames[0]))
+            self.update(frames[0].markup)
         self._timer = self.set_interval(interval, self._advance_frame)
+
+    def icon_pulse(
+        self,
+        glyph: str,
+        *,
+        bright: tuple[int, int, int],
+        dim: tuple[int, int, int],
+        n: int = 12,
+        interval: float = 0.1,
+    ) -> None:
+        """Animate *glyph* pulsing between *bright* and *dim* colours via sin()."""
+        frames: list[Icon] = []
+        for i in range(n):
+            t = i / n * 2 * math.pi
+            blend = (math.sin(t) + 1) / 2
+            r = round(dim[0] + (bright[0] - dim[0]) * blend)
+            g = round(dim[1] + (bright[1] - dim[1]) * blend)
+            b = round(dim[2] + (bright[2] - dim[2]) * blend)
+            frames.append(Icon(glyph, color=(r, g, b)))
+        self.icon_animate(frames, interval)
 
     def stop_icon_animation(self) -> None:
         """Stop animation and restore the static glyph."""
         self._stop_timer()
-        self.update(str(self._static_glyph))
+        self.update(self._static_glyph.markup)
         self._frames = []
 
     def _stop_timer(self) -> None:
@@ -84,7 +106,7 @@ class AnimatedIcon(Static):
         if not self._frames:
             return
         self._frame_index = (self._frame_index + 1) % len(self._frames)
-        self.update(str(self._frames[self._frame_index]))
+        self.update(self._frames[self._frame_index].markup)
 
     def _on_unmount(self) -> None:
         self._stop_timer()
@@ -93,4 +115,4 @@ class AnimatedIcon(Static):
         event.stop()
         event.prevent_default()
         if self._action is not None:
-            await self.app.run_action(self._action)
+            await self.app.screen.run_action(self._action)

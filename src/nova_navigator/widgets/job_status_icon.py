@@ -10,23 +10,16 @@ from textual.widget import Widget
 if TYPE_CHECKING:
     from nova_navigator.dialogs.job_registry import JobRegistry
 
+from nova_navigator.icons import ico_
 from nova_navigator.scheduler import Job
 from nova_widgets.animated_icon import AnimatedIcon
 from nova_widgets.icon import Icon
 
-_DEFAULT_RUNNING_FRAMES: list[Icon] = [
-    Icon("󰪞"),
-    Icon("󰪟"),
-    Icon("󰪠"),
-    Icon("󰪡"),
-    Icon("󰪢"),
-    Icon("󰪣"),
-    Icon("󰪤"),
-    Icon("󰪥"),
-]
-_DEFAULT_RUNNING_INTERVAL: float = 0.15
-_DEFAULT_IDLE_ICON: Icon = Icon("󰄳")
-_DEFAULT_FAILED_ICON: Icon = Icon("󰅚")
+_RUNNING_INTERVAL: float = 0.15
+_FAILED_BRIGHT: tuple[int, int, int] = (255, 60, 60)
+_FAILED_DIM: tuple[int, int, int] = (140, 10, 10)
+_FAILED_N: int = 12
+_FAILED_INTERVAL: float = 0.1
 
 
 class _State(Enum):
@@ -53,39 +46,21 @@ class JobStatusIcon(Widget):
 
     _registry: JobRegistry
     _action: str
-    _idle_icon: Icon
-    _running_frames: list[Icon]
-    _running_interval: float
-    _failed_icon: Icon
     _current_state: _State
     _animated_icon: AnimatedIcon
     _poll_timer: Timer | None
 
-    def __init__(
-        self,
-        registry: JobRegistry,
-        action: str,
-        *,
-        idle_icon: Icon = _DEFAULT_IDLE_ICON,
-        running_frames: list[Icon] | None = None,
-        running_interval: float = _DEFAULT_RUNNING_INTERVAL,
-        failed_icon: Icon = _DEFAULT_FAILED_ICON,
-    ) -> None:
+    def __init__(self, registry: JobRegistry, action: str) -> None:
         super().__init__()
         self._registry = registry
         self._action = action
-        self._idle_icon = idle_icon
-        self._running_frames = running_frames if running_frames is not None else _DEFAULT_RUNNING_FRAMES
-        self._running_interval = running_interval
-        self._failed_icon = failed_icon
         self._current_state = _State.IDLE
         self._poll_timer = None
 
     def compose(self) -> ComposeResult:
         self._animated_icon = AnimatedIcon(
-            self._idle_icon,
+            ico_("circle_full", default=Icon("●")),
             action=self._action,
-            tooltip="Jobs (Ctrl+K)",
         )
         yield self._animated_icon
 
@@ -112,8 +87,23 @@ class JobStatusIcon(Widget):
         self._current_state = new_state
         match new_state:
             case _State.IDLE:
-                self._animated_icon.set_glyph(self._idle_icon)
+                self._animated_icon.icon_static(ico_("circle_full", default=Icon("●")))
             case _State.RUNNING:
-                self._animated_icon.set_animation(self._running_frames, self._running_interval)
+                self._animated_icon.icon_animate(
+                    [
+                        ico_("circle_empty", default=Icon("○")),
+                        ico_("circle_quarter", default=Icon("◔")),
+                        ico_("circle_half", default=Icon("◑")),
+                        ico_("circle_three_quarter", default=Icon("◕")),
+                        ico_("circle_full", default=Icon("●")),
+                    ],
+                    _RUNNING_INTERVAL,
+                )
             case _State.FAILED:
-                self._animated_icon.set_glyph(self._failed_icon)
+                self._animated_icon.icon_pulse(
+                    ico_("circle_full", default=Icon("●")),
+                    bright=_FAILED_BRIGHT,
+                    dim=_FAILED_DIM,
+                    n=_FAILED_N,
+                    interval=_FAILED_INTERVAL,
+                )

@@ -12,15 +12,31 @@ class Icon(str):
 
     ICON_WIDTH = 2
 
-    __slots__ = ()
+    __slots__ = ("_color",)
 
-    def __new__(cls, glyph: str | None = None) -> "Icon":
+    _color: tuple[int, int, int] | None
+
+    def __new__(cls, glyph: str | None = None, *, color: tuple[int, int, int] | None = None) -> "Icon":
         if glyph is None:
             text = " " * cls.ICON_WIDTH
         else:
             text = ljust(glyph, cls.ICON_WIDTH)
-        return super().__new__(cls, text)
+        instance = super().__new__(cls, text)
+        instance._color = color
+        return instance
 
     def __len__(self) -> int:
         """Return the fixed display width of the icon."""
         return self.ICON_WIDTH
+
+    @property
+    def markup(self) -> str:
+        """Return the icon as a Rich markup string.
+
+        Wraps the glyph in ``[rgb(r,g,b)]...[/]`` markup when a color was
+        given, otherwise returns the plain padded glyph.
+        """
+        if self._color is not None:
+            r, g, b = self._color
+            return f"[rgb({r},{g},{b})]{self!s}[/]"
+        return str(self)

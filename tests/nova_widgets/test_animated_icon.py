@@ -1,5 +1,6 @@
 import pytest
 from textual.app import App, ComposeResult
+from textual.screen import Screen
 
 from nova_widgets.animated_icon import AnimatedIcon
 from nova_widgets.icon import Icon
@@ -29,7 +30,7 @@ async def test_animated_icon_set_glyph_updates_display() -> None:
     app = _TestApp(icon)
     async with app.run_test() as pilot:
         await pilot.pause()
-        icon.set_glyph(Icon("B"))
+        icon.icon_static(Icon("B"))
         await pilot.pause()
         assert icon.renderable == str(Icon("B"))
 
@@ -40,7 +41,7 @@ async def test_animated_icon_stop_animation_restores_static_glyph() -> None:
     app = _TestApp(icon)
     async with app.run_test() as pilot:
         await pilot.pause()
-        icon.set_animation([Icon("X"), Icon("Y")], interval=0.05)
+        icon.icon_animate([Icon("X"), Icon("Y")], interval=0.05)
         await pilot.pause(delay=0.15)
         icon.stop_icon_animation()
         await pilot.pause()
@@ -50,20 +51,20 @@ async def test_animated_icon_stop_animation_restores_static_glyph() -> None:
 @pytest.mark.asyncio
 async def test_animated_icon_click_calls_action() -> None:
     triggered: list[str] = []
+    icon = AnimatedIcon(Icon("A"), action="test_action")
 
-    class _ActionApp(App[None]):
-        def __init__(self, widget: AnimatedIcon) -> None:
-            super().__init__()
-            self._widget = widget
-
+    class _ActionScreen(Screen[None]):
         def compose(self) -> ComposeResult:
-            yield self._widget
+            yield icon
 
         def action_test_action(self) -> None:
             triggered.append("test_action")
 
-    icon = AnimatedIcon(Icon("A"), action="test_action")
-    app = _ActionApp(icon)
+    class _ActionApp(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(_ActionScreen())
+
+    app = _ActionApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.hover(icon)

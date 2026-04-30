@@ -63,6 +63,13 @@ disc,U+ede9,💿
 bookmark,U+f02e,🔖
 remote,U+f08b9,🖧
 plus,U+f067,➕
+
+# job status
+circle_empty,U+f10c,○
+circle_quarter,◔,◔
+circle_half,U+f042,◑
+circle_three_quarter,◕,◕
+circle_full,U+f111,●
 minus,U+f068,➖
 info,U+ea74,🛈 
 checkbox,U+f0131,🞎 
