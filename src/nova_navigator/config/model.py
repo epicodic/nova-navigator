@@ -297,7 +297,15 @@ def _update_toml_container(container: Any, obj: BaseModel) -> None:
         if _is_list_of_config_model(inner_type):
             continue
 
-        if _is_config_model_type(inner_type) and isinstance(value, BaseModel):
+        if _is_list_of_config_model(inner_type) and isinstance(value, list):
+            aot = tomlkit.aot()
+            for item in value:
+                aot.append(_obj_to_table(item))
+            # Replace the existing key so the array-of-tables is fully rewritten.
+            if f.name in container:
+                del container[f.name]
+            container.add(f.name, aot)
+        elif _is_config_model_type(inner_type) and isinstance(value, BaseModel):
             if f.name in container:
                 _update_toml_container(container[f.name], value)
             # else: update-only semantics — new nested tables are not added
@@ -311,6 +319,6 @@ def update_toml_doc(doc: TOMLDocument, obj: BaseModel) -> None:
     Scalars are updated by key assignment (tomlkit preserves surrounding
     comments).
     Nested :class:`ConfigModel` subtables are recursed into.
-    ``list[ConfigModel]`` fields are skipped (too complex for in-place update).
+    ``list[ConfigModel]`` fields are fully rewritten as array-of-tables.
     """
     _update_toml_container(doc, obj)

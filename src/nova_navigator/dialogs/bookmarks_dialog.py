@@ -76,7 +76,7 @@ class BookmarksDialog(PopupWidget, can_focus=True):
         if event.button.id != "btn_edit":
             return
 
-        async def _after_edit(result: str) -> None:
+        async def _after_edit(result: str | None) -> None:
             if result == "OK":
                 self._rebuild_tree()
                 self.query_one(Tree).focus()
