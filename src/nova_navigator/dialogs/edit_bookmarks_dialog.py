@@ -279,11 +279,12 @@ class EditBookmarksDialog(Dialog):
         tree.set_reactive(Tree.cursor_line, -1)  # ty: ignore[invalid-argument-type]
         for node in tree.root.children:
             if node.data == tag:
-                tree.select_node(node)
+                node.expand()
+                tree.move_cursor(node)
                 return
             for child in node.children:
                 if child.data == tag:
-                    tree.select_node(child)
+                    tree.move_cursor(child)
                     return
 
     def _selected_tag(self) -> _NodeTag | None:

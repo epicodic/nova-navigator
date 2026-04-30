@@ -538,3 +538,46 @@ async def test_bookmarks_dialog_no_auto_select_when_group_absent(monkeypatch: py
         # cursor may be anywhere (or -1); just confirm no crash
         tree = app.query_one(Tree)
         assert tree is not None
+
+
+@pytest.mark.asyncio
+async def test_bookmarks_dialog_selected_group_is_expanded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BookmarksDialog: the auto-selected Bookmarks group is expanded and its entry visible."""
+    from nova_navigator.config import conf_
+
+    cfg = BookmarkConfig(
+        groups=[
+            Group(name="Computer", icon=None, bookmarks=[]),
+            Group(
+                name=DEFAULT_BOOKMARKS_GROUP,
+                icon=None,
+                bookmarks=[Bookmark(name="My Server", path="/mnt/server", icon=None)],
+            ),
+        ]
+    )
+    monkeypatch.setattr(conf_, "bookmarks", cfg)
+
+    class _App(App[None]):
+        def compose(self) -> ComposeResult:
+            return iter([])
+
+        async def on_mount(self) -> None:
+            await self.mount(BookmarksDialog(position=(0, 0)))
+
+    app = _App()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        tree = app.query_one(Tree)
+
+        # Bookmarks group is selected
+        assert tree.cursor_node is not None
+        assert DEFAULT_BOOKMARKS_GROUP in str(tree.cursor_node.label)
+
+        # The selected group is expanded
+        assert tree.cursor_node.is_expanded
+
+        # The added entry is a visible child of the selected node
+        children = list(tree.cursor_node.children)
+        assert len(children) == 1
+        assert "My Server" in str(children[0].label)

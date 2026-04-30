@@ -77,7 +77,8 @@ class BookmarksDialog(PopupWidget, can_focus=True):
         tree.set_reactive(Tree.cursor_line, -1)  # ty: ignore[invalid-argument-type]
         for node, group in zip(tree.root.children, conf_.bookmarks.groups, strict=False):
             if group.name == DEFAULT_BOOKMARKS_GROUP:
-                tree.select_node(node)
+                node.expand()
+                tree.move_cursor(node)
                 return
 
     def on_tree_node_selected(self, event: Tree.NodeSelected[str]) -> None:
