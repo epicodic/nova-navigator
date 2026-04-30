@@ -86,7 +86,7 @@ def test_button_icon_failed() -> None:
 @pytest.mark.asyncio
 async def test_job_row_running_is_expanded_on_mount() -> None:
     job = _make_job(state=Job.State.RUNNING)
-    row = JobRow(job, lambda j: None)
+    row = JobRow(job, lambda _: None)
     async with _RowApp(row).run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         assert row.query_one(".job-body").display is True
@@ -95,7 +95,7 @@ async def test_job_row_running_is_expanded_on_mount() -> None:
 @pytest.mark.asyncio
 async def test_job_row_completed_is_collapsed_on_mount() -> None:
     job = _make_job(state=Job.State.COMPLETED)
-    row = JobRow(job, lambda j: None)
+    row = JobRow(job, lambda _: None)
     async with _RowApp(row).run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         assert row.query_one(".job-body").display is False
@@ -104,7 +104,7 @@ async def test_job_row_completed_is_collapsed_on_mount() -> None:
 @pytest.mark.asyncio
 async def test_job_row_click_toggles_body() -> None:
     job = _make_job(state=Job.State.RUNNING)
-    row = JobRow(job, lambda j: None)
+    row = JobRow(job, lambda _: None)
     async with _RowApp(row).run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         body = row.query_one(".job-body")
@@ -120,7 +120,7 @@ async def test_job_row_click_toggles_body() -> None:
 @pytest.mark.asyncio
 async def test_job_row_error_label_hidden_when_running() -> None:
     job = _make_job(state=Job.State.RUNNING, error=None)
-    row = JobRow(job, lambda j: None)
+    row = JobRow(job, lambda _: None)
     async with _RowApp(row).run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         assert row.query_one(".error-msg").display is False
@@ -129,7 +129,7 @@ async def test_job_row_error_label_hidden_when_running() -> None:
 @pytest.mark.asyncio
 async def test_job_row_error_label_shown_for_failed_with_error() -> None:
     job = _make_job(state=Job.State.FAILED, error="disk full")
-    row = JobRow(job, lambda j: None)
+    row = JobRow(job, lambda _: None)
     async with _RowApp(row).run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         assert row.query_one(".error-msg").display is True
@@ -138,7 +138,7 @@ async def test_job_row_error_label_shown_for_failed_with_error() -> None:
 @pytest.mark.asyncio
 async def test_job_row_error_label_hidden_for_failed_without_error() -> None:
     job = _make_job(state=Job.State.FAILED, error=None)
-    row = JobRow(job, lambda j: None)
+    row = JobRow(job, lambda _: None)
     async with _RowApp(row).run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         assert row.query_one(".error-msg").display is False
@@ -147,7 +147,7 @@ async def test_job_row_error_label_hidden_for_failed_without_error() -> None:
 @pytest.mark.asyncio
 async def test_refresh_job_updates_css_class() -> None:
     job = _make_job(state=Job.State.RUNNING)
-    row = JobRow(job, lambda j: None)
+    row = JobRow(job, lambda _: None)
     async with _RowApp(row).run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         job.state = Job.State.COMPLETED
@@ -160,7 +160,7 @@ async def test_refresh_job_updates_css_class() -> None:
 @pytest.mark.asyncio
 async def test_refresh_job_shows_error_label_for_failed() -> None:
     job = _make_job(state=Job.State.RUNNING)
-    row = JobRow(job, lambda j: None)
+    row = JobRow(job, lambda _: None)
     async with _RowApp(row).run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         job.state = Job.State.FAILED
@@ -173,7 +173,7 @@ async def test_refresh_job_shows_error_label_for_failed() -> None:
 @pytest.mark.asyncio
 async def test_refresh_job_hides_error_label_when_no_error() -> None:
     job = _make_job(state=Job.State.FAILED, error="oops")
-    row = JobRow(job, lambda j: None)
+    row = JobRow(job, lambda _: None)
     async with _RowApp(row).run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         job.state = Job.State.COMPLETED
@@ -187,7 +187,7 @@ async def test_refresh_job_hides_error_label_when_no_error() -> None:
 async def test_refresh_job_updates_progress_labels() -> None:
     job = _make_job(state=Job.State.RUNNING)
     job.progress = Progress(total=10, completed=3, step_total=100, step_completed=40)
-    row = JobRow(job, lambda j: None)
+    row = JobRow(job, lambda _: None)
     async with _RowApp(row).run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         # verify refresh_job runs without error and updates bar values

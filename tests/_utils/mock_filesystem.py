@@ -297,3 +297,7 @@ class MockFilesystem(Filesystem):
     @override
     def readlink(self, path: VPath) -> str:
         raise OSError(f"Not a symbolic link: '{path}'")
+
+    @override
+    def refresh(self, path: VPath | None = None) -> None:
+        pass  # no caching in MockFilesystem

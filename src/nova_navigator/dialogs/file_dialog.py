@@ -237,8 +237,15 @@ class FileDialog(Dialog):
 
     DEFAULT_CSS = """
     FileDialog {
+        align: center middle;
+
+        #dialog_box {
+            width: 60%;
+            height: 60%;
+        }
+
         _FileListing {
-            height: 15;
+            height: 1fr;
             border: inner $surface;
         }
 
@@ -285,12 +292,14 @@ class FileDialog(Dialog):
             active_filter=self._filters[0] if self._filters else None,
             id="listing",
         )
-        with Horizontal(id="filename_row"):
-            yield Label("Directory:" if self._mode == FileDialogMode.DIR else "File name:")
-            yield Input(
+        yield Horizontal(
+            Label("Directory:" if self._mode == FileDialogMode.DIR else "File name:"),
+            Input(
                 id="filename_input",
                 disabled=(self._mode != FileDialogMode.SAVE),
-            )
+            ),
+            id="filename_row",
+        )
         if self._filters:
             options: list[tuple[str, int]] = [(f.label, i) for i, f in enumerate(self._filters)]
             yield Select(options, id="filter_select", value=0)
