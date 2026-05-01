@@ -109,6 +109,182 @@ It returns `ZshDriver` for `zsh`, `BashDriver` for `bash`, and `FallbackDriver` 
 
 ---
 
+## Terminal Widget Layer
+
+The `Terminal` class is a focusable Textual `Widget` that owns rendering, draining, and event handling.
+It delegates downward to `PtyBackend` (process I/O) and `ShellDriver` (shell syntax).
+
+### Supporting Classes
+
+**`TerminalPyteScreen`** — subclass of `pyte.Screen` that drops the unsupported `private` keyword from `set_margins`.
+This is a compatibility shim for a pyte bug triggered by certain escape sequences.
+
+**`TerminalDisplay`** — a `rich.ConsoleRenderable` holding one `rich.text.Text` per terminal row plus the cursor position.
+Its `__rich_console__` method copies the cursor row and applies a `"reverse"` style span at the cursor character before yielding.
+The stored lines in `_display` are never mutated.
+
+### Key Attributes
+
+| Attribute | Type | Purpose |
+|-----------|------|---------|
+| `command` | `str` | The shell command to run (e.g. `"/usr/bin/zsh"`) |
+| `ncol`, `nrow` | `int` | Current terminal dimensions |
+| `mouse_tracking` | `bool` | Whether the child app has enabled mouse reporting |
+| `keep_alive` | `bool` | Whether to respawn the shell on disconnect |
+| `_backend` | `PtyBackend` | The backend instance (default: `LocalPtyBackend`) |
+| `_driver` | `ShellDriver` | The driver instance (auto-detected from `command`) |
+| `_screen` | `TerminalPyteScreen` | pyte virtual screen (VT100 state machine) |
+| `_stream` | `pyte.Stream` | pyte ANSI parser; feeds bytes into `_screen` |
+| `_display` | `TerminalDisplay` | The last rendered frame, returned by `render()` |
+| `send_queue` | `asyncio.Queue \| None` | Commands from the widget to the PTY writer task |
+| `recv_queue` | `asyncio.Queue \| None` | Events from the backend readers, consumed by `recv()` |
+| `_draining` | `bool` | When True, stdout is fed to pyte but display rebuilds are suppressed |
+| `_nav_pending` | `int` | Number of in-flight navigations awaiting pre_cmd acknowledgement |
+| `_nav_future` | `Future[PurePath] \| None` | Resolved when `_nav_pending` reaches zero |
+| `_prompt_cursor_x` | `int` | Cursor X position captured after the most recent prompt |
+| `_pending_yank` | `bool` | Whether to restore killed text after draining ends |
+| `_snapshot_prompt_cursor` | `bool` | Set True to capture `_prompt_cursor_x` on the next rebuild |
+| `_rebuild_handle` | `TimerHandle \| None` | Pending `call_later` for the next deferred display rebuild |
+
+### Module-Level Constants
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `_CTRL_KEYS` | `dict[str, str]` | Maps Textual key names (arrows, F-keys, etc.) to VT escape sequences |
+| `_TERMINAL_COLORS` | `dict[str, str]` | Maps 10 named pyte colors plus `"default"` to hex values |
+| `_MOUSE_TRACKING_MODES` | `frozenset({"1000", "1002", "1003", "1006"})` | DECSET mode numbers that toggle mouse tracking |
+| `_RECV_DRAIN_LIMIT` | `100` | Maximum messages drained per `recv()` iteration |
+| `_DISPLAY_FPS` | `60.0` | Maximum display rebuild rate in frames per second |
+
+### Lifecycle
+
+```
+Terminal.__init__()   → allocates pyte screen/stream; queues are None
+Terminal.start()      → opens backend, creates async tasks
+Terminal.stop()       → cancels tasks, tears down backend, resets display
+Terminal.respawn()    → tears down and restarts backend (keeps recv loop alive)
+```
+
+`start()` and `stop()` are called explicitly by the host (`MainScreen`).
+The widget renders an empty line until `start()` is called.
+
+---
+
+## Screen Rendering Pipeline
+
+Rendering is split into two phases with different frequencies.
+
+### Phase 1 — per stdout chunk: `_feed_stdout(chars)`
+
+Called once per `stdout` message received from the PTY, at full read rate:
+
+1. **ANSI scan:** The raw text is searched with `_re_ansi_sequence` for DECSET sequences.
+Any sequence whose mode numbers intersect `_MOUSE_TRACKING_MODES` updates `mouse_tracking` — `h` enables, `l` disables.
+
+2. **pyte feed:** `self._stream.feed(chars)` parses the ANSI escape sequences and updates the pyte `TerminalPyteScreen` buffer.
+
+After `_feed_stdout` returns, `recv()` calls `_schedule_rebuild()`, which posts a `call_later(1 / _DISPLAY_FPS)` timer if one is not already pending.
+Many consecutive reads cause only one rebuild per frame.
+
+### Phase 2 — rate-limited: `_rebuild_display()`
+
+Called by the event loop timer at most `_DISPLAY_FPS` (60) times per second:
+
+3. **Rich Text conversion:** For each row in the pyte buffer, a `rich.text.Text` object is built.
+Characters are appended one by one.
+A run-length encoding approach tracks where the current style run started.
+When the style of character `x` differs from character `x-1`, `Text.stylize` is called on the completed run.
+
+4. **`TerminalDisplay` creation:** The list of `Text` lines and cursor position are wrapped in a new `TerminalDisplay` and stored as `self._display`.
+
+5. **Prompt cursor snapshot:** If `_snapshot_prompt_cursor` is True, `_prompt_cursor_x` is captured from the current cursor X position and the flag is cleared.
+
+6. **`refresh()`:** The widget is marked dirty.
+Textual calls `render()` which returns `self._display`.
+`TerminalDisplay.__rich_console__` yields the lines with cursor highlighting applied.
+
+---
+
+## Silent Send and Draining
+
+Some data must be sent to the shell without its echo appearing in the terminal display.
+The primary use cases are shell init code at startup and programmatic directory navigation.
+
+### Why termios ECHO Suppression Does Not Work
+
+Clearing the PTY `ECHO` flag via `termios.tcsetattr` is ineffective for interactive shells.
+When zsh or bash runs in interactive mode, they use their own line editor in raw mode, managing echo internally and ignoring the PTY line discipline's `ECHO` flag.
+
+### Inspiration: Midnight Commander
+
+MC's `feed_subshell(QUIETLY, ...)` reads and discards all PTY output until the shell prompt reappears.
+The same approach is applied here at the application layer.
+
+### The Draining State
+
+`Terminal._draining: bool` controls whether PTY output is forwarded to the display.
+
+```
+Normal mode (_draining=False)
+  stdout → pyte feed → _schedule_rebuild → display updated
+
+Draining mode (_draining=True)
+  stdout → discarded (pyte not fed, no rebuild)
+  ...more stdout...
+  pre_cmd fires → _draining=False → display rebuilt from current screen state
+```
+
+The `pre_cmd` pipe is the reliable "shell is back at prompt" signal — exactly as MC uses its `subshell_pipe`.
+
+### `send(data, mode="silent")`
+
+Public method on `Terminal`.
+When `mode` is `"silent"` and the driver supports stop/resume, sets `_draining = True` before writing `data` to the backend.
+The data reaches the shell as regular input; the echo is swallowed by the draining logic.
+Once the shell's precmd hook fires, draining ends and the display is live again.
+
+### Startup Bootstrap
+
+`_start_backend()` sets `_draining = True` before writing the init code when the driver supports stop/resume.
+The shell will STOP after its first precmd (startup).
+`recv()` will send SIGCONT to resume it and end the startup drain.
+
+---
+
+## Key and Mouse Event Flow
+
+### Keyboard
+
+1. Textual delivers a `Key` event to `on_key`.
+2. Special keys (arrows, F-keys, etc.) are translated via `_CTRL_KEYS` to their VT escape sequences.
+3. Printable characters use `event.character` directly.
+4. `ctrl+f1` releases focus back to the application without sending to the shell.
+5. The result is placed on `send_queue` as `["stdin", text]`.
+6. `_run()` writes the encoded bytes to the PTY via `backend.write()`.
+
+### Mouse (when `mouse_tracking` is enabled)
+
+1. `on_click` / `on_mouse_scroll_up` / `on_mouse_scroll_down` place `["click", ...]` or `["scroll", ...]` on `send_queue`.
+2. `_run()` encodes these as SGR mouse escape sequences via `_encode_mouse()` and writes them to the PTY.
+
+Mouse tracking is active when the running application sends any of the DECSET enable sequences `?1000h`, `?1002h`, `?1003h`, or `?1006h`.
+It is disabled by the corresponding `l` variants.
+
+---
+
+## Color Mapping
+
+pyte represents character colors as either:
+- A named color: `"black"`, `"red"`, `"green"`, `"yellow"`, `"blue"`, `"magenta"`, `"cyan"`, `"brown"`, `"white"`, `"brightblack"`, `"default"`.
+- A 6-digit hex string, uppercase or lowercase (e.g. `"ff6600"` for 256-color/truecolor).
+
+`_translate_terminal_color` maps these to Rich-compatible color strings:
+- Hex strings → `"#rrggbb"`.
+- Named colors → the hex values in `_TERMINAL_COLORS`.
+- Unknown strings → passed through as-is (may raise `ColorParseError` in `char_rich_style`, which logs a warning and falls back to `Style()`).
+
+---
+
 ## SIGSTOP Synchronisation
 
 The core design challenge is directory navigation: the Terminal widget needs to send `cd /path` to the shell and suppress the echo, without a race between the shell printing its prompt and the widget ending suppression.
@@ -195,9 +371,20 @@ This is an accepted trade-off for shells that lack `precmd_functions` or `PROMPT
 
 ---
 
-## recv_queue Message Protocol
+## Message Protocol (Internal Queues)
 
-The `recv_queue` is an `asyncio.Queue[list[object]]` shared between the backend's reader callbacks and the Terminal widget's `recv()` loop.
+Both queues carry `list[object]` messages with a string command as the first element.
+
+### send_queue (widget → PTY writer)
+
+| Message | Format | Purpose |
+|---------|--------|---------|
+| `stdin` | `["stdin", str]` | Text to write to the PTY |
+| `set_size` | `["set_size", rows, cols]` | Resize the PTY window |
+| `click` | `["click", x, y, button]` | Mouse click event |
+| `scroll` | `["scroll", "up"/"down", x, y]` | Mouse scroll event |
+
+### recv_queue (PTY readers → display updater)
 
 | Message | Format | Source | Purpose |
 |---------|--------|--------|---------|
