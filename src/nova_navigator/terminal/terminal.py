@@ -1,26 +1,36 @@
-"""A terminal emulator widget for Textual.
+"""PTY-backed terminal emulator widget for Textual.
+
+This module contains the ``Terminal`` widget, which embeds a shell inside a
+Textual application.  It delegates OS-level PTY management to a ``PtyBackend``
+and shell-specific hook/quoting logic to a ``ShellDriver``.
+
+The widget owns:
+- The pyte virtual screen and ANSI parser.
+- The Rich text rendering pipeline (``TerminalDisplay``).
+- The draining state machine for silent directory navigation.
+- Keyboard and mouse event handling.
+- The recv_queue processing loop.
+
+It does NOT own:
+- Process lifecycle (start/stop/signal) — that's ``PtyBackend``.
+- Shell init code, quoting, precmd parsing — that's ``ShellDriver``.
 
 Based on David Brochart's pyte example:
 https://github.com/selectel/pyte/blob/master/examples/terminal_emulator.py
 
+Related modules:
+- ``pty_backend.py`` — ``PtyBackend`` ABC and ``LocalPtyBackend``.
+- ``shell_driver.py`` — ``ShellDriver`` ABC and concrete drivers.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import fcntl
 import logging
-import os
-import pty
 import re
-import shlex
-import signal
-import struct
-import termios
-from asyncio import Task, TimerHandle
+from asyncio import Future, Task, TimerHandle
 from pathlib import PurePath
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import pyte
 from pyte.screens import Char
@@ -34,21 +44,20 @@ from textual.app import RenderResult, log
 from textual.message import Message
 from textual.widget import Widget
 
-_logger = logging.getLogger(__name__)
+from nova_navigator.terminal.pty_backend import LocalPtyBackend, PtyBackend
+from nova_navigator.terminal.shell_driver import ShellDriver, detect_driver
 
+_logger = logging.getLogger(__name__)
 
 __all__ = [
     "Terminal",
     "TerminalDisplay",
     "TerminalPyteScreen",
-    "shell_clear_prompt",
-    "shell_cmd_cd",
-    "shell_init_code",
 ]
 
 _KILL_LINE = "\x15"  # Ctrl+U — kill whole line to kill ring
 _YANK = "\x19"  # Ctrl+Y — yank from kill ring
-_END_OF_LINE = "\x05"  # Ctrl+E — move cursor to end of line, clears yank mark
+_END_OF_LINE = "\x05"  # Ctrl+E — move cursor to end of line
 
 
 _MOUSE_TRACKING_MODES: frozenset[str] = frozenset({"1000", "1002", "1003", "1006"})
@@ -79,7 +88,6 @@ class TerminalDisplay(ConsoleRenderable):
         self.cursor_y = cursor_y
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RichRenderResult:
-        # Cursor reverse is applied here only; we copy the row so the stored line is never mutated.
         result: list[Text] = []
         for y, line in enumerate(self.lines):
             if y == self.cursor_y:
@@ -139,21 +147,6 @@ _TERMINAL_COLORS: dict[str, str] = {
 }
 
 
-def shell_init_code(fd: int) -> str:
-    """Return zsh init code that hooks precmd to write the current directory to *fd*."""
-    return f" _nn_precmd() {{ pwd>&{fd} }} ; precmd_functions+=(_nn_precmd)\n"
-
-
-def shell_clear_prompt() -> str:
-    """Return 200 backspace characters to erase the current shell prompt."""
-    return "\b" * 200
-
-
-def shell_cmd_cd(path: PurePath) -> str:
-    """Return a shell command that silently changes directory to *path*."""
-    return f"cd {shlex.quote(str(path))} >& /dev/null && printf '\\e[A'"
-
-
 def _translate_terminal_color(color: str) -> str:
     """Map a pyte color name or 6-digit hex string to a Rich-compatible color string."""
     if re.fullmatch("[0-9a-f]{6}", color, re.IGNORECASE):
@@ -163,8 +156,39 @@ def _translate_terminal_color(color: str) -> str:
     return color
 
 
+def _encode_mouse(msg: list[Any]) -> bytes:
+    """Encode a mouse event message as SGR escape bytes for the PTY."""
+    if msg[0] == "click":
+        x = int(msg[1]) + 1
+        y = int(msg[2]) + 1
+        button = int(msg[3])
+        if button == 1:
+            return f"\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m".encode()
+        return b""
+    elif msg[0] == "scroll":
+        x = int(msg[2]) + 1
+        y = int(msg[3]) + 1
+        if msg[1] == "up":
+            return f"\x1b[<64;{x};{y}M".encode()
+        if msg[1] == "down":
+            return f"\x1b[<65;{x};{y}M".encode()
+    return b""
+
+
 class Terminal(Widget, can_focus=True):
-    """PTY-backed terminal emulator widget for Textual."""
+    """PTY-backed terminal emulator widget for Textual.
+
+    Embeds a shell process and renders its output via pyte and Rich.
+    Delegates process management to a ``PtyBackend`` and shell-specific
+    logic to a ``ShellDriver``.
+
+    The SIGSTOP synchronisation model:
+    When using a shell that supports it (zsh, bash), the precmd hook sends
+    ``kill -STOP $$`` after writing the CWD to the precmd pipe.  This freezes
+    the shell until ``Terminal`` calls ``backend.resume()``.  This makes
+    directory navigation deterministic — no race between output suppression
+    and shell prompt rendering.
+    """
 
     DEFAULT_CSS = """
     Terminal {
@@ -190,6 +214,8 @@ class Terminal(Widget, can_focus=True):
     def __init__(
         self,
         command: str,
+        backend: PtyBackend | None = None,
+        driver: ShellDriver | None = None,
         name: str | None = None,
         id: str | None = None,
         classes: str | None = None,
@@ -197,6 +223,8 @@ class Terminal(Widget, can_focus=True):
     ) -> None:
         self.command = command
         self.keep_alive = keep_alive
+        self._backend = backend or LocalPtyBackend()
+        self._driver = driver or detect_driver(command)
         self._started = False
         self._draining = False
         self.ncol = 80
@@ -207,8 +235,6 @@ class Terminal(Widget, can_focus=True):
         self.recv_queue: asyncio.Queue[list[object]] | None = None
         self.recv_task_t: Task[None] | None = None
         self._run_task: Task[None] | None = None
-        # Stored in _run() so stop() can remove readers without a running-loop call
-        self._loop: asyncio.AbstractEventLoop | None = None
         self._rebuild_handle: TimerHandle | None = None
 
         self._display = self.initial_display()
@@ -217,6 +243,14 @@ class Terminal(Widget, can_focus=True):
         self._prompt_cursor_x: int = 0
         self._pending_yank: bool = False
         self._snapshot_prompt_cursor: bool = False
+        # Counts navigations whose pre_cmd acknowledgement has not yet
+        # arrived.  Draining ends only when this reaches zero, preventing
+        # a rapid second cd from leaking its echo after the first pre_cmd
+        # clears draining.
+        self._nav_pending: int = 0
+        # Resolved when _nav_pending reaches 0.  Allows callers to await
+        # completion of a programmatic directory change.
+        self._nav_future: Future[PurePath] | None = None
 
         super().__init__(name=name, id=id, classes=classes)
 
@@ -232,9 +266,27 @@ class Terminal(Widget, can_focus=True):
         self.nrow = 24
 
         self.recv_queue = asyncio.Queue()
-        self._spawn_pty()
+        self._start_backend()
         self.recv_task_t = asyncio.create_task(self.recv())
         self._started = True
+
+    def _start_backend(self) -> None:
+        """Open the backend, start the send loop, and inject shell init code.
+
+        When the driver supports stop/resume, draining is enabled immediately.
+        The shell will freeze after its first precmd (startup); recv() will
+        send SIGCONT to resume it and end the startup drain.
+        """
+        precmd_fd = self._backend.open(self.command, self.nrow, self.ncol)
+        self.send_queue = asyncio.Queue()
+        self._run_task = asyncio.create_task(self._run())
+        # The shell will STOP after its first precmd.  Set draining so the
+        # startup output (init code echo) is suppressed.
+        if self._driver.supports_stop_resume:
+            self._draining = True
+        init = self._driver.init_code(precmd_fd)
+        if init:
+            self._backend.write(init.encode())
 
     def stop(self) -> None:
         if not self._started:
@@ -252,7 +304,8 @@ class Terminal(Widget, can_focus=True):
         if self._run_task is not None:
             self._run_task.cancel()
 
-        self._teardown_pty()
+        self._backend.detach_readers()
+        self._backend.teardown()
 
     def render(self) -> RenderResult:
         return self._display
@@ -280,28 +333,52 @@ class Terminal(Widget, can_focus=True):
         log.info("cursor, prompt cursor:", self._screen.cursor.x, self._prompt_cursor_x)
         return self._screen.cursor.x > self._prompt_cursor_x
 
-    async def set_terminal_directory(self, path: PurePath) -> None:
+    async def set_terminal_directory(self, path: PurePath) -> PurePath:
         """Change the shell's working directory to *path*, preserving any typed input.
 
-        If the user has typed text on the current prompt line, it is saved to the
-        kill ring with Ctrl+U, the ``cd`` command runs silently, and the text is
-        restored with Ctrl+Y once the new prompt appears.
+        Returns the actual CWD reported by the shell once the last in-flight
+        navigation completes.  If the caller is cancelled while awaiting, the
+        cd still executes but the result is discarded.
+
+        For drivers that support stop/resume (zsh, bash):
+        - Typed text is saved to the kill ring with Ctrl+U.
+        - The cd command runs silently (draining suppresses echo).
+        - After precmd, the text is restored with Ctrl+Y.
+
+        For FallbackDriver (POSIX sh):
+        - The cd command is written directly (echo visible).
+        - Returns *path* immediately (no synchronisation).
         """
-        self._pending_yank = self.has_input()
-        await self.send(_KILL_LINE + shell_cmd_cd(path) + "\n", mode="silent")
+        if not self._started:
+            return path
+        if self._driver.supports_stop_resume:
+            self._pending_yank = self.has_input()
+            if self._pending_yank:
+                self._backend.write(_KILL_LINE.encode())
+            self._nav_pending += 1
+            self._draining = True
+            # Create or reuse a future.  Multiple rapid navigations share
+            # the same future — it resolves when the *last* pre_cmd arrives.
+            if self._nav_future is None or self._nav_future.done():
+                self._nav_future = asyncio.get_running_loop().create_future()
+            cmd = " " + self._driver.cd_command(str(path)) + "\n"
+            self._backend.write(cmd.encode())
+            return await self._nav_future
+        cmd = " " + self._driver.cd_command(str(path)) + "\n"
+        self._backend.write(cmd.encode())
+        return path
 
     async def send(self, data: str, mode: Literal["normal", "silent"] = "normal") -> None:
         """Send *data* to the shell.
 
-        When *mode* is ``"silent"``, the echo of *data* is suppressed from
-        the display until the next shell prompt reappears.
+        When *mode* is ``"silent"`` and the driver supports stop/resume,
+        the echo of *data* is suppressed until the next precmd fires.
         """
         if not self._started:
             return
-        assert self.send_queue is not None
-        if mode == "silent":
+        if mode == "silent" and self._driver.supports_stop_resume:
             self._draining = True
-        self.send_queue.put_nowait(["stdin", data])
+        self._backend.write(data.encode())
 
     async def on_resize(self, _event: events.Resize) -> None:
         if not self._started:
@@ -338,7 +415,32 @@ class Terminal(Widget, can_focus=True):
     # recv loop
     # ------------------------------------------------------------------
 
+    def _handle_pre_cmd(self, raw: str) -> None:
+        """Process a pre_cmd message: update nav state, resume shell, post event."""
+        _pid, cwd = self._driver.parse_precmd_payload(raw)
+        if self._nav_pending > 0:
+            self._nav_pending -= 1
+        if self._draining and self._nav_pending == 0:
+            # All in-flight navigations acknowledged.  Write yank bytes
+            # before resuming so they arrive at the shell before it
+            # prints the new prompt.
+            if self._pending_yank:
+                self._pending_yank = False
+                self._backend.write((_YANK + _END_OF_LINE).encode())
+            self._draining = False
+            # Resolve the navigation future so callers unblock.
+            if self._nav_future is not None and not self._nav_future.done():
+                self._nav_future.set_result(cwd)
+        # Always resume — the shell STOPs after every precmd,
+        # not just after navigations.
+        if self._driver.supports_stop_resume:
+            self._backend.resume()
+        if self._nav_pending == 0:
+            self._snapshot_prompt_cursor = True
+        self.post_message(Terminal.PreCmd(self, cwd))
+
     async def recv(self) -> None:
+        """Process messages from recv_queue: stdout, pre_cmd, setup, disconnect."""
         assert self.recv_queue is not None
         try:
             while True:
@@ -351,11 +453,7 @@ class Terminal(Widget, can_focus=True):
                         assert self.send_queue is not None
                         self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
                     elif cmd == "pre_cmd":
-                        if self._draining:
-                            self._draining = False
-                        cwd = PurePath(str(message[1]).strip())
-                        self._snapshot_prompt_cursor = True
-                        self.post_message(Terminal.PreCmd(self, cwd))
+                        self._handle_pre_cmd(str(message[1]))
                     elif cmd == "stdout":
                         if not self._draining:
                             self._feed_stdout(str(message[1]))
@@ -394,7 +492,7 @@ class Terminal(Widget, can_focus=True):
         self._rebuild_display()
 
     def _feed_stdout(self, chars: str) -> None:
-        """Scan for DECSET sequences and feed chars to the pyte stream. Does not rebuild display."""
+        """Scan for DECSET sequences and feed chars to the pyte stream."""
         for sep_match in re.finditer(_re_ansi_sequence, chars):
             sequence = sep_match.group(0)
             if sequence.startswith(_DECSET_PREFIX):
@@ -438,10 +536,6 @@ class Terminal(Widget, can_focus=True):
         if self._snapshot_prompt_cursor:
             self._snapshot_prompt_cursor = False
             self._prompt_cursor_x = self._screen.cursor.x
-            if self._pending_yank:
-                self._pending_yank = False
-                if self.send_queue is not None:
-                    self.send_queue.put_nowait(["stdin", _YANK + _END_OF_LINE])
         self.refresh()
 
     def _process_stdout(self, chars: str) -> None:
@@ -494,143 +588,45 @@ class Terminal(Widget, can_focus=True):
         return TerminalDisplay([Text()], 0, 0)
 
     # ------------------------------------------------------------------
-    # Internal: PTY setup
+    # Internal: PTY management via backend
     # ------------------------------------------------------------------
 
-    def _teardown_pty(self) -> None:
-        """Remove event-loop readers, terminate the shell process, and close PTY file objects."""
-        if self._loop is not None:
-            with contextlib.suppress(Exception):
-                self._loop.remove_reader(self._p_out)
-            with contextlib.suppress(Exception):
-                self._loop.remove_reader(self._p_out_pre_cmd)
-        with contextlib.suppress(OSError):
-            os.kill(self.pid, signal.SIGTERM)
-        with contextlib.suppress(OSError):
-            os.waitpid(self.pid, os.WNOHANG)
-        with contextlib.suppress(OSError):
-            self._p_out.close()
-        with contextlib.suppress(OSError):
-            self._p_out_pre_cmd.close()
-
     def respawn(self) -> None:
-        """Tear down the current PTY and start a fresh shell, keeping ``recv_task_t`` alive.
+        """Tear down the current backend and start a fresh shell.
 
-        Can be called from a ``Terminal.Closed`` handler to restart the terminal on demand.
+        Keeps ``recv_task_t`` alive.  Can be called from a ``Terminal.Closed``
+        handler to restart the terminal on demand.
         """
-        assert self._loop is not None
-
-        # Cancel the send loop — a new one will be started below.
         if self._run_task is not None:
             self._run_task.cancel()
             self._run_task = None
 
-        self._teardown_pty()
+        self._backend.detach_readers()
+        self._backend.teardown()
 
-        # Reset the pyte screen.
         self._screen = TerminalPyteScreen(self.ncol, self.nrow)
         self._stream = pyte.Stream(self._screen)
 
-        # Open a fresh PTY and restart the send loop.
-        self._spawn_pty()
-
-    def _spawn_pty(self) -> None:
-        """Open a new PTY, start the send loop, and enqueue the shell init code."""
-        self.fd, self.fd_pre_cmd, self.fd_pre_cmd_child = self.open_terminal(command=self.command)
-        self._p_out = os.fdopen(self.fd, "w+b", 0)
-        self._p_out_pre_cmd = os.fdopen(self.fd_pre_cmd, "w+b", 0)
-        self.send_queue = asyncio.Queue()
-        self._run_task = asyncio.create_task(self._run())
-        # send() cannot be awaited here (sync context); replicate its SILENT logic inline
-        self._draining = True
-        self.send_queue.put_nowait(["stdin", shell_init_code(self.fd_pre_cmd_child)])
-
-    def open_terminal(self, command: str) -> tuple[int, int, int]:
-        """Fork a PTY and exec *command*.
-
-        Returns ``(master_fd, pre_cmd_read_fd, pre_cmd_child_fd_number)``.
-
-        ``pre_cmd_child_fd_number`` is the numeric fd value of the write end of the
-        pre-cmd pipe.  It is already closed in the parent process but its numeric value
-        is retained so it can be embedded in the zsh init script that runs inside the
-        child process (where the fd is still open).
-        """
-        fd_pre_cmd_parent, fd_pre_cmd_child = os.pipe()
-
-        self.pid, fd = pty.fork()
-        if self.pid == 0:
-            # Child process
-            os.close(fd_pre_cmd_parent)
-            os.set_inheritable(fd_pre_cmd_child, True)
-            argv = shlex.split(command)
-            env = os.environ.copy()
-            env["TERM"] = "xterm-256color"
-            env["LC_ALL"] = "en_US.UTF-8"
-            os.execvpe(argv[0], argv, env)  # noqa: S606
-            raise RuntimeError("execvpe failed")
-
-        # Parent process: close write end of the pre-cmd pipe.
-        # Its numeric value is kept as self.fd_pre_cmd_child and embedded in the shell
-        # init script where the fd is still open inside the child.
-        os.close(fd_pre_cmd_child)
-        return fd, fd_pre_cmd_parent, fd_pre_cmd_child
-
-    def _dispatch_send_message(self, msg: list[Any]) -> None:
-        """Write a single send-queue message to the PTY master."""
-        if msg[0] == "stdin":
-            self._p_out.write(str(msg[1]).encode())
-        elif msg[0] == "set_size":
-            winsize = struct.pack("HH", int(msg[1]), int(msg[2]))
-            fcntl.ioctl(self.fd, termios.TIOCSWINSZ, winsize)
-        elif msg[0] == "click":
-            x = int(msg[1]) + 1
-            y = int(msg[2]) + 1
-            button = int(msg[3])
-            if button == 1:
-                self._p_out.write(f"\x1b[<0;{x};{y}M".encode())
-                self._p_out.write(f"\x1b[<0;{x};{y}m".encode())
-        elif msg[0] == "scroll":
-            x = int(msg[2]) + 1
-            y = int(msg[3]) + 1
-            if msg[1] == "up":
-                self._p_out.write(f"\x1b[<64;{x};{y}M".encode())
-            if msg[1] == "down":
-                self._p_out.write(f"\x1b[<65;{x};{y}M".encode())
+        self._start_backend()
 
     async def _run(self) -> None:
+        """Send loop: reads from send_queue and dispatches to backend."""
         loop = asyncio.get_running_loop()
-        # Store loop reference so stop() can call remove_reader from sync context
-        self._loop = loop
-
         assert self.recv_queue is not None
-
-        def on_output() -> None:
-            assert self.recv_queue is not None
-            try:
-                read = self._p_out.read(65536).decode()
-                self.recv_queue.put_nowait(["stdout", read])
-            except UnicodeDecodeError as error:
-                log.warning("decode error:", error)
-            except Exception:  # noqa: BLE001
-                loop.remove_reader(self._p_out)
-                self.recv_queue.put_nowait(["disconnect", 1])
-
-        def on_pre_cmd() -> None:
-            assert self.recv_queue is not None
-            try:
-                self.recv_queue.put_nowait(["pre_cmd", self._p_out_pre_cmd.read(65536).decode()])
-            except UnicodeDecodeError:
-                pass
-            except Exception:  # noqa: BLE001
-                loop.remove_reader(self._p_out_pre_cmd)
-
-        loop.add_reader(self._p_out, on_output)
-        loop.add_reader(self._p_out_pre_cmd, on_pre_cmd)
+        self._backend.attach_readers(loop, self.recv_queue)
         self.recv_queue.put_nowait(["setup", {}])
 
         try:
             assert self.send_queue is not None
             while True:
-                self._dispatch_send_message(list(await self.send_queue.get()))
+                msg = list(await self.send_queue.get())
+                if msg[0] == "stdin":
+                    self._backend.write(str(msg[1]).encode())
+                elif msg[0] == "set_size":
+                    self._backend.resize(cast("int", msg[1]), cast("int", msg[2]))
+                elif msg[0] in ("click", "scroll"):
+                    encoded = _encode_mouse(msg)
+                    if encoded:
+                        self._backend.write(encoded)
         except asyncio.CancelledError:
             pass

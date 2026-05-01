@@ -30,11 +30,11 @@ from nova_navigator.nova_navigator_core import (
     PanelRef,
 )
 from nova_navigator.scheduler import DecisionRequest, Job
+from nova_navigator.terminal import Terminal
 from nova_navigator.uri import vfspath_from_uri
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
 from nova_navigator.widgets import DirectoryBrowser, Footer, JobStatusIcon
-from nova_navigator.widgets.terminal import Terminal
 from nova_widgets.menu import Action, Menu, MenuBar
 from nova_widgets.menu import constructor as mc
 
@@ -86,6 +86,7 @@ class MainScreen(Screen[None]):
     def __init__(self) -> None:
         super().__init__()
         self._terminal_mode = self._TerminalMode.MINIMIZED
+        self._nav_task: asyncio.Task[PurePath] | None = None
 
     @property
     def app(self) -> NovaNavigator:  # type: ignore[override]
@@ -353,7 +354,21 @@ class MainScreen(Screen[None]):
     async def _set_terminal_directory(self, path: VPath) -> None:
         if not isinstance(path.filesystem, LocalFilesystem):
             return
-        await self._terminal.set_terminal_directory(path.path)
+        # Cancel any in-flight programmatic navigation so a stale PreCmd
+        # cannot update the wrong panel.
+        if self._nav_task is not None and not self._nav_task.done():
+            self._nav_task.cancel()
+
+        # Capture the requesting panel so the callback updates the right one
+        # even if the active panel changes before the cd completes.
+        requesting_panel = self.active_panel()
+
+        async def _navigate() -> PurePath:
+            cwd = await self._terminal.set_terminal_directory(path.path)
+            requesting_panel.set_path(VPath(cwd, LocalFilesystem.singleton()))
+            return cwd
+
+        self._nav_task = asyncio.create_task(_navigate())
 
     async def _on_directory_browser_path_selected(self, event: DirectoryBrowser.PathSelected) -> None:
         vpath = event.path
@@ -363,6 +378,10 @@ class MainScreen(Screen[None]):
         self._update_actions(event.path)
 
     def _on_terminal_pre_cmd(self, event: Terminal.PreCmd) -> None:
+        # Ignore pre_cmds from programmatic navigations — the _nav_task
+        # callback handles those.  Only react to user-typed cd commands.
+        if self._nav_task is not None and not self._nav_task.done():
+            return
         # TODO handle non-local paths
         self.active_panel().set_path(VPath(event.cwd, LocalFilesystem.singleton()))
 
@@ -399,10 +418,11 @@ class MainScreen(Screen[None]):
         self.app.job_registry.add_job(job)
         await job.start(self.app.request_callback)
 
-    def on_bookmarks_dialog_bookmark_selected(self, event: BookmarksDialog.BookmarkSelected) -> None:
+    async def on_bookmarks_dialog_bookmark_selected(self, event: BookmarksDialog.BookmarkSelected) -> None:
         vpath = vfspath_from_uri(event.bookmark_path)
         _logger.info("Bookmark selected: %s", vpath)
         self.active_panel().set_path(vpath)
+        await self._set_terminal_directory(vpath)
 
     def _update_actions(self, path: VPath | None) -> None:
         class AKey(NamedTuple):
