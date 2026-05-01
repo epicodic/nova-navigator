@@ -399,10 +399,11 @@ class MainScreen(Screen[None]):
         self.app.job_registry.add_job(job)
         await job.start(self.app.request_callback)
 
-    def on_bookmarks_dialog_bookmark_selected(self, event: BookmarksDialog.BookmarkSelected) -> None:
+    async def on_bookmarks_dialog_bookmark_selected(self, event: BookmarksDialog.BookmarkSelected) -> None:
         vpath = vfspath_from_uri(event.bookmark_path)
         _logger.info("Bookmark selected: %s", vpath)
         self.active_panel().set_path(vpath)
+        await self._set_terminal_directory(vpath)
 
     def _update_actions(self, path: VPath | None) -> None:
         class AKey(NamedTuple):

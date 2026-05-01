@@ -1253,3 +1253,127 @@ async def test_prompt_cursor_x_snapshotted_at_rebuild_not_at_pre_cmd() -> None:
             assert terminal._prompt_cursor_x == terminal._screen.cursor.x
         finally:
             await _stop_recv_only(terminal)
+
+
+# ---------------------------------------------------------------------------
+# Race condition tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_race_a_stale_pre_cmd_resets_draining_for_current_navigation() -> None:
+    """Race A: a pre_cmd already sitting in recv_queue when set_terminal_directory
+    sets _draining=True immediately resets the flag back to False, ending silent
+    mode before the cd echo has been suppressed.
+
+    Correct behaviour: a pre_cmd that was queued *before* the current navigation
+    started should not clear the draining flag that belongs to that navigation.
+
+    This test is expected to FAIL on the current (buggy) code.
+    """
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
+
+        # Stale pre_cmd from a previous navigation is already in the queue.
+        recv_q: asyncio.Queue[list[object]] = asyncio.Queue()
+        terminal.recv_queue = recv_q
+        await recv_q.put(["pre_cmd", "/old/path\n"])
+
+        # Create the recv() task — it is scheduled but will not run until we
+        # yield to the event loop.  send() has no suspension points, so the
+        # task cannot interleave with set_terminal_directory.
+        terminal.recv_task_t = asyncio.create_task(terminal.recv())
+
+        # This sets _draining=True atomically (no yield inside send()).
+        await terminal.set_terminal_directory(PurePath("/new/path"))
+        assert terminal._draining is True  # sanity check — draining IS set here
+
+        # Yield to the event loop: recv() runs, processes the stale pre_cmd,
+        # and — in the buggy implementation — resets _draining to False.
+        await pilot.pause(delay=0.05)
+
+        # _draining should still be True because the pre_cmd predates the current
+        # navigation.  On current code this assertion FAILS.
+        assert terminal._draining is True  # BUG: currently False
+
+        terminal.recv_task_t.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await terminal.recv_task_t
+
+
+@pytest.mark.asyncio
+async def test_race_c_stale_pre_cmd_causes_wrong_prompt_cursor_snapshot() -> None:
+    """Race C: in a sequence of two rapid navigations (A then B), A's pre_cmd
+    arrives while _draining is still True for B's navigation.
+
+    The stale pre_cmd resets _draining=False and arms _snapshot_prompt_cursor.
+    The *first* stdout that arrives (echo of the cd B command) triggers a
+    rebuild that consumes the snapshot flag and records the echo cursor position
+    as _prompt_cursor_x — not B's real prompt position.
+
+    B's pre_cmd never arrives in this test (dropped / delayed), so the flag is
+    never re-armed.  When B's actual prompt stdout arrives, no snapshot is taken.
+    _prompt_cursor_x therefore reflects the echo position, not B's prompt.
+
+    A subsequent has_input() call then returns True (falsely detecting user input)
+    because cursor.x at B's prompt exceeds the stale _prompt_cursor_x.
+
+    This test is expected to FAIL on the current (buggy) code.
+    """
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
+        try:
+            terminal._prompt_cursor_x = 0  # initial: cursor at start of prompt
+
+            # Two rapid navigations — both set _draining=True.
+            await terminal.set_terminal_directory(PurePath("/tmp/A"))
+            await terminal.set_terminal_directory(PurePath("/tmp/B"))
+
+            # A's pre_cmd arrives (stale):
+            #   - resets _draining=False
+            #   - arms _snapshot_prompt_cursor=True
+            await recv_q.put(["pre_cmd", "/tmp/A\n"])
+            await pilot.pause(delay=0.05)
+            assert terminal._draining is False
+            assert terminal._snapshot_prompt_cursor is True
+
+            # Echo of the cd B command is now visible (draining was reset).
+            # Feed "abc" so the cursor lands at column 3 — an intermediate
+            # position that is NOT B's real prompt column.
+            await recv_q.put(["stdout", "abc"])
+            await pilot.pause(delay=0.15)  # wait for the 16.6 ms rebuild timer
+
+            # _snapshot_prompt_cursor was consumed: _prompt_cursor_x is now 3.
+            # This is wrong — it reflects the cd echo, not B's prompt.
+            assert terminal._snapshot_prompt_cursor is False
+            echo_cursor_pos = terminal._prompt_cursor_x  # 3
+
+            # B's pre_cmd never arrives (dropped / delayed — not injected here).
+            # B's prompt stdout arrives, moving the cursor to a column past the
+            # echo position.  Feed CR+LF then a long prompt so cursor ends at 14.
+            await recv_q.put(["stdout", "\r\n/home/user/projects $ "])
+            await pilot.pause(delay=0.15)
+
+            # No snapshot: flag is False, so _prompt_cursor_x stays at echo pos.
+            assert terminal._snapshot_prompt_cursor is False
+            assert terminal._prompt_cursor_x == echo_cursor_pos  # still 3, not 14
+
+            # Cursor is now at column 14 (end of B's prompt).
+            prompt_b_cursor = terminal._screen.cursor.x
+            assert prompt_b_cursor > echo_cursor_pos  # 14 > 3
+
+            # has_input() compares cursor.x (14) > _prompt_cursor_x (3) → True.
+            # The user has NOT typed anything; the correct answer is False.
+            # On current code this assertion FAILS.
+            assert terminal.has_input() is False  # BUG: currently True
+        finally:
+            await _stop_recv_only(terminal)
