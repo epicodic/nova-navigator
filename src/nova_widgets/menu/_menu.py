@@ -377,15 +377,13 @@ class Menu(Widget, Action, ActionCollection, can_focus=True):
 
         if action.checkable:
             kind = "radio" if action.is_exclusive else "checkbox"
-            segments.append(Segment(SYMBOL_TABLE[kind][1 if action.checked else 0], item_style))
+            segments.append(Segment(SYMBOL_TABLE[kind][1 if action.checked else 0].glyph, item_style))
         else:
             segments.append(Segment("  ", item_style))
 
         if self._has_icons:
-            icon_text = ""
-            if action.icon:
-                icon_text = action.icon
-            segments.append(Segment(icon_text.ljust(3), item_style))
+            icon_glyph = action.icon.glyph if action.icon else ""
+            segments.append(Segment(icon_glyph.ljust(3), item_style))
 
         segments.append(Segment(item_text, item_style))
 

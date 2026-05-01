@@ -121,3 +121,37 @@ async def test_menu_bar_left_arrow_while_menu_open_moves_to_previous_item() -> N
         active_after = _active_item(app)
         assert active_after is not None
         assert active_after.menu.text == "File"
+
+
+@pytest.mark.asyncio
+async def test_menu_bar_add_right_widget_mounts_widget() -> None:
+    from textual.widgets import Static
+
+    bar = MenuBar()
+    bar.add_menu("File")
+    right = Static("R", id="right-marker")
+    bar.add_right_widget(right)
+
+    app = MenuBarTestApp(bar)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        found = app.query_one("#right-marker", Static)
+        assert found is right
+
+
+@pytest.mark.asyncio
+async def test_menu_bar_right_widget_is_to_the_right_of_menu_items() -> None:
+    from textual.widgets import Static
+
+    bar = MenuBar()
+    bar.add_menu("File")
+    right = Static("R", id="right-marker")
+    bar.add_right_widget(right)
+
+    app = MenuBarTestApp(bar)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        items = list(app.query(MenuBarItem))
+        right_widget = app.query_one("#right-marker", Static)
+        # Right widget's x offset must be >= rightmost menu item's x offset
+        assert right_widget.region.x >= items[-1].region.right

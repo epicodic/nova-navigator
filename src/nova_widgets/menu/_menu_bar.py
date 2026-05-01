@@ -84,6 +84,7 @@ class MenuBar(Widget, ActionCollection):
     _menus: list[Menu]
     _items: list[MenuBarItem]
     _menu_opened: Menu | None
+    _right_widgets: list[Widget]
 
     def __init__(
         self,
@@ -92,6 +93,7 @@ class MenuBar(Widget, ActionCollection):
         ActionCollection.__init__(self)
         self._menus = []
         self._menu_opened = None
+        self._right_widgets = []
 
     def add_menu(self, title: str, *items: Action, name: str | None = None) -> Menu:
         menu = Menu(title, *items, name=name)
@@ -99,11 +101,23 @@ class MenuBar(Widget, ActionCollection):
         self._add_action(menu)
         return menu
 
+    def add_right_widget(self, widget: Widget) -> None:
+        """Append *widget* to the right side of the menu bar.
+
+        Must be called before the widget is mounted (before compose runs).
+        """
+        if self.is_mounted:
+            raise RuntimeError("add_right_widget() must be called before the widget is mounted")
+        self._right_widgets.append(widget)
+
     def compose(self) -> ComposeResult:
         self._items = [MenuBarItem(self, menu) for menu in self._menus]
-        yield Horizontal(
-            *self._items,
-        )
+        left = Horizontal(*self._items)
+        left.styles.width = "1fr"
+        right = Horizontal(*self._right_widgets)
+        right.styles.width = "auto"
+        outer = Horizontal(left, right)
+        yield outer
 
     def _on_menu_bar_item_mouse_over(self, event: MenuBarItem.MouseOver) -> None:
         if self._menu_opened:

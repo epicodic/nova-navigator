@@ -105,12 +105,12 @@ def column_formatter_icon(path: VPath) -> str:
         icon = ico_("executable")
 
     if stat.is_symlink:
-        icon_str = icon + "~"
+        icon_str = icon.glyph + "~"
     else:
-        icon_str = icon + " "
+        icon_str = icon.glyph + " "
 
     if stat.is_symlink and stat.is_broken_symlink:
-        icon_str = ico_("broken link") + "!"
+        icon_str = ico_("broken link").glyph + "!"
     return icon_str
 
 
@@ -203,6 +203,12 @@ class Column:
 class FilterWidget(PopupWidget, can_focus=True):
     """Widget for finding files in the directory browser."""
 
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "dismiss", "Dismiss", show=False),
+    ]
+    CLOSE_ACTION = PopupWidget.CloseAction.KEEP
+    CLOSE_ON_BLUR = False
+
     DEFAULT_CSS = """
     FilterWidget {
         width: 40;
@@ -227,16 +233,10 @@ class FilterWidget(PopupWidget, can_focus=True):
     }
     """
 
-    BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("escape", "dismiss", "Dismiss", show=False),
-    ]
-
     input: Input
 
     def __init__(self, title: str, position: tuple[int, int], browser: DirectoryBrowser) -> None:
-        super().__init__(
-            title, position, close_on_escape=False, close_on_blur=False, close_action=self.CloseAction.KEEP
-        )
+        super().__init__(title, position)
         self.browser = browser
         self.input = Input(placeholder="Type to filter ...", compact=True)
         self.display = False
@@ -245,7 +245,7 @@ class FilterWidget(PopupWidget, can_focus=True):
         yield Horizontal(
             Static("Filter:"),
             self.input,
-            Button(ico_("xmark"), id="close-button", compact=True),
+            Button(ico_("xmark").glyph, id="close-button", compact=True),
         )
 
     def on_focus(self, event: events.Focus) -> None:
