@@ -217,6 +217,13 @@ class Terminal(Widget, can_focus=True):
         self._prompt_cursor_x: int = 0
         self._pending_yank: bool = False
         self._snapshot_prompt_cursor: bool = False
+        # Counts the number of silent navigations currently in flight (i.e.
+        # set_terminal_directory calls whose pre_cmd acknowledgement has not yet
+        # arrived).  Together with _draining it prevents a race where a pre_cmd
+        # from a *previous* navigation clears the drain flag that belongs to a
+        # *subsequent* one — which would make the cd echo appear on screen and
+        # snapshot the prompt cursor at the wrong position.
+        self._nav_pending: int = 0
 
         super().__init__(name=name, id=id, classes=classes)
 
@@ -242,6 +249,7 @@ class Terminal(Widget, can_focus=True):
 
         self._display = self.initial_display()
         self._started = False
+        self._nav_pending = 0  # discard any in-flight navigation state
 
         if self._rebuild_handle is not None:
             self._rebuild_handle.cancel()
@@ -300,6 +308,16 @@ class Terminal(Widget, can_focus=True):
             return
         assert self.send_queue is not None
         if mode == "silent":
+            assert self.recv_queue is not None
+            # Put a "nav_start" barrier into recv_queue *before* setting
+            # _draining.  recv() processes recv_queue in order, so nav_start
+            # will always arrive before the pre_cmd that the shell will emit
+            # in response to the cd command.  Each nav_start increments
+            # _nav_pending; each matching pre_cmd decrements it.  Draining
+            # ends only when the counter reaches zero, ensuring that
+            # pre_cmds from earlier navigations cannot prematurely end the
+            # silent mode that belongs to a later one.
+            self.recv_queue.put_nowait(["nav_start"])
             self._draining = True
         self.send_queue.put_nowait(["stdin", data])
 
@@ -350,11 +368,32 @@ class Terminal(Widget, can_focus=True):
                     if cmd == "setup":
                         assert self.send_queue is not None
                         self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
+                    elif cmd == "nav_start":
+                        # A silent navigation was started; increment the counter
+                        # so the next pre_cmd is known to belong to it.
+                        self._nav_pending += 1
                     elif cmd == "pre_cmd":
-                        if self._draining:
-                            self._draining = False
+                        if self._nav_pending > 0:
+                            # This pre_cmd acknowledges a tracked navigation.
+                            # Decrement the counter; only end draining and arm
+                            # the cursor snapshot once all in-flight navigations
+                            # have been acknowledged.  This prevents a pre_cmd
+                            # from navigation N from clearing the drain that
+                            # belongs to the later navigation N+1.
+                            self._nav_pending -= 1
+                            if self._nav_pending == 0:
+                                self._draining = False
+                                self._snapshot_prompt_cursor = True
+                        else:
+                            # No tracked navigation in flight: this pre_cmd came
+                            # from a user-typed cd, a shell startup hook, or a
+                            # stale shell event.  Arm the snapshot only when not
+                            # draining; if draining, a nav_start for the current
+                            # navigation is still queued ahead of this pre_cmd and
+                            # we must not disturb the ongoing drain.
+                            if not self._draining:
+                                self._snapshot_prompt_cursor = True
                         cwd = PurePath(str(message[1]).strip())
-                        self._snapshot_prompt_cursor = True
                         self.post_message(Terminal.PreCmd(self, cwd))
                     elif cmd == "stdout":
                         if not self._draining:
@@ -541,7 +580,12 @@ class Terminal(Widget, can_focus=True):
         self._p_out_pre_cmd = os.fdopen(self.fd_pre_cmd, "w+b", 0)
         self.send_queue = asyncio.Queue()
         self._run_task = asyncio.create_task(self._run())
-        # send() cannot be awaited here (sync context); replicate its SILENT logic inline
+        # send() cannot be awaited here (sync context); replicate its SILENT
+        # logic inline.  Set _nav_pending=1 directly rather than enqueuing a
+        # nav_start, because recv_queue does not exist yet at this point —
+        # the first pre_cmd emitted by the shell after it loads the init code
+        # will decrement the counter to 0 and end the startup drain.
+        self._nav_pending = 1
         self._draining = True
         self.send_queue.put_nowait(["stdin", shell_init_code(self.fd_pre_cmd_child)])
 

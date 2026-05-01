@@ -998,6 +998,7 @@ async def test_draining_suppresses_display_rebuild_until_pre_cmd() -> None:
         initial_display = terminal._display
         recv_q = await _start_recv_only(terminal)
         try:
+            terminal._nav_pending = 1  # simulate one tracked navigation in flight
             terminal._draining = True
 
             # stdout while draining: discarded, display must NOT change
@@ -1044,6 +1045,7 @@ async def test_normal_send_after_pre_cmd_resets_drain_appears_on_screen() -> Non
         await pilot.pause()
         recv_q = await _start_recv_only(terminal)
         try:
+            terminal._nav_pending = 1  # simulate one tracked navigation in flight
             terminal._draining = True
             await recv_q.put(["stdout", "SILENT_CONTENT"])
             await recv_q.put(["pre_cmd", "/some/path\n"])
@@ -1127,6 +1129,7 @@ async def test_set_terminal_directory_sends_kill_line_and_cd_silently() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         terminal.send_queue = asyncio.Queue()
+        terminal.recv_queue = asyncio.Queue()
         terminal._started = True
 
         await terminal.set_terminal_directory(PurePath("/tmp/test"))  # noqa: S108
@@ -1149,6 +1152,7 @@ async def test_set_terminal_directory_no_pending_yank_when_no_input() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         terminal.send_queue = asyncio.Queue()
+        terminal.recv_queue = asyncio.Queue()
         terminal._started = True
         terminal._prompt_cursor_x = 0
         terminal._screen.cursor.x = 0  # no user input
@@ -1166,6 +1170,7 @@ async def test_set_terminal_directory_sets_pending_yank_when_input_present() -> 
     async with app.run_test() as pilot:
         await pilot.pause()
         terminal.send_queue = asyncio.Queue()
+        terminal.recv_queue = asyncio.Queue()
         terminal._started = True
         terminal._prompt_cursor_x = 2
         terminal._screen.cursor.x = 6  # user has typed 4 chars
@@ -1306,21 +1311,23 @@ async def test_race_a_stale_pre_cmd_resets_draining_for_current_navigation() -> 
 
 
 @pytest.mark.asyncio
-async def test_race_c_stale_pre_cmd_causes_wrong_prompt_cursor_snapshot() -> None:
-    """Race C: in a sequence of two rapid navigations (A then B), A's pre_cmd
-    arrives while _draining is still True for B's navigation.
+async def test_race_c_snapshot_taken_only_after_last_navigation_pre_cmd() -> None:
+    """Race C: with two rapid navigations (A then B), the snapshot of the prompt
+    cursor must only be armed once BOTH pre_cmds have arrived, not after the first.
 
-    The stale pre_cmd resets _draining=False and arms _snapshot_prompt_cursor.
-    The *first* stdout that arrives (echo of the cd B command) triggers a
-    rebuild that consumes the snapshot flag and records the echo cursor position
-    as _prompt_cursor_x — not B's real prompt position.
+    With the buggy code A's pre_cmd clears draining immediately (_nav_pending is
+    not tracked), so stdout arriving between the two pre_cmds is fed to the screen
+    and a rebuild snapshots _prompt_cursor_x at the wrong (echo) position.  After
+    that the flag is consumed; when B's prompt stdout arrives no snapshot is taken,
+    so _prompt_cursor_x is stuck at the echo position.  has_input() then wrongly
+    reports user input.
 
-    B's pre_cmd never arrives in this test (dropped / delayed), so the flag is
-    never re-armed.  When B's actual prompt stdout arrives, no snapshot is taken.
-    _prompt_cursor_x therefore reflects the echo position, not B's prompt.
-
-    A subsequent has_input() call then returns True (falsely detecting user input)
-    because cursor.x at B's prompt exceeds the stale _prompt_cursor_x.
+    With the fix (_nav_pending counter + nav_start barrier):
+    - After A's pre_cmd:  _nav_pending 2→1, draining still True, no snapshot.
+    - Stdout while draining is suppressed — screen not updated.
+    - After B's pre_cmd:  _nav_pending 1→0, draining cleared, snapshot armed.
+    - B's prompt stdout triggers rebuild; cursor recorded at B's real prompt.
+    - has_input() correctly returns False.
 
     This test is expected to FAIL on the current (buggy) code.
     """
@@ -1332,48 +1339,48 @@ async def test_race_c_stale_pre_cmd_causes_wrong_prompt_cursor_snapshot() -> Non
         terminal.send_queue = asyncio.Queue()
         terminal._started = True
         try:
-            terminal._prompt_cursor_x = 0  # initial: cursor at start of prompt
+            terminal._prompt_cursor_x = 0
 
-            # Two rapid navigations — both set _draining=True.
+            # Two rapid navigations — each enqueues a nav_start into recv_q.
             await terminal.set_terminal_directory(PurePath("/tmp/A"))
             await terminal.set_terminal_directory(PurePath("/tmp/B"))
+            # recv_q now contains: [nav_start, nav_start] (nav_pending will reach 2)
 
-            # A's pre_cmd arrives (stale):
-            #   - resets _draining=False
-            #   - arms _snapshot_prompt_cursor=True
+            # Let recv() process both nav_start messages.
+            await pilot.pause(delay=0.05)
+            assert terminal._nav_pending == 2
+            assert terminal._draining is True
+
+            # A's pre_cmd arrives — nav_pending should drop to 1, still draining.
             await recv_q.put(["pre_cmd", "/tmp/A\n"])
             await pilot.pause(delay=0.05)
+            # With fix: nav_pending=1, draining still True, no snapshot yet.
+            assert terminal._nav_pending == 1
+            assert terminal._draining is True  # BUG (no fix): currently False
+            assert terminal._snapshot_prompt_cursor is False  # BUG: currently True
+
+            # Stdout arrives while draining — must be suppressed (screen not fed).
+            # Feed "abc" which would move cursor to column 3 if not suppressed.
+            cursor_before = terminal._screen.cursor.x
+            await recv_q.put(["stdout", "abc"])
+            await pilot.pause(delay=0.15)
+            assert terminal._screen.cursor.x == cursor_before  # stdout was suppressed
+            assert terminal._prompt_cursor_x == 0  # unchanged
+
+            # B's pre_cmd arrives — nav_pending drops to 0, draining cleared, snapshot armed.
+            await recv_q.put(["pre_cmd", "/tmp/B\n"])
+            await pilot.pause(delay=0.05)
+            assert terminal._nav_pending == 0
             assert terminal._draining is False
             assert terminal._snapshot_prompt_cursor is True
 
-            # Echo of the cd B command is now visible (draining was reset).
-            # Feed "abc" so the cursor lands at column 3 — an intermediate
-            # position that is NOT B's real prompt column.
-            await recv_q.put(["stdout", "abc"])
-            await pilot.pause(delay=0.15)  # wait for the 16.6 ms rebuild timer
-
-            # _snapshot_prompt_cursor was consumed: _prompt_cursor_x is now 3.
-            # This is wrong — it reflects the cd echo, not B's prompt.
-            assert terminal._snapshot_prompt_cursor is False
-            echo_cursor_pos = terminal._prompt_cursor_x  # 3
-
-            # B's pre_cmd never arrives (dropped / delayed — not injected here).
-            # B's prompt stdout arrives, moving the cursor to a column past the
-            # echo position.  Feed CR+LF then a long prompt so cursor ends at 14.
+            # B's prompt stdout — now visible; rebuild fires and takes the snapshot.
             await recv_q.put(["stdout", "\r\n/home/user/projects $ "])
             await pilot.pause(delay=0.15)
+            assert terminal._snapshot_prompt_cursor is False  # consumed by rebuild
+            assert terminal._prompt_cursor_x == terminal._screen.cursor.x
 
-            # No snapshot: flag is False, so _prompt_cursor_x stays at echo pos.
-            assert terminal._snapshot_prompt_cursor is False
-            assert terminal._prompt_cursor_x == echo_cursor_pos  # still 3, not 14
-
-            # Cursor is now at column 14 (end of B's prompt).
-            prompt_b_cursor = terminal._screen.cursor.x
-            assert prompt_b_cursor > echo_cursor_pos  # 14 > 3
-
-            # has_input() compares cursor.x (14) > _prompt_cursor_x (3) → True.
-            # The user has NOT typed anything; the correct answer is False.
-            # On current code this assertion FAILS.
+            # Cursor is at the end of B's prompt; user has not typed anything.
             assert terminal.has_input() is False  # BUG: currently True
         finally:
             await _stop_recv_only(terminal)
