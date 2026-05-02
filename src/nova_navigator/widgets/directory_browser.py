@@ -339,6 +339,14 @@ class DirectoryBrowser(ScrollView):
             self.browser = browser
             super().__init__()
 
+    class PathChanged(Message):
+        """Posted when the current directory changes."""
+
+        def __init__(self, browser: DirectoryBrowser, path: VPath) -> None:
+            self.browser = browser
+            self.path = path
+            super().__init__()
+
     # private classes
 
     class _FileSystemEventHandler(watchdog.events.FileSystemEventHandler):
@@ -378,6 +386,8 @@ class DirectoryBrowser(ScrollView):
     HEADER_HEIGHT: ClassVar[int] = 1
 
     _path: VPath
+    _history: list[VPath]
+    _history_index: int
 
     _all_items: list[VPath]
     _shown_items: list[VPath]
@@ -433,6 +443,8 @@ class DirectoryBrowser(ScrollView):
             ),
         ]
         self._path = UpPath()
+        self._history = []
+        self._history_index = -1
         self._observer = watchdog.observers.Observer()
         self._observer.start()
         self._watch = None
@@ -454,10 +466,6 @@ class DirectoryBrowser(ScrollView):
     def _on_focus(self, event: events.Focus) -> None:
         self.post_message(DirectoryBrowser.Focus(self))
 
-    async def _on_key(self, event: events.Key) -> None:
-        self.log("KEY EVENT!!!", event)
-        # event.stop()
-
     @property
     def path(self) -> VPath:
         return self._path
@@ -474,9 +482,33 @@ class DirectoryBrowser(ScrollView):
             return [self.path_item_under_cursor]
         return list(self._selected_items)
 
-    def set_path(self, path: VPath) -> None:
+    @property
+    def can_go_back(self) -> bool:
+        return self._history_index > 0
+
+    @property
+    def can_go_forward(self) -> bool:
+        return self._history_index < len(self._history) - 1
+
+    def go_back(self) -> None:
+        if self.can_go_back:
+            self._history_index -= 1
+            self.set_path(self._history[self._history_index], record_history=False)
+
+    def go_forward(self) -> None:
+        if self.can_go_forward:
+            self._history_index += 1
+            self.set_path(self._history[self._history_index], record_history=False)
+
+    def set_path(self, path: VPath, *, record_history: bool = True) -> None:
         if path == self._path:
             return
+
+        if record_history:
+            # Truncate any forward history, then append
+            self._history = self._history[: self._history_index + 1]
+            self._history.append(path)
+            self._history_index = len(self._history) - 1
 
         old_name = None
         if path == self._path.parent:
@@ -485,6 +517,7 @@ class DirectoryBrowser(ScrollView):
 
         self.border_title = path.compact_path_str
         self._path = path
+        self.post_message(DirectoryBrowser.PathChanged(self, path))
         self.update(self.WhatChanged.ALL)
 
         if old_name is not None:
