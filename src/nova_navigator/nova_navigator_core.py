@@ -53,7 +53,7 @@ class NovaNavigatorCore:
     async def open_path(self, path: VPath, panel: PanelRef = PanelRef.ACTIVE) -> None:
         """Open *path* — navigate, execute, or open with app as appropriate."""
         if path.stat.is_directory:
-            await self.set_terminal_directory(path)
+            await self.set_panel_directory(path, panel)
             return
 
         if archive.is_supported_archive(path.path):
