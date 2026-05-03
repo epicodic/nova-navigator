@@ -790,12 +790,6 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         self._refresh_region(region)
         return self
 
-    def _is_symlink_at_row(self, row: int) -> bool:
-        if not self._shown_items or not (0 <= row < len(self._shown_items)):
-            return False
-        item = self._shown_items[row]
-        return not isinstance(item, UpPath) and item.stat.is_symlink
-
     def _scroll_cursor_into_view(self, animate: bool = False) -> None:
         """When the cursor is at a boundary, this method handles scrolling to ensure it remains visible."""
         fixed_offset = Spacing(self.HEADER_HEIGHT, 0, 0, 0)
@@ -818,8 +812,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         if old_row != new_row:
             self.refresh_row(old_row)
             self.refresh_row(new_row)
-            if self._is_symlink_at_row(old_row) != self._is_symlink_at_row(new_row):
-                self.refresh(layout=False)
+            self.refresh_border()
             self._scroll_cursor_into_view()
             self.post_message(DirectoryBrowser.ItemChanged(self, self.path_item_under_cursor))
 
