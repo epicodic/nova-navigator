@@ -651,7 +651,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
 
         return styles
 
-    def render_border_bottom_left(self) -> Strip:
+    def render_border_bottom_right(self) -> Strip:
         n = len(self._selected_items)
         if n == 0:
             return Strip.blank(0)
@@ -659,7 +659,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         text = f" {n} file{'s' if n != 1 else ''}, {_format_size(total)} "
         return Strip([Segment(text, self._border_rich_style())])
 
-    def render_border_bottom_right(self) -> Strip:
+    def render_border_bottom_left(self) -> Strip:
         if not self._shown_items:
             return Strip.blank(0)
         item = self._shown_items[self.cursor_row]
@@ -790,6 +790,12 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         self._refresh_region(region)
         return self
 
+    def _is_symlink_at_row(self, row: int) -> bool:
+        if not self._shown_items or not (0 <= row < len(self._shown_items)):
+            return False
+        item = self._shown_items[row]
+        return not isinstance(item, UpPath) and item.stat.is_symlink
+
     def _scroll_cursor_into_view(self, animate: bool = False) -> None:
         """When the cursor is at a boundary, this method handles scrolling to ensure it remains visible."""
         fixed_offset = Spacing(self.HEADER_HEIGHT, 0, 0, 0)
@@ -812,7 +818,8 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         if old_row != new_row:
             self.refresh_row(old_row)
             self.refresh_row(new_row)
-            self.refresh_border()
+            if self._is_symlink_at_row(old_row) != self._is_symlink_at_row(new_row):
+                self.refresh(layout=False)
             self._scroll_cursor_into_view()
             self.post_message(DirectoryBrowser.ItemChanged(self, self.path_item_under_cursor))
 
@@ -862,6 +869,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
             self._selected_items.add(cursor_item)
 
         self.refresh_row(self.cursor_row)
+        self.refresh_border()
 
     def action_select_all(self) -> None:
         self._selected_items = {item for item in self._shown_items if not isinstance(item, UpPath)}
