@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 
-from nova_navigator.vfs.filesystems import LocalFilesystem
+from nova_navigator.vfs.filesystems import AzureFilesystem, LocalFilesystem
 from nova_navigator.vfs.parse_uri import parse_uri
 from nova_navigator.vfs.vpath import VPath
 
@@ -57,7 +57,26 @@ def local_uri(path: str, _netloc: str | None) -> VPath:
     return LocalFilesystem.singleton().path(path)
 
 
+def azure_uri(path: str, netloc: str | None) -> VPath:
+    """Resolve an ``azure://`` URI to a :class:`~nova_navigator.vfs.VPath`.
+
+    URI format: ``azure://<account-hostname>/<container>/<blob-path>``
+
+    Example: ``azure://myaccount.blob.core.windows.net/mycontainer/folder/file.txt``
+    """
+    account_url = f"https://{netloc}"
+    # path is "/container/rest/of/path" or "/container/"
+    parts = path.lstrip("/").split("/", 1)
+    container = parts[0]
+    blob_path = "/" + parts[1] if len(parts) > 1 else "/"
+    if blob_path in ("//", "/"):
+        blob_path = "/"
+    fs = AzureFilesystem(account_url, container)
+    return fs.path(blob_path)
+
+
 def register_common_schemes() -> None:
     """Register built-in URI schemes: ``file`` and the empty (bare-path) scheme."""
     SCHEME_REGISTRY.register_scheme("file", local_uri)
     SCHEME_REGISTRY.register_scheme("", local_uri)
+    SCHEME_REGISTRY.register_scheme("azure", azure_uri)
