@@ -83,7 +83,7 @@ async def test_top_left_slot_appears_after_left_corner() -> None:
     async with _BorderTestApp(widget).run_test() as pilot:
         await pilot.pause()
         top_text = _get_strips(widget)[0].text
-        assert top_text[1:3] == "AB"
+        assert top_text[2:4] == "AB"
 
 
 @pytest.mark.asyncio
@@ -95,7 +95,7 @@ async def test_top_right_slot_appears_before_right_corner() -> None:
         strips = _get_strips(widget)
         top_text = strips[0].text
         w = widget.outer_size.width
-        assert top_text[w - 3 : w - 1] == "XY"
+        assert top_text[w - 4 : w - 2] == "XY"
 
 
 @pytest.mark.asyncio
@@ -105,7 +105,7 @@ async def test_bottom_left_slot_appears_after_left_corner() -> None:
     async with _BorderTestApp(widget).run_test() as pilot:
         await pilot.pause()
         bottom_text = _get_strips(widget)[-1].text
-        assert bottom_text[1:3] == "CD"
+        assert bottom_text[2:4] == "CD"
 
 
 @pytest.mark.asyncio
@@ -117,14 +117,14 @@ async def test_bottom_right_slot_appears_before_right_corner() -> None:
         strips = _get_strips(widget)
         bottom_text = strips[-1].text
         w = widget.outer_size.width
-        assert bottom_text[w - 3 : w - 1] == "PQ"
+        assert bottom_text[w - 4 : w - 2] == "PQ"
 
 
 @pytest.mark.asyncio
 async def test_slots_clipped_when_combined_width_exceeds_available() -> None:
     """Left slot fits fully; right slot is clipped to remaining space."""
     widget = _SlottedWidget()
-    # width=20, available between corners=18; left=12, right=12, combined=24>18
+    # width=20, available between slots=16 (w - 4); left=12 fits, right gets 4
     widget.tl = "L" * 12
     widget.tr = "R" * 12
     async with _BorderTestApp(widget).run_test() as pilot:
@@ -132,8 +132,8 @@ async def test_slots_clipped_when_combined_width_exceeds_available() -> None:
         top_text = _get_strips(widget)[0].text
         w = widget.outer_size.width
         assert len(top_text) == w
-        assert top_text[1:13] == "L" * 12  # left: all 12 fit
-        assert top_text[13 : w - 1] == "R" * 6  # right: only 6 remain
+        assert top_text[2:14] == "L" * 12  # left: all 12 fit (starts after corner+pad)
+        assert top_text[14 : w - 2] == "R" * 4  # right: only 4 remain (ends before pad+corner)
 
 
 @pytest.mark.asyncio
@@ -142,7 +142,7 @@ async def test_no_slots_leaves_native_fill_chars_intact() -> None:
     async with _BorderTestApp(widget).run_test() as pilot:
         await pilot.pause()
         top_text = _get_strips(widget)[0].text
-        # solid border fill is ─
+        # solid border fill is ─ (including the 1 padding char on each side)
         assert all(c == "─" for c in top_text[1:-1])
 
 
