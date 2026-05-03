@@ -52,3 +52,33 @@ def test_vfspath_from_uri_no_scheme() -> None:
     register_common_schemes()
     vpath = vfspath_from_uri("/usr/local/bin")
     assert str(vpath.path) == "/usr/local/bin"
+
+
+def test_vfspath_from_uri_azure_scheme() -> None:
+    from unittest.mock import patch
+
+    from nova_navigator.vfs.filesystems.azure import AzureFilesystem
+
+    register_common_schemes()
+    with (
+        patch("nova_navigator.vfs.filesystems.azure.ContainerClient"),
+        patch("nova_navigator.vfs.filesystems.azure.DefaultAzureCredential"),
+    ):
+        vpath = vfspath_from_uri("azure://myaccount.blob.core.windows.net/mycontainer/folder/file.txt")
+    assert isinstance(vpath.filesystem, AzureFilesystem)
+    assert str(vpath.path) == "/folder/file.txt"
+
+
+def test_vfspath_from_uri_azure_root() -> None:
+    from unittest.mock import patch
+
+    from nova_navigator.vfs.filesystems.azure import AzureFilesystem
+
+    register_common_schemes()
+    with (
+        patch("nova_navigator.vfs.filesystems.azure.ContainerClient"),
+        patch("nova_navigator.vfs.filesystems.azure.DefaultAzureCredential"),
+    ):
+        vpath = vfspath_from_uri("azure://myaccount.blob.core.windows.net/mycontainer/")
+    assert isinstance(vpath.filesystem, AzureFilesystem)
+    assert str(vpath.path) == "/"
