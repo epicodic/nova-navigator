@@ -35,6 +35,7 @@ from nova_navigator.nova_navigator_core import (
     NovaNavigatorCore,
     PanelRef,
 )
+from nova_navigator.remotes.azure import connect_azure
 from nova_navigator.remotes.ssh import connect_ssh
 from nova_navigator.scheduler import DecisionRequest, Job
 from nova_navigator.terminal import Terminal
@@ -599,9 +600,20 @@ class MainScreen(Screen[None]):
         if result != "OK":
             return
         conn = dialog.selected_connection
-        if conn is None or conn.ssh is None:
+        if conn is None:
             return
-        fs = await connect_ssh(conn)
+        if conn.ssh is not None and conn.ssh.host:
+            fs = await connect_ssh(conn)
+        elif conn.azure is not None and conn.azure.account_url:
+            fs = await connect_azure(conn)
+        else:
+            _logger.warning(
+                "Connection %r has no usable settings (ssh.host=%r, azure.account_url=%r)",
+                conn.name,
+                conn.ssh.host if conn.ssh else None,
+                conn.azure.account_url if conn.azure else None,
+            )
+            return
         if fs is None:
             return
         start_path = await asyncio.to_thread(fs.cwd)
