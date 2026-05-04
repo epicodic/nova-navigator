@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import io
+import logging
 from pathlib import PurePosixPath
 from typing import override
 
@@ -14,6 +15,8 @@ from azure.storage.blob import BlobPrefix, BlobProperties, ContainerClient, Stor
 from ..filesystem import Filesystem, StreamReaderLike, StreamWriterLike
 from ..types import Stat
 from ..vpath import VPath
+
+_logger = logging.getLogger(__name__)
 
 
 def _blob_name(path: VPath) -> str:
@@ -74,6 +77,8 @@ class AzureFilesystem(Filesystem):
         account_url: str,
         container: str,
         *,
+        proxy_url: str | None = None,
+        managed_identity: bool = False,
         client: ContainerClient | None = None,
     ) -> None:
         """Create an :class:`AzureFilesystem` for *container* on *account_url*.
@@ -82,14 +87,39 @@ class AzureFilesystem(Filesystem):
             account_url: Azure Storage service URL, e.g.
                 ``https://myaccount.blob.core.windows.net``.
             container: Blob container name.
+            proxy_url: Optional HTTP/HTTPS proxy URL, e.g. ``http://host:1080``.
+                Applied to all SDK requests when set.
+            managed_identity: When ``True``, ``ManagedIdentityCredential`` (IMDS) is
+                included in the ``DefaultAzureCredential`` chain even when a proxy is
+                configured.  The caller must ensure ``169.254.169.254`` bypasses the
+                proxy (e.g. via the ``NO_PROXY`` environment variable), otherwise the
+                IMDS probe will time out.  When ``False`` (default) and a proxy is
+                set, IMDS is excluded to avoid ~20 s of retries.
             client: Pre-constructed :class:`~azure.storage.blob.ContainerClient`
                 to reuse (used in tests to inject a mock).
                 When ``None``, a real client is built using
                 :class:`~azure.identity.DefaultAzureCredential`.
         """
         if client is None:
-            credential = DefaultAzureCredential()
-            self._client = ContainerClient(account_url, container, credential=credential)
+            _logger.info(
+                "Connecting to Azure Blob Storage: account_url=%r container=%r proxy=%r managed_identity=%r",
+                account_url,
+                container,
+                proxy_url,
+                managed_identity,
+            )
+            proxies: dict[str, str] | None = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+            # Skip ManagedIdentityCredential when a proxy is set and the user has not
+            # explicitly requested managed identity.  169.254.169.254 (IMDS) is a
+            # link-local address that can never be reached through a proxy; the SDK
+            # retries with exponential back-off (~20 s) before giving up otherwise.
+            exclude_mi = proxy_url is not None and not managed_identity
+            credential = DefaultAzureCredential(
+                exclude_managed_identity_credential=exclude_mi,
+                proxies=proxies,
+            )
+            self._client = ContainerClient(account_url, container, credential=credential, proxies=proxies)
+            _logger.info("ContainerClient created for %r / %r", account_url, container)
         else:
             self._client = client
 
@@ -127,12 +157,23 @@ class AzureFilesystem(Filesystem):
                 name = item.name
                 if name == prefix:
                     continue  # skip the directory marker itself
-                results.append(self.path("/" + name))
+                vpath = self.path("/" + name)
+                modified = item.last_modified.timestamp() if item.last_modified else -1.0
+                basename = PurePosixPath(name.rstrip("/")).name
+                vpath._stat = Stat(
+                    size=item.size or 0,
+                    modified=modified,
+                    is_hidden=basename.startswith("."),
+                )
+                results.append(vpath)
             else:
                 # BlobPrefix — virtual directory
                 assert isinstance(item, BlobPrefix)
                 vdir = item.name
-                results.append(self.path("/" + vdir.rstrip("/")))
+                vpath = self.path("/" + vdir.rstrip("/"))
+                basename = PurePosixPath(vdir.rstrip("/")).name
+                vpath._stat = Stat(is_directory=True, size=0, is_hidden=basename.startswith("."))
+                results.append(vpath)
         return results
 
     @override
