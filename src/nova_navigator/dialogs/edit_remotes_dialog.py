@@ -12,7 +12,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Label, ListItem, ListView
 
-from nova_navigator.config.remotes import ProxySettings, RemoteConfig, RemoteConnection, SshSettings
+from nova_navigator.config.remotes import AzureSettings, ProxySettings, RemoteConfig, RemoteConnection, SshSettings
 from nova_navigator.decision import Decision
 from nova_navigator.dialogs.dialog import Dialog
 from nova_navigator.dialogs.file_dialog import FileDialog, FileDialogMode
@@ -20,7 +20,7 @@ from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.icons import ICONS
 from nova_widgets import Button, Checkbox, Input, Select
 
-_PROTOCOL_OPTIONS: list[tuple[str, str]] = [("SSH", "ssh")]
+_PROTOCOL_OPTIONS: list[tuple[str, str]] = [("SSH", "ssh"), ("Azure Blob", "azure")]
 
 
 class EditRemotesDialog(Dialog):
@@ -97,6 +97,18 @@ class EditRemotesDialog(Dialog):
 
         #ssh_section {
             height: auto;
+        }
+
+        #azure_section {
+            height: auto;
+        }
+
+        #input_account_url {
+            width: 1fr;
+        }
+
+        #input_container {
+            width: 1fr;
         }
 
         #input_address {
@@ -198,6 +210,23 @@ class EditRemotesDialog(Dialog):
                 ),
                 id="ssh_section",
             ),
+            Vertical(
+                Horizontal(
+                    Label("Account URL: ", classes="form_label form_label-main"),
+                    Input(placeholder="https://account.blob.core.windows.net", id="input_account_url", disabled=True),
+                    classes="form_row",
+                ),
+                Horizontal(
+                    Label("Container: ", classes="form_label form_label-main"),
+                    Input(placeholder="container-name", id="input_container", disabled=True),
+                    classes="form_row",
+                ),
+                Horizontal(
+                    Checkbox("Use Managed Identity", id="check_managed_identity", disabled=True),
+                    classes="form_row",
+                ),
+                id="azure_section",
+            ),
             Horizontal(
                 Checkbox("Use Proxy", id="check_proxy", disabled=True),
                 Label("  Host: ", classes="form_label"),
@@ -215,14 +244,18 @@ class EditRemotesDialog(Dialog):
     # ------------------------------------------------------------------ list
 
     def _entry_uri(self, entry: RemoteConnection) -> str:
-        """Build a URI string from the entry's SSH settings."""
-        ssh = entry.ssh
-        if not ssh or not ssh.host:
-            return ""
-        netloc = f"{ssh.user}@{ssh.host}" if ssh.user else ssh.host
-        if ssh.port is not None and ssh.port != 22:  # noqa: PLR2004
-            netloc = f"{netloc}:{ssh.port}"
-        return f"ssh://{netloc}"
+        """Build a URI string from the entry's connection settings."""
+        if entry.ssh and entry.ssh.host:
+            ssh = entry.ssh
+            netloc = f"{ssh.user}@{ssh.host}" if ssh.user else ssh.host
+            if ssh.port is not None and ssh.port != 22:  # noqa: PLR2004
+                netloc = f"{netloc}:{ssh.port}"
+            return f"ssh://{netloc}"
+        if entry.azure and entry.azure.account_url:
+            azure = entry.azure
+            container = f"/{azure.container}" if azure.container else ""
+            return f"azure://{azure.account_url.removeprefix('https://')}{container}"
+        return ""
 
     def _make_list_label(self, entry: RemoteConnection) -> str:
         icon = ICONS.get_icon(entry.icon).glyph + " " if entry.icon else ""
@@ -258,6 +291,9 @@ class EditRemotesDialog(Dialog):
             "#input_username",
             "#input_identity_file",
             "#btn_pick_identity_file",
+            "#input_account_url",
+            "#input_container",
+            "#check_managed_identity",
             "#check_proxy",
             "#input_proxy_host",
             "#input_proxy_port",
@@ -277,10 +313,14 @@ class EditRemotesDialog(Dialog):
                 self.query_one("#input_port", Input).value = ""
                 self.query_one("#input_username", Input).value = ""
                 self.query_one("#input_identity_file", Input).value = ""
+                self.query_one("#input_account_url", Input).value = ""
+                self.query_one("#input_container", Input).value = ""
+                self.query_one("#check_managed_identity", Checkbox).value = False
                 self.query_one("#check_proxy", Checkbox).value = False
                 self.query_one("#input_proxy_host", Input).value = ""
                 self.query_one("#input_proxy_port", Input).value = ""
                 self.query_one("#ssh_section").display = False
+                self.query_one("#azure_section").display = False
                 self._update_remove_button()
                 return
 
@@ -292,9 +332,10 @@ class EditRemotesDialog(Dialog):
             self.query_one("#uri_preview", Input).value = self._entry_uri(entry)
 
             # protocol
-            proto = "ssh"  # only supported for now
+            proto = "azure" if entry.azure is not None else "ssh"
             self.query_one("#select_type", Select).value = proto
             self.query_one("#ssh_section").display = proto == "ssh"
+            self.query_one("#azure_section").display = proto == "azure"
 
             # SSH fields
             ssh = entry.ssh or SshSettings()
@@ -302,6 +343,12 @@ class EditRemotesDialog(Dialog):
             self.query_one("#input_port", Input).value = str(ssh.port) if ssh.port is not None else ""
             self.query_one("#input_username", Input).value = ssh.user or ""
             self.query_one("#input_identity_file", Input).value = ssh.identity_file or ""
+
+            # Azure fields
+            azure = entry.azure or AzureSettings()
+            self.query_one("#input_account_url", Input).value = azure.account_url
+            self.query_one("#input_container", Input).value = azure.container
+            self.query_one("#check_managed_identity", Checkbox).value = azure.use_managed_identity
 
             # proxy
             proxy_enabled = entry.proxy is not None
@@ -322,7 +369,15 @@ class EditRemotesDialog(Dialog):
     # ------------------------------------------------------------------ URI assembly
 
     def _build_uri_preview(self) -> str:
-        proto = "ssh"
+        proto = str(self.query_one("#select_type", Select).value)
+        if proto == "azure":
+            account_url = self.query_one("#input_account_url", Input).value.strip()
+            container = self.query_one("#input_container", Input).value.strip()
+            if not account_url:
+                return ""
+            container_part = f"/{container}" if container else ""
+            return f"azure://{account_url.removeprefix('https://')}{container_part}"
+        # ssh
         address = self.query_one("#input_address", Input).value.strip()
         port_str = self.query_one("#input_port", Input).value.strip()
         username = self.query_one("#input_username", Input).value.strip()
@@ -331,7 +386,7 @@ class EditRemotesDialog(Dialog):
         netloc = f"{username}@{address}" if username else address
         if port_str and port_str != "22":
             netloc = f"{netloc}:{port_str}"
-        return f"{proto}://{netloc}"
+        return f"ssh://{netloc}"
 
     def _assemble_and_store_uri(self) -> None:
         if self._current_index is None:
@@ -364,7 +419,7 @@ class EditRemotesDialog(Dialog):
                 self._run_pick_identity_file()
 
     def _on_add(self) -> None:
-        new_entry = RemoteConnection(name="new-connection", ssh=SshSettings())
+        new_entry = RemoteConnection(name="new-connection", ssh=SshSettings(), azure=None)
         self._working.append(new_entry)
         lv = self.query_one("#remote_list", ListView)
         lv.append(ListItem(Label(self._make_list_label(new_entry))))
@@ -459,6 +514,53 @@ class EditRemotesDialog(Dialog):
         if entry.ssh is None:
             entry.ssh = SshSettings()
         entry.ssh.identity_file = event.value or None
+
+    @on(Select.Changed, "#select_type")
+    def _on_protocol_changed(self, event: Select.Changed) -> None:
+        if self._syncing or self._current_index is None:
+            return
+        proto = str(event.value)
+        entry = self._working[self._current_index]
+        if proto == "azure":
+            if entry.azure is None:
+                entry.azure = AzureSettings()
+            entry.ssh = None
+        else:
+            if entry.ssh is None:
+                entry.ssh = SshSettings()
+            entry.azure = None
+        self.query_one("#ssh_section").display = proto == "ssh"
+        self.query_one("#azure_section").display = proto == "azure"
+        self._assemble_and_store_uri()
+
+    @on(Input.Changed, "#input_account_url")
+    def _on_account_url_changed(self, event: Input.Changed) -> None:
+        if self._syncing or self._current_index is None:
+            return
+        entry = self._working[self._current_index]
+        if entry.azure is None:
+            entry.azure = AzureSettings()
+        entry.azure.account_url = event.value
+        self._assemble_and_store_uri()
+
+    @on(Input.Changed, "#input_container")
+    def _on_container_changed(self, event: Input.Changed) -> None:
+        if self._syncing or self._current_index is None:
+            return
+        entry = self._working[self._current_index]
+        if entry.azure is None:
+            entry.azure = AzureSettings()
+        entry.azure.container = event.value
+        self._assemble_and_store_uri()
+
+    @on(Checkbox.Changed, "#check_managed_identity")
+    def _on_managed_identity_toggled(self, event: Checkbox.Changed) -> None:
+        if self._syncing or self._current_index is None:
+            return
+        entry = self._working[self._current_index]
+        if entry.azure is None:
+            entry.azure = AzureSettings()
+        entry.azure.use_managed_identity = event.value
 
     @on(Checkbox.Changed, "#check_proxy")
     def _on_proxy_toggled(self, event: Checkbox.Changed) -> None:

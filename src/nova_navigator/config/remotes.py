@@ -20,6 +20,15 @@ class SshSettings(BaseModel):
 
 
 @dataclass
+class AzureSettings(BaseModel):
+    """Azure Blob Storage settings for a remote connection."""
+
+    account_url: str = ""
+    container: str = ""
+    use_managed_identity: bool = False
+
+
+@dataclass
 class ProxySettings(BaseModel):
     """Proxy settings for a remote connection."""
 
@@ -34,6 +43,7 @@ class RemoteConnection(BaseModel):
     name: str = key_field()
     icon: str | None = None
     ssh: SshSettings | None = None
+    azure: AzureSettings | None = None
     proxy: ProxySettings | None = None
 
 
