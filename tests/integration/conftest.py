@@ -25,6 +25,7 @@ auto_confirm_delete_dialog()
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -120,6 +121,25 @@ async def set_panels(ctx: AppCtx) -> None:
     await ctx.pilot.pause()  # let the directory scan complete
     await ctx.pilot.press("down")  # skip past ".." to first file
     await ctx.pilot.pause()
+
+
+async def poll_until(
+    pilot: Pilot[None],
+    predicate: Callable[[], bool],
+    *,
+    interval: float = 0.1,
+    max_wait: float = 5.0,
+) -> None:
+    """Pause repeatedly until *predicate* returns ``True`` or *max_wait* expires.
+
+    Prefer this over ``pilot.pause(delay=X)`` wherever the ready condition is
+    observable, so tests are not sensitive to absolute timing under load.
+    """
+    steps = max(1, round(max_wait / interval))
+    for _ in range(steps):
+        await pilot.pause(delay=interval)
+        if predicate():
+            return
 
 
 # ---------------------------------------------------------------------------

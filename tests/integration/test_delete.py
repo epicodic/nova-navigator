@@ -10,6 +10,7 @@ from tests.integration.conftest import (
     AppCtx,
     auto_cancel_dialog,
     auto_confirm_delete_dialog,
+    poll_until,
     set_panels,
 )
 
@@ -25,7 +26,7 @@ async def test_delete_single_file_removes_it_from_filesystem(app_ctx: AppCtx) ->
 
     with patch(_DELETE_DIALOG_PATH, return_value=auto_confirm_delete_dialog()):
         await app_ctx.pilot.press("f8")
-        await app_ctx.pilot.pause(delay=0.5)
+        await poll_until(app_ctx.pilot, lambda: not (app_ctx.src_dir / "remove_me.txt").exists())
 
     assert not (app_ctx.src_dir / "remove_me.txt").exists()
 
@@ -59,7 +60,7 @@ async def test_delete_multiple_files_all_removed(app_ctx: AppCtx) -> None:
 
     with patch(_DELETE_DIALOG_PATH, return_value=auto_confirm_delete_dialog()):
         await app_ctx.pilot.press("f8")
-        await app_ctx.pilot.pause(delay=0.5)
+        await poll_until(app_ctx.pilot, lambda: not any((app_ctx.src_dir / n).exists() for n in names))
 
     for name in names:
         assert not (app_ctx.src_dir / name).exists(), f"{name} still exists after delete"

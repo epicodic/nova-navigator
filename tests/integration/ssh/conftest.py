@@ -42,6 +42,7 @@ from nova_navigator.nova_navigator import MainScreen, NovaNavigator
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem, SSHFilesystem
 from tests._utils.stub_ssh_server import StubSSHServer
+from tests.integration.conftest import poll_until
 
 # ---------------------------------------------------------------------------
 # SSH server fixture (session-scoped)
@@ -127,15 +128,13 @@ async def ssh_app_ctx(
 # Panel setup helpers
 # ---------------------------------------------------------------------------
 
-_SSH_SCAN_DELAY = 0.5  # seconds: SSH exec_command involves a subprocess, so we wait longer than local
-
 
 async def set_ssh_panels(ctx: SshAppCtx) -> None:
     """Point left=local (active), right=remote SSH.  Waits for scan and moves cursor off '..'."""
     ctx.screen._left_panel.set_path(VPath(ctx.local_dir, LocalFilesystem.singleton()))
     ctx.screen._right_panel.set_path(VPath(ctx.remote_dir, ctx.ssh_fs))
     ctx.screen._left_panel.focus()
-    await ctx.pilot.pause(delay=_SSH_SCAN_DELAY)
+    await poll_until(ctx.pilot, lambda: len(ctx.screen._right_panel._shown_items) > 1)
     await ctx.pilot.press("down")  # skip past ".." to first file
     await ctx.pilot.pause()
 
@@ -145,10 +144,6 @@ async def set_ssh_panels_remote_left(ctx: SshAppCtx) -> None:
     ctx.screen._left_panel.set_path(VPath(ctx.remote_dir, ctx.ssh_fs))
     ctx.screen._right_panel.set_path(VPath(ctx.local_dir, LocalFilesystem.singleton()))
     ctx.screen._left_panel.focus()
-    # Poll until the remote scan populates the panel (more than just "..").
-    for _ in range(20):
-        await ctx.pilot.pause(delay=_SSH_SCAN_DELAY / 4)
-        if len(ctx.screen._left_panel._shown_items) > 1:
-            break
+    await poll_until(ctx.pilot, lambda: len(ctx.screen._left_panel._shown_items) > 1)
     await ctx.pilot.press("down")
     await ctx.pilot.pause()
