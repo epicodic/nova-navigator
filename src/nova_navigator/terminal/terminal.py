@@ -328,6 +328,9 @@ class Terminal(Widget, can_focus=True):
         self._backend.detach_readers()
         self._backend.teardown()
 
+    def on_unmount(self) -> None:
+        self.stop()
+
     def render(self) -> RenderResult:
         return self._display
 
