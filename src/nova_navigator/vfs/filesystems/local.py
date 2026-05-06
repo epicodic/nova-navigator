@@ -151,3 +151,8 @@ class LocalFilesystem(Filesystem):
     def mkdir(self, path: VPath) -> None:
         self._assert_vpath(path)
         os.mkdir(path.path)
+
+    @override
+    def readlink(self, path: VPath) -> str:
+        self._assert_vpath(path)
+        return os.readlink(path.path)

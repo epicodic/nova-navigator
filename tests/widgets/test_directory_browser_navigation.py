@@ -2,12 +2,39 @@
 
 import pytest
 
+from nova_navigator.vfs.types import Stat
+from nova_navigator.vfs.vpath import VPath
 from nova_navigator.widgets.directory_browser import DirectoryBrowser, UpPath
+from tests._utils.mock_filesystem import MockFilesystem
 from tests.widgets._directory_browser_fixtures import (
     flat_dir_fs,
     nested_fs,
     run_browser,
 )
+
+
+class _SymlinkNavigationFilesystem(MockFilesystem):
+    def stat(self, path: VPath) -> Stat:
+        stat = super().stat(path)
+        if path.name == "link.txt":
+            return Stat(
+                size=stat.size,
+                modified=stat.modified,
+                is_hidden=stat.is_hidden,
+                is_directory=stat.is_directory,
+                is_symlink=True,
+            )
+        return stat
+
+    def readlink(self, path: VPath) -> str:
+        if path.name == "link.txt":
+            return "../wrong-target.txt"
+        return super().readlink(path)
+
+    def resolve_link(self, path: VPath) -> VPath:
+        if path.name == "link.txt":
+            return self.path("/resolved/target.txt")
+        return super().resolve_link(path)
 
 
 @pytest.mark.asyncio
@@ -128,3 +155,25 @@ async def test_item_changed_message_posted_on_cursor_move() -> None:
         await pilot.pause()
         item_changed = [m for m in msgs if isinstance(m, DirectoryBrowser.ItemChanged)]
         assert len(item_changed) == 1
+
+
+@pytest.mark.asyncio
+async def test_follow_symlink_uses_filesystem_resolve_link() -> None:
+    fs = _SymlinkNavigationFilesystem(
+        files={
+            "/home/user/link.txt": b"",
+            "/resolved/target.txt": b"resolved",
+        }
+    )
+
+    async with run_browser(fs) as (pilot, browser, msgs):
+        browser.cursor_row = next(i for i, path in enumerate(browser._shown_items) if path.name == "link.txt")
+        await pilot.pause()
+
+        msgs.clear()
+        browser.action_follow_symlink()
+        await pilot.pause()
+
+        path_selected = [m for m in msgs if isinstance(m, DirectoryBrowser.PathSelected)]
+        assert len(path_selected) == 1
+        assert path_selected[0].path == fs.path("/resolved/target.txt")
