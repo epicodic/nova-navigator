@@ -21,6 +21,7 @@ import os
 import socket
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import IO
 
@@ -210,6 +211,9 @@ class StubSFTPServerInterface(paramiko.SFTPServerInterface):
 class StubSSHServerInterface(paramiko.ServerInterface):
     """SSH ServerInterface: accepts all auth, handles exec and sftp channels."""
 
+    def __init__(self, exec_delay: float = 0.0) -> None:
+        self._exec_delay = exec_delay
+
     def check_auth_password(self, username: str, password: str) -> int:
         """Accept any password."""
         return AUTH_SUCCESSFUL
@@ -232,6 +236,8 @@ class StubSSHServerInterface(paramiko.ServerInterface):
         """Execute *command* via zsh and pipe stdout/stderr back through the channel."""
 
         def _run() -> None:
+            if self._exec_delay > 0:
+                time.sleep(self._exec_delay)
             result = subprocess.run(["zsh", "-c", command.decode()], capture_output=True, check=False)
             channel.sendall(result.stdout)
             if result.stderr:
@@ -261,10 +267,13 @@ class StubSSHServer:
     Args:
         root_dir: Path that StubSFTPServerInterface uses as the default cwd
             for the sftp subsystem's canonicalize('.') call.
+        exec_delay: Artificial delay (seconds) added before each exec_command
+            response, to simulate network/server latency in tests.
     """
 
-    def __init__(self, root_dir: Path) -> None:
+    def __init__(self, root_dir: Path, exec_delay: float = 0.0) -> None:
         self.root_dir = root_dir
+        self._exec_delay = exec_delay
         self.host = "127.0.0.1"
         self._host_key: paramiko.RSAKey = paramiko.RSAKey.generate(bits=2048)
         self._transports: list[paramiko.Transport] = []
@@ -305,7 +314,7 @@ class StubSSHServer:
         transport = paramiko.Transport(conn)
         transport.add_server_key(self._host_key)
         transport.set_subsystem_handler("sftp", paramiko.SFTPServer, StubSFTPServerInterface, self.root_dir)
-        server_iface = StubSSHServerInterface()
+        server_iface = StubSSHServerInterface(exec_delay=self._exec_delay)
         with self._lock:
             self._transports.append(transport)
         event = threading.Event()

@@ -59,6 +59,16 @@ def ssh_server(tmp_path_factory: pytest.TempPathFactory) -> Generator[StubSSHSer
     server.stop()
 
 
+@pytest.fixture(scope="session")
+def slow_ssh_server(tmp_path_factory: pytest.TempPathFactory) -> Generator[StubSSHServer, None, None]:
+    """Stub SSH server with 300 ms per-command delay to simulate real network latency."""
+    root = tmp_path_factory.mktemp("slow_ssh_root")
+    server = StubSSHServer(root_dir=root, exec_delay=0.3)
+    server.start()
+    yield server
+    server.stop()
+
+
 # ---------------------------------------------------------------------------
 # App context dataclass
 # ---------------------------------------------------------------------------
@@ -103,6 +113,46 @@ async def ssh_app_ctx(
         lambda: SSHFilesystem(
             hostname=ssh_server.host,
             port=ssh_server.port,
+            username="testuser",
+            password="testpass",  # noqa: S106
+            ssh_client=ssh_client,
+        )
+    )
+
+    app = NovaNavigator()
+    async with app.run_test(size=(120, 40), headless=not headed) as pilot:
+        await pilot.pause()
+        screen = app._main_screen
+        yield SshAppCtx(
+            pilot=pilot,
+            screen=screen,
+            local_dir=local_dir,
+            remote_dir=remote_dir,
+            ssh_fs=ssh_fs,
+        )
+
+    ssh_fs._ssh_client.close()
+
+
+@pytest_asyncio.fixture
+async def slow_ssh_app_ctx(
+    tmp_path: Path,
+    slow_ssh_server: StubSSHServer,
+    headed: bool,
+) -> object:  # yields SshAppCtx
+    """Like ssh_app_ctx but connected to the slow_ssh_server (300 ms exec delay)."""
+    local_dir = tmp_path / "local"
+    local_dir.mkdir()
+    remote_dir = tmp_path / "remote"
+    remote_dir.mkdir()
+
+    ssh_client = paramiko.SSHClient()
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())  # noqa: S507
+
+    ssh_fs: SSHFilesystem = await asyncio.to_thread(
+        lambda: SSHFilesystem(
+            hostname=slow_ssh_server.host,
+            port=slow_ssh_server.port,
             username="testuser",
             password="testpass",  # noqa: S106
             ssh_client=ssh_client,

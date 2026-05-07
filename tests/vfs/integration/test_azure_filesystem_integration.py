@@ -71,8 +71,9 @@ def fs(container_client: ContainerClient) -> AzureFilesystem:
 # ── tests ─────────────────────────────────────────────────────────────────────
 
 
-def test_list_empty_container(fs: AzureFilesystem) -> None:
-    result = fs.iterdir(fs.path("/"))
+@pytest.mark.asyncio
+async def test_list_empty_container(fs: AzureFilesystem) -> None:
+    result = [p async for p in fs.iterdir(fs.path("/"))]
     assert result == []
 
 
@@ -108,10 +109,10 @@ def test_remove(fs: AzureFilesystem) -> None:
         fs.stat(fs.path("/todelete.txt"))
 
 
-def test_mkdir_and_iterdir(fs: AzureFilesystem) -> None:
+@pytest.mark.asyncio
+async def test_mkdir_and_iterdir(fs: AzureFilesystem) -> None:
     fs.mkdir(fs.path("/mydir"))
-    root_entries = fs.iterdir(fs.path("/"))
-    paths = [str(p.path) for p in root_entries]
+    paths = [str(p.path) async for p in fs.iterdir(fs.path("/"))]
     assert "/mydir" in paths
 
 

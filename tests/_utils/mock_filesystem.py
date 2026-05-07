@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import threading
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import override
@@ -163,11 +165,21 @@ class MockFilesystem(Filesystem):
         return VPath(self._home_path, self)
 
     @override
-    def iterdir(self, path: VPath) -> list[VPath]:
+    async def iterdir(
+        self,
+        path: VPath,
+        *,
+        cancel: threading.Event | None = None,
+    ) -> AsyncIterator[VPath]:
         posix = self._to_posix(path)
         self._dir_node(posix)  # raises if not a directory
         children = [p for p in self._nodes if p.parent == posix and p != posix]
-        return [VPath(p, self) for p in children]
+        for p in children:
+            if cancel is not None and cancel.is_set():
+                return
+            vp = VPath(p, self)
+            vp._stat = self.stat(vp)
+            yield vp
 
     @override
     def stat(self, path: VPath) -> Stat:
