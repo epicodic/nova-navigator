@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import os
-from collections.abc import Callable
+import threading
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import override
 
 import paramiko
 
-from ..filesystem import Filesystem, Stat, StreamReaderLike, StreamWriterLike
+from ..filesystem import Filesystem, FilesystemCapabilities, Stat, StreamReaderLike, StreamWriterLike
 from ..vpath import VPath
 
 
@@ -156,6 +158,7 @@ class SSHFilesystem(Filesystem):
             self._ssh_client.save_host_keys(os.path.expanduser("~/.ssh/known_hosts"))
         self._sftp_client = self._ssh_client.open_sftp()
         self._stat_cache: dict[tuple[str, bool], dict[str, StatEntry]] = {}
+        self._stat_cache_lock = threading.Lock()
 
     def __eq__(self, value: object) -> bool:
         return isinstance(value, SSHFilesystem) and self._ssh_client == value._ssh_client
@@ -188,25 +191,72 @@ class SSHFilesystem(Filesystem):
 
     def _dir_stat(self, path: str, follow_symlinks: bool) -> dict[str, StatEntry]:
         key = (path, follow_symlinks)
-        if key not in self._stat_cache:
-            command = _STAT_COMMAND_FOLLOW_LINKS if follow_symlinks else _STAT_COMMAND
+        with self._stat_cache_lock:
+            if key in self._stat_cache:
+                return self._stat_cache[key]
+        command = _STAT_COMMAND_FOLLOW_LINKS if follow_symlinks else _STAT_COMMAND
+        try:
             _, stdout, _ = self._ssh_client.exec_command(f"cd {path} && {command}")
-            self._stat_cache[key] = _parse_stat_output(stdout.read().decode())
-        return self._stat_cache[key]
+            result = _parse_stat_output(stdout.read().decode())
+        except paramiko.SSHException as exc:
+            raise OSError(str(exc)) from exc
+        with self._stat_cache_lock:
+            self._stat_cache[key] = result
+        return result
 
     @override
     def refresh(self, path: VPath | None = None) -> None:
-        if path is None:
-            self._stat_cache.clear()
-        else:
-            p = str(path)
-            self._stat_cache.pop((p, True), None)
-            self._stat_cache.pop((p, False), None)
+        with self._stat_cache_lock:
+            if path is None:
+                self._stat_cache.clear()
+            else:
+                p = str(path)
+                self._stat_cache.pop((p, True), None)
+                self._stat_cache.pop((p, False), None)
+
+    @property
+    @override
+    def capabilities(self) -> FilesystemCapabilities:
+        return FilesystemCapabilities(
+            streaming_iterdir=False,
+            watch=False,
+            symlinks=True,
+            permissions=True,
+        )
 
     @override
-    def iterdir(self, path: VPath) -> list[VPath]:
-        file_list = self._dir_stat(str(path), follow_symlinks=False)
-        return [path / name for name, _ in file_list.items()]
+    async def iterdir(
+        self,
+        path: VPath,
+        *,
+        cancel: threading.Event | None = None,
+    ) -> AsyncIterator[VPath]:
+        self._assert_vpath(path)
+        if cancel is not None and cancel.is_set():
+            return
+
+        def _fetch_both() -> tuple[dict[str, StatEntry], dict[str, StatEntry]]:
+            return self._dir_stat(str(path), True), self._dir_stat(str(path), False)
+
+        file_list_stat, file_list_lstat = await asyncio.to_thread(_fetch_both)
+
+        for name, lstat_entry in file_list_lstat.items():
+            if cancel is not None and cancel.is_set():
+                return
+            stat_entry = file_list_stat.get(name)
+            if stat_entry is None:
+                continue
+            vp = path / name
+            vp._stat = Stat(
+                size=stat_entry.size or 0,
+                modified=stat_entry.modified_time or 0,
+                mode=lstat_entry.permissions,
+                is_hidden=name.startswith("."),
+                is_directory=stat_entry.is_directory,
+                is_executable=stat_entry.permissions & 0o111 != 0,
+                is_symlink=lstat_entry.is_symlink,
+            )
+            yield vp
 
     @override
     def parent(self, path: VPath) -> VPath:

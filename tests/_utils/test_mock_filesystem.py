@@ -2,6 +2,8 @@
 
 import pytest
 
+from nova_navigator.vfs.filesystem import FilesystemCapabilities
+
 from .mock_filesystem import MockFilesystem
 
 # ---------------------------------------------------------------------------
@@ -80,26 +82,30 @@ def test_stat_missing_raises() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_iterdir_empty() -> None:
+@pytest.mark.asyncio
+async def test_iterdir_empty() -> None:
     fs = MockFilesystem({"/empty": None})
-    assert fs.path("/empty").iterdir() == []
+    assert [p async for p in fs.path("/empty").iterdir()] == []
 
 
-def test_iterdir_returns_direct_children_only() -> None:
+@pytest.mark.asyncio
+async def test_iterdir_returns_direct_children_only() -> None:
     fs = MockFilesystem(
         {
             "/d/a.txt": b"a",
             "/d/sub/b.txt": b"b",
         }
     )
-    children = {str(p.path) for p in fs.path("/d").iterdir()}
+    children = {str(p.path) async for p in fs.path("/d").iterdir()}
     assert children == {"/d/a.txt", "/d/sub"}
 
 
-def test_iterdir_on_file_raises() -> None:
+@pytest.mark.asyncio
+async def test_iterdir_on_file_raises() -> None:
     fs = MockFilesystem({"/f.txt": b"x"})
     with pytest.raises(NotADirectoryError):
-        fs.path("/f.txt").iterdir()
+        async for _ in fs.path("/f.txt").iterdir():
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -334,10 +340,12 @@ def test_vpath_from_wrong_filesystem_raises() -> None:
         fs2.stat(foreign)
 
 
-def test_iterdir_on_missing_path_raises() -> None:
+@pytest.mark.asyncio
+async def test_iterdir_on_missing_path_raises() -> None:
     fs = MockFilesystem()
     with pytest.raises(FileNotFoundError):
-        fs.path("/no/such/dir").iterdir()
+        async for _ in fs.path("/no/such/dir").iterdir():
+            pass
 
 
 def test_read_errors_only_affect_specified_path() -> None:
@@ -575,10 +583,11 @@ def test_mkdir_parent_is_file_raises() -> None:
         fs.mkdir(fs.path("/home/user/f.txt/child"))
 
 
-def test_mkdir_new_dir_appears_in_iterdir() -> None:
+@pytest.mark.asyncio
+async def test_mkdir_new_dir_appears_in_iterdir() -> None:
     fs = MockFilesystem()
     fs.mkdir(fs.path("/home/user/newdir"))
-    children = {str(p.path) for p in fs.path("/home/user").iterdir()}
+    children = {str(p.path) async for p in fs.path("/home/user").iterdir()}
     assert "/home/user/newdir" in children
 
 
@@ -596,3 +605,28 @@ def test_is_same_device_different_filesystem() -> None:
     fs1 = MockFilesystem({"/a.txt": b"x"})
     fs2 = MockFilesystem({"/a.txt": b"x"})
     assert not fs1.is_same_device(fs1.path("/a.txt"), fs2.path("/a.txt"))
+
+
+# ---------------------------------------------------------------------------
+# FilesystemCapabilities / async iterdir
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mock_filesystem_async_iterdir() -> None:
+    fs = MockFilesystem(
+        {
+            "/home/user/a.txt": b"aaa",
+            "/home/user/b.txt": b"bbb",
+        }
+    )
+    names = sorted([p.name async for p in fs.path("/home/user").iterdir()])
+    assert names == ["a.txt", "b.txt"]
+
+
+def test_filesystem_default_capabilities() -> None:
+    fs = MockFilesystem()
+    caps = fs.capabilities
+    assert isinstance(caps, FilesystemCapabilities)
+    assert caps.streaming_iterdir is False
+    assert caps.watch is False

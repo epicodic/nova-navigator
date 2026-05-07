@@ -177,3 +177,29 @@ async def test_follow_symlink_uses_filesystem_resolve_link() -> None:
         path_selected = [m for m in msgs if isinstance(m, DirectoryBrowser.PathSelected)]
         assert len(path_selected) == 1
         assert path_selected[0].path == fs.path("/resolved/target.txt")
+
+
+@pytest.mark.asyncio
+async def test_setting_cursor_row_with_empty_shown_items_does_not_crash() -> None:
+    """Setting cursor_row while _shown_items is empty must not raise IndexError.
+
+    Regression: when set_path is called while a directory load is already in
+    flight, _load_directory clears _shown_items to [] then the new set_path
+    sets cursor_row = 0, triggering watch_cursor_row → path_item_under_cursor
+    → _shown_items[0] → IndexError, killing the worker and freezing the panel.
+    """
+    async with run_browser(flat_dir_fs()) as (pilot, browser, _msgs):
+        # Move the cursor to a non-zero row so the watcher will fire when we
+        # reset to 0 (the watcher only runs when old_row != new_row).
+        await pilot.press("down")
+        await pilot.pause()
+        assert browser.cursor_row > 0
+
+        # Simulate what _load_directory does at the start of a new load.
+        browser._shown_items = []
+        browser.refresh()
+        await pilot.pause()
+
+        # This must not raise IndexError — the real crash site.
+        browser.cursor_row = 0
+        await pilot.pause()

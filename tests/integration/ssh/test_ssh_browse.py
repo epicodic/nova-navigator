@@ -102,7 +102,8 @@ async def test_enter_on_dotdot_navigates_to_parent(ssh_app_ctx: SshAppCtx) -> No
     # Start inside the subdirectory; the cursor defaults to row 0 ("..")
     ssh_app_ctx.screen._left_panel.set_path(VPath(subdir, ssh_app_ctx.ssh_fs))
     ssh_app_ctx.screen._left_panel.focus()
-    await ssh_app_ctx.pilot.pause()
+    # Wait until the panel has loaded ".." at row 0 before pressing Enter
+    await poll_until(ssh_app_ctx.pilot, lambda: len(ssh_app_ctx.screen._left_panel._shown_items) >= 1)
 
     # Row 0 is always the ".." (UpPath) entry; Enter selects it and navigates up
     await ssh_app_ctx.pilot.press("enter")

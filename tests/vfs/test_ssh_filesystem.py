@@ -196,12 +196,12 @@ def test_dir_stat_parses_exec_command_output() -> None:
     assert set(result.keys()) == {"a.txt", "b.txt"}
 
 
-def test_iterdir_returns_vpaths() -> None:
+@pytest.mark.asyncio
+async def test_iterdir_returns_vpaths() -> None:
     fs, mock_ssh, _ = _make_fs()
     output = "\n".join([_stat_line("x.txt"), _stat_line("y.txt")])
     _set_exec_output(mock_ssh, output)
-    entries = fs.iterdir(fs.path("/home/user"))
-    names = {vp.name for vp in entries}
+    names = {vp.name async for vp in fs.iterdir(fs.path("/home/user"))}
     assert names == {"x.txt", "y.txt"}
 
 

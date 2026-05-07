@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import io
 import logging
+import threading
+from collections.abc import AsyncIterator
 from pathlib import PurePosixPath
 from typing import override
 
@@ -12,7 +15,7 @@ from azure.core.exceptions import HttpResponseError, ResourceExistsError, Resour
 from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobPrefix, BlobProperties, ContainerClient, StorageStreamDownloader
 
-from ..filesystem import Filesystem, StreamReaderLike, StreamWriterLike
+from ..filesystem import Filesystem, FilesystemCapabilities, StreamReaderLike, StreamWriterLike
 from ..types import Stat
 from ..vpath import VPath
 
@@ -147,16 +150,35 @@ class AzureFilesystem(Filesystem):
         self._assert_vpath(path2)
         return True
 
+    @property
     @override
-    def iterdir(self, path: VPath) -> list[VPath]:
+    def capabilities(self) -> FilesystemCapabilities:
+        return FilesystemCapabilities(
+            streaming_iterdir=True,
+            watch=False,
+        )
+
+    @override
+    async def iterdir(
+        self,
+        path: VPath,
+        *,
+        cancel: threading.Event | None = None,
+    ) -> AsyncIterator[VPath]:
         self._assert_vpath(path)
         prefix = _blob_prefix(path)
-        results: list[VPath] = []
-        for item in self._client.walk_blobs(name_starts_with=prefix or None, delimiter="/"):
+
+        if cancel is not None and cancel.is_set():
+            return
+
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[VPath | None] = asyncio.Queue()
+
+        def _item_to_vpath(item: BlobProperties | BlobPrefix) -> VPath | None:
             if isinstance(item, BlobProperties):
                 name = item.name
                 if name == prefix:
-                    continue  # skip the directory marker itself
+                    return None
                 vpath = self.path("/" + name)
                 modified = item.last_modified.timestamp() if item.last_modified else -1.0
                 basename = PurePosixPath(name.rstrip("/")).name
@@ -165,16 +187,33 @@ class AzureFilesystem(Filesystem):
                     modified=modified,
                     is_hidden=basename.startswith("."),
                 )
-                results.append(vpath)
+                return vpath
             else:
-                # BlobPrefix — virtual directory
                 assert isinstance(item, BlobPrefix)
                 vdir = item.name
                 vpath = self.path("/" + vdir.rstrip("/"))
                 basename = PurePosixPath(vdir.rstrip("/")).name
                 vpath._stat = Stat(is_directory=True, size=0, is_hidden=basename.startswith("."))
-                results.append(vpath)
-        return results
+                return vpath
+
+        def _produce() -> None:
+            try:
+                for item in self._client.walk_blobs(name_starts_with=prefix or None, delimiter="/"):
+                    if cancel is not None and cancel.is_set():
+                        break
+                    vp = _item_to_vpath(item)
+                    if vp is not None:
+                        loop.call_soon_threadsafe(queue.put_nowait, vp)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
+
+        threading.Thread(target=_produce, daemon=True).start()
+
+        while True:
+            vp = await queue.get()
+            if vp is None or (cancel is not None and cancel.is_set()):
+                break
+            yield vp
 
     @override
     def stat(self, path: VPath) -> Stat:

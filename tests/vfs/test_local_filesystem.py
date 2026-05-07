@@ -60,11 +60,12 @@ def test_home_returns_home_directory() -> None:
     assert str(fs.home().path) == os.path.expanduser("~")
 
 
-def test_iterdir_lists_contents(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_iterdir_lists_contents(tmp_path: Path) -> None:
     fs = _fs()
     (tmp_path / "a.txt").write_text("a")
     (tmp_path / "b.txt").write_text("b")
-    names = sorted(vp.name for vp in fs.iterdir(fs.path(tmp_path)))
+    names = sorted([vp.name async for vp in fs.iterdir(fs.path(tmp_path))])
     assert names == ["a.txt", "b.txt"]
 
 

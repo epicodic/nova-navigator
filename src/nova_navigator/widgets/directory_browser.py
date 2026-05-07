@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import contextlib
-import logging
+import asyncio
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -9,14 +8,10 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, ClassVar, Self
 
-import watchdog
-import watchdog.events
-import watchdog.observers
-import watchdog.observers.api
 from rich.color import Color
 from rich.segment import Segment
 from rich.style import Style
-from textual import events, on
+from textual import events, on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal
@@ -35,12 +30,8 @@ from ..config import conf_
 from ..format_utils import format_size
 from ..icons import ico_
 from ..vfs import VPath
-from ..vfs.filesystems.local import LocalFilesystem
 from ..vfs.types import Stat
 from .popup_widget import PopupWidget
-
-# silence watchdog logging to avoid spamming logs with file system events
-logging.getLogger("watchdog").setLevel(logging.WARNING)
 
 
 class UpPath(VPath):
@@ -351,49 +342,6 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
 
     # private classes
 
-    class _FileSystemEventHandler(watchdog.events.FileSystemEventHandler):
-        DEBOUNCE_INTERVAL_SECONDS = 0.2
-
-        _timer: threading.Timer | None
-
-        def __init__(self, browser: DirectoryBrowser) -> None:
-            self.browser = browser
-            self._timer = None
-            self._lock = threading.Lock()
-            self._stopped = False
-
-        def on_timer(self) -> None:
-            with self._lock:
-                if self._stopped:
-                    return
-            with contextlib.suppress(Exception):  # app may be shutting down
-                self.browser.app.call_from_thread(
-                    self.browser.update, self.browser.WhatChanged.ALL
-                )
-
-        def on_any_event(self, event: watchdog.events.FileSystemEvent) -> None:
-            # logging.warning(f"Filesystem event: {event}")
-            if not isinstance(event, watchdog.events.DirModifiedEvent):
-                return  # ignore other events
-
-            with self._lock:
-                if self._timer is not None:
-                    self._timer.cancel()
-
-                self._timer = threading.Timer(
-                    self.DEBOUNCE_INTERVAL_SECONDS,
-                    self.on_timer,
-                )
-                self._timer.start()
-
-        def stop(self) -> None:
-            """Cancel any pending debounce timer so no callbacks fire after teardown."""
-            with self._lock:
-                self._stopped = True
-                if self._timer is not None:
-                    self._timer.cancel()
-                    self._timer = None
-
     # members
 
     HEADER_HEIGHT: ClassVar[int] = 1
@@ -406,12 +354,12 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
     _shown_items: list[VPath]
     _selected_items: set[VPath]
 
+    _load_cancel: threading.Event | None
+    _loading: bool
+
     _empty_strip: Strip = Strip([])
     _columns: list[Column]
     _max_line_width: int
-    # _observer: watchdog.observers.ObserverType
-    _watch: watchdog.observers.api.ObservedWatch | None
-    _event_handler: _FileSystemEventHandler | None
     _filter_widget: FilterWidget
 
     show_hidden_files: Reactive[bool] = Reactive(default=False, repaint=False, always_update=False)
@@ -459,10 +407,8 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         self._path = UpPath()
         self._history = []
         self._history_index = -1
-        self._observer = watchdog.observers.Observer()
-        self._observer.start()
-        self._watch = None
-        self._event_handler = None
+        self._load_cancel = None
+        self._loading = False
         self._all_items = []
         self._shown_items = []
         self._selected_items = set()
@@ -477,11 +423,8 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
     def on_mount(self) -> None:
         super().on_mount()
         self.screen.mount(self._filter_widget)
-
-    def on_unmount(self) -> None:
-        if self._event_handler is not None:
-            self._event_handler.stop()
-        self._observer.stop()
+        self._load_directory()
+        self._start_watch()
 
     def _on_focus(self, event: events.Focus) -> None:
         self.post_message(DirectoryBrowser.Focus(self))
@@ -549,19 +492,8 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         else:
             self.cursor_row = 0
 
-        if self._watch is not None:
-            self._observer.unschedule(self._watch)
-            self._watch = None
-
-        if isinstance(self._path.filesystem, LocalFilesystem):
-            self.log(f"Watching path: {self._path.path}")
-            self._event_handler = self._FileSystemEventHandler(self)
-            self._watch = self._observer.schedule(
-                self._event_handler,
-                self._path.path.as_posix(),
-                recursive=False,
-                # event_filter=[watchdog.events.DirModifiedEvent],
-            )
+        if self.is_attached:
+            self._start_watch()
 
     # Data management
 
@@ -574,37 +506,32 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         SORTING = 1
         FILTERING = 2
 
-    def update(self, what_changed: WhatChanged) -> None:
-        # store old selection and cursor state
+    def _apply_sort_and_filter(self) -> None:
+        """Re-sort, re-filter, and restore cursor position from _all_items."""
         old_item_under_cursor = self._shown_items[self.cursor_row] if self._shown_items else None
         old_selected_items = self._selected_items
 
-        if what_changed <= self.WhatChanged.ALL:
-            self._all_items = self._path.iterdir()
+        column_sorter = self._columns[self.sort_column].sorter
 
-        if what_changed <= self.WhatChanged.SORTING:
-            column_sorter = self._columns[self.sort_column].sorter
+        def sorter(item: VPath) -> Any:
+            order, value = column_sorter(item)
+            return (order if self.sort_ascending else -order), value
 
-            def sorter(item: VPath) -> Any:
-                order, value = column_sorter(item)
-                return (order if self.sort_ascending else -order), value
-
-            self._all_items.sort(key=sorter, reverse=not self.sort_ascending)
+        self._all_items.sort(key=sorter, reverse=not self.sort_ascending)
 
         self._shown_items = [UP_PATH] if self._path.parent != self._path else []
-        if what_changed <= self.WhatChanged.FILTERING:
-            if self.show_hidden_files and len(self._filter_widget.value) == 0:
-                self._shown_items += self._all_items
-            else:
+        if self.show_hidden_files and len(self._filter_widget.value) == 0:
+            self._shown_items += self._all_items
+        else:
 
-                def filter_func(item: VPath) -> bool:
-                    if not self.show_hidden_files and item.stat.is_hidden:
-                        return False
-                    if len(self._filter_widget.value) == 0:
-                        return True
-                    return self._filter_widget.value.lower() in item.name.lower()
+            def filter_func(item: VPath) -> bool:
+                if not self.show_hidden_files and item.stat.is_hidden:
+                    return False
+                if len(self._filter_widget.value) == 0:
+                    return True
+                return self._filter_widget.value.lower() in item.name.lower()
 
-                self._shown_items += [item for item in self._all_items if filter_func(item)]
+            self._shown_items += [item for item in self._all_items if filter_func(item)]
 
         # restore cursor position
         self.cursor_row = 0
@@ -623,7 +550,69 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         self._max_line_width = 0
         self._update_virtual_size()
 
+    def _append_items(self, new_items: list[VPath]) -> None:
+        """Append new items to _shown_items with filtering only (no sort)."""
+        filter_text = self._filter_widget.value.lower()
+        for item in new_items:
+            if not self.show_hidden_files and item.stat.is_hidden:
+                continue
+            if filter_text and filter_text not in item.name.lower():
+                continue
+            self._shown_items.append(item)
+        self._update_virtual_size()
+
+    def update(self, what_changed: WhatChanged) -> None:
+        if what_changed <= self.WhatChanged.ALL:
+            if self.is_attached:
+                self._load_directory()
+            return
+        self._apply_sort_and_filter()
         self.refresh()
+
+    _BATCH_SIZE: ClassVar[int] = 200
+
+    @work(exclusive=True, group="load")
+    async def _load_directory(self) -> None:
+        """Load directory contents incrementally into _all_items."""
+        cancel = threading.Event()
+        self._load_cancel = cancel
+        self._all_items = []
+        self._shown_items = []
+        self._loading = True
+        self.refresh()
+        self.refresh_border()
+
+        try:
+            batch: list[VPath] = []
+            async for vpath in self._path.filesystem.iterdir(self._path, cancel=cancel):
+                batch.append(vpath)
+                if len(batch) >= self._BATCH_SIZE:
+                    self._all_items.extend(batch)
+                    self._append_items(batch)
+                    batch.clear()
+                    self.refresh()
+            self._all_items.extend(batch)
+        except OSError:
+            self._all_items = []
+        finally:
+            cancel.set()
+            self._loading = False
+            self.refresh_border()
+
+        self._apply_sort_and_filter()
+        self.refresh()
+
+    @work(exclusive=True, group="watch")
+    async def _start_watch(self) -> None:
+        try:
+            async with self._path.filesystem.watch(self._path, self._on_directory_changed):
+                await asyncio.Event().wait()  # run until cancelled by Textual
+        except OSError:
+            self.log.warning("Watch ended unexpectedly for %s", self._path)
+            # Directory still works; user can press F5 to refresh manually.
+
+    async def _on_directory_changed(self, path: VPath) -> None:
+        self.update(self.WhatChanged.ALL)
 
     # Rendering
 
@@ -670,6 +659,8 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         return Strip([Segment(text, self._border_rich_style())])
 
     def render_border_bottom_left(self) -> Strip:
+        if self._loading:
+            return Strip([Segment(" Loading... ", self._border_rich_style())])
         if not self._shown_items:
             return Strip.blank(0)
         item = self._shown_items[self.cursor_row]
@@ -833,7 +824,8 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
             self.refresh_row(new_row)
             self.refresh_border()
             self._scroll_cursor_into_view()
-            self.post_message(DirectoryBrowser.ItemChanged(self, self.path_item_under_cursor))
+            item = self._shown_items[new_row] if 0 <= new_row < len(self._shown_items) else None
+            self.post_message(DirectoryBrowser.ItemChanged(self, item))
 
     def watch_sort_column(self, _old: ColumnKey, _new: ColumnKey) -> None:
         self.update(self.WhatChanged.SORTING)
