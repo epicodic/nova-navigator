@@ -157,7 +157,7 @@ async def _copy_dir(
 ) -> None:
     file_tasks: list[asyncio.Task[None]] = []
     dir_stats: list[tuple[VPath, Stat]] = []
-    for src_root, _src_dirs, src_files in src_path.walk():
+    async for src_root, _src_dirs, src_files in src_path.walk():
         ctx.status.check_cancelled()
         dst_root = dst_path / src_root.path.relative_to(src_path.path)
         with contextlib.suppress(FileExistsError):
@@ -246,7 +246,7 @@ async def _move_dir_contents(
         actual_dst.filesystem.mkdir(actual_dst)
     src_dirs: list[VPath] = []
     dir_stats: list[tuple[VPath, Stat]] = []
-    for src_root, _src_dirs, src_files in src_path.walk():
+    async for src_root, _src_dirs, src_files in src_path.walk():
         ctx.status.check_cancelled()
         dst_root = actual_dst / src_root.path.relative_to(src_path.path)
         with contextlib.suppress(FileExistsError):
@@ -410,7 +410,8 @@ async def _erase_path(
     ctx.status.check_cancelled()
     _logger.debug("erase_path %s", path.path)
     if path.stat.is_directory:
-        if len(path.iterdir()) > 0 and options.ask_before_erase:
+        children = [child async for child in path.iterdir()]
+        if len(children) > 0 and options.ask_before_erase:
             decision = await ctx.request_decision(
                 "Delete non-empty directory",
                 expected_decisions=[Decision.YES, Decision.NO, Decision.ALL, Decision.NONE],
@@ -420,7 +421,7 @@ async def _erase_path(
                 _logger.debug("erase_path skip (user declined) %s", path.path)
                 ctx.status.update_progress(inc_completed=1)
                 return
-        await erase_files(ctx, list(path.iterdir()), EraseFilesOptions(ask_before_erase=False))
+        await erase_files(ctx, children, EraseFilesOptions(ask_before_erase=False))
         path.filesystem.rmdir(path)
     else:
         path.filesystem.remove(path)

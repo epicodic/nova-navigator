@@ -73,52 +73,56 @@ def _make_blob_prefix(name: str) -> MagicMock:
 # ── iterdir ───────────────────────────────────────────────────────────────────
 
 
-def test_iterdir_root_passes_none_prefix() -> None:
+@pytest.mark.asyncio
+async def test_iterdir_root_passes_none_prefix() -> None:
     fs, mock_client = _make_fs()
     mock_client.walk_blobs.return_value = []
-    fs.iterdir(fs.path("/"))
+    async for _ in fs.iterdir(fs.path("/")):
+        pass
     mock_client.walk_blobs.assert_called_once_with(name_starts_with=None, delimiter="/")
 
 
-def test_iterdir_subdir_passes_prefix_with_slash() -> None:
+@pytest.mark.asyncio
+async def test_iterdir_subdir_passes_prefix_with_slash() -> None:
     fs, mock_client = _make_fs()
     mock_client.walk_blobs.return_value = []
-    fs.iterdir(fs.path("/foo"))
+    async for _ in fs.iterdir(fs.path("/foo")):
+        pass
     mock_client.walk_blobs.assert_called_once_with(name_starts_with="foo/", delimiter="/")
 
 
-def test_iterdir_returns_blobs_and_prefixes() -> None:
+@pytest.mark.asyncio
+async def test_iterdir_returns_blobs_and_prefixes() -> None:
     fs, mock_client = _make_fs()
     blob = _make_blob_properties("docs/readme.txt")
     prefix = _make_blob_prefix("docs/images/")
     mock_client.walk_blobs.return_value = [blob, prefix]
-    results = fs.iterdir(fs.path("/docs"))
-    paths = [str(p.path) for p in results]
+    paths = [str(p.path) async for p in fs.iterdir(fs.path("/docs"))]
     assert "/docs/readme.txt" in paths
     assert "/docs/images" in paths
 
 
-def test_iterdir_skips_blob_whose_name_equals_prefix() -> None:
+@pytest.mark.asyncio
+async def test_iterdir_skips_blob_whose_name_equals_prefix() -> None:
     """A blob whose name is exactly the directory prefix (e.g. 'foo/') is skipped."""
     fs, mock_client = _make_fs()
     # Blob named exactly "foo/" (the prefix itself) should be skipped
     dir_marker = _make_blob_properties("foo/")
     blob = _make_blob_properties("foo/bar.txt")
     mock_client.walk_blobs.return_value = [dir_marker, blob]
-    results = fs.iterdir(fs.path("/foo"))
-    paths = [str(p.path) for p in results]
+    paths = [str(p.path) async for p in fs.iterdir(fs.path("/foo"))]
     assert "/foo/bar.txt" in paths
     assert "/foo/" not in paths  # the prefix-named blob is skipped
 
 
-def test_iterdir_keep_marker_blob_appears_in_listing() -> None:
+@pytest.mark.asyncio
+async def test_iterdir_keep_marker_blob_appears_in_listing() -> None:
     """The .keep marker blob is a regular blob and appears in iterdir results."""
     fs, mock_client = _make_fs()
     keep = _make_blob_properties("foo/.keep")
     blob = _make_blob_properties("foo/bar.txt")
     mock_client.walk_blobs.return_value = [keep, blob]
-    results = fs.iterdir(fs.path("/foo"))
-    paths = [str(p.path) for p in results]
+    paths = [str(p.path) async for p in fs.iterdir(fs.path("/foo"))]
     assert "/foo/.keep" in paths
     assert "/foo/bar.txt" in paths
 

@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import os
-import stat as stat_mod
+import threading
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from io import BufferedReader, BufferedWriter
-from stat import S_ISDIR, S_ISLNK
+from stat import S_IMODE, S_ISDIR, S_ISLNK
 from typing import Any, override
 
-from ..filesystem import Filesystem, Stat, StreamReaderLike, StreamWriterLike
+import watchdog.events
+import watchdog.observers
+
+from ..filesystem import Filesystem, FilesystemCapabilities, Stat, StreamReaderLike, StreamWriterLike
 from ..vpath import VPath
 
 
@@ -35,6 +41,16 @@ class LocalFilesystem(Filesystem):
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}"
 
+    @property
+    @override
+    def capabilities(self) -> FilesystemCapabilities:
+        return FilesystemCapabilities(
+            streaming_iterdir=True,
+            watch=True,
+            symlinks=True,
+            permissions=True,
+        )
+
     @override
     def is_same_device(self, path1: VPath, path2: VPath) -> bool:
         self._assert_vpath(path1)
@@ -61,9 +77,103 @@ class LocalFilesystem(Filesystem):
         return VPath(os.path.expanduser("~"), self)
 
     @override
-    def iterdir(self, path: VPath) -> list[VPath]:
+    async def iterdir(
+        self,
+        path: VPath,
+        *,
+        cancel: threading.Event | None = None,
+    ) -> AsyncIterator[VPath]:
         self._assert_vpath(path)
-        return [path / name for name in os.listdir(path.path)]
+        with os.scandir(path.path) as scanner:
+            for entry in scanner:
+                if cancel is not None and cancel.is_set():
+                    return
+                vp = VPath(entry.path, self)
+                try:
+                    lstat = entry.stat(follow_symlinks=False)
+                    try:
+                        fstat = entry.stat(follow_symlinks=True)
+                        is_broken_symlink = False
+                    except FileNotFoundError:
+                        fstat = lstat
+                        is_broken_symlink = True
+                    is_hidden = entry.name.startswith(".") if os.name != "nt" else bool(lstat.st_file_attributes & 0x2)
+                    vp._stat = Stat(
+                        size=fstat.st_size,
+                        modified=fstat.st_mtime,
+                        mode=S_IMODE(lstat.st_mode),
+                        is_hidden=is_hidden,
+                        is_directory=S_ISDIR(fstat.st_mode),
+                        is_executable=fstat.st_mode & 0o111 != 0,
+                        is_symlink=S_ISLNK(lstat.st_mode),
+                        is_broken_symlink=is_broken_symlink,
+                    )
+                except OSError:
+                    vp._stat = Stat()
+                yield vp
+
+    @asynccontextmanager
+    @override
+    async def watch(
+        self,
+        path: VPath,
+        callback: Callable[[VPath], Awaitable[None]],
+    ) -> AsyncIterator[None]:
+        """Watch *path* for changes using watchdog (inotify on Linux).
+
+        Debounces rapid change events with a 0.2 s timer.
+        The callback is scheduled on the running event loop from the watchdog thread.
+        """
+        self._assert_vpath(path)
+        loop = asyncio.get_running_loop()
+
+        class _DebounceHandler(watchdog.events.FileSystemEventHandler):
+            _DEBOUNCE_INTERVAL: float = 0.2
+            _timer: threading.Timer | None = None
+            _stopped: bool = False
+            _lock: threading.Lock
+
+            def __init__(self) -> None:
+                super().__init__()
+                self._lock = threading.Lock()
+
+            def _fire(self) -> None:
+                with self._lock:
+                    if self._stopped:
+                        return
+
+                async def _invoke() -> None:
+                    await callback(path)
+
+                asyncio.run_coroutine_threadsafe(_invoke(), loop)
+
+            def on_any_event(self, event: watchdog.events.FileSystemEvent) -> None:
+                if not isinstance(event, watchdog.events.DirModifiedEvent):
+                    return
+                with self._lock:
+                    if self._timer is not None:
+                        self._timer.cancel()
+                    self._timer = threading.Timer(self._DEBOUNCE_INTERVAL, self._fire)
+                    self._timer.start()
+
+            def stop(self) -> None:
+                with self._lock:
+                    self._stopped = True
+                    if self._timer is not None:
+                        self._timer.cancel()
+                        self._timer = None
+
+        handler = _DebounceHandler()
+        observer = watchdog.observers.Observer()
+        observer.start()
+        watch_handle = observer.schedule(handler, path.path.as_posix(), recursive=False)
+        try:
+            yield
+        finally:
+            handler.stop()
+            observer.unschedule(watch_handle)
+            observer.stop()
+            observer.join()
 
     @override
     def parent(self, path: VPath) -> VPath:
@@ -90,7 +200,7 @@ class LocalFilesystem(Filesystem):
         return Stat(
             size=stat.st_size,
             modified=stat.st_mtime,
-            mode=stat_mod.S_IMODE(lstat.st_mode),
+            mode=S_IMODE(lstat.st_mode),
             is_hidden=is_hidden,
             is_directory=S_ISDIR(stat.st_mode),
             is_executable=stat.st_mode & 0o111 != 0,

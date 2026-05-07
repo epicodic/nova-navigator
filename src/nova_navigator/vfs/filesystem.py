@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import threading
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import PurePath
 from typing import Protocol
 
@@ -22,6 +26,27 @@ class StreamWriterLike(Protocol):
     def close(self) -> None: ...
 
 
+@dataclass(frozen=True)
+class FilesystemCapabilities:
+    """Runtime capabilities of a filesystem instance."""
+
+    streaming_iterdir: bool = False
+    """True if iterdir yields items incrementally before all entries are ready.
+
+    False means all items arrive in a single burst.
+    The browser uses this flag to decide whether to show a spinner.
+    """
+
+    watch: bool = False
+    """True if the filesystem can notify on directory changes."""
+
+    symlinks: bool = False
+    """True if this filesystem instance supports symbolic links."""
+
+    permissions: bool = False
+    """True if this filesystem instance exposes POSIX permission bits."""
+
+
 class Filesystem(ABC):
     """Abstract base class for virtual filesystem implementations.
 
@@ -35,6 +60,11 @@ class Filesystem(ABC):
     def _assert_vpath(self, path: VPath) -> None:
         if path.filesystem != self:
             raise ValueError(f"VPath {path} does not belong to filesystem {self}")
+
+    @property
+    def capabilities(self) -> FilesystemCapabilities:
+        """Return the runtime capabilities of this filesystem instance."""
+        return FilesystemCapabilities()
 
     def path(self, p: str | PurePath) -> VPath:
         """Create a :class:`~nova_navigator.vfs.vpath.VPath` bound to this filesystem."""
@@ -65,8 +95,33 @@ class Filesystem(ABC):
         """Return the home directory path."""
 
     @abstractmethod
-    def iterdir(self, path: VPath) -> list[VPath]:
-        """Return the list of files and directories in the given directory path."""
+    def iterdir(
+        self,
+        path: VPath,
+        *,
+        cancel: threading.Event | None = None,
+    ) -> AsyncIterator[VPath]:
+        """Yield directory entries as they arrive, with stat pre-populated.
+
+        Each yielded VPath has ``_stat`` already set from data bundled in the
+        listing response; no separate ``stat()`` call is needed for the listing.
+        Implementations must check ``cancel.is_set()`` between batches and stop
+        cleanly when it is set.
+        """
+
+    @asynccontextmanager
+    async def watch(
+        self,
+        path: VPath,
+        callback: Callable[[VPath], Awaitable[None]],
+    ) -> AsyncIterator[None]:
+        """Async context manager that invokes callback when path changes.
+
+        The default implementation is a no-op.
+        Subclasses that support watching override this method and set
+        ``capabilities.watch = True``.
+        """
+        yield  # default no-op; subclasses override
 
     @abstractmethod
     def stat(self, path: VPath) -> Stat:

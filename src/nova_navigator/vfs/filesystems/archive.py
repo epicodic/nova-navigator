@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import threading
+from collections.abc import AsyncIterator
 from typing import override
 
 from ...archive import Archive, open_archive
-from ..filesystem import Filesystem, Stat, StreamReaderLike, StreamWriterLike
+from ..filesystem import Filesystem, FilesystemCapabilities, Stat, StreamReaderLike, StreamWriterLike
 from ..vpath import VPath
 from .local import LocalFilesystem
 
@@ -41,10 +43,30 @@ class ArchiveFilesystem(Filesystem):
     def home(self) -> VPath:
         return self.root()
 
+    @property
     @override
-    def iterdir(self, path: VPath) -> list[VPath]:
+    def capabilities(self) -> FilesystemCapabilities:
+        return FilesystemCapabilities(
+            streaming_iterdir=False,
+            watch=False,
+            symlinks=False,
+            permissions=False,
+        )
+
+    @override
+    async def iterdir(
+        self,
+        path: VPath,
+        *,
+        cancel: threading.Event | None = None,
+    ) -> AsyncIterator[VPath]:
         self._assert_vpath(path)
-        return [VPath(path.path / entry, self) for entry in self._archive.listdir(path.path)]
+        for entry in self._archive.listdir(path.path):
+            if cancel is not None and cancel.is_set():
+                return
+            vp = VPath(path.path / entry, self)
+            vp._stat = self._archive.stats(vp.path)
+            yield vp
 
     @override
     def parent(self, path: VPath) -> VPath:

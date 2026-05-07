@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import mimetypes
 import os
-from collections.abc import Generator
+import threading
+from collections.abc import AsyncIterator
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -32,28 +34,38 @@ class VPath:
     def filesystem(self) -> Filesystem:
         return self._filesystem
 
-    def iterdir(self) -> list[VPath]:
-        """Return the list of immediate children of this directory."""
-        return self._filesystem.iterdir(self)
+    async def iterdir(
+        self,
+        cancel: threading.Event | None = None,
+    ) -> AsyncIterator[VPath]:
+        """Yield immediate children of this directory with stat pre-populated."""
+        async for vp in self._filesystem.iterdir(self, cancel=cancel):
+            yield vp
 
-    def walk(self) -> Generator[tuple[VPath, list[VPath], list[VPath]], None, None]:
-        """Like os.walk, but yields tuples of (root: VPath, dirs: list[VPath], files: list[VPath))."""
-        root = self
-        if not root.stat.is_directory:
-            raise NotADirectoryError(f"{root} is not a directory")
+    async def walk(
+        self,
+        cancel: threading.Event | None = None,
+    ) -> AsyncIterator[tuple[VPath, list[VPath], list[VPath]]]:
+        """Like os.walk, but async. Yields (root, dirs, files) tuples.
 
-        dirs = []
-        files = []
-        for child in root.iterdir():
+        Each VPath in dirs and files has _stat pre-populated from iterdir.
+        """
+        if not self.stat.is_directory:
+            raise NotADirectoryError(f"{self} is not a directory")
+
+        dirs: list[VPath] = []
+        files: list[VPath] = []
+        async for child in self._filesystem.iterdir(self, cancel=cancel):
             if child.stat.is_directory:
                 dirs.append(child)
             else:
                 files.append(child)
 
-        yield root, dirs, files
+        yield self, dirs, files
 
         for d in dirs:
-            yield from d.walk()
+            async for item in d.walk(cancel=cancel):
+                yield item
 
     @property
     def stat(self) -> Stat:
@@ -70,6 +82,11 @@ class VPath:
             return self._stat
         except FileNotFoundError:
             return None
+
+    async def fresh_stat(self) -> Stat:
+        """Fetch a fresh stat from the filesystem and update the cache."""
+        self._stat = await asyncio.to_thread(self._filesystem.stat, self)
+        return self._stat
 
     @property
     def path(self) -> PurePosixPath:
