@@ -1,3 +1,5 @@
+import copy
+
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.events import Focus
@@ -5,6 +7,7 @@ from textual.message import Message
 from textual.widgets import Tree
 
 from nova_navigator.dialogs.edit_bookmarks_dialog import EditBookmarksDialog
+from nova_navigator.response import Response
 from nova_widgets import Button
 
 from ..config import conf_
@@ -101,9 +104,13 @@ class BookmarksDialog(PopupWidget, can_focus=True):
         if event.button.id != "btn_edit":
             return
 
-        async def _after_edit(result: str | None) -> None:
-            if result == "OK":
+        _dlg = EditBookmarksDialog(copy.deepcopy(conf_.bookmarks))
+
+        async def _after_edit(result: Response | None) -> None:
+            if result == Response.OK:
+                conf_.bookmarks = _dlg.config
+                conf_.bookmarks.save()
                 self._rebuild_tree()
                 self.query_one(Tree).focus()
 
-        self.app.push_screen(EditBookmarksDialog(conf_.bookmarks), callback=_after_edit)
+        self.app.push_screen(_dlg, callback=_after_edit)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import subprocess
 import sys
@@ -18,7 +19,6 @@ from textual.widgets import Input
 
 from nova_navigator import debug_analytics
 from nova_navigator.config import conf_
-from nova_navigator.decision import Decision
 from nova_navigator.dialogs import (
     BookmarksDialog,
     ConnectToDialog,
@@ -27,7 +27,8 @@ from nova_navigator.dialogs import (
     JobsDialog,
 )
 from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
-from nova_navigator.dialogs.decision_dialog import make_decision_dialog
+from nova_navigator.dialogs.response_dialog import make_response_dialog
+from nova_navigator.dialogs.settings_dialog import SettingsDialog
 from nova_navigator.editor import Editor
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
 from nova_navigator.filemanager.tasks import dummy_task
@@ -37,7 +38,8 @@ from nova_navigator.nova_navigator_core import (
 )
 from nova_navigator.remotes.azure import connect_azure
 from nova_navigator.remotes.ssh import connect_ssh
-from nova_navigator.scheduler import DecisionRequest, Job
+from nova_navigator.response import Response
+from nova_navigator.scheduler import Job, ResponseRequest
 from nova_navigator.terminal import Terminal
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
@@ -76,6 +78,7 @@ class MainScreen(Screen[None]):
         Binding("alt+up", "go_up", "Go Up"),
         Binding("ctrl+shift+g", "connect_to", "Connect to Remote", show=False),
         Binding("ctrl+r", "refresh", "Refresh", show=False, priority=True),
+        Binding("ctrl+f1", "settings", "Settings", show=False),
     ]
 
     class _TerminalMode(Enum):
@@ -106,7 +109,7 @@ class MainScreen(Screen[None]):
 
         self._menu_bar.add_menu(
             "Ⓝ ",
-            mc.action("Settings", icon="gear", shortcut="Ctrl+F1"),
+            mc.action("Settings", icon="gear", shortcut="Ctrl+F1", action="settings"),
             mc.separator(),
             mc.action("About", icon="info"),
             mc.separator(),
@@ -584,20 +587,31 @@ class MainScreen(Screen[None]):
             await self._open_path(parent_path, panel)
 
     @work
+    async def _action_settings(self) -> None:
+        dialog = SettingsDialog(copy.deepcopy(conf_.settings))
+        if await dialog.run() == Response.OK:
+            conf_.settings = dialog.config
+            conf_.settings.save()
+
+    @work
     async def _action_edit_bookmarks(self) -> None:
-        dialog = EditBookmarksDialog(conf_.bookmarks)
-        await dialog.run()
+        dialog = EditBookmarksDialog(copy.deepcopy(conf_.bookmarks))
+        if await dialog.run() == Response.OK:
+            conf_.bookmarks = dialog.config
+            conf_.bookmarks.save()
 
     @work
     async def _action_manage_remotes(self) -> None:
-        dialog = EditRemotesDialog(conf_.remotes)
-        await dialog.run()
+        dialog = EditRemotesDialog(copy.deepcopy(conf_.remotes))
+        if await dialog.run() == Response.OK:
+            conf_.remotes = dialog.config
+            conf_.remotes.save()
 
     @work
     async def _action_connect_to(self) -> None:
         dialog = ConnectToDialog(conf_.remotes)
         result = await dialog.run()
-        if result != "OK":
+        if result != Response.OK:
             return
         conn = dialog.selected_connection
         if conn is None:
@@ -625,10 +639,12 @@ class MainScreen(Screen[None]):
         if path is None:
             return
         dialog = EditBookmarksDialog(
-            conf_.bookmarks,
+            copy.deepcopy(conf_.bookmarks),
             prefill=(DEFAULT_BOOKMARKS_GROUP, path.name, str(path.path)),
         )
-        await dialog.run()
+        if await dialog.run() == Response.OK:
+            conf_.bookmarks = dialog.config
+            conf_.bookmarks.save()
 
     def _action_refresh(self) -> None:
         self._left_panel.reload()
@@ -703,10 +719,10 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
 
     async def request_callback(
         self,
-        request: DecisionRequest,
-        future: asyncio.Future[Decision],
+        request: ResponseRequest,
+        future: asyncio.Future[Response],
     ) -> None:
-        _logger.warning(request.expected_decisions)
-        dialog = make_decision_dialog(request)
+        _logger.warning(request.expected_responses)
+        dialog = make_response_dialog(request)
         result = await dialog.run()
         future.set_result(result)

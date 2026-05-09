@@ -3,8 +3,8 @@ from pathlib import PurePosixPath
 
 import pytest
 
-from nova_navigator.decision import Decision
 from nova_navigator.filemanager.tasks import CHUNK_SIZE, FileCopyOptions, copy_file, copy_files
+from nova_navigator.response import Response
 from nova_navigator.scheduler import TaskCancelled, TaskStatus
 from tests._utils.mock_filesystem import MockFilesystem
 
@@ -72,7 +72,7 @@ async def test_copy_file_ask_yes() -> None:
 
     requests = await run_task(
         lambda ctx: copy_file(ctx, src, dst, FileCopyOptions(overwrite="ask")),
-        [Decision.YES],
+        [Response.YES],
     )
 
     assert len(requests) == 1
@@ -92,7 +92,7 @@ async def test_copy_file_ask_no() -> None:
 
     requests = await run_task(
         lambda ctx: copy_file(ctx, src, dst, FileCopyOptions(overwrite="ask")),
-        [Decision.NO],
+        [Response.NO],
     )
 
     assert len(requests) == 1
@@ -328,7 +328,7 @@ async def test_copy_paths_overwrite_ask_yes() -> None:
 
     requests = await run_task(
         lambda ctx: copy_files(ctx, [src_fs.path("/src/file.txt")], dst_fs.path("/dst")),
-        [Decision.YES],
+        [Response.YES],
     )
 
     assert len(requests) == 1
@@ -343,7 +343,7 @@ async def test_copy_paths_overwrite_ask_no() -> None:
 
     requests = await run_task(
         lambda ctx: copy_files(ctx, [src_fs.path("/src/file.txt")], dst_fs.path("/dst")),
-        [Decision.NO],
+        [Response.NO],
     )
 
     assert len(requests) == 1
@@ -360,7 +360,7 @@ async def test_copy_paths_overwrite_ask_per_file() -> None:
     srcs = [src_fs.path("/src/a.txt"), src_fs.path("/src/b.txt")]
     requests = await run_task(
         lambda ctx: copy_files(ctx, srcs, dst_fs.path("/dst")),
-        [Decision.YES, Decision.NO],
+        [Response.YES, Response.NO],
     )
 
     assert len(requests) == 2
@@ -370,7 +370,7 @@ async def test_copy_paths_overwrite_ask_per_file() -> None:
 
 @pytest.mark.asyncio
 async def test_copy_paths_overwrite_yes_to_all() -> None:
-    """YES_TO_ALL on the first conflict suppresses all subsequent prompts for the same title."""
+    """ALL on the first conflict suppresses all subsequent prompts for the same title."""
     src_fs = MockFilesystem({"/src/a.txt": b"new-a", "/src/b.txt": b"new-b", "/src/c.txt": b"new-c"})
     dst_fs = MockFilesystem({"/dst/a.txt": b"old-a", "/dst/b.txt": b"old-b", "/dst/c.txt": b"old-c"})
 
@@ -378,7 +378,7 @@ async def test_copy_paths_overwrite_yes_to_all() -> None:
     # Scheduler caches ALL after the first prompt; sub-tasks 2 and 3 get the cached response.
     requests = await run_task(
         lambda ctx: copy_files(ctx, srcs, dst_fs.path("/dst")),
-        [Decision.ALL],
+        [Response.ALL],
     )
 
     assert len(requests) == 1
@@ -396,7 +396,7 @@ async def test_copy_paths_overwrite_no_to_all() -> None:
     srcs = [src_fs.path(p) for p in ("/src/a.txt", "/src/b.txt", "/src/c.txt")]
     requests = await run_task(
         lambda ctx: copy_files(ctx, srcs, dst_fs.path("/dst")),
-        [Decision.NONE],
+        [Response.NONE],
     )
 
     assert len(requests) == 1
@@ -408,7 +408,7 @@ async def test_copy_paths_overwrite_no_to_all() -> None:
 
 @pytest.mark.asyncio
 async def test_copy_paths_no_conflict_no_prompt() -> None:
-    """When destination files do not exist, no DecisionRequests are issued."""
+    """When destination files do not exist, no ResponseRequests are issued."""
     src_fs = MockFilesystem({"/src/x.txt": b"x", "/src/y.txt": b"y"})
     dst_fs = MockFilesystem()
 

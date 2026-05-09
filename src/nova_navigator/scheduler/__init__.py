@@ -1,7 +1,7 @@
 from nova_navigator.scheduler.context import (
-    DecisionRequest,
     GuiRequestCallback,
     Progress,
+    ResponseRequest,
     TaskCancelled,
     TaskContext,
     TaskStatus,
@@ -11,10 +11,10 @@ from nova_navigator.scheduler.scheduler import AsyncTaskScheduler
 
 __all__ = [
     "AsyncTaskScheduler",
-    "DecisionRequest",
     "GuiRequestCallback",
     "Job",
     "Progress",
+    "ResponseRequest",
     "TaskCancelled",
     "TaskContext",
     "TaskStatus",

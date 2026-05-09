@@ -2,7 +2,7 @@ from textual import events
 from textual.widgets import Static
 
 from nova_navigator.vfs.filesystem import VPath
-from nova_widgets import Button, Input
+from nova_widgets import Input
 
 from ..widgets import NoSelectListView
 from .dialog import ComposeResult, DefaultButton, Dialog
@@ -68,11 +68,6 @@ class CopyMoveFilesDialog(Dialog):
     def action_accept_dialog(self) -> None:
         self._capture_filename()
         super().action_accept_dialog()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if self._button_accept and event.button.id == self._button_accept.id:
-            self._capture_filename()
-        super().on_button_pressed(event)
 
     def _on_mount(self, event: events.Mount) -> None:
         for path in self.source_paths[0 : self.MAX_DISPLAYED_FILES]:
