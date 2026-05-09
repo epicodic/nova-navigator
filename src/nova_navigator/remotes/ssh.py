@@ -8,8 +8,8 @@ import logging
 import paramiko
 
 from nova_navigator.config.remotes import RemoteConnection
-from nova_navigator.decision import Decision
 from nova_navigator.dialogs import CredentialsDialog, MessageBox
+from nova_navigator.response import Response
 from nova_navigator.vfs.filesystems import SSHFilesystem, UnknownHostKeyError
 
 _logger = logging.getLogger(__name__)
@@ -35,10 +35,10 @@ async def connect_ssh(conn: RemoteConnection) -> SSHFilesystem | None:
             f"The authenticity of host {exc.hostname!r} can't be established.\n"
             f"{exc.key_type} key fingerprint is {exc.fingerprint}\n\nAdd to known hosts?",
             title="Unknown Host",
-            buttons=[Decision.OK, Decision.CANCEL],
+            buttons=[Response.OK, Response.CANCEL],
             variant="warning",
         )
-        if await confirm.run() != "OK":
+        if await confirm.run() != Response.OK:
             return None
         try:
             fs = await asyncio.to_thread(
@@ -66,7 +66,7 @@ async def _prompt_credentials(hostname: str, port: int, username: str | None) ->
     Returns the connected `SSHFilesystem`, or `None` if the user cancelled or auth failed.
     """
     cred_dialog = CredentialsDialog(hostname, username or "")
-    if await cred_dialog.run() != "OK":
+    if await cred_dialog.run() != Response.OK:
         return None
     creds = cred_dialog.credentials
     try:

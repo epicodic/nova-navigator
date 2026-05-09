@@ -4,25 +4,25 @@ from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
 
-from nova_navigator.decision import Decision
+from nova_navigator.response import Response
 
 
 @dataclass(init=False)
-class DecisionRequest:
-    """A request for a user decision, yielded by a task.
+class ResponseRequest:
+    """A request for a user response, yielded by a task.
 
     The *title* also serves as the deduplication key inside :class:`TaskScheduler` so
     that ``ALL`` / ``NO`` responses suppress identical prompts.
 
     *dialog_type* is an optional string tag used by the GUI to select a specialised
-    dialog widget (e.g. ``"overwrite"`` renders :class:`OverwriteDecisionDialog`).
+    dialog widget (e.g. ``"overwrite"`` renders :class:`OverwriteResponseDialog`).
 
     *details* is a free-form dict that the specialised dialog can inspect to render
     additional context (filenames, sizes, dates, …).
     """
 
     title: str
-    expected_decisions: list[Decision]
+    expected_responses: list[Response]
     message: str
     dialog_type: str | None
     details: dict[str, Any]
@@ -30,13 +30,13 @@ class DecisionRequest:
     def __init__(
         self,
         title: str,
-        expected_decisions: list[Decision],
+        expected_responses: list[Response],
         message: str,
         dialog_type: str | None = None,
         details: dict[str, Any] | None = None,
     ) -> None:
         self.title = title
-        self.expected_decisions = expected_decisions
+        self.expected_responses = expected_responses
         self.message = message
         self.dialog_type = dialog_type
         self.details = details if details is not None else {}
@@ -142,7 +142,7 @@ class TaskStatus:
         )
 
 
-GuiRequestCallback = Callable[[DecisionRequest, asyncio.Future[Decision]], Awaitable[None]]
+GuiRequestCallback = Callable[[ResponseRequest, asyncio.Future[Response]], Awaitable[None]]
 
 
 class _SubtaskTracker:
@@ -185,28 +185,28 @@ class _SubtaskTracker:
 class TaskContext:
     """Context passed as the first argument to every async task function.
 
-    Provides access to progress/cancellation state and GUI decision requests.
+    Provides access to progress/cancellation state and GUI response requests.
     """
 
     _status: TaskStatus
-    _decision_requester: Callable[["DecisionRequest"], Awaitable[Decision]]
+    _response_requester: Callable[["ResponseRequest"], Awaitable[Response]]
     _subtask_tracker: _SubtaskTracker
 
     @property
     def status(self) -> TaskStatus:
         return self._status
 
-    async def request_decision(
+    async def request_response(
         self,
         title: str,
-        expected_decisions: list[Decision],
+        expected_responses: list[Response],
         message: str,
         dialog_type: str | None = None,
         details: dict[str, Any] | None = None,
-    ) -> Decision:
-        """Request a user decision via the GUI; suspends until the user responds."""
-        request = DecisionRequest(title, expected_decisions, message, dialog_type, details)
-        return await self._decision_requester(request)
+    ) -> Response:
+        """Request a user response via the GUI; suspends until the user responds."""
+        request = ResponseRequest(title, expected_responses, message, dialog_type, details)
+        return await self._response_requester(request)
 
     async def subtask[R](self, coro: Coroutine[Any, Any, R]) -> asyncio.Task[R]:
         """Start *coro* as a concurrent asyncio task and yield control so it can begin."""

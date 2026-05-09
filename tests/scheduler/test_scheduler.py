@@ -4,8 +4,8 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
-from nova_navigator.decision import Decision
-from nova_navigator.scheduler import AsyncTaskScheduler, DecisionRequest, TaskCancelled, TaskContext, TaskStatus
+from nova_navigator.response import Response
+from nova_navigator.scheduler import AsyncTaskScheduler, ResponseRequest, TaskCancelled, TaskContext, TaskStatus
 
 
 def _make_status() -> TaskStatus:
@@ -18,7 +18,7 @@ class TaskHarness:
     Usage::
 
         harness = TaskHarness()
-        harness.hold("Confirm", Decision.YES)   # block until answer() is called
+        harness.hold("Confirm", Response.YES)   # block until answer() is called
         runner = harness.start(my_task_fn)
         await harness.wait_for("some:entry")
         harness.answer("Confirm")
@@ -28,30 +28,30 @@ class TaskHarness:
 
     log: list[str]
     gui_call_count: int
-    _held: dict[str, tuple[asyncio.Event, Decision]]
+    _held: dict[str, tuple[asyncio.Event, Response]]
 
     def __init__(self) -> None:
         self.log = []
         self.gui_call_count = 0
         self._held = {}
 
-    def hold(self, title: str, answer: Decision) -> None:
-        """Register *title* as a held decision answered with *answer* when released."""
+    def hold(self, title: str, answer: Response) -> None:
+        """Register *title* as a held response answered with *answer* when released."""
         self._held[title] = (asyncio.Event(), answer)
 
     def answer(self, title: str) -> None:
-        """Release the held decision for *title*, unblocking the waiting task."""
+        """Release the held response for *title*, unblocking the waiting task."""
         event, _ = self._held[title]
         event.set()
 
-    async def _gui_callback(self, request: DecisionRequest, future: asyncio.Future[Decision]) -> None:
+    async def _gui_callback(self, request: ResponseRequest, future: asyncio.Future[Response]) -> None:
         self.gui_call_count += 1
         if request.title in self._held:
-            event, decision = self._held[request.title]
+            event, response = self._held[request.title]
             await event.wait()
-            future.set_result(decision)
+            future.set_result(response)
         else:
-            future.set_result(Decision.YES)
+            future.set_result(Response.YES)
 
     async def run(self, task_fn: Callable[[TaskContext], Awaitable[None]], status: TaskStatus | None = None) -> None:
         """Execute *task_fn* via AsyncTaskScheduler and await its full completion."""
@@ -74,7 +74,7 @@ class TaskHarness:
 
 @pytest.mark.asyncio
 async def test_scheduler_task_completes() -> None:
-    """A task with no decisions runs and logs its completion."""
+    """A task with no responses runs and logs its completion."""
     harness = TaskHarness()
 
     async def my_task(_ctx: TaskContext) -> None:
@@ -85,28 +85,28 @@ async def test_scheduler_task_completes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_scheduler_decision_routing() -> None:
-    """A task that calls ctx.request_decision() receives the registered answer."""
+async def test_scheduler_response_routing() -> None:
+    """A task that calls ctx.request_response() receives the registered answer."""
     harness = TaskHarness()
-    harness.hold("Confirm", Decision.YES)
+    harness.hold("Confirm", Response.YES)
 
-    received: list[Decision] = []
+    received: list[Response] = []
 
     async def my_task(ctx: TaskContext) -> None:
-        d = await ctx.request_decision("Confirm", [Decision.YES, Decision.NO], "Are you sure?")
+        d = await ctx.request_response("Confirm", [Response.YES, Response.NO], "Are you sure?")
         received.append(d)
 
-    # answer immediately — no waiting needed since we answer before the decision blocks
+    # answer immediately — no waiting needed since we answer before the response blocks
     harness.answer("Confirm")
     await harness.run(my_task)
-    assert received == [Decision.YES]
+    assert received == [Response.YES]
 
 
 @pytest.mark.asyncio
-async def test_blocking_subtask_with_held_decision() -> None:
-    """B and E both block on the same decision title; C, D, F run freely in between.
+async def test_blocking_subtask_with_held_response() -> None:
+    """B and E both block on the same response title; C, D, F run freely in between.
 
-    B is answered with Decision.ALL (YES_TO_ALL), which the scheduler caches.
+    B is answered with Response.ALL (ALL), which the scheduler caches.
     E is blocked on the _request_lock while B holds it; when B releases the lock
     after receiving ALL, E finds the cached answer and unblocks immediately — so
     E finishes after B without a second GUI prompt.
@@ -122,22 +122,22 @@ async def test_blocking_subtask_with_held_decision() -> None:
         E:continues, E:finishes,
     """
     harness = TaskHarness()
-    harness.hold("Confirm", Decision.ALL)
+    harness.hold("Confirm", Response.ALL)
 
     async def task_A(_ctx: TaskContext) -> None:
         harness.log.append("A:runs")
         harness.log.append("A:finishes")
 
     # task_B shares the parent TaskContext; the scheduler's _request_lock ensures
-    # only one decision is in-flight at a time. C, D, and F don't call
-    # request_decision so they run freely. E also calls request_decision with the
+    # only one response is in-flight at a time. C, D, and F don't call
+    # request_response so they run freely. E also calls request_response with the
     # same title, but it blocks on the lock until B releases it. Since B's answer
-    # is Decision.ALL, the scheduler caches it, and E finds the cached value
+    # is Response.ALL, the scheduler caches it, and E finds the cached value
     # immediately after acquiring the lock.
     async def task_B(ctx: TaskContext) -> None:
         harness.log.append("B:runs")
         harness.log.append("B:waits")
-        await ctx.request_decision("Confirm", [Decision.YES, Decision.ALL], "Proceed?")
+        await ctx.request_response("Confirm", [Response.YES, Response.ALL], "Proceed?")
         harness.log.append("B:continues")
         harness.log.append("B:finishes")
 
@@ -152,7 +152,7 @@ async def test_blocking_subtask_with_held_decision() -> None:
     async def task_E(ctx: TaskContext) -> None:
         harness.log.append("E:runs")
         harness.log.append("E:waits")
-        await ctx.request_decision("Confirm", [Decision.YES, Decision.ALL], "Proceed?")
+        await ctx.request_response("Confirm", [Response.YES, Response.ALL], "Proceed?")
         harness.log.append("E:continues")
         harness.log.append("E:finishes")
 
@@ -217,37 +217,37 @@ async def test_blocking_subtask_with_held_decision() -> None:
 
 
 @pytest.mark.asyncio
-async def test_scheduler_multiple_sequential_decisions() -> None:
-    """Multiple sequential decision requests are each routed to the GUI in order."""
-    received: list[Decision] = []
+async def test_scheduler_multiple_sequential_responses() -> None:
+    """Multiple sequential response requests are each routed to the GUI in order."""
+    received: list[Response] = []
 
     async def my_task(ctx: TaskContext) -> None:
-        d1 = await ctx.request_decision("Q1", [Decision.YES, Decision.NO], "First?")
-        d2 = await ctx.request_decision("Q2", [Decision.YES, Decision.NO], "Second?")
+        d1 = await ctx.request_response("Q1", [Response.YES, Response.NO], "First?")
+        d2 = await ctx.request_response("Q2", [Response.YES, Response.NO], "Second?")
         received.extend([d1, d2])
 
     harness = TaskHarness()
-    harness.hold("Q1", Decision.YES)
-    harness.hold("Q2", Decision.NO)
+    harness.hold("Q1", Response.YES)
+    harness.hold("Q2", Response.NO)
     harness.answer("Q1")
     harness.answer("Q2")
     await harness.run(my_task)
 
-    assert received == [Decision.YES, Decision.NO]
+    assert received == [Response.YES, Response.NO]
     assert harness.gui_call_count == 2
 
 
 @pytest.mark.asyncio
 async def test_scheduler_all_caches_for_same_title() -> None:
-    """Decision.ALL for a title suppresses subsequent GUI prompts with the same title."""
+    """Response.ALL for a title suppresses subsequent GUI prompts with the same title."""
 
     async def my_task(ctx: TaskContext) -> None:
-        await ctx.subtask(ctx.request_decision("Overwrite", [Decision.YES, Decision.ALL], "Overwrite?"))
-        await ctx.subtask(ctx.request_decision("Overwrite", [Decision.YES, Decision.ALL], "Overwrite?"))
-        await ctx.subtask(ctx.request_decision("Overwrite", [Decision.YES, Decision.ALL], "Overwrite?"))
+        await ctx.subtask(ctx.request_response("Overwrite", [Response.YES, Response.ALL], "Overwrite?"))
+        await ctx.subtask(ctx.request_response("Overwrite", [Response.YES, Response.ALL], "Overwrite?"))
+        await ctx.subtask(ctx.request_response("Overwrite", [Response.YES, Response.ALL], "Overwrite?"))
 
     harness = TaskHarness()
-    harness.hold("Overwrite", Decision.ALL)
+    harness.hold("Overwrite", Response.ALL)
     harness.answer("Overwrite")
     await harness.run(my_task)
 
@@ -256,14 +256,14 @@ async def test_scheduler_all_caches_for_same_title() -> None:
 
 @pytest.mark.asyncio
 async def test_scheduler_none_caches_for_same_title() -> None:
-    """Decision.NONE for a title suppresses subsequent GUI prompts with the same title."""
+    """Response.NONE for a title suppresses subsequent GUI prompts with the same title."""
 
     async def my_task(ctx: TaskContext) -> None:
-        await ctx.subtask(ctx.request_decision("Delete", [Decision.YES, Decision.NONE], "Delete?"))
-        await ctx.subtask(ctx.request_decision("Delete", [Decision.YES, Decision.NONE], "Delete?"))
+        await ctx.subtask(ctx.request_response("Delete", [Response.YES, Response.NONE], "Delete?"))
+        await ctx.subtask(ctx.request_response("Delete", [Response.YES, Response.NONE], "Delete?"))
 
     harness = TaskHarness()
-    harness.hold("Delete", Decision.NONE)
+    harness.hold("Delete", Response.NONE)
     harness.answer("Delete")
     await harness.run(my_task)
 
@@ -275,8 +275,8 @@ async def test_scheduler_different_titles_each_get_gui_call() -> None:
     """Requests with different titles each trigger a separate GUI callback."""
 
     async def my_task(ctx: TaskContext) -> None:
-        await ctx.request_decision("Title A", [Decision.YES], "A?")
-        await ctx.request_decision("Title B", [Decision.YES], "B?")
+        await ctx.request_response("Title A", [Response.YES], "A?")
+        await ctx.request_response("Title B", [Response.YES], "B?")
 
     harness = TaskHarness()
     # both titles are unregistered → auto-answered YES; two separate GUI calls expected

@@ -1,6 +1,6 @@
 # Scheduler Framework
 
-Nova Navigator provides an async scheduler that runs long-running operations as **jobs** in worker threads while maintaining the ability to request user decisions through the GUI.
+Nova Navigator provides an async scheduler that runs long-running operations as **jobs** in worker threads while maintaining the ability to request user responses through the GUI.
 This document describes the framework, its API, and how to implement new tasks.
 
 ## Overview
@@ -9,7 +9,7 @@ The scheduler enables:
 
 - **Long-running operations** to run asynchronously without blocking the GUI
 - **Progress tracking** with two-level granularity (overall items and per-item steps)
-- **User decisions** requested mid-operation (e.g., "File exists, overwrite?")
+- **User responses** requested mid-operation (e.g., "File exists, overwrite?")
 - **Cancellation** handling when the user terminates a job
 - **Concurrency** within tasks using asyncio
 
@@ -31,7 +31,7 @@ Jobs are visible in the Processes dialog, where the user can monitor progress an
 
 A **task** is an async function with the signature `async def my_task(ctx: TaskContext) -> None`.
 Within a job, the task function is the entry point and its steps execute **sequentially** by default.
-The `TaskContext` (`ctx`) gives the task access to progress reporting, cancellation checks, user decisions, and the ability to spawn subtasks.
+The `TaskContext` (`ctx`) gives the task access to progress reporting, cancellation checks, user responses, and the ability to spawn subtasks.
 
 ### Subtasks
 
@@ -55,7 +55,7 @@ Scheduler
         └── ...
 ```
 
-The key reason to use subtasks is user decisions: if one subtask blocks on `ctx.request_decision()`, other subtasks in the same job continue making progress.
+The key reason to use subtasks is user responses: if one subtask blocks on `ctx.request_response()`, other subtasks in the same job continue making progress.
 Without subtasks, any user prompt would stall the entire job.
 
 ## Architecture
@@ -68,14 +68,14 @@ When a job is executed:
 1. A new worker thread is spawned
 2. A fresh asyncio event loop is created in the worker thread
 3. The task runs in this isolated loop
-4. Decision requests are bridged back to the GUI loop via `asyncio.run_coroutine_threadsafe()`
+4. Response requests are bridged back to the GUI loop via `asyncio.run_coroutine_threadsafe()`
 
 This design allows tasks to use async/await syntax freely while the GUI remains responsive.
 
-### Decision Serialization
+### Response Serialization
 
 An `asyncio.Lock` inside `AsyncTaskScheduler` ensures that at most one GUI dialog is in flight at a time.
-When multiple concurrent subtasks call `request_decision()` simultaneously, they queue up on the lock.
+When multiple concurrent subtasks call `request_response()` simultaneously, they queue up on the lock.
 `ALL`/`NONE`/`SKIP_ALL` responses are cached by title and applied automatically to subsequent identical requests, bypassing the lock and dialog entirely.
 
 ## Core Components
@@ -104,37 +104,37 @@ await job.start(gui_request_callback)
 - `state: Job.State`
 - `progress: Progress`
 
-### `Decision`
+### `Response`
 
 An enum flag representing user choices in response to a dialog.
-Common decisions:
+Common responses:
 
-- `Decision.YES` / `Decision.NO` — binary choice
-- `Decision.OK` / `Decision.CANCEL` — confirmation
-- `Decision.RETRY` / `Decision.SKIP` — error recovery
-- `Decision.ALL` / `Decision.NONE` — "apply to all" variants of YES/NO
-- `Decision.SKIP_ALL` — "apply to all" variant of SKIP
+- `Response.YES` / `Response.NO` — binary choice
+- `Response.OK` / `Response.CANCEL` — confirmation
+- `Response.RETRY` / `Response.SKIP` — error recovery
+- `Response.ALL` / `Response.NONE` — "apply to all" variants of YES/NO
+- `Response.SKIP_ALL` — "apply to all" variant of SKIP
 
-Decisions have properties:
+Responses have properties:
 
-- `is_negative` — `True` if the decision carries the negative bit (NO, CANCEL, SKIP, NONE, SKIP_ALL)
+- `is_negative` — `True` if the response carries the negative bit (NO, CANCEL, SKIP, NONE, SKIP_ALL)
 - `is_positive` — `True` if `not is_negative` (YES, OK, RETRY, ALL)
 - `is_to_all` — `True` if the modifier bit is set (ALL, NONE, SKIP_ALL)
 
-Use `is_decision()` to compare against a specific value:
+Use `is_response()` to compare against a specific value:
 
 ```python
-if decision.is_decision(Decision.YES) or decision.is_decision(Decision.ALL):
+if response.is_response(Response.YES) or response.is_response(Response.ALL):
     # user said yes
 ```
 
-### `DecisionRequest`
+### `ResponseRequest`
 
 Represents a request for user input, passed to the GUI callback.
 Contains:
 
-- `title: str` — dialog title; also the deduplication key for caching "apply to all" decisions
-- `expected_decisions: list[Decision]` — the choices available to the user
+- `title: str` — dialog title; also the deduplication key for caching "apply to all" responses
+- `expected_responses: list[Response]` — the choices available to the user
 - `message: str` — the dialog message
 
 ### `Progress`
@@ -177,15 +177,15 @@ Passed as the first argument to every async task function.
 
 **Methods:**
 
-- `async request_decision(title, expected_decisions, message) -> Decision` — pause and ask the user
+- `async request_response(title, expected_responses, message) -> Response` — pause and ask the user
 - `async subtask(coro: Coroutine[Any, Any, R]) -> asyncio.Task[R]` — spawn a concurrent subtask and yield control so it can begin
 
 ### `GuiRequestCallback`
 
-Type alias for the callback that the GUI must supply to show decision dialogs:
+Type alias for the callback that the GUI must supply to show response dialogs:
 
 ```python
-GuiRequestCallback = Callable[[DecisionRequest, asyncio.Future[Decision]], Awaitable[None]]
+GuiRequestCallback = Callable[[ResponseRequest, asyncio.Future[Response]], Awaitable[None]]
 ```
 
 The callback receives the request and a `Future` that must be resolved with the user's choice.
@@ -206,7 +206,7 @@ async def execute(
 ```
 
 Runs `task_fn` in a worker thread and awaits completion.
-The `gui_request_callback` is invoked whenever a `DecisionRequest` needs to be shown to the user.
+The `gui_request_callback` is invoked whenever a `ResponseRequest` needs to be shown to the user.
 
 ## Implementing a Task
 
@@ -231,19 +231,19 @@ async def my_task(ctx: TaskContext) -> None:
 
 ### Common Patterns
 
-#### Request a User Decision
+#### Request a User Response
 
 ```python
-decision = await ctx.request_decision(
+response = await ctx.request_response(
     title="Overwrite file",
-    expected_decisions=[Decision.YES, Decision.NO, Decision.ALL, Decision.NONE],
+    expected_responses=[Response.YES, Response.NO, Response.ALL, Response.NONE],
     message="File 'data.txt' already exists. Overwrite?",
 )
 
-if decision.is_positive:
+if response.is_positive:
     # User clicked YES or ALL
     overwrite_file()
-elif decision.is_negative:
+elif response.is_negative:
     # User clicked NO or NONE
     skip_file()
 ```
@@ -292,7 +292,7 @@ async def process_many(ctx: TaskContext, items: list[str]) -> None:
     await asyncio.gather(*tasks)
 ```
 
-**Why this matters:** If `process_one()` calls `ctx.request_decision()` for item A, that subtask blocks on the lock waiting for the user to respond.
+**Why this matters:** If `process_one()` calls `ctx.request_response()` for item A, that subtask blocks on the lock waiting for the user to respond.
 Meanwhile, subtasks for items B and C continue running in the worker thread, so you get progress without stalling the entire operation.
 
 Without subtasks, sequential processing would stall completely whenever user feedback is needed.
@@ -320,5 +320,5 @@ async def long_operation(ctx: TaskContext) -> None:
 - **`AsyncTaskScheduler`:** `nova_navigator/scheduler/scheduler.py`
 - **`TaskContext`, `TaskStatus`:** `nova_navigator/scheduler/context.py`
 - **Task implementations:** `nova_navigator/filemanager/tasks.py`
-- **Decision enum:** `nova_navigator/decision.py`
+- **Response enum:** `nova_navigator/response.py`
 - **Architecture guide:** See `AGENTS.md` for the broader threading model and async architecture

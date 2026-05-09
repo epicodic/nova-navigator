@@ -2,8 +2,8 @@ import asyncio
 import threading
 from collections.abc import Awaitable, Callable
 
-from nova_navigator.decision import Decision
-from nova_navigator.scheduler import AsyncTaskScheduler, DecisionRequest, TaskContext, TaskStatus
+from nova_navigator.response import Response
+from nova_navigator.scheduler import AsyncTaskScheduler, ResponseRequest, TaskContext, TaskStatus
 from tests._utils.mock_filesystem import MockFilesystem
 
 
@@ -33,24 +33,24 @@ def read_all(fs: MockFilesystem, path: str) -> bytes:
 
 async def run_task(
     task_fn: Callable[[TaskContext], Awaitable[None]],
-    decisions: list[Decision] | None = None,
+    responses: list[Response] | None = None,
     status: TaskStatus | None = None,
-) -> list[DecisionRequest]:
-    """Run *task_fn* via AsyncTaskScheduler with pre-supplied GUI decisions.
+) -> list[ResponseRequest]:
+    """Run *task_fn* via AsyncTaskScheduler with pre-supplied GUI responses.
 
-    Returns the list of DecisionRequests that were presented to the GUI callback.
+    Returns the list of ResponseRequests that were presented to the GUI callback.
     Raises any exception the task raises (e.g. TaskCancelled, OSError).
     """
-    pending = list(decisions or [])
-    requests: list[DecisionRequest] = []
+    pending = list(responses or [])
+    requests: list[ResponseRequest] = []
     if status is None:
         status = make_status()
 
-    async def gui_callback(request: DecisionRequest, future: asyncio.Future[Decision]) -> None:
+    async def gui_callback(request: ResponseRequest, future: asyncio.Future[Response]) -> None:
         requests.append(request)
         if not pending:
             raise AssertionError(
-                f"Task yielded an unexpected DecisionRequest {request.title!r} but no decisions remain in the list"
+                f"Task yielded an unexpected ResponseRequest {request.title!r} but no responses remain in the list"
             )
         future.set_result(pending.pop(0))
 

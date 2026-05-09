@@ -1,6 +1,7 @@
 # tests/dialogs/test_manage_remotes_dialog.py
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -63,8 +64,8 @@ async def test_add_button_appends_and_selects() -> None:
         await pilot.pause()
         await pilot.click(app.screen.query_one("#btn_add", Button))
         await pilot.pause()
-        assert len(dialog._working) == 3
-        assert dialog._working[-1].name == "new-connection"
+        assert len(dialog._config._items) == 3
+        assert dialog._config._items[-1].name == "new-connection"
         lv = app.screen.query_one("#remote_list", ListView)
         assert lv.index == 2
 
@@ -79,8 +80,8 @@ async def test_remove_button_removes_selected() -> None:
         # index 0 (my-server) is already selected on mount
         await pilot.click(app.screen.query_one("#btn_remove", Button))
         await pilot.pause()
-        assert len(dialog._working) == 1
-        assert dialog._working[0].name == "dev-box"
+        assert len(dialog._config._items) == 1
+        assert dialog._config._items[0].name == "dev-box"
 
 
 @pytest.mark.asyncio
@@ -162,7 +163,7 @@ async def test_ok_saves_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 async def test_cancel_discards_changes() -> None:
     cfg = _fixture_config()
     original_name = cfg._items[0].name
-    _dialog, _App = _make_app(cfg)
+    _dialog, _App = _make_app(copy.deepcopy(cfg))
     app = _App()
     async with app.run_test() as pilot:
         await pilot.pause()

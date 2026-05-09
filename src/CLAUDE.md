@@ -59,10 +59,10 @@ The codebase lives under `src/` and contains two packages:
 - `filesystems/ssh.py` - `SSHFilesystem` via paramiko
 - `filesystems/azure.py` - Azure blob stub (incomplete)
 
-**Task system:** `nova_navigator/task.py` - defines a coroutine-like generator protocol for long-running operations that may need user decisions:
-- `Task = Generator[DecisionRequest | Task, DecisionResponse, None]`
-- `TaskScheduler` runs tasks in a thread and bridges decision requests to the GUI via async callbacks
-- Tasks `yield DecisionRequest(...)` to pause and ask the user; the scheduler resumes them with a `DecisionResponse`
+**Task system:** `nova_navigator/task.py` - defines a coroutine-like generator protocol for long-running operations that may need user responses:
+- `Task = Generator[ResponseRequest | Task, ResponseResponse, None]`
+- `TaskScheduler` runs tasks in a thread and bridges response requests to the GUI via async callbacks
+- Tasks `yield ResponseRequest(...)` to pause and ask the user; the scheduler resumes them with a `ResponseResponse`
 
 **Operations:** `nova_navigator/operations/` - file operations (copy, move, delete) implemented as `Operation` subclasses. `Operation.process()` runs in a thread via `asyncio.to_thread`. `filemanager/tasks.py` contains generator-based task implementations (`copy_file`, `erase`) built on top of `vfs`.
 
@@ -79,7 +79,7 @@ The codebase lives under `src/` and contains two packages:
 
 ### Threading model
 
-The Textual event loop runs on the main thread. Long-running operations (file copy, delete) run in worker threads via `asyncio.to_thread`. The `TaskScheduler` in `task.py` bridges between worker threads and the Textual event loop for user decisions.
+The Textual event loop runs on the main thread. Long-running operations (file copy, delete) run in worker threads via `asyncio.to_thread`. The `TaskScheduler` in `task.py` bridges between worker threads and the Textual event loop for user responses.
 
 ### `nova_widgets` package
 
