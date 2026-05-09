@@ -18,14 +18,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nova_navigator.decision import Decision
+from nova_navigator.response import Response
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
-from tests.integration.conftest import auto_confirm_copy_dialog, auto_confirm_decision_dialog, poll_until
+from tests.integration.conftest import auto_confirm_copy_dialog, auto_confirm_response_dialog, poll_until
 from tests.integration.ssh.conftest import SshAppCtx, set_ssh_panels, set_ssh_panels_remote_left
 
 _COPY_DIALOG_PATH = "nova_navigator.filemanager.jobs.CopyMoveFilesDialog"
-_DECISION_DIALOG_PATH = "nova_navigator.nova_navigator.make_decision_dialog"
+_RESPONSE_DIALOG_PATH = "nova_navigator.nova_navigator.make_response_dialog"
 
 # Give SSH exec_command (subprocess) time to complete in addition to the copy I/O.
 _COPY_WAIT = 1.5
@@ -124,12 +124,12 @@ async def test_copy_local_to_remote_no_spurious_overwrite_dialog(ssh_app_ctx: Ss
     await set_ssh_panels(ssh_app_ctx)
 
     p_copy = patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog())
-    p_dec = patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.YES))
-    with p_copy, p_dec as mock_decision:
+    p_dec = patch(_RESPONSE_DIALOG_PATH, return_value=auto_confirm_response_dialog(Response.YES))
+    with p_copy, p_dec as mock_response:
         await ssh_app_ctx.pilot.press("f5")
         await poll_until(ssh_app_ctx.pilot, lambda: (ssh_app_ctx.remote_dir / "newfile.txt").exists())
 
-    mock_decision.assert_not_called()
+    mock_response.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +202,7 @@ async def test_copy_local_to_remote_overwrites_when_confirmed(ssh_app_ctx: SshAp
     await set_ssh_panels(ssh_app_ctx)
 
     p_copy = patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog())
-    p_dec = patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.YES))
+    p_dec = patch(_RESPONSE_DIALOG_PATH, return_value=auto_confirm_response_dialog(Response.YES))
     with p_copy, p_dec:
         await ssh_app_ctx.pilot.press("f5")
         await poll_until(ssh_app_ctx.pilot, lambda: (ssh_app_ctx.remote_dir / "file.txt").read_text() == "new content")
@@ -232,7 +232,7 @@ async def test_copy_local_to_remote_skips_when_overwrite_declined(ssh_app_ctx: S
     _ = remote_vpath.stat_or_none  # warm the cache
 
     p_copy = patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog())
-    p_dec = patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.NO))
+    p_dec = patch(_RESPONSE_DIALOG_PATH, return_value=auto_confirm_response_dialog(Response.NO))
     with p_copy, p_dec:
         await ssh_app_ctx.pilot.press("f5")
         await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)

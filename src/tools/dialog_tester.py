@@ -2,15 +2,14 @@
 
 CLI usage:
   uv run dialog_tester --list                       # list all available dialogs
-  uv run dialog_tester DecisionDialog               # launch dialog interactively
-  uv run dialog_tester DecisionDialog --screenshot  # render headlessly, print SVG to stdout
+  uv run dialog_tester ResponseDialog               # launch dialog interactively
+  uv run dialog_tester ResponseDialog --screenshot  # render headlessly, print SVG to stdout
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import sys
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
@@ -23,10 +22,8 @@ from textual.app import App, ComposeResult
 from textual.widgets import Static
 
 from nova_navigator.config import conf_
-from nova_navigator.decision import Decision
 from nova_navigator.dialogs.connect_to_dialog import ConnectToDialog
 from nova_navigator.dialogs.credentials_dialog import CredentialsDialog
-from nova_navigator.dialogs.decision_dialog import DecisionDialog, OverwriteDecisionDialog
 from nova_navigator.dialogs.dialog import Dialog
 from nova_navigator.dialogs.edit_bookmarks_dialog import EditBookmarksDialog
 from nova_navigator.dialogs.edit_remotes_dialog import EditRemotesDialog
@@ -34,8 +31,11 @@ from nova_navigator.dialogs.file_dialog import FileDialog, FileDialogMode, FileT
 from nova_navigator.dialogs.files_dialog import CopyMoveFilesDialog, DeleteFilesDialog
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.dialogs.message_box import MessageBox
+from nova_navigator.dialogs.response_dialog import OverwriteResponseDialog, ResponseDialog
+from nova_navigator.dialogs.settings_dialog import SettingsDialog
 from nova_navigator.nova_navigator_core import NovaNavigatorCore
-from nova_navigator.scheduler.context import DecisionRequest
+from nova_navigator.response import Response
+from nova_navigator.scheduler.context import ResponseRequest
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_navigator.vfs.vpath import VPath
 
@@ -46,10 +46,10 @@ _TCSS = str(Path(__file__).parent.parent / "nova_navigator" / "nn.tcss")
 
 _LauncherFn = Callable[[], Coroutine[Any, Any, str]]
 _DialogFactory = Callable[[], Dialog]
-_ResultFn = Callable[[Any, str], str]
+_ResultFn = Callable[[Any, "Response | None"], str]
 
 
-def _fmt(_dialog: Any, result: str) -> str:
+def _fmt(_dialog: Any, result: Response | None) -> str:
     return f"Result: {result}"
 
 
@@ -79,10 +79,15 @@ _ENTRIES: list[DialogEntry] = [
         lambda: ConnectToDialog(conf_.remotes),
     ),
     DialogEntry(
+        "SettingsDialog",
+        "Edit all application settings (uses real config).",
+        lambda: SettingsDialog(conf_.settings),
+    ),
+    DialogEntry(
         "CredentialsDialog",
         "Username + password prompt for SSH authentication.",
         lambda: CredentialsDialog(hostname="example.com", username="admin"),
-        result_fn=lambda d, r: f"Result: {r}  creds={d.credentials if r == 'OK' else None}",
+        result_fn=lambda d, r: f"Result: {r}  creds={d.credentials if r == Response.OK else None}",
     ),
     DialogEntry(
         "MessageBox (default)",
@@ -111,27 +116,27 @@ _ENTRIES: list[DialogEntry] = [
             "The authenticity of host 'example.com' can't be established.\n"
             "ED25519 key fingerprint is SHA256:abc123xyz\n\nAdd to known hosts?",
             title="Unknown Host",
-            buttons=[Decision.OK, Decision.CANCEL],
+            buttons=[Response.OK, Response.CANCEL],
         ),
     ),
     DialogEntry(
-        "DecisionDialog",
-        "Simple yes/no decision prompt.",
-        lambda: DecisionDialog(
-            DecisionRequest(
+        "ResponseDialog",
+        "Simple yes/no response prompt.",
+        lambda: ResponseDialog(
+            ResponseRequest(
                 title="Confirm action",
-                expected_decisions=[Decision.YES, Decision.NO],
+                expected_responses=[Response.YES, Response.NO],
                 message="Do you want to proceed with this action?",
             )
         ),
     ),
     DialogEntry(
-        "OverwriteDecisionDialog",
+        "OverwriteResponseDialog",
         "File overwrite confirmation with source/destination info.",
-        lambda: OverwriteDecisionDialog(
-            DecisionRequest(
+        lambda: OverwriteResponseDialog(
+            ResponseRequest(
                 title="File already exists",
-                expected_decisions=[Decision.YES, Decision.ALL, Decision.NO, Decision.NONE],
+                expected_responses=[Response.YES, Response.ALL, Response.NO, Response.NONE],
                 message="The destination file already exists.",
                 dialog_type="overwrite",
                 details={
@@ -271,8 +276,9 @@ class _ScreenshotApp(App[str]):
     @work
     async def _run(self) -> None:
         await asyncio.sleep(0.1)  # let the app settle
-        with contextlib.suppress(Exception):
-            await self._entry.launcher()
+        dialog = self._entry.factory()
+        self.push_screen(dialog)
+        await asyncio.sleep(0.2)  # let the dialog render
         self._svg = self.export_screenshot()
         self.exit(self._svg)
 
@@ -318,8 +324,8 @@ def main() -> None:
         epilog=(
             "Examples:\n"
             "  uv run dialog_tester --list\n"
-            "  uv run dialog_tester DecisionDialog\n"
-            "  uv run dialog_tester DecisionDialog --screenshot\n"
+            "  uv run dialog_tester ResponseDialog\n"
+            "  uv run dialog_tester ResponseDialog --screenshot\n"
         ),
     )
     parser.add_argument("--list", action="store_true", help="List all available dialogs and exit.")

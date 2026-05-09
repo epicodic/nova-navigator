@@ -11,27 +11,27 @@ from textual.widget import Widget
 
 from nova_widgets import ButtonBox
 
-from ..decision import Decision
 from ..format_utils import format_size
-from ..scheduler import DecisionRequest
+from ..response import Response
+from ..scheduler import ResponseRequest
 
 _logger = logging.getLogger(__name__)
 
 
-def make_decision_dialog(request: DecisionRequest) -> "DecisionDialog":
+def make_response_dialog(request: ResponseRequest) -> "ResponseDialog":
     """Return the appropriate dialog widget for *request*.
 
     Dispatches on ``request.dialog_type``; falls back to the generic
-    :class:`DecisionDialog` for unknown or absent types.
+    :class:`ResponseDialog` for unknown or absent types.
     """
     if request.dialog_type == "overwrite":
-        return OverwriteDecisionDialog(request)
-    return DecisionDialog(request)
+        return OverwriteResponseDialog(request)
+    return ResponseDialog(request)
 
 
-class DecisionDialog(ModalScreen[Decision]):
+class ResponseDialog(ModalScreen[Response]):
     DEFAULT_CSS = """
-    DecisionDialog {
+    ResponseDialog {
         align: center middle;
 
         #dialog_box {
@@ -60,9 +60,9 @@ class DecisionDialog(ModalScreen[Decision]):
         Binding(key="escape", action="abort", description="No", priority=True),
     ]
 
-    _request: DecisionRequest
+    _request: ResponseRequest
 
-    def __init__(self, request: DecisionRequest, id: str | None = None, **kwargs: Any) -> None:
+    def __init__(self, request: ResponseRequest, id: str | None = None, **kwargs: Any) -> None:
         super().__init__(id=id, **kwargs)
         self._request = request
 
@@ -72,12 +72,12 @@ class DecisionDialog(ModalScreen[Decision]):
     def compose(self) -> ComposeResult:
         buttons = []
         to_all_buttons = []
-        for expected_decision in self._request.expected_decisions:
-            text = expected_decision.tr
+        for expected_response in self._request.expected_responses:
+            text = expected_response.tr
             _logger.warning(text)
-            variant = "success" if expected_decision.is_positive else "error"
-            btn = widgets.Button(text, id=expected_decision.name, variant=variant, flat=True)
-            if expected_decision.is_to_all:
+            variant = "success" if expected_response.is_accepted else "error"
+            btn = widgets.Button(text, id=expected_response.name, variant=variant, flat=True)
+            if expected_response.is_to_all:
                 to_all_buttons.append(btn)
             else:
                 buttons.append(btn)
@@ -97,19 +97,19 @@ class DecisionDialog(ModalScreen[Decision]):
         yield dialog_box
 
     def on_button_pressed(self, event: widgets.Button.Pressed) -> None:
-        chosen = Decision[event.button.id]
+        chosen = Response[event.button.id]
         self.dismiss(chosen)
 
     def action_abort(self) -> None:
-        self.dismiss(Decision.NO)
+        self.dismiss(Response.NO)
 
-    async def run(self) -> Decision:
+    async def run(self) -> Response:
         self.focus()
         return await self.app.push_screen_wait(screen=self)
 
 
-class OverwriteDecisionDialog(DecisionDialog):
-    """A specialised decision dialog for file-overwrite confirmations.
+class OverwriteResponseDialog(ResponseDialog):
+    """A specialised response dialog for file-overwrite confirmations.
 
     Expects the following keys in ``request.details``:
 
@@ -120,9 +120,9 @@ class OverwriteDecisionDialog(DecisionDialog):
     """
 
     DEFAULT_CSS = (
-        DecisionDialog.DEFAULT_CSS
+        ResponseDialog.DEFAULT_CSS
         + """
-    OverwriteDecisionDialog {
+    OverwriteResponseDialog {
         #file_info {
             color: $text;
             padding: 0 1;

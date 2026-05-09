@@ -11,12 +11,12 @@ from unittest.mock import patch
 
 import pytest
 
-from nova_navigator.decision import Decision
+from nova_navigator.response import Response
 from tests.integration.conftest import (
     AppCtx,
     auto_cancel_dialog,
     auto_confirm_copy_dialog,
-    auto_confirm_decision_dialog,
+    auto_confirm_response_dialog,
     poll_until,
     set_panels,
 )
@@ -126,7 +126,7 @@ async def test_copy_multiple_files_all_appear_in_destination(app_ctx: AppCtx) ->
 # Overwrite — exercises request_callback
 # ---------------------------------------------------------------------------
 
-_DECISION_DIALOG_PATH = "nova_navigator.nova_navigator.make_decision_dialog"
+_RESPONSE_DIALOG_PATH = "nova_navigator.nova_navigator.make_response_dialog"
 
 
 @pytest.mark.asyncio
@@ -135,7 +135,7 @@ async def test_copy_overwrites_existing_file_when_user_confirms(app_ctx: AppCtx)
     """When the destination file already exists and the user confirms overwrite,
     the source content replaces the destination content.
 
-    This exercises the full request_callback → make_decision_dialog path that
+    This exercises the full request_callback → make_response_dialog path that
     fires when the copy task detects a conflict.
     """
     (app_ctx.src_dir / "file.txt").write_text("new content")
@@ -143,7 +143,7 @@ async def test_copy_overwrites_existing_file_when_user_confirms(app_ctx: AppCtx)
     await set_panels(app_ctx)
 
     p_copy = patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog())
-    p_dec = patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.YES))
+    p_dec = patch(_RESPONSE_DIALOG_PATH, return_value=auto_confirm_response_dialog(Response.YES))
     with p_copy, p_dec:
         await app_ctx.pilot.press("f5")
         await poll_until(app_ctx.pilot, lambda: (app_ctx.dst_dir / "file.txt").read_text() == "new content")
@@ -160,7 +160,7 @@ async def test_copy_skips_existing_file_when_user_declines_overwrite(app_ctx: Ap
     await set_panels(app_ctx)
 
     p_copy = patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog())
-    p_dec = patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.NO))
+    p_dec = patch(_RESPONSE_DIALOG_PATH, return_value=auto_confirm_response_dialog(Response.NO))
     with p_copy, p_dec:
         await app_ctx.pilot.press("f5")
         await app_ctx.pilot.pause(delay=0.5)

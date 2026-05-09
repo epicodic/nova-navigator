@@ -2,8 +2,8 @@ import threading
 
 import pytest
 
-from nova_navigator.decision import Decision
 from nova_navigator.filemanager.tasks import FileCopyOptions, move_files
+from nova_navigator.response import Response
 from nova_navigator.scheduler import TaskCancelled, TaskStatus
 from tests._utils.mock_filesystem import MockFilesystem
 
@@ -75,7 +75,7 @@ async def test_move_overwrite_ask_yes() -> None:
         lambda ctx: move_files(
             ctx, [fs.path("/src/file.txt")], fs.path("/home/user"), FileCopyOptions(overwrite="ask")
         ),
-        [Decision.YES],
+        [Response.YES],
     )
 
     assert len(requests) == 1
@@ -92,7 +92,7 @@ async def test_move_overwrite_ask_no() -> None:
         lambda ctx: move_files(
             ctx, [fs.path("/src/file.txt")], fs.path("/home/user"), FileCopyOptions(overwrite="ask")
         ),
-        [Decision.NO],
+        [Response.NO],
     )
 
     assert len(requests) == 1
@@ -115,7 +115,7 @@ async def test_move_overwrite_ask_all() -> None:
     srcs = [fs.path("/src/a.txt"), fs.path("/src/b.txt")]
     requests = await run_task(
         lambda ctx: move_files(ctx, srcs, fs.path("/home/user"), FileCopyOptions(overwrite="ask")),
-        [Decision.ALL],
+        [Response.ALL],
     )
 
     assert len(requests) == 1
@@ -140,7 +140,7 @@ async def test_move_overwrite_ask_none() -> None:
     srcs = [fs.path("/src/a.txt"), fs.path("/src/b.txt")]
     requests = await run_task(
         lambda ctx: move_files(ctx, srcs, fs.path("/home/user"), FileCopyOptions(overwrite="ask")),
-        [Decision.NONE],
+        [Response.NONE],
     )
 
     assert len(requests) == 1
@@ -224,7 +224,7 @@ async def test_move_cross_device_ask_no_does_not_delete_source() -> None:
         lambda ctx: move_files(
             ctx, [src_fs.path("/src/file.txt")], dst_fs.path("/home/user"), FileCopyOptions(overwrite="ask")
         ),
-        [Decision.NO],
+        [Response.NO],
     )
 
     assert len(requests) == 1
@@ -276,7 +276,7 @@ async def test_move_cross_device_directory_ask_no_does_not_erase_source() -> Non
         lambda ctx: move_files(
             ctx, [src_fs.path("/src/mydir")], dst_fs.path("/home/user"), FileCopyOptions(overwrite="ask")
         ),
-        [Decision.NO],
+        [Response.NO],
     )
 
     assert len(requests) == 1

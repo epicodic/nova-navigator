@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import pathlib
 from typing import ClassVar
 
@@ -13,11 +12,11 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Label, ListItem, ListView
 
 from nova_navigator.config.remotes import AzureSettings, ProxySettings, RemoteConfig, RemoteConnection, SshSettings
-from nova_navigator.decision import Decision
 from nova_navigator.dialogs.dialog import Dialog
 from nova_navigator.dialogs.file_dialog import FileDialog, FileDialogMode
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.icons import ICONS
+from nova_navigator.response import Response
 from nova_widgets import Button, Checkbox, Input, Select
 
 _PROTOCOL_OPTIONS: list[tuple[str, str]] = [("SSH", "ssh"), ("Azure Blob", "azure")]
@@ -148,9 +147,9 @@ class EditRemotesDialog(Dialog):
     _syncing: bool
 
     def __init__(self, config: RemoteConfig) -> None:
-        super().__init__("Edit Remote Connections", buttons=[Decision.OK, Decision.CANCEL])
+        super().__init__("Edit Remote Connections", buttons=[Response.OK, Response.CANCEL])
         self._config = config
-        self._working = copy.deepcopy(config._items)
+        self._working = config._items
         self._current_index = None
         self._syncing = False
 
@@ -402,21 +401,21 @@ class EditRemotesDialog(Dialog):
         index = event.list_view.index
         self._sync_form(index)
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        event.prevent_default()
-        match event.button.id:
-            case "OK":
-                self.action_accept_dialog()
-            case "CANCEL":
-                self.dismiss(Decision.CANCEL.name)
-            case "btn_add":
-                self._on_add()
-            case "btn_remove":
-                self._on_remove()
-            case "btn_pick_icon":
-                self._run_pick_icon()
-            case "btn_pick_identity_file":
-                self._run_pick_identity_file()
+    @on(Button.Pressed, "#btn_add")
+    def _on_btn_add(self, _event: Button.Pressed) -> None:
+        self._on_add()
+
+    @on(Button.Pressed, "#btn_remove")
+    def _on_btn_remove(self, _event: Button.Pressed) -> None:
+        self._on_remove()
+
+    @on(Button.Pressed, "#btn_pick_icon")
+    def _on_btn_pick_icon(self, _event: Button.Pressed) -> None:
+        self._run_pick_icon()
+
+    @on(Button.Pressed, "#btn_pick_identity_file")
+    def _on_btn_pick_identity_file(self, _event: Button.Pressed) -> None:
+        self._run_pick_identity_file()
 
     def _on_add(self) -> None:
         new_entry = RemoteConnection(name="new-connection", ssh=SshSettings(), azure=None)
@@ -437,12 +436,15 @@ class EditRemotesDialog(Dialog):
 
     def _run_pick_icon(self) -> None:
         current_icon = self.query_one("#input_icon", Input).value or None
-        self.app.push_screen(IconPickerDialog(initial_icon=current_icon), callback=self._on_icon_picked)
+        _dlg = IconPickerDialog(initial_icon=current_icon)
 
-    def _on_icon_picked(self, result: str | None) -> None:
-        if result is None or result == Decision.CANCEL.name:
-            return
-        self.query_one("#input_icon", Input).value = result
+        def _on_icon_picked(result: Response | None) -> None:
+            if result != Response.OK:
+                return
+            if _dlg.selected_icon is not None:
+                self.query_one("#input_icon", Input).value = _dlg.selected_icon
+
+        self.app.push_screen(_dlg, callback=_on_icon_picked)
 
     def _run_pick_identity_file(self) -> None:
         current = self.query_one("#input_identity_file", Input).value.strip()
@@ -455,8 +457,8 @@ class EditRemotesDialog(Dialog):
             start = pathlib.Path.home()
         dialog = FileDialog(mode=FileDialogMode.OPEN, start_path=start, title="Select Identity File")
 
-        def _on_picked(result: str | None) -> None:
-            if result != Decision.CANCEL.name and dialog.selected_path is not None:
+        def _on_picked(result: Response | None) -> None:
+            if result == Response.OK and dialog.selected_path is not None:
                 self.query_one("#input_identity_file", Input).value = str(dialog.selected_path)
 
         self.app.push_screen(dialog, callback=_on_picked)
@@ -605,10 +607,12 @@ class EditRemotesDialog(Dialog):
 
     # ------------------------------------------------------------------ dialog result
 
+    @property
+    def config(self) -> RemoteConfig:
+        return self._config
+
     def action_accept_dialog(self) -> None:
-        self._config._items = self._working
-        self._config.save()
-        self.dismiss(Decision.OK.name)
+        self.dismiss(Response.OK)
 
     def action_remove_item(self) -> None:
         self._on_remove()

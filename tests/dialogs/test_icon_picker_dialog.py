@@ -170,12 +170,11 @@ async def test_hovering_cell_updates_status_label() -> None:
 
 
 @pytest.mark.asyncio
-async def test_action_accept_dismisses_with_icon_name() -> None:
-    dialog, _App = _make_dialog_app(initial_icon="home")
-    dismissed_with: list[str] = []
+async def test_action_accept_dismisses_with_response_ok() -> None:
+    from nova_navigator.response import Response
 
-    class _TrackedApp(_App):  # type: ignore
-        pass
+    dialog, _App = _make_dialog_app(initial_icon="home")
+    dismissed_with: list[Response | None] = []
 
     app = _App()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -185,7 +184,8 @@ async def test_action_accept_dismisses_with_icon_name() -> None:
         dialog.dismiss = lambda v: dismissed_with.append(v) or original_dismiss(v)  # type: ignore
         dialog.action_accept_dialog()
         await pilot.pause()
-        assert dismissed_with == ["home"]
+        assert dismissed_with == [Response.OK]
+        assert dialog.selected_icon == "home"
 
 
 @pytest.mark.asyncio

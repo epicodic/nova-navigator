@@ -2,8 +2,8 @@ import threading
 
 import pytest
 
-from nova_navigator.decision import Decision
 from nova_navigator.filemanager.tasks import EraseFilesOptions, erase_files
+from nova_navigator.response import Response
 from nova_navigator.scheduler import TaskCancelled, TaskStatus
 from tests._utils.mock_filesystem import MockFilesystem
 
@@ -50,7 +50,7 @@ async def test_erase_non_empty_directory_ask_yes() -> None:
 
     requests = await run_task(
         lambda ctx: erase_files(ctx, [fs.path("/home/user/dir")]),
-        [Decision.YES],
+        [Response.YES],
     )
 
     assert len(requests) == 1
@@ -65,7 +65,7 @@ async def test_erase_non_empty_directory_ask_no() -> None:
 
     requests = await run_task(
         lambda ctx: erase_files(ctx, [fs.path("/home/user/dir")]),
-        [Decision.NO],
+        [Response.NO],
     )
 
     assert len(requests) == 1
@@ -86,7 +86,7 @@ async def test_erase_multiple_non_empty_dirs_ask_all() -> None:
     paths = [fs.path("/home/user/dir1"), fs.path("/home/user/dir2")]
     requests = await run_task(
         lambda ctx: erase_files(ctx, paths),
-        [Decision.ALL],
+        [Response.ALL],
     )
 
     # Only one prompt; the cached ALL answer silences the second
@@ -108,7 +108,7 @@ async def test_erase_multiple_non_empty_dirs_ask_none() -> None:
     paths = [fs.path("/home/user/dir1"), fs.path("/home/user/dir2")]
     requests = await run_task(
         lambda ctx: erase_files(ctx, paths),
-        [Decision.NONE],
+        [Response.NONE],
     )
 
     # Only one prompt; the cached NONE answer silences the second
@@ -169,7 +169,7 @@ async def test_erase_mixed_files_and_dirs() -> None:
     paths = [fs.path("/home/user/file.txt"), fs.path("/home/user/dir")]
     requests = await run_task(
         lambda ctx: erase_files(ctx, paths),
-        [Decision.YES],
+        [Response.YES],
     )
 
     assert len(requests) == 1
@@ -215,7 +215,7 @@ async def test_erase_skipped_dir_not_counted_in_completed() -> None:
     status = make_status()
     await run_task(
         lambda ctx: erase_files(ctx, [fs.path("/home/user/dir")]),
-        [Decision.NO],
+        [Response.NO],
         status=status,
     )
 
@@ -243,7 +243,7 @@ async def test_erase_directory_progress_total() -> None:
     status = make_status()
     await run_task(
         lambda ctx: erase_files(ctx, [fs.path("/home/user/mydir")]),
-        [Decision.YES],
+        [Response.YES],
         status=status,
     )
 

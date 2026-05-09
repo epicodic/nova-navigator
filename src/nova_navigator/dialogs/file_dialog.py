@@ -17,7 +17,7 @@ from textual.css.query import NoMatches
 from textual.message import Message
 from textual.widgets import Input, Label, ListItem, ListView, Static
 
-from nova_widgets import Button, Checkbox, Select
+from nova_widgets import Checkbox, Select
 
 from ..icons import ico_
 from .dialog import DefaultButton, Dialog
@@ -229,9 +229,8 @@ class _FileListing(ListView):
 class FileDialog(Dialog):
     """Modal file/directory picker dialog.
 
-    Returns the ID of the pressed button (``Decision.OK.name`` or
-    ``Decision.CANCEL.name``) via ``run()``.
-    After an OK dismissal, ``selected_path`` holds the resolved
+    Dismisses with ``Response.OK`` or ``Response.CANCEL`` (and similar).
+    After a ``Response.OK`` dismissal, ``selected_path`` holds the resolved
     ``pathlib.Path``.
     """
 
@@ -368,15 +367,6 @@ class FileDialog(Dialog):
             return
         if self._validate_and_store():
             super().action_accept_dialog()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Intercept OK to validate; let Cancel fall through to Dialog base."""
-        if self._button_accept and event.button.id == self._button_accept.id:
-            event.stop()
-            if self._validate_and_store():
-                self.dismiss(self._button_accept.id)
-        else:
-            super().on_button_pressed(event)
 
     # ── Validation ────────────────────────────────────────────────────────
 

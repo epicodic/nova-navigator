@@ -2,8 +2,8 @@ import asyncio
 
 import pytest
 
-from nova_navigator.decision import Decision
-from nova_navigator.scheduler import DecisionRequest, Job, TaskContext
+from nova_navigator.response import Response
+from nova_navigator.scheduler import Job, ResponseRequest, TaskContext
 
 
 async def _failing_task(_ctx: TaskContext) -> None:
@@ -14,8 +14,8 @@ async def _ok_task(ctx: TaskContext) -> None:
     ctx.status.set_completed()
 
 
-async def _no_gui(_request: DecisionRequest, future: asyncio.Future[Decision]) -> None:
-    future.set_result(Decision.YES)
+async def _no_gui(_request: ResponseRequest, future: asyncio.Future[Response]) -> None:
+    future.set_result(Response.YES)
 
 
 @pytest.mark.asyncio

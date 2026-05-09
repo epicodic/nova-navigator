@@ -5,6 +5,15 @@ This file is also served as `CLAUDE.md` via symlink for Claude Code.
 
 ---
 
+## CRITICAL: Do Not Implement Without Explicit Approval
+
+**Never start writing or modifying code as part of a design discussion.**
+When a design is being discussed or refined, your role is to present options, answer questions, and iterate on the design.
+Only begin implementation after the user has explicitly said something like "go ahead", "implement it", "looks good", or equivalent.
+This applies even if the design appears final or complete.
+
+---
+
 ## Project Overview
 
 Nova Navigator is a modern TUI file manager (like Midnight Commander) built with Python and the [Textual](https://github.com/Textualize/textual) framework.
@@ -126,10 +135,10 @@ The codebase lives under `src/` and contains two packages:
 - `filesystems/ssh.py` — `SSHFilesystem` via paramiko
 - `filesystems/azure.py` — Azure blob stub (incomplete)
 
-**Task system:** `nova_navigator/scheduler/` — async scheduler for long-running operations with user decision support. See `docs/scheduler.md` for the complete scheduler framework guide.
+**Task system:** `nova_navigator/scheduler/` — async scheduler for long-running operations with user response support. See `docs/scheduler.md` for the complete scheduler framework guide.
 - `AsyncTaskScheduler` runs async task functions in worker threads with isolated event loops
-- Tasks accept `TaskContext` for progress tracking, cancellation, and user decisions
-- `TaskContext.request_decision()` pauses execution to show user dialogs
+- Tasks accept `TaskContext` for progress tracking, cancellation, and user responses
+- `TaskContext.request_response()` pauses execution to show user dialogs
 - `TaskContext.subtask()` — spawn a subtask
 
 **Operations:** `nova_navigator/operations/` — file operations (copy, move, delete) implemented as `Operation` subclasses. `Operation.process()` runs in a thread via `asyncio.to_thread`. `filemanager/tasks.py` contains generator-based task implementations (`copy_file`, `erase`) built on top of `vfs`.
@@ -153,7 +162,7 @@ The codebase lives under `src/` and contains two packages:
 
 The Textual event loop runs on the main thread.
 Long-running operations (file copy, delete) run in worker threads via `asyncio.to_thread`.
-The `TaskScheduler` in `task.py` bridges between worker threads and the Textual event loop for user decisions.
+The `TaskScheduler` in `task.py` bridges between worker threads and the Textual event loop for user responses.
 
 ### `nova_widgets` package
 

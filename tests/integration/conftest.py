@@ -35,6 +35,7 @@ import pytest_asyncio
 from textual.pilot import Pilot
 
 from nova_navigator.nova_navigator import MainScreen, NovaNavigator
+from nova_navigator.response import Response
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
 
@@ -148,40 +149,40 @@ async def poll_until(
 
 
 def auto_confirm_copy_dialog(filename: str | None = None) -> MagicMock:
-    """Mock CopyMoveFilesDialog that immediately returns 'OK'.
+    """Mock CopyMoveFilesDialog that immediately returns Response.OK.
 
     Args:
         filename: Simulated edited filename; ``None`` means no rename.
     """
     dialog = MagicMock()
-    dialog.run = AsyncMock(return_value="OK")
+    dialog.run = AsyncMock(return_value=Response.OK)
     dialog.filename = filename
     return dialog
 
 
 def auto_cancel_dialog() -> MagicMock:
-    """Mock dialog that immediately returns 'CANCEL'."""
+    """Mock dialog that immediately returns Response.CANCEL."""
     dialog = MagicMock()
-    dialog.run = AsyncMock(return_value="CANCEL")
+    dialog.run = AsyncMock(return_value=Response.CANCEL)
     return dialog
 
 
 def auto_confirm_delete_dialog() -> MagicMock:
-    """Mock DeleteFilesDialog that immediately returns 'YES'."""
+    """Mock DeleteFilesDialog that immediately returns Response.YES."""
     dialog = MagicMock()
-    dialog.run = AsyncMock(return_value="YES")
+    dialog.run = AsyncMock(return_value=Response.YES)
     return dialog
 
 
-def auto_confirm_decision_dialog(decision: object) -> MagicMock:
-    """Mock decision dialog that immediately returns *decision*.
+def auto_confirm_response_dialog(response: object) -> MagicMock:
+    """Mock response dialog that immediately returns *response*.
 
     Used to simulate the user answering an overwrite or other in-job
-    decision prompt without showing a real screen.
+    response prompt without showing a real screen.
 
     Args:
-        decision: The ``Decision`` value the dialog should return.
+        response: The ``Response`` value the dialog should return.
     """
     dialog = MagicMock()
-    dialog.run = AsyncMock(return_value=decision)
+    dialog.run = AsyncMock(return_value=response)
     return dialog

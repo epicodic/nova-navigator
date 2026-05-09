@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Literal
 
-from nova_navigator.decision import Decision
+from nova_navigator.response import Response
 from nova_navigator.scheduler import TaskContext
 
 from ..vfs import VPath
@@ -70,7 +70,7 @@ async def copy_file(
     Reads in CHUNK_SIZE chunks, updating step-level progress. When the
     destination already exists the action depends on ``options.overwrite``:
     ``"overwrite"`` replaces unconditionally, ``"skip"`` leaves it untouched,
-    ``"ask"`` requests a user decision.
+    ``"ask"`` requests a user response.
 
     Returns ``True`` if the file was actually written, ``False`` if the copy
     was skipped (destination exists and overwrite policy did not proceed).
@@ -93,9 +93,9 @@ async def copy_file(
                     _logger.debug("copy_file skip (exists) %s", dst_path.path)
                     return False
                 elif options.overwrite == "ask":
-                    decision = await ctx.request_decision(
+                    response = await ctx.request_response(
                         "Overwrite",
-                        expected_decisions=[Decision.YES, Decision.NO, Decision.ALL, Decision.NONE],
+                        expected_responses=[Response.YES, Response.NO, Response.ALL, Response.NONE],
                         message=f"File '{dst_path.name}' already exists. Overwrite?",
                         dialog_type="overwrite",
                         details={
@@ -105,7 +105,7 @@ async def copy_file(
                             "dst_size": dst_stat.size,
                         },
                     )
-                    if decision.is_negative:
+                    if response.is_rejected:
                         _logger.debug("copy_file skip (user declined) %s", dst_path.path)
                         return False
 
@@ -265,12 +265,12 @@ async def _move_dir_contents(
                         ctx.status.update_progress(inc_completed=1)
                         continue
                     if options.overwrite == "ask":
-                        decision = await ctx.request_decision(
+                        response = await ctx.request_response(
                             "Overwrite",
-                            expected_decisions=[Decision.YES, Decision.NO, Decision.ALL, Decision.NONE],
+                            expected_responses=[Response.YES, Response.NO, Response.ALL, Response.NONE],
                             message=f"File '{f_dst.path}' already exists. Overwrite?",
                         )
-                        if decision.is_negative:
+                        if response.is_rejected:
                             ctx.status.update_progress(inc_completed=1)
                             continue
                     f_dst.filesystem.remove(f_dst)
@@ -332,12 +332,12 @@ async def _move_path(
                     )
                     return
                 if options.overwrite == "ask":
-                    decision = await ctx.request_decision(
+                    response = await ctx.request_response(
                         "Overwrite",
-                        expected_decisions=[Decision.YES, Decision.NO, Decision.ALL, Decision.NONE],
+                        expected_responses=[Response.YES, Response.NO, Response.ALL, Response.NONE],
                         message=f"'{actual_dst.path}' already exists. Overwrite?",
                     )
-                    if decision.is_negative:
+                    if response.is_rejected:
                         _logger.debug("move_path skip (user declined) %s", actual_dst.path)
                         ctx.status.update_progress(
                             inc_total=1 if is_dir else 0,
@@ -374,7 +374,7 @@ async def move_files(
     """Move each path in *src_paths* into *dst_path*.
 
     Same-device moves use rename (atomic). Cross-device moves copy then remove.
-    Each path is processed as a concurrent subtask so that a user decision
+    Each path is processed as a concurrent subtask so that a user response
     blocking one item does not stall the others.
     """
     if options is None:
@@ -412,12 +412,12 @@ async def _erase_path(
     if path.stat.is_directory:
         children = [child async for child in path.iterdir()]
         if len(children) > 0 and options.ask_before_erase:
-            decision = await ctx.request_decision(
+            response = await ctx.request_response(
                 "Delete non-empty directory",
-                expected_decisions=[Decision.YES, Decision.NO, Decision.ALL, Decision.NONE],
+                expected_responses=[Response.YES, Response.NO, Response.ALL, Response.NONE],
                 message=f"Directory '{path.path}' is not empty. Delete it recursively?",
             )
-            if decision.is_negative:
+            if response.is_rejected:
                 _logger.debug("erase_path skip (user declined) %s", path.path)
                 ctx.status.update_progress(inc_completed=1)
                 return
@@ -436,7 +436,7 @@ async def erase_files(
 ) -> None:
     """Erase each path in *paths*; directories are removed recursively.
 
-    Each path is processed as a concurrent subtask so that a user decision
+    Each path is processed as a concurrent subtask so that a user response
     blocking one item does not stall the others.
     """
     if options is None:

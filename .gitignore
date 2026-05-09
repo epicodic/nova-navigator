@@ -8,7 +8,6 @@ wheels/
 
 # just for local development
 .agents
-todo.md
 
 # test files
 tests/stress_test/

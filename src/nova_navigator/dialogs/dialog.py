@@ -10,24 +10,34 @@ from textual.widgets.button import ButtonVariant
 
 from nova_widgets import Button, ButtonBox
 
-from ..decision import Decision
+from ..response import Response
 
 
 @dataclass
 class ButtonSpec:
-    label: str
-    id: str
-    variant: ButtonVariant = "default"
+    response: Response
+    label: str | None = None
+    variant: ButtonVariant | None = None
+
+    @property
+    def id(self) -> str:
+        return self.response.name
+
+    @property
+    def display_label(self) -> str:
+        return self.label if self.label is not None else self.response.tr
+
+    @property
+    def display_variant(self) -> ButtonVariant:
+        if self.variant is not None:
+            return self.variant
+        return "primary" if self.response.is_accepted else "error"
 
 
-DefaultButton = Decision
+DefaultButton = Response
 
 
-def _default_button(button: DefaultButton) -> ButtonSpec:
-    return ButtonSpec(label=button.tr, id=button.name, variant="primary" if button.is_positive else "error")
-
-
-class Dialog(ModalScreen[str]):
+class Dialog(ModalScreen[Response | None]):
     DEFAULT_CSS = """
     Dialog {
         align: center middle;
@@ -77,20 +87,20 @@ class Dialog(ModalScreen[str]):
 
         self._buttons = []
         for button in buttons or [DefaultButton.OK]:
-            if isinstance(button, DefaultButton):
-                button_to_add = _default_button(button)
-                if button.is_positive:
-                    self._button_accept = button_to_add
-                elif button.is_negative:
-                    self._button_dismiss = button_to_add
-                self._buttons.append(button_to_add)
+            if isinstance(button, Response):
+                button_to_add = ButtonSpec(response=button)
             else:
-                self._buttons.append(button)
+                button_to_add = button  # already a ButtonSpec
+            if button_to_add.response.is_accepted:
+                self._button_accept = button_to_add
+            elif button_to_add.response.is_rejected:
+                self._button_dismiss = button_to_add
+            self._buttons.append(button_to_add)
 
         self._dialog_box = None
         self._button_box = None
 
-    async def run(self) -> str:
+    async def run(self) -> Response | None:
         self.focus()
         return await self.app.push_screen_wait(screen=self)
 
@@ -101,9 +111,9 @@ class Dialog(ModalScreen[str]):
         self._button_box = ButtonBox(
             [
                 Button(
-                    button.label,
+                    button.display_label,
                     id=button.id,
-                    variant=button.variant,
+                    variant=button.display_variant,
                 )
                 for button in self._buttons
             ],
@@ -120,7 +130,15 @@ class Dialog(ModalScreen[str]):
         yield widgets.Footer()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id)
+        _dialog_button_ids = {b.id for b in self._buttons}
+        if event.button.id not in _dialog_button_ids:
+            return  # custom action button — handled by subclass @on handler
+        if self._button_accept and event.button.id == self._button_accept.id:
+            self.action_accept_dialog()
+        elif self._button_dismiss and event.button.id == self._button_dismiss.id:
+            self.action_dismiss_dialog()
+        else:
+            self.dismiss(Response[event.button.id])
 
     async def _on_key(self, event: events.Key) -> None:
         """Handle Enter before non-priority bindings are checked.
@@ -140,8 +158,10 @@ class Dialog(ModalScreen[str]):
 
     def action_accept_dialog(self) -> None:
         if self._button_accept:
-            self.dismiss(self._button_accept.id)
+            self.dismiss(self._button_accept.response)
 
     def action_dismiss_dialog(self) -> None:
         if self._button_dismiss:
-            self.dismiss(self._button_dismiss.id)
+            self.dismiss(self._button_dismiss.response)
+        else:
+            self.dismiss(None)

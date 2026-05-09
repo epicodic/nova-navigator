@@ -2,16 +2,16 @@ import asyncio
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any, cast
 
-from nova_navigator.decision import Decision
+from nova_navigator.response import Response
 
-from .context import DecisionRequest, GuiRequestCallback, TaskContext, TaskStatus, _SubtaskTracker
+from .context import GuiRequestCallback, ResponseRequest, TaskContext, TaskStatus, _SubtaskTracker
 
 
-async def _create_future_in_loop() -> asyncio.Future[Decision]:
+async def _create_future_in_loop() -> asyncio.Future[Response]:
     return asyncio.get_event_loop().create_future()
 
 
-async def _wait_for_future(future: asyncio.Future[Decision]) -> Decision:
+async def _wait_for_future(future: asyncio.Future[Response]) -> Response:
     """Poll *future* (which lives in another event loop) until it is done."""
     await asyncio.sleep(0)
     while not future.done():  # noqa: ASYNC110
@@ -22,19 +22,19 @@ async def _wait_for_future(future: asyncio.Future[Decision]) -> Decision:
 class AsyncTaskScheduler:
     """Runs async task coroutines in a worker thread with an isolated event loop.
 
-    Decision requests are bridged to the GUI event loop via
+    Response requests are bridged to the GUI event loop via
     :func:`asyncio.run_coroutine_threadsafe`.  An :class:`asyncio.Lock` ensures
     only one GUI dialog is in flight at a time; ``ALL``/``NONE`` responses are
     cached and applied automatically to subsequent identical requests.
     """
 
     _gui_request_callback: GuiRequestCallback
-    _decisions_to_all: dict[str, Decision]
+    _responses_to_all: dict[str, Response]
     _request_lock: asyncio.Lock | None
 
     def __init__(self, gui_request_callback: GuiRequestCallback) -> None:
         self._gui_request_callback = gui_request_callback
-        self._decisions_to_all = {}
+        self._responses_to_all = {}
         self._request_lock = None
 
     @staticmethod
@@ -72,36 +72,36 @@ class AsyncTaskScheduler:
         tracker = _SubtaskTracker()
         ctx = TaskContext(
             _status=status,
-            _decision_requester=self._create_decision_requester(gui_loop),
+            _response_requester=self._create_response_requester(gui_loop),
             _subtask_tracker=tracker,
         )
         await task_fn(ctx)
         await tracker.wait_all()
 
-    def _create_decision_requester(
+    def _create_response_requester(
         self,
         gui_loop: asyncio.AbstractEventLoop,
-    ) -> Callable[[DecisionRequest], Awaitable[Decision]]:
-        async def requester(request: DecisionRequest) -> Decision:
+    ) -> Callable[[ResponseRequest], Awaitable[Response]]:
+        async def requester(request: ResponseRequest) -> Response:
             title = request.title
-            if title in self._decisions_to_all:
-                return self._decisions_to_all[title]
+            if title in self._responses_to_all:
+                return self._responses_to_all[title]
             assert self._request_lock is not None
             async with self._request_lock:
-                if title in self._decisions_to_all:
-                    return self._decisions_to_all[title]
+                if title in self._responses_to_all:
+                    return self._responses_to_all[title]
 
-                gui_future: asyncio.Future[Decision] = asyncio.run_coroutine_threadsafe(
+                gui_future: asyncio.Future[Response] = asyncio.run_coroutine_threadsafe(
                     _create_future_in_loop(), gui_loop
                 ).result()
                 asyncio.run_coroutine_threadsafe(
                     cast("Coroutine[Any, Any, None]", self._gui_request_callback(request, gui_future)),
                     gui_loop,
                 )
-                decision = await _wait_for_future(gui_future)
+                response = await _wait_for_future(gui_future)
 
-                if decision.is_to_all:
-                    self._decisions_to_all[title] = decision
-                return decision
+                if response.is_to_all:
+                    self._responses_to_all[title] = response
+                return response
 
         return requester
