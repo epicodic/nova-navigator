@@ -32,6 +32,7 @@ from nova_widgets import unicode
 from nova_widgets.custom_border import CustomBorderMixin
 
 from ..config import conf_
+from ..format_utils import format_size
 from ..icons import ico_
 from ..vfs import VPath
 from ..vfs.filesystems.local import LocalFilesystem
@@ -77,8 +78,6 @@ UP_PATH = UpPath()
 MOUSE_BUTTON_LEFT = 1
 MOUSE_BUTTON_RIGHT = 3
 MOUSE_DOUBLE_CLICK = 2
-
-DECIMAL_MAGNITUDE: int = 1000
 
 
 def _ljust(s: str, width: int) -> str:
@@ -129,21 +128,7 @@ def column_formatter_size(path: VPath) -> str:
     if stat.is_directory:
         return "-"
 
-    size = stat.size
-    for unit in ["", "K", "M", "G", "T"]:
-        if size < DECIMAL_MAGNITUDE:
-            return f"{size}{unit}"
-        size //= DECIMAL_MAGNITUDE
-    return f"{size}P"
-
-
-def _format_size(size: int) -> str:
-    """Format *size* bytes as a human-readable decimal magnitude string."""
-    for unit in ["B", "K", "M", "G", "T"]:
-        if size < DECIMAL_MAGNITUDE:
-            return f"{size}{unit}"
-        size //= DECIMAL_MAGNITUDE
-    return f"{size}P"
+    return format_size(stat.size)
 
 
 def column_formatter_modified(path: VPath) -> str:
@@ -306,7 +291,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         Binding("pageup", "page_up", "Page up", show=False),
         Binding("pagedown", "page_down", "Page down", show=False),
         Binding("home", "scroll_top", "Top", show=False),
-        Binding("alt+b", "scroll_bottom", "Bottom", show=False),
+        Binding("end", "scroll_bottom", "Bottom", show=False),
         Binding("insert", "insert_select", "Select", show=False),
         Binding("ctrl+a", "select_all", "Select All", show=False),
         Binding("ctrl+f", "filter", "Filter", show=True),
@@ -657,7 +642,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         if n == 0:
             return Strip.blank(0)
         total = sum(p.stat.size for p in self._selected_items if not p.stat.is_directory)
-        text = f" {n} file{'s' if n != 1 else ''}, {_format_size(total)} "
+        text = f" {n} file{'s' if n != 1 else ''}, {format_size(total)} "
         return Strip([Segment(text, self._border_rich_style())])
 
     def render_border_bottom_left(self) -> Strip:

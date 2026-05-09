@@ -95,7 +95,14 @@ async def copy_file(
                     decision = await ctx.request_decision(
                         "Overwrite",
                         expected_decisions=[Decision.YES, Decision.NO, Decision.ALL, Decision.NONE],
-                        message=f"File '{dst_path.path}' already exists. Overwrite?",
+                        message=f"File '{dst_path.name}' already exists. Overwrite?",
+                        dialog_type="overwrite",
+                        details={
+                            "src_name": src_path.name,
+                            "src_size": src_stat.size,
+                            "dst_name": dst_path.name,
+                            "dst_size": dst_stat.size,
+                        },
                     )
                     if decision.is_negative:
                         _logger.debug("copy_file skip (user declined) %s", dst_path.path)
