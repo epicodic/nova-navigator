@@ -134,6 +134,7 @@ class SSHFilesystem(Filesystem):
         return Stat(
             size=stat.size or 0,
             modified=stat.modified_time or 0,
+            mode=lstat.permissions,
             is_hidden=is_hidden,
             is_directory=stat.is_directory,
             is_executable=stat.permissions & 0o111 != 0,
@@ -180,6 +181,15 @@ class SSHFilesystem(Filesystem):
     def mkdir(self, path: VPath) -> None:
         self._assert_vpath(path)
         self._sftp_client.mkdir(path.path.as_posix())
+
+    @override
+    def copy_stat(self, path: VPath, src_stat: Stat) -> None:
+        self._assert_vpath(path)
+        p = path.path.as_posix()
+        if src_stat.modified >= 0:
+            self._sftp_client.utime(p, (src_stat.modified, src_stat.modified))
+        if src_stat.mode >= 0:
+            self._sftp_client.chmod(p, src_stat.mode)
 
     @override
     def readlink(self, path: VPath) -> str:

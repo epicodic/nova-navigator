@@ -104,6 +104,13 @@ class Filesystem(ABC):
         If a parent directory in the path does not exist, FileNotFoundError is raised.
         """
 
+    def copy_stat(self, path: VPath, stat: Stat) -> None:  # noqa: B027
+        """Apply file attributes from *stat* (modification time, permissions) to *path*.
+
+        The default implementation is a no-op for filesystems that do not
+        support setting attributes (e.g. read-only archive filesystems).
+        """
+
     @abstractmethod
     def readlink(self, path: VPath) -> str:
         """Return the target of the symbolic link at *path*.

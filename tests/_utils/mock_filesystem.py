@@ -288,5 +288,12 @@ class MockFilesystem(Filesystem):
         return PurePosixPath(path) in self._nodes
 
     @override
+    def copy_stat(self, path: VPath, src_stat: Stat) -> None:
+        posix = self._to_posix(path)
+        node = self._node(posix)
+        if src_stat.modified >= 0:
+            node.modified = src_stat.modified
+
+    @override
     def readlink(self, path: VPath) -> str:
         raise OSError(f"Not a symbolic link: '{path}'")
