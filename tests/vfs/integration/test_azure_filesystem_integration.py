@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import shutil
 import subprocess
+import tempfile
 import time
 from collections.abc import Generator
 
@@ -39,8 +40,9 @@ def azurite_process() -> Generator[subprocess.Popen[bytes], None, None]:
     """Start azurite-blob on port 10000; skip session if not available."""
     if not _azurite_available():
         pytest.skip("azurite-blob not on PATH — skipping integration tests")
+    tmp_dir = tempfile.mkdtemp(prefix="azurite_")
     proc = subprocess.Popen(
-        ["azurite-blob", "--blobPort", "10000", "--blobHost", "127.0.0.1", "--silent"],
+        ["azurite-blob", "--blobPort", "10000", "--blobHost", "127.0.0.1", "--silent", "--location", tmp_dir],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
