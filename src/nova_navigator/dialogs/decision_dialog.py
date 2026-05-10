@@ -54,6 +54,7 @@ class DecisionDialog(ModalScreen[Decision]):
             margin: 0 2;
         }
 
+
     }
     """
 
