@@ -409,6 +409,8 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         self._history_index = -1
         self._load_cancel = None
         self._loading = False
+        self._load_generation: int = 0
+        self._pending_cursor_name: str | None = None
         self._all_items = []
         self._shown_items = []
         self._selected_items = set()
@@ -473,10 +475,11 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
             self._history.append(path)
             self._history_index = len(self._history) - 1
 
-        old_name = None
         if path == self._path.parent:
-            # navigating up, keep cursor on same item if possible
-            old_name = self._path.name
+            # navigating up: place cursor on the directory we came from
+            self._pending_cursor_name = self._path.name
+        else:
+            self._pending_cursor_name = None
 
         self.border_title = path.compact_path_str
         self._path = path
@@ -484,20 +487,14 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         path.filesystem.refresh(path)
         self.update(self.WhatChanged.ALL)
 
-        if old_name is not None:
-            for index, item in enumerate(self._shown_items):
-                if item.name == old_name:
-                    self.cursor_row = index
-                    break
-        else:
-            self.cursor_row = 0
-
         if self.is_attached:
             self._start_watch()
 
     # Data management
 
     def reload(self) -> None:
+        if not self._loading and self.cursor_row < len(self._shown_items):
+            self._pending_cursor_name = self._shown_items[self.cursor_row].name
         self._path.filesystem.refresh()
         self.update(self.WhatChanged.ALL)
 
@@ -506,9 +503,17 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         SORTING = 1
         FILTERING = 2
 
-    def _apply_sort_and_filter(self) -> None:
+    def _apply_sort_and_filter(self, *, from_load: bool = False) -> None:
         """Re-sort, re-filter, and restore cursor position from _all_items."""
-        old_item_under_cursor = self._shown_items[self.cursor_row] if self._shown_items else None
+        if from_load:
+            target_name = self._pending_cursor_name
+            self._pending_cursor_name = None
+            old_item_under_cursor = None
+        else:
+            old_item_under_cursor = (
+                self._shown_items[self.cursor_row] if self.cursor_row < len(self._shown_items) else None
+            )
+            target_name = None
         old_selected_items = self._selected_items
 
         column_sorter = self._columns[self.sort_column].sorter
@@ -535,10 +540,16 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
 
         # restore cursor position
         self.cursor_row = 0
-        for index, item in enumerate(self._shown_items):
-            if item == old_item_under_cursor:
-                self.cursor_row = index
-                break
+        if old_item_under_cursor is not None:
+            for index, item in enumerate(self._shown_items):
+                if item == old_item_under_cursor:
+                    self.cursor_row = index
+                    break
+        elif target_name is not None:
+            for index, item in enumerate(self._shown_items):
+                if item.name == target_name:
+                    self.cursor_row = index
+                    break
         self.cursor_row = self.validate_cursor_row(self.cursor_row)
 
         # restore selected items
@@ -574,6 +585,8 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
     @work(exclusive=True, group="load")
     async def _load_directory(self) -> None:
         """Load directory contents incrementally into _all_items."""
+        self._load_generation += 1
+        my_generation = self._load_generation
         cancel = threading.Event()
         self._load_cancel = cancel
         self._all_items = []
@@ -590,17 +603,20 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
                     self._all_items.extend(batch)
                     self._append_items(batch)
                     batch.clear()
+                    await asyncio.sleep(0)
                     self.refresh()
             self._all_items.extend(batch)
         except OSError:
             self._all_items = []
         finally:
             cancel.set()
-            self._loading = False
-            self.refresh_border()
+            if self._load_generation == my_generation:
+                self._loading = False
+                self.refresh_border()
 
-        self._apply_sort_and_filter()
-        self.refresh()
+        if self._load_generation == my_generation:
+            self._apply_sort_and_filter(from_load=True)
+            self.refresh()
 
     @work(exclusive=True, group="watch")
     async def _start_watch(self) -> None:
@@ -612,6 +628,8 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
             # Directory still works; user can press F5 to refresh manually.
 
     async def _on_directory_changed(self, path: VPath) -> None:
+        if not self._loading and self.cursor_row < len(self._shown_items):
+            self._pending_cursor_name = self._shown_items[self.cursor_row].name
         self.update(self.WhatChanged.ALL)
 
     # Rendering
