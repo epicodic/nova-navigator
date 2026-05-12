@@ -1,7 +1,8 @@
 from textual import events
-from textual.widgets import Button, Input, Static
+from textual.widgets import Static
 
 from nova_navigator.vfs.filesystem import VPath
+from nova_widgets import Button, Input
 
 from ..widgets import NoSelectListView
 from .dialog import ComposeResult, DefaultButton, Dialog

@@ -2,9 +2,10 @@ from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.events import Focus
 from textual.message import Message
-from textual.widgets import Button, Tree
+from textual.widgets import Tree
 
 from nova_navigator.dialogs.edit_bookmarks_dialog import EditBookmarksDialog
+from nova_widgets import Button
 
 from ..config import conf_
 from ..dialogs.constants import DEFAULT_BOOKMARKS_GROUP
@@ -56,7 +57,7 @@ class BookmarksDialog(PopupWidget, can_focus=True):
         tree.show_root = False
         yield Vertical(
             tree,
-            Button("Edit bookmarks…", id="btn_edit", flat=True),
+            Button("Edit bookmarks…", id="btn_edit"),
         )
 
     def on_mount(self) -> None:
