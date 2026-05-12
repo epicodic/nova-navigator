@@ -391,7 +391,13 @@ class EditRemotesDialog(Dialog):
 
     def _run_pick_identity_file(self) -> None:
         current = self.query_one("#input_identity_file", Input).value.strip()
-        start = pathlib.Path(current).parent if current else pathlib.Path.home()
+        _ssh_dir = pathlib.Path.home() / ".ssh"
+        if current:
+            start = pathlib.Path(current).parent
+        elif _ssh_dir.is_dir():
+            start = _ssh_dir
+        else:
+            start = pathlib.Path.home()
         dialog = FileDialog(mode=FileDialogMode.OPEN, start_path=start, title="Select Identity File")
 
         def _on_picked(result: str | None) -> None:
