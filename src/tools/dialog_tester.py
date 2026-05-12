@@ -27,6 +27,7 @@ from nova_navigator.decision import Decision
 from nova_navigator.dialogs.decision_dialog import DecisionDialog, OverwriteDecisionDialog
 from nova_navigator.dialogs.edit_bookmarks_dialog import EditBookmarksDialog
 from nova_navigator.dialogs.edit_remotes_dialog import EditRemotesDialog
+from nova_navigator.dialogs.file_dialog import FileDialog, FileDialogMode, FileTypeFilter
 from nova_navigator.dialogs.files_dialog import CopyMoveFilesDialog, DeleteFilesDialog
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.nova_navigator_core import NovaNavigatorCore
@@ -114,6 +115,32 @@ async def _launch_delete_files(app: App[Any]) -> str:
     return f"Result: {result}"
 
 
+async def _launch_file_open(app: App[Any]) -> str:
+    dialog = FileDialog(mode=FileDialogMode.OPEN, start_path=Path.home(), title="Open File")
+    result = await app.push_screen_wait(dialog)
+    path = dialog.selected_path
+    return f"Result: {result}  path={path}"
+
+
+async def _launch_file_save(app: App[Any]) -> str:
+    filters = [
+        FileTypeFilter("Python files", ["*.py", "*.pyi"]),
+        FileTypeFilter("Text files", ["*.txt", "*.md"]),
+        FileTypeFilter("All files", ["*"]),
+    ]
+    dialog = FileDialog(mode=FileDialogMode.SAVE, start_path=Path.home(), title="Save File As", filters=filters)
+    result = await app.push_screen_wait(dialog)
+    path = dialog.selected_path
+    return f"Result: {result}  path={path}"
+
+
+async def _launch_file_dir(app: App[Any]) -> str:
+    dialog = FileDialog(mode=FileDialogMode.DIR, start_path=Path.home(), title="Select Directory")
+    result = await app.push_screen_wait(dialog)
+    path = dialog.selected_path
+    return f"Result: {result}  path={path}"
+
+
 # ── dialog registry ───────────────────────────────────────────────────────────
 
 _ENTRIES: list[DialogEntry] = [
@@ -133,6 +160,9 @@ _ENTRIES: list[DialogEntry] = [
     DialogEntry("CopyMoveFilesDialog (copy)", "Copy multiple files to a destination.", _launch_copy_files),
     DialogEntry("CopyMoveFilesDialog (move)", "Move a single file — shows rename input.", _launch_move_file),
     DialogEntry("DeleteFilesDialog", "Delete confirmation for multiple files.", _launch_delete_files),
+    DialogEntry("FileDialog (open)", "File picker in open mode — select an existing file.", _launch_file_open),
+    DialogEntry("FileDialog (save)", "File picker in save mode — with file-type filters.", _launch_file_save),
+    DialogEntry("FileDialog (dir)", "Directory picker mode — select a folder.", _launch_file_dir),
 ]
 
 _ENTRY_MAP: dict[str, DialogEntry] = {e.name.lower(): e for e in _ENTRIES}
