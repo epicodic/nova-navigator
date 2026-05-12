@@ -150,3 +150,17 @@ def auto_confirm_delete_dialog() -> MagicMock:
     dialog = MagicMock()
     dialog.run = AsyncMock(return_value="YES")
     return dialog
+
+
+def auto_confirm_decision_dialog(decision: object) -> MagicMock:
+    """Mock decision dialog that immediately returns *decision*.
+
+    Used to simulate the user answering an overwrite or other in-job
+    decision prompt without showing a real screen.
+
+    Args:
+        decision: The ``Decision`` value the dialog should return.
+    """
+    dialog = MagicMock()
+    dialog.run = AsyncMock(return_value=decision)
+    return dialog
