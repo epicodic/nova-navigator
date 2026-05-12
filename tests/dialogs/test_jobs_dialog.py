@@ -34,6 +34,7 @@ def _make_job(
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+
 class _RowApp(App[None]):
     def __init__(self, row: JobRow) -> None:
         super().__init__()
@@ -53,6 +54,7 @@ class _DialogApp(App[None]):
 
 
 # ── JobRow static helpers ─────────────────────────────────────────────────────
+
 
 def test_display_title_canceled() -> None:
     assert JobRow._display_title(_make_job(title="Copy", state=Job.State.CANCELED)) == "Copy (canceled)"
@@ -79,6 +81,7 @@ def test_button_icon_failed() -> None:
 
 
 # ── JobRow widget ─────────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_job_row_running_is_expanded_on_mount() -> None:
@@ -207,6 +210,7 @@ async def test_button_press_calls_on_action() -> None:
 
 # ── JobsDialog ────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_jobs_dialog_hidden_on_mount() -> None:
     registry = JobRegistry()
@@ -311,10 +315,10 @@ async def test_tick_removes_stale_row() -> None:
 
         # move job to finished, then remove it from registry
         job.state = Job.State.COMPLETED
-        await dialog._tick()   # registry.update() moves it to finished
+        await dialog._tick()  # registry.update() moves it to finished
         await pilot.pause()
         registry.remove_job(job)
-        await dialog._tick()   # job no longer in desired → row removed
+        await dialog._tick()  # job no longer in desired → row removed
         await pilot.pause()
         assert len(dialog._rows) == 0
 
@@ -338,12 +342,12 @@ async def test_handle_action_removes_finished_job_row() -> None:
     dialog = JobsDialog((0, 0), registry)
     async with _DialogApp(dialog).run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        await dialog._tick()   # row mounted
+        await dialog._tick()  # row mounted
         await pilot.pause()
         assert len(dialog._rows) == 1
 
         job.state = Job.State.COMPLETED
-        await dialog._tick()   # row refreshed, job now in finished
+        await dialog._tick()  # row refreshed, job now in finished
         await pilot.pause()
 
         dialog._handle_action(job)
