@@ -154,6 +154,9 @@ convention = "google"
 addopts = "--import-mode=importlib"
 cache_dir = ".cache/pytest"
 asyncio_mode = "strict"
+markers = [
+    "integration: full-stack tests that launch a real NovaNavigator app and use the real local filesystem",
+]
 
 [tool.coverage.run]
 source = ["."]
