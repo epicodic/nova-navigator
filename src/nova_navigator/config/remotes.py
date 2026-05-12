@@ -32,7 +32,6 @@ class RemoteConnection(BaseModel):
     """A single saved remote connection entry."""
 
     name: str = key_field()
-    uri: str = ""
     icon: str | None = None
     ssh: SshSettings | None = None
     proxy: ProxySettings | None = None
