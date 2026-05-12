@@ -29,11 +29,31 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 import pytest_asyncio
 
 from nova_navigator.nova_navigator import MainScreen, NovaNavigator
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
+
+
+# ---------------------------------------------------------------------------
+# --headed CLI option
+# ---------------------------------------------------------------------------
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--headed",
+        action="store_true",
+        default=False,
+        help="Run integration tests with a visible Textual app (headless=False).",
+    )
+
+
+@pytest.fixture
+def headed(request: pytest.FixtureRequest) -> bool:
+    return bool(request.config.getoption("--headed"))
 
 # ---------------------------------------------------------------------------
 # AppCtx — bundles everything a test needs
@@ -57,8 +77,11 @@ class AppCtx:
 
 
 @pytest_asyncio.fixture
-async def app_ctx(tmp_path: Path) -> object:  # yields AppCtx
+async def app_ctx(tmp_path: Path, headed: bool) -> object:  # yields AppCtx
     """Launch NovaNavigator and yield an AppCtx with empty src/dst dirs.
+
+    Pass ``--headed`` on the pytest command line to render the app live in the
+    terminal so you can visually inspect what the test is doing.
 
     The app is torn down cleanly after each test.
     """
@@ -68,7 +91,7 @@ async def app_ctx(tmp_path: Path) -> object:  # yields AppCtx
     dst.mkdir()
 
     app = NovaNavigator()
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(120, 40), headless=not headed) as pilot:
         await pilot.pause()
         screen = app._main_screen
         fs = LocalFilesystem.singleton()
