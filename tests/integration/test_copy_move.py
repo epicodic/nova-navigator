@@ -11,10 +11,12 @@ from unittest.mock import patch
 
 import pytest
 
+from nova_navigator.decision import Decision
 from tests.integration.conftest import (
     AppCtx,
     auto_cancel_dialog,
     auto_confirm_copy_dialog,
+    auto_confirm_decision_dialog,
     set_panels,
 )
 
@@ -117,3 +119,47 @@ async def test_copy_multiple_files_all_appear_in_destination(app_ctx: AppCtx) ->
 
     for name in names:
         assert (app_ctx.dst_dir / name).exists(), f"{name} missing from destination"
+
+
+# ---------------------------------------------------------------------------
+# Overwrite — exercises request_callback
+# ---------------------------------------------------------------------------
+
+_DECISION_DIALOG_PATH = "nova_navigator.nova_navigator.make_decision_dialog"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_copy_overwrites_existing_file_when_user_confirms(app_ctx: AppCtx) -> None:
+    """When the destination file already exists and the user confirms overwrite,
+    the source content replaces the destination content.
+
+    This exercises the full request_callback → make_decision_dialog path that
+    fires when the copy task detects a conflict.
+    """
+    (app_ctx.src_dir / "file.txt").write_text("new content")
+    (app_ctx.dst_dir / "file.txt").write_text("old content")
+    await set_panels(app_ctx)
+
+    with patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog()):
+        with patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.YES)):
+            await app_ctx.pilot.press("f5")  # type: ignore[union-attr]
+            await app_ctx.pilot.pause(delay=0.5)  # type: ignore[union-attr]
+
+    assert (app_ctx.dst_dir / "file.txt").read_text() == "new content"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_copy_skips_existing_file_when_user_declines_overwrite(app_ctx: AppCtx) -> None:
+    """When the destination file exists and the user declines, the original is preserved."""
+    (app_ctx.src_dir / "file.txt").write_text("new content")
+    (app_ctx.dst_dir / "file.txt").write_text("old content")
+    await set_panels(app_ctx)
+
+    with patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog()):
+        with patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.NO)):
+            await app_ctx.pilot.press("f5")  # type: ignore[union-attr]
+            await app_ctx.pilot.pause(delay=0.5)  # type: ignore[union-attr]
+
+    assert (app_ctx.dst_dir / "file.txt").read_text() == "old content"
