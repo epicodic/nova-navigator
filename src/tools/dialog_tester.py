@@ -40,7 +40,7 @@ _fs = LocalFilesystem.singleton()
 # Absolute path so CSS_PATH resolves regardless of cwd.
 _TCSS = str(Path(__file__).parent.parent / "nova_navigator" / "nn.tcss")
 
-_LauncherFn = Callable[[App[Any]], Coroutine[Any, Any, str]]
+_LauncherFn = Callable[[], Coroutine[Any, Any, str]]
 
 
 @dataclass
@@ -53,17 +53,17 @@ class DialogEntry:
 # ── launcher functions ────────────────────────────────────────────────────────
 
 
-async def _launch_decision(app: App[Any]) -> str:
+async def _launch_decision() -> str:
     request = DecisionRequest(
         title="Confirm action",
         expected_decisions=[Decision.YES, Decision.NO],
         message="Do you want to proceed with this action?",
     )
-    result = await app.push_screen_wait(DecisionDialog(request))
+    result = await DecisionDialog(request).run()
     return f"Result: {result}"
 
 
-async def _launch_overwrite(app: App[Any]) -> str:
+async def _launch_overwrite() -> str:
     request = DecisionRequest(
         title="File already exists",
         expected_decisions=[Decision.YES, Decision.ALL, Decision.NO, Decision.NONE],
@@ -76,67 +76,67 @@ async def _launch_overwrite(app: App[Any]) -> str:
             "dst_size": 1_024_000,
         },
     )
-    result = await app.push_screen_wait(OverwriteDecisionDialog(request))
+    result = await OverwriteDecisionDialog(request).run()
     return f"Result: {result}"
 
 
-async def _launch_icon_picker(app: App[Any]) -> str:
-    result = await app.push_screen_wait(IconPickerDialog(title="Pick an Icon"))
+async def _launch_icon_picker() -> str:
+    result = await IconPickerDialog(title="Pick an Icon").run()
     return f"Result: {result}"
 
 
-async def _launch_edit_bookmarks(app: App[Any]) -> str:
-    result = await app.push_screen_wait(EditBookmarksDialog(conf_.bookmarks))
+async def _launch_edit_bookmarks() -> str:
+    result = await EditBookmarksDialog(conf_.bookmarks).run()
     return f"Result: {result}"
 
 
-async def _launch_edit_remotes(app: App[Any]) -> str:
-    result = await app.push_screen_wait(EditRemotesDialog(conf_.remotes))
+async def _launch_edit_remotes() -> str:
+    result = await EditRemotesDialog(conf_.remotes).run()
     return f"Result: {result}"
 
 
-async def _launch_copy_files(app: App[Any]) -> str:
+async def _launch_copy_files() -> str:
     src = [VPath("/home/user/Documents/report.pdf", _fs), VPath("/home/user/Documents/notes.txt", _fs)]
     dst = VPath("/home/user/Downloads", _fs)
-    result = await app.push_screen_wait(CopyMoveFilesDialog(source_paths=src, destination_path=dst, move=False))
+    result = await CopyMoveFilesDialog(source_paths=src, destination_path=dst, move=False).run()
     return f"Result: {result}"
 
 
-async def _launch_move_file(app: App[Any]) -> str:
+async def _launch_move_file() -> str:
     src = [VPath("/home/user/Documents/report.pdf", _fs)]
     dst = VPath("/home/user/Downloads", _fs)
-    result = await app.push_screen_wait(CopyMoveFilesDialog(source_paths=src, destination_path=dst, move=True))
+    result = await CopyMoveFilesDialog(source_paths=src, destination_path=dst, move=True).run()
     return f"Result: {result}"
 
 
-async def _launch_delete_files(app: App[Any]) -> str:
+async def _launch_delete_files() -> str:
     paths = [VPath("/home/user/Documents/old_report.pdf", _fs), VPath("/home/user/Downloads/archive.zip", _fs)]
-    result = await app.push_screen_wait(DeleteFilesDialog(paths=paths))
+    result = await DeleteFilesDialog(paths=paths).run()
     return f"Result: {result}"
 
 
-async def _launch_file_open(app: App[Any]) -> str:
+async def _launch_file_open() -> str:
     dialog = FileDialog(mode=FileDialogMode.OPEN, start_path=Path.home(), title="Open File")
-    result = await app.push_screen_wait(dialog)
+    result = await dialog.run()
     path = dialog.selected_path
     return f"Result: {result}  path={path}"
 
 
-async def _launch_file_save(app: App[Any]) -> str:
+async def _launch_file_save() -> str:
     filters = [
         FileTypeFilter("Python files", ["*.py", "*.pyi"]),
         FileTypeFilter("Text files", ["*.txt", "*.md"]),
         FileTypeFilter("All files", ["*"]),
     ]
     dialog = FileDialog(mode=FileDialogMode.SAVE, start_path=Path.home(), title="Save File As", filters=filters)
-    result = await app.push_screen_wait(dialog)
+    result = await dialog.run()
     path = dialog.selected_path
     return f"Result: {result}  path={path}"
 
 
-async def _launch_file_dir(app: App[Any]) -> str:
+async def _launch_file_dir() -> str:
     dialog = FileDialog(mode=FileDialogMode.DIR, start_path=Path.home(), title="Select Directory")
-    result = await app.push_screen_wait(dialog)
+    result = await dialog.run()
     path = dialog.selected_path
     return f"Result: {result}  path={path}"
 
@@ -196,7 +196,7 @@ class _RunnerApp(App[str | None]):
     async def _run(self) -> None:
         await asyncio.sleep(0.05)  # let the app settle before pushing a modal
         try:
-            result = await self._entry.launcher(self)
+            result = await self._entry.launcher()
         except Exception as exc:  # noqa: BLE001
             result = f"Error: {exc}"
         self.exit(result)
@@ -225,7 +225,7 @@ class _ScreenshotApp(App[str]):
     async def _run(self) -> None:
         await asyncio.sleep(0.1)  # let the app settle
         with contextlib.suppress(Exception):
-            await self._entry.launcher(self)
+            await self._entry.launcher()
         self._svg = self.export_screenshot()
         self.exit(self._svg)
 
