@@ -155,13 +155,13 @@ class LocalFilesystem(Filesystem):
         os.mkdir(path.path)
 
     @override
-    def copy_stat(self, path: VPath, src_stat: Stat) -> None:
+    def copy_stat(self, path: VPath, stat: Stat) -> None:
         self._assert_vpath(path)
         p = path.path
-        if src_stat.modified >= 0:
-            os.utime(p, (src_stat.modified, src_stat.modified), follow_symlinks=False)
-        if src_stat.mode >= 0:
-            os.chmod(p, src_stat.mode, follow_symlinks=False)
+        if stat.modified >= 0:
+            os.utime(p, (stat.modified, stat.modified), follow_symlinks=False)
+        if stat.mode >= 0:
+            os.chmod(p, stat.mode, follow_symlinks=False)
 
     @override
     def readlink(self, path: VPath) -> str:
