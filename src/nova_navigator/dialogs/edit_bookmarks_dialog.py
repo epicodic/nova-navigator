@@ -19,7 +19,7 @@ from nova_navigator.dialogs.dialog import Dialog
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.icons import ICONS
 from nova_navigator.widgets.popup_widget import PopupWidget
-from nova_widgets import Button, Input
+from nova_widgets import Button, ButtonBox, Input
 
 # Tag types stored in tree node data
 _GroupTag = tuple[str, int]  # ("group", group_index)
@@ -107,6 +107,14 @@ class EditBookmarksDialog(Dialog):
         #action_row {
             width: auto;
             height: 1fr;
+
+            Vertical {
+                width: auto;
+            }
+
+            .button-box-row {
+                width: auto;
+            }
         }
 
         #tree_row {
@@ -197,13 +205,15 @@ class EditBookmarksDialog(Dialog):
     def compose_content(self) -> ComposeResult:
         yield Horizontal(
             Tree("Bookmarks", id="bookmark_tree"),
-            Vertical(
-                Button("Add Group", id="btn_add_group"),
-                Button("Add Entry", id="btn_add_entry", disabled=True),
-                Button("Remove", id="btn_remove", disabled=True),
-                Button("↑ Move Up", id="btn_move_up", disabled=True),
-                Button("↓ Move Down", id="btn_move_down", disabled=True),
-                Button("Move to…", id="btn_move_to_group", disabled=True),
+            ButtonBox(
+                [
+                    [Button("Add Group", id="btn_add_group")],
+                    [Button("Add Entry", id="btn_add_entry", disabled=True)],
+                    [Button("Remove", id="btn_remove", disabled=True)],
+                    [Button("↑ Move Up", id="btn_move_up", disabled=True)],
+                    [Button("↓ Move Down", id="btn_move_down", disabled=True)],
+                    [Button("Move to…", id="btn_move_to_group", disabled=True)],
+                ],
                 id="action_row",
             ),
             id="tree_row",
