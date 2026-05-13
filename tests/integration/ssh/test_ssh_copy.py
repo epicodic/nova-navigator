@@ -39,17 +39,11 @@ _COPY_WAIT = 1.5
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_copy_local_to_remote_file_appears(ssh_app_ctx: SshAppCtx) -> None:
-    """F5 on a local file copies it to the remote panel directory.
-
-    The decision dialog is auto-confirmed with YES to handle the known spurious
-    overwrite prompt that fires due to the bug in SSHFilesystem.stat().
-    """
+    """F5 on a local file copies it to the remote panel directory."""
     (ssh_app_ctx.local_dir / "hello.txt").write_text("content")
     await set_ssh_panels(ssh_app_ctx)
 
-    p_copy = patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog())
-    p_dec = patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.YES))
-    with p_copy, p_dec:
+    with patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog()):
         await ssh_app_ctx.pilot.press("f5")
         await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
 
@@ -65,9 +59,7 @@ async def test_copy_local_to_remote_binary_content_preserved(ssh_app_ctx: SshApp
     (ssh_app_ctx.local_dir / "binary.bin").write_bytes(data)
     await set_ssh_panels(ssh_app_ctx)
 
-    p_copy = patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog())
-    p_dec = patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.YES))
-    with p_copy, p_dec:
+    with patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog()):
         await ssh_app_ctx.pilot.press("f5")
         await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
 
@@ -82,9 +74,7 @@ async def test_copy_local_to_remote_large_file(ssh_app_ctx: SshAppCtx) -> None:
     (ssh_app_ctx.local_dir / "large.bin").write_bytes(data)
     await set_ssh_panels(ssh_app_ctx)
 
-    p_copy = patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog())
-    p_dec = patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.YES))
-    with p_copy, p_dec:
+    with patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog()):
         await ssh_app_ctx.pilot.press("f5")
         await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
 
@@ -98,9 +88,7 @@ async def test_copy_local_to_remote_filename_with_spaces(ssh_app_ctx: SshAppCtx)
     (ssh_app_ctx.local_dir / "my file.txt").write_text("spaced")
     await set_ssh_panels(ssh_app_ctx)
 
-    p_copy = patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog())
-    p_dec = patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.YES))
-    with p_copy, p_dec:
+    with patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog()):
         await ssh_app_ctx.pilot.press("f5")
         await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
 
@@ -114,22 +102,8 @@ async def test_copy_local_to_remote_filename_with_spaces(ssh_app_ctx: SshAppCtx)
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BUG: SSHFilesystem.stat() returns Stat() for non-existent files instead of "
-        "raising FileNotFoundError.  This makes VPath.stat_or_none() return a non-None "
-        "value for new destinations, causing copy_file() to trigger the overwrite dialog "
-        "even when the destination does not yet exist."
-    ),
-)
 async def test_copy_local_to_remote_no_spurious_overwrite_dialog(ssh_app_ctx: SshAppCtx) -> None:
-    """Copying to a non-existent remote path must NOT trigger the overwrite dialog.
-
-    This is a regression test for a known bug.  The test is marked xfail(strict=True):
-    it is expected to fail while the bug is present.  When the bug is fixed the xfail
-    marker must be removed.
-    """
+    """Copying to a non-existent remote path must NOT trigger the overwrite dialog."""
     (ssh_app_ctx.local_dir / "newfile.txt").write_text("hello")
     await set_ssh_panels(ssh_app_ctx)
 
@@ -139,7 +113,7 @@ async def test_copy_local_to_remote_no_spurious_overwrite_dialog(ssh_app_ctx: Ss
         await ssh_app_ctx.pilot.press("f5")
         await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
 
-    mock_decision.assert_not_called()  # fails while the bug is present
+    mock_decision.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

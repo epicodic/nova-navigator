@@ -254,12 +254,12 @@ def test_stat_symlink() -> None:
     assert s.is_symlink is True
 
 
-def test_stat_missing_file_returns_empty_stat() -> None:
+def test_stat_missing_file_raises_file_not_found() -> None:
     fs, mock_ssh, _ = _make_fs()
     _set_exec_output(mock_ssh, "")  # empty directory listing
     fs._dir_stat.cache_clear()
-    s = fs.stat(fs.path("/home/user/missing.txt"))
-    assert s == Stat()
+    with pytest.raises(FileNotFoundError):
+        fs.stat(fs.path("/home/user/missing.txt"))
 
 
 # ── read / write ──────────────────────────────────────────────────────────────

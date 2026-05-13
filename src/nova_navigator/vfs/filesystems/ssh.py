@@ -198,7 +198,7 @@ class SSHFilesystem(Filesystem):
         stat = file_list_stat.get(path.path.name)
         lstat = file_list_lstat.get(path.path.name)
         if stat is None or lstat is None:
-            return Stat()
+            raise FileNotFoundError(f"No such file or directory: {path.path!r}")
 
         is_hidden = path.name.startswith(".")
 
