@@ -7,7 +7,6 @@ wheels/
 *.egg-info
 
 # just for local development
-docs/agents/
 .agents
 todo.md
 
