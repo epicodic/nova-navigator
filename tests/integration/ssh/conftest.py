@@ -65,7 +65,7 @@ def ssh_server(tmp_path_factory: pytest.TempPathFactory) -> StubSSHServer:
 class SshAppCtx:
     """Context passed to every SSH integration test."""
 
-    pilot: object        # textual.pilot.Pilot[None] — kept as `object` to avoid import
+    pilot: object  # textual.pilot.Pilot[None] — kept as `object` to avoid import
     screen: MainScreen
     local_dir: Path
     remote_dir: Path

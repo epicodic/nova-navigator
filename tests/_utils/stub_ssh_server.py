@@ -237,10 +237,6 @@ class StubSSHServerInterface(paramiko.ServerInterface):
         """Reject interactive shell requests (tests use exec only)."""
         return False
 
-    def check_channel_subsystem_request(self, channel: paramiko.Channel, name: str) -> bool:
-        """Allow only the sftp subsystem."""
-        return name == "sftp"
-
 
 # ---------------------------------------------------------------------------
 # Server orchestrator
@@ -261,7 +257,7 @@ class StubSSHServer:
     def __init__(self, root_dir: Path) -> None:
         self.root_dir = root_dir
         self.host = "127.0.0.1"
-        self._host_key: paramiko.Ed25519Key = paramiko.Ed25519Key.generate()
+        self._host_key: paramiko.RSAKey = paramiko.RSAKey.generate(bits=2048)
         self._transports: list[paramiko.Transport] = []
         self._lock: threading.Lock = threading.Lock()
         self._sock: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -269,9 +265,7 @@ class StubSSHServer:
         self._sock.bind(("127.0.0.1", 0))
         self.port: int = self._sock.getsockname()[1]
         self._sock.listen(16)
-        self._thread: threading.Thread = threading.Thread(
-            target=self._accept_loop, daemon=True, name="stub-ssh-accept"
-        )
+        self._thread: threading.Thread = threading.Thread(target=self._accept_loop, daemon=True, name="stub-ssh-accept")
 
     def start(self) -> None:
         """Start the accept loop in a daemon thread."""
@@ -296,11 +290,16 @@ class StubSSHServer:
             self._spawn_transport(conn)
 
     def _spawn_transport(self, conn: socket.socket) -> None:
+        threading.Thread(target=self._run_transport, args=(conn,), daemon=True, name="stub-ssh-transport").start()
+
+    def _run_transport(self, conn: socket.socket) -> None:
         transport = paramiko.Transport(conn)
         transport.add_server_key(self._host_key)
         transport.set_subsystem_handler("sftp", paramiko.SFTPServer, StubSFTPServerInterface, self.root_dir)
         server_iface = StubSSHServerInterface()
         with self._lock:
             self._transports.append(transport)
+        event = threading.Event()
         with contextlib.suppress(Exception):
-            transport.start_server(server=server_iface)
+            transport.start_server(event=event, server=server_iface)
+        event.wait(timeout=10)

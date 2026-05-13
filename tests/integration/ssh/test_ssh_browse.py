@@ -86,17 +86,18 @@ async def test_enter_on_remote_subdir_navigates_into_it(ssh_app_ctx: SshAppCtx) 
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_remote_panel_backspace_navigates_to_parent(ssh_app_ctx: SshAppCtx) -> None:
-    """Pressing Backspace navigates from a remote subdirectory up to its parent."""
+async def test_enter_on_dotdot_navigates_to_parent(ssh_app_ctx: SshAppCtx) -> None:
+    """Pressing Enter on the '..' entry navigates from a remote subdirectory up to its parent."""
     subdir = ssh_app_ctx.remote_dir / "subdir"
     subdir.mkdir()
 
-    # Start inside the subdirectory
+    # Start inside the subdirectory; the cursor defaults to row 0 ("..")
     ssh_app_ctx.screen._left_panel.set_path(VPath(subdir, ssh_app_ctx.ssh_fs))
     ssh_app_ctx.screen._left_panel.focus()
     await ssh_app_ctx.pilot.pause(delay=0.5)  # type: ignore[union-attr]
 
-    await ssh_app_ctx.pilot.press("backspace")  # type: ignore[union-attr]
+    # Row 0 is always the ".." (UpPath) entry; Enter selects it and navigates up
+    await ssh_app_ctx.pilot.press("enter")  # type: ignore[union-attr]
     await ssh_app_ctx.pilot.pause(delay=0.5)  # type: ignore[union-attr]
 
     assert ssh_app_ctx.screen._left_panel.path.path == PurePosixPath(ssh_app_ctx.remote_dir)
