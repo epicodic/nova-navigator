@@ -145,6 +145,10 @@ async def set_ssh_panels_remote_left(ctx: SshAppCtx) -> None:
     ctx.screen._left_panel.set_path(VPath(ctx.remote_dir, ctx.ssh_fs))
     ctx.screen._right_panel.set_path(VPath(ctx.local_dir, LocalFilesystem.singleton()))
     ctx.screen._left_panel.focus()
-    await ctx.pilot.pause(delay=_SSH_SCAN_DELAY)
+    # Poll until the remote scan populates the panel (more than just "..").
+    for _ in range(20):
+        await ctx.pilot.pause(delay=_SSH_SCAN_DELAY / 4)
+        if len(ctx.screen._left_panel._shown_items) > 1:
+            break
     await ctx.pilot.press("down")
     await ctx.pilot.pause()

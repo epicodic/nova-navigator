@@ -146,7 +146,7 @@ async def test_on_button_pressed_dismisses_with_corresponding_decision() -> None
     async with _make_app(dialog).run_test(size=(80, 20)) as pilot:
         await pilot.pause()
         original_dismiss = dialog.dismiss
-        dialog.dismiss = lambda v: dismissed_with.append(v) or original_dismiss(v)
+        dialog.dismiss = lambda v: dismissed_with.append(v) or original_dismiss(v)  # type: ignore
 
         event = MagicMock()
         event.button.id = "YES"

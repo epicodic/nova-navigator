@@ -103,7 +103,7 @@ def test_parse_stat_output_multiple_entries() -> None:
 
 def test_init_with_injected_client() -> None:
     fs, mock_ssh, mock_sftp = _make_fs()
-    mock_ssh.connect.assert_called_once_with("localhost", port=22)
+    mock_ssh.connect.assert_called_once_with("localhost", port=22, username=None, key_filename=None, password=None)
     mock_ssh.open_sftp.assert_called_once()
     assert fs._ssh_client is mock_ssh
     assert fs._sftp_client is mock_sftp
@@ -116,7 +116,7 @@ def test_init_creates_new_client_when_none_provided() -> None:
     with patch("nova_navigator.vfs.filesystems.ssh.paramiko.SSHClient", return_value=mock_ssh):
         SSHFilesystem("remotehost", port=2222)
     mock_ssh.load_system_host_keys.assert_called_once()
-    mock_ssh.connect.assert_called_once_with("remotehost", port=2222)
+    mock_ssh.connect.assert_called_once_with("remotehost", port=2222, username=None, key_filename=None, password=None)
 
 
 # ── identity ──────────────────────────────────────────────────────────────────
