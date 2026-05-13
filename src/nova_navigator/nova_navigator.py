@@ -19,7 +19,13 @@ from textual.widgets import Input
 from nova_navigator import debug_analytics
 from nova_navigator.config import conf_
 from nova_navigator.decision import Decision
-from nova_navigator.dialogs import BookmarksDialog, EditBookmarksDialog, EditRemotesDialog, JobsDialog
+from nova_navigator.dialogs import (
+    BookmarksDialog,
+    ConnectToDialog,
+    EditBookmarksDialog,
+    EditRemotesDialog,
+    JobsDialog,
+)
 from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
 from nova_navigator.dialogs.decision_dialog import make_decision_dialog
 from nova_navigator.editor import Editor
@@ -29,6 +35,7 @@ from nova_navigator.nova_navigator_core import (
     NovaNavigatorCore,
     PanelRef,
 )
+from nova_navigator.remotes.ssh import connect_ssh
 from nova_navigator.scheduler import DecisionRequest, Job
 from nova_navigator.terminal import Terminal
 from nova_navigator.vfs import VPath
@@ -66,7 +73,7 @@ class MainScreen(Screen[None]):
         Binding("alt+left", "go_back", "Go Back", show=False),
         Binding("alt+right", "go_forward", "Go Forward", show=False),
         Binding("alt+up", "go_up", "Go Up"),
-        #        Binding("ctrl+shift+g", "connect_to_server", "Connect to Server", show=False),
+        Binding("ctrl+shift+g", "connect_to", "Connect to Remote", show=False),
     ]
 
     class _TerminalMode(Enum):
@@ -151,9 +158,7 @@ class MainScreen(Screen[None]):
             mc.action("Go Forward", shortcut="Alt+Right", action="go_forward", name="go_forward"),
             mc.action("Go Up", shortcut="Alt+Up", action="go_up", name="go_up"),
             mc.separator(),
-            mc.action(
-                "Connect to Server…", shortcut="Ctrl+Shift+G", action="connect_to_server", name="connect_to_server"
-            ),
+            mc.action("Connect to…", shortcut="Ctrl+Shift+G", action="connect_to", name="connect_to"),
             mc.separator(),
             mc.action("Manage Remotes…", action="manage_remotes", name="manage_remotes"),
         )
@@ -585,6 +590,21 @@ class MainScreen(Screen[None]):
     async def _action_manage_remotes(self) -> None:
         dialog = EditRemotesDialog(conf_.remotes)
         await dialog.run()
+
+    @work
+    async def _action_connect_to(self) -> None:
+        dialog = ConnectToDialog(conf_.remotes)
+        result = await dialog.run()
+        if result != "OK":
+            return
+        conn = dialog.selected_connection
+        if conn is None or conn.ssh is None:
+            return
+        fs = await connect_ssh(conn)
+        if fs is None:
+            return
+        start_path = await asyncio.to_thread(fs.cwd)
+        self.active_panel().set_path(start_path)
 
     @work
     async def _action_add_to_bookmarks(self) -> None:
