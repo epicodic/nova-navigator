@@ -50,8 +50,8 @@ async def test_copy_local_to_remote_file_appears(ssh_app_ctx: SshAppCtx) -> None
     p_copy = patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog())
     p_dec = patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.YES))
     with p_copy, p_dec:
-        await ssh_app_ctx.pilot.press("f5")  # type: ignore[union-attr]
-        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)  # type: ignore[union-attr]
+        await ssh_app_ctx.pilot.press("f5")
+        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
 
     assert (ssh_app_ctx.remote_dir / "hello.txt").exists()
     assert (ssh_app_ctx.remote_dir / "hello.txt").read_text() == "content"
@@ -68,8 +68,8 @@ async def test_copy_local_to_remote_binary_content_preserved(ssh_app_ctx: SshApp
     p_copy = patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog())
     p_dec = patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.YES))
     with p_copy, p_dec:
-        await ssh_app_ctx.pilot.press("f5")  # type: ignore[union-attr]
-        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)  # type: ignore[union-attr]
+        await ssh_app_ctx.pilot.press("f5")
+        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
 
     assert (ssh_app_ctx.remote_dir / "binary.bin").read_bytes() == data
 
@@ -85,8 +85,8 @@ async def test_copy_local_to_remote_large_file(ssh_app_ctx: SshAppCtx) -> None:
     p_copy = patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog())
     p_dec = patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.YES))
     with p_copy, p_dec:
-        await ssh_app_ctx.pilot.press("f5")  # type: ignore[union-attr]
-        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)  # type: ignore[union-attr]
+        await ssh_app_ctx.pilot.press("f5")
+        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
 
     assert (ssh_app_ctx.remote_dir / "large.bin").read_bytes() == data
 
@@ -101,8 +101,8 @@ async def test_copy_local_to_remote_filename_with_spaces(ssh_app_ctx: SshAppCtx)
     p_copy = patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog())
     p_dec = patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.YES))
     with p_copy, p_dec:
-        await ssh_app_ctx.pilot.press("f5")  # type: ignore[union-attr]
-        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)  # type: ignore[union-attr]
+        await ssh_app_ctx.pilot.press("f5")
+        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
 
     assert (ssh_app_ctx.remote_dir / "my file.txt").read_text() == "spaced"
 
@@ -136,8 +136,8 @@ async def test_copy_local_to_remote_no_spurious_overwrite_dialog(ssh_app_ctx: Ss
     p_copy = patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog())
     p_dec = patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.YES))
     with p_copy, p_dec as mock_decision:
-        await ssh_app_ctx.pilot.press("f5")  # type: ignore[union-attr]
-        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)  # type: ignore[union-attr]
+        await ssh_app_ctx.pilot.press("f5")
+        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
 
     mock_decision.assert_not_called()  # fails while the bug is present
 
@@ -155,8 +155,8 @@ async def test_copy_remote_to_local_file_appears(ssh_app_ctx: SshAppCtx) -> None
     await set_ssh_panels_remote_left(ssh_app_ctx)
 
     with patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog()):
-        await ssh_app_ctx.pilot.press("f5")  # type: ignore[union-attr]
-        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)  # type: ignore[union-attr]
+        await ssh_app_ctx.pilot.press("f5")
+        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
 
     assert (ssh_app_ctx.local_dir / "remote_file.txt").exists()
     assert (ssh_app_ctx.local_dir / "remote_file.txt").read_text() == "from remote"
@@ -171,8 +171,8 @@ async def test_copy_remote_to_local_binary_content_preserved(ssh_app_ctx: SshApp
     await set_ssh_panels_remote_left(ssh_app_ctx)
 
     with patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog()):
-        await ssh_app_ctx.pilot.press("f5")  # type: ignore[union-attr]
-        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)  # type: ignore[union-attr]
+        await ssh_app_ctx.pilot.press("f5")
+        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
 
     assert (ssh_app_ctx.local_dir / "binary.bin").read_bytes() == data
 
@@ -188,8 +188,8 @@ async def test_copy_cancelled_leaves_remote_destination_empty(ssh_app_ctx: SshAp
     cancel_dialog.run = AsyncMock(return_value="CANCEL")
 
     with patch(_COPY_DIALOG_PATH, return_value=cancel_dialog):
-        await ssh_app_ctx.pilot.press("f5")  # type: ignore[union-attr]
-        await ssh_app_ctx.pilot.pause(delay=0.5)  # type: ignore[union-attr]
+        await ssh_app_ctx.pilot.press("f5")
+        await ssh_app_ctx.pilot.pause(delay=0.5)
 
     assert list(ssh_app_ctx.remote_dir.iterdir()) == []
 
@@ -210,8 +210,8 @@ async def test_copy_local_to_remote_overwrites_when_confirmed(ssh_app_ctx: SshAp
     p_copy = patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog())
     p_dec = patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.YES))
     with p_copy, p_dec:
-        await ssh_app_ctx.pilot.press("f5")  # type: ignore[union-attr]
-        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)  # type: ignore[union-attr]
+        await ssh_app_ctx.pilot.press("f5")
+        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
 
     assert (ssh_app_ctx.remote_dir / "file.txt").read_text() == "new content"
 
@@ -228,9 +228,9 @@ async def test_copy_local_to_remote_skips_when_overwrite_declined(ssh_app_ctx: S
     ssh_app_ctx.screen._left_panel.set_path(VPath(ssh_app_ctx.local_dir, LocalFilesystem.singleton()))
     ssh_app_ctx.screen._right_panel.set_path(VPath(ssh_app_ctx.remote_dir, ssh_app_ctx.ssh_fs))
     ssh_app_ctx.screen._left_panel.focus()
-    await ssh_app_ctx.pilot.pause(delay=0.5)  # type: ignore[union-attr]
-    await ssh_app_ctx.pilot.press("down")  # type: ignore[union-attr]
-    await ssh_app_ctx.pilot.pause()  # type: ignore[union-attr]
+    await ssh_app_ctx.pilot.pause(delay=0.5)
+    await ssh_app_ctx.pilot.press("down")
+    await ssh_app_ctx.pilot.pause()
 
     # Prime the SSHFilesystem _dir_stat cache so it knows the remote file exists.
     # The stat call populates the lru_cache entry for the remote parent directory.
@@ -240,7 +240,7 @@ async def test_copy_local_to_remote_skips_when_overwrite_declined(ssh_app_ctx: S
     p_copy = patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog())
     p_dec = patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.NO))
     with p_copy, p_dec:
-        await ssh_app_ctx.pilot.press("f5")  # type: ignore[union-attr]
-        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)  # type: ignore[union-attr]
+        await ssh_app_ctx.pilot.press("f5")
+        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
 
     assert (ssh_app_ctx.remote_dir / "file.txt").read_text() == "old content"

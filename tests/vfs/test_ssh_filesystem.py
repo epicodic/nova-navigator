@@ -114,7 +114,7 @@ def test_init_creates_new_client_when_none_provided() -> None:
     mock_sftp = MagicMock(spec=paramiko.SFTPClient)
     mock_ssh.open_sftp.return_value = mock_sftp
     with patch("nova_navigator.vfs.filesystems.ssh.paramiko.SSHClient", return_value=mock_ssh):
-        fs = SSHFilesystem("remotehost", port=2222)
+        SSHFilesystem("remotehost", port=2222)
     mock_ssh.load_system_host_keys.assert_called_once()
     mock_ssh.connect.assert_called_once_with("remotehost", port=2222)
 
@@ -159,7 +159,7 @@ def test_is_same_device_always_false() -> None:
 
 
 def test_cwd_returns_sftp_getcwd() -> None:
-    fs, _, mock_sftp = _make_fs(cwd="/remote/dir")
+    fs, _, _ = _make_fs(cwd="/remote/dir")
     assert str(fs.cwd().path) == "/remote/dir"
 
 
@@ -344,5 +344,5 @@ def test_readlink_raises_oserror_when_not_a_link() -> None:
     fs, _, mock_sftp = _make_fs()
     mock_sftp.readlink.return_value = None
     vp = fs.path("/home/user/file.txt")
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="not a symbolic link"):
         fs.readlink(vp)

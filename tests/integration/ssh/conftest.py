@@ -29,12 +29,14 @@ set_ssh_panels_remote_left(ctx)
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
 
 import paramiko
 import pytest
 import pytest_asyncio
+from textual.pilot import Pilot
 
 from nova_navigator.nova_navigator import MainScreen, NovaNavigator
 from nova_navigator.vfs import VPath
@@ -47,12 +49,12 @@ from tests._utils.stub_ssh_server import StubSSHServer
 
 
 @pytest.fixture(scope="session")
-def ssh_server(tmp_path_factory: pytest.TempPathFactory) -> StubSSHServer:
+def ssh_server(tmp_path_factory: pytest.TempPathFactory) -> Generator[StubSSHServer, None, None]:
     """Start a stub SSH server once for the entire test session."""
     root = tmp_path_factory.mktemp("ssh_root")
     server = StubSSHServer(root_dir=root)
     server.start()
-    yield server  # type: ignore[misc]
+    yield server
     server.stop()
 
 
@@ -65,7 +67,7 @@ def ssh_server(tmp_path_factory: pytest.TempPathFactory) -> StubSSHServer:
 class SshAppCtx:
     """Context passed to every SSH integration test."""
 
-    pilot: object  # textual.pilot.Pilot[None] — kept as `object` to avoid import
+    pilot: Pilot[None]
     screen: MainScreen
     local_dir: Path
     remote_dir: Path
@@ -133,9 +135,9 @@ async def set_ssh_panels(ctx: SshAppCtx) -> None:
     ctx.screen._left_panel.set_path(VPath(ctx.local_dir, LocalFilesystem.singleton()))
     ctx.screen._right_panel.set_path(VPath(ctx.remote_dir, ctx.ssh_fs))
     ctx.screen._left_panel.focus()
-    await ctx.pilot.pause(delay=_SSH_SCAN_DELAY)  # type: ignore[union-attr]
-    await ctx.pilot.press("down")  # type: ignore[union-attr]  # skip past ".." to first file
-    await ctx.pilot.pause()  # type: ignore[union-attr]
+    await ctx.pilot.pause(delay=_SSH_SCAN_DELAY)
+    await ctx.pilot.press("down")  # skip past ".." to first file
+    await ctx.pilot.pause()
 
 
 async def set_ssh_panels_remote_left(ctx: SshAppCtx) -> None:
@@ -143,6 +145,6 @@ async def set_ssh_panels_remote_left(ctx: SshAppCtx) -> None:
     ctx.screen._left_panel.set_path(VPath(ctx.remote_dir, ctx.ssh_fs))
     ctx.screen._right_panel.set_path(VPath(ctx.local_dir, LocalFilesystem.singleton()))
     ctx.screen._left_panel.focus()
-    await ctx.pilot.pause(delay=_SSH_SCAN_DELAY)  # type: ignore[union-attr]
-    await ctx.pilot.press("down")  # type: ignore[union-attr]
-    await ctx.pilot.pause()  # type: ignore[union-attr]
+    await ctx.pilot.pause(delay=_SSH_SCAN_DELAY)
+    await ctx.pilot.press("down")
+    await ctx.pilot.pause()

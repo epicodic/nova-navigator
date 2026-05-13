@@ -20,7 +20,7 @@ def _make_copy_app(
     dest: MagicMock,
     move: bool = False,
 ) -> tuple[CopyMoveFilesDialog, type[App[None]]]:
-    dialog = CopyMoveFilesDialog(sources, dest, move=move)  # type: ignore[arg-type]
+    dialog = CopyMoveFilesDialog(sources, dest, move=move)  # type: ignore
 
     class _App(App[None]):
         def compose(self) -> ComposeResult:
@@ -35,7 +35,7 @@ def _make_copy_app(
 def _make_delete_app(
     paths: list[MagicMock],
 ) -> tuple[DeleteFilesDialog, type[App[None]]]:
-    dialog = DeleteFilesDialog(paths)  # type: ignore[arg-type]
+    dialog = DeleteFilesDialog(paths)  # type: ignore
 
     class _App(App[None]):
         def compose(self) -> ComposeResult:

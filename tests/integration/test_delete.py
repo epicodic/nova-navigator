@@ -24,8 +24,8 @@ async def test_delete_single_file_removes_it_from_filesystem(app_ctx: AppCtx) ->
     await set_panels(app_ctx)
 
     with patch(_DELETE_DIALOG_PATH, return_value=auto_confirm_delete_dialog()):
-        await app_ctx.pilot.press("f8")  # type: ignore[union-attr]
-        await app_ctx.pilot.pause(delay=0.5)  # type: ignore[union-attr]
+        await app_ctx.pilot.press("f8")
+        await app_ctx.pilot.pause(delay=0.5)
 
     assert not (app_ctx.src_dir / "remove_me.txt").exists()
 
@@ -38,8 +38,8 @@ async def test_delete_cancelled_leaves_file_intact(app_ctx: AppCtx) -> None:
     await set_panels(app_ctx)
 
     with patch(_DELETE_DIALOG_PATH, return_value=auto_cancel_dialog()):
-        await app_ctx.pilot.press("f8")  # type: ignore[union-attr]
-        await app_ctx.pilot.pause(delay=0.2)  # type: ignore[union-attr]
+        await app_ctx.pilot.press("f8")
+        await app_ctx.pilot.pause(delay=0.2)
 
     assert (app_ctx.src_dir / "keep_me.txt").exists()
 
@@ -54,12 +54,12 @@ async def test_delete_multiple_files_all_removed(app_ctx: AppCtx) -> None:
     await set_panels(app_ctx)
 
     for _ in names:
-        await app_ctx.pilot.press("insert")  # type: ignore[union-attr]
-    await app_ctx.pilot.pause()  # type: ignore[union-attr]
+        await app_ctx.pilot.press("insert")
+    await app_ctx.pilot.pause()
 
     with patch(_DELETE_DIALOG_PATH, return_value=auto_confirm_delete_dialog()):
-        await app_ctx.pilot.press("f8")  # type: ignore[union-attr]
-        await app_ctx.pilot.pause(delay=0.5)  # type: ignore[union-attr]
+        await app_ctx.pilot.press("f8")
+        await app_ctx.pilot.pause(delay=0.5)
 
     for name in names:
         assert not (app_ctx.src_dir / name).exists(), f"{name} still exists after delete"

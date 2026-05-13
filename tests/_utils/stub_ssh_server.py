@@ -16,13 +16,17 @@ Usage::
 from __future__ import annotations
 
 import contextlib
+import errno as _errno
 import os
 import socket
 import subprocess
 import threading
 from pathlib import Path
+from typing import IO
 
 import paramiko
+from paramiko.common import AUTH_SUCCESSFUL, OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED, OPEN_SUCCEEDED
+from paramiko.sftp import SFTP_FAILURE, SFTP_OK
 
 # ---------------------------------------------------------------------------
 # SFTP handle
@@ -37,19 +41,24 @@ class StubSFTPHandle(paramiko.SFTPHandle):
     We only need to override stat() and chattr().
     """
 
+    # Declare attributes that exist on the base class at runtime but are
+    # omitted from the paramiko stubs.
+    readfile: IO[bytes] | None
+    writefile: IO[bytes] | None
+
     def stat(self) -> paramiko.SFTPAttributes | int:
         """Return stat attributes for the open file descriptor."""
         fobj = self.readfile or self.writefile
         if fobj is None:
-            return paramiko.SFTP_FAILURE
+            return SFTP_FAILURE
         try:
             return paramiko.SFTPAttributes.from_stat(os.fstat(fobj.fileno()))
         except OSError as exc:
-            return paramiko.SFTPServer.convert_errno(exc.errno)
+            return paramiko.SFTPServer.convert_errno(exc.errno or _errno.EIO)
 
     def chattr(self, attr: paramiko.SFTPAttributes) -> int:  # type: ignore[override]
         """No-op: attribute changes on an open handle are not needed for tests."""
-        return paramiko.SFTP_OK
+        return SFTP_OK
 
 
 # ---------------------------------------------------------------------------
@@ -85,21 +94,21 @@ class StubSFTPServerInterface(paramiko.SFTPServerInterface):
                 entries.append(attr)
             return entries
         except OSError as exc:
-            return paramiko.SFTPServer.convert_errno(exc.errno)
+            return paramiko.SFTPServer.convert_errno(exc.errno or _errno.EIO)
 
     def stat(self, path: str) -> paramiko.SFTPAttributes | int:
         """Return stat attributes (following symlinks)."""
         try:
             return paramiko.SFTPAttributes.from_stat(os.stat(path))
         except OSError as exc:
-            return paramiko.SFTPServer.convert_errno(exc.errno)
+            return paramiko.SFTPServer.convert_errno(exc.errno or _errno.EIO)
 
     def lstat(self, path: str) -> paramiko.SFTPAttributes | int:
         """Return stat attributes (not following symlinks)."""
         try:
             return paramiko.SFTPAttributes.from_stat(os.lstat(path))
         except OSError as exc:
-            return paramiko.SFTPServer.convert_errno(exc.errno)
+            return paramiko.SFTPServer.convert_errno(exc.errno or _errno.EIO)
 
     # -- file I/O ------------------------------------------------------------
 
@@ -124,7 +133,7 @@ class StubSFTPServerInterface(paramiko.SFTPServerInterface):
                 handle.readfile = fobj
             return handle
         except OSError as exc:
-            return paramiko.SFTPServer.convert_errno(exc.errno)
+            return paramiko.SFTPServer.convert_errno(exc.errno or _errno.EIO)
 
     # -- file / directory operations -----------------------------------------
 
@@ -132,33 +141,33 @@ class StubSFTPServerInterface(paramiko.SFTPServerInterface):
         """Delete a file."""
         try:
             os.remove(path)
-            return paramiko.SFTP_OK
+            return SFTP_OK
         except OSError as exc:
-            return paramiko.SFTPServer.convert_errno(exc.errno)
+            return paramiko.SFTPServer.convert_errno(exc.errno or _errno.EIO)
 
     def rename(self, oldpath: str, newpath: str) -> int:
         """Rename / move a file."""
         try:
             os.rename(oldpath, newpath)
-            return paramiko.SFTP_OK
+            return SFTP_OK
         except OSError as exc:
-            return paramiko.SFTPServer.convert_errno(exc.errno)
+            return paramiko.SFTPServer.convert_errno(exc.errno or _errno.EIO)
 
     def mkdir(self, path: str, attr: paramiko.SFTPAttributes) -> int:
         """Create a directory."""
         try:
             os.mkdir(path)
-            return paramiko.SFTP_OK
+            return SFTP_OK
         except OSError as exc:
-            return paramiko.SFTPServer.convert_errno(exc.errno)
+            return paramiko.SFTPServer.convert_errno(exc.errno or _errno.EIO)
 
     def rmdir(self, path: str) -> int:
         """Remove an empty directory."""
         try:
             os.rmdir(path)
-            return paramiko.SFTP_OK
+            return SFTP_OK
         except OSError as exc:
-            return paramiko.SFTPServer.convert_errno(exc.errno)
+            return paramiko.SFTPServer.convert_errno(exc.errno or _errno.EIO)
 
     def canonicalize(self, path: str) -> str:
         """Return normalised absolute path; '.' resolves to root_dir."""
@@ -173,24 +182,24 @@ class StubSFTPServerInterface(paramiko.SFTPServerInterface):
                 os.utime(path, (attr.st_atime, attr.st_mtime))
             if attr.st_mode is not None:
                 os.chmod(path, attr.st_mode & 0o777)
-            return paramiko.SFTP_OK
+            return SFTP_OK
         except OSError as exc:
-            return paramiko.SFTPServer.convert_errno(exc.errno)
+            return paramiko.SFTPServer.convert_errno(exc.errno or _errno.EIO)
 
     def readlink(self, path: str) -> str | int:
         """Return the target of the symbolic link at *path*."""
         try:
             return os.readlink(path)
         except OSError as exc:
-            return paramiko.SFTPServer.convert_errno(exc.errno)
+            return paramiko.SFTPServer.convert_errno(exc.errno or _errno.EIO)
 
     def symlink(self, target_path: str, path: str) -> int:
         """Create a symbolic link at *path* pointing to *target_path*."""
         try:
             os.symlink(target_path, path)
-            return paramiko.SFTP_OK
+            return SFTP_OK
         except OSError as exc:
-            return paramiko.SFTPServer.convert_errno(exc.errno)
+            return paramiko.SFTPServer.convert_errno(exc.errno or _errno.EIO)
 
 
 # ---------------------------------------------------------------------------
@@ -203,11 +212,11 @@ class StubSSHServerInterface(paramiko.ServerInterface):
 
     def check_auth_password(self, username: str, password: str) -> int:
         """Accept any password."""
-        return paramiko.AUTH_SUCCESSFUL
+        return AUTH_SUCCESSFUL
 
     def check_auth_publickey(self, username: str, key: paramiko.PKey) -> int:
         """Accept any public key."""
-        return paramiko.AUTH_SUCCESSFUL
+        return AUTH_SUCCESSFUL
 
     def get_allowed_auths(self, username: str) -> str:
         """Advertise both password and publickey auth methods."""
@@ -216,8 +225,8 @@ class StubSSHServerInterface(paramiko.ServerInterface):
     def check_channel_request(self, kind: str, chanid: int) -> int:
         """Allow only session channels."""
         if kind == "session":
-            return paramiko.OPEN_SUCCEEDED
-        return paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
+            return OPEN_SUCCEEDED
+        return OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
 
     def check_channel_exec_request(self, channel: paramiko.Channel, command: bytes) -> bool:
         """Execute *command* via zsh and pipe stdout/stderr back through the channel."""
