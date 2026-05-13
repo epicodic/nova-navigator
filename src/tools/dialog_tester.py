@@ -24,11 +24,15 @@ from textual.widgets import Static
 
 from nova_navigator.config import conf_
 from nova_navigator.decision import Decision
+from nova_navigator.dialogs.connect_to_dialog import ConnectToDialog
+from nova_navigator.dialogs.credentials_dialog import CredentialsDialog
 from nova_navigator.dialogs.decision_dialog import DecisionDialog, OverwriteDecisionDialog
 from nova_navigator.dialogs.edit_bookmarks_dialog import EditBookmarksDialog
 from nova_navigator.dialogs.edit_remotes_dialog import EditRemotesDialog
+from nova_navigator.dialogs.file_dialog import FileDialog, FileDialogMode, FileTypeFilter
 from nova_navigator.dialogs.files_dialog import CopyMoveFilesDialog, DeleteFilesDialog
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
+from nova_navigator.dialogs.message_dialog import MessageDialog
 from nova_navigator.nova_navigator_core import NovaNavigatorCore
 from nova_navigator.scheduler.context import DecisionRequest
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
@@ -39,7 +43,7 @@ _fs = LocalFilesystem.singleton()
 # Absolute path so CSS_PATH resolves regardless of cwd.
 _TCSS = str(Path(__file__).parent.parent / "nova_navigator" / "nn.tcss")
 
-_LauncherFn = Callable[[App[Any]], Coroutine[Any, Any, str]]
+_LauncherFn = Callable[[], Coroutine[Any, Any, str]]
 
 
 @dataclass
@@ -52,17 +56,44 @@ class DialogEntry:
 # ── launcher functions ────────────────────────────────────────────────────────
 
 
-async def _launch_decision(app: App[Any]) -> str:
+async def _launch_connect_to() -> str:
+    result = await ConnectToDialog(conf_.remotes).run()
+    return f"Result: {result}"
+
+
+async def _launch_credentials() -> str:
+    dialog = CredentialsDialog(hostname="example.com", username="admin")
+    result = await dialog.run()
+    creds = dialog.credentials if result == "OK" else None
+    return f"Result: {result}  creds={creds}"
+
+
+async def _launch_message_info() -> str:
+    result = await MessageDialog("Operation completed successfully.", title="Info").run()
+    return f"Result: {result}"
+
+
+async def _launch_message_confirm() -> str:
+    result = await MessageDialog(
+        "The authenticity of host 'example.com' can't be established.\n"
+        "ED25519 key fingerprint is SHA256:abc123xyz\n\nAdd to known hosts?",
+        title="Unknown Host",
+        buttons=[Decision.OK, Decision.CANCEL],
+    ).run()
+    return f"Result: {result}"
+
+
+async def _launch_decision() -> str:
     request = DecisionRequest(
         title="Confirm action",
         expected_decisions=[Decision.YES, Decision.NO],
         message="Do you want to proceed with this action?",
     )
-    result = await app.push_screen_wait(DecisionDialog(request))
+    result = await DecisionDialog(request).run()
     return f"Result: {result}"
 
 
-async def _launch_overwrite(app: App[Any]) -> str:
+async def _launch_overwrite() -> str:
     request = DecisionRequest(
         title="File already exists",
         expected_decisions=[Decision.YES, Decision.ALL, Decision.NO, Decision.NONE],
@@ -75,48 +106,82 @@ async def _launch_overwrite(app: App[Any]) -> str:
             "dst_size": 1_024_000,
         },
     )
-    result = await app.push_screen_wait(OverwriteDecisionDialog(request))
+    result = await OverwriteDecisionDialog(request).run()
     return f"Result: {result}"
 
 
-async def _launch_icon_picker(app: App[Any]) -> str:
-    result = await app.push_screen_wait(IconPickerDialog(title="Pick an Icon"))
+async def _launch_icon_picker() -> str:
+    result = await IconPickerDialog(title="Pick an Icon").run()
     return f"Result: {result}"
 
 
-async def _launch_edit_bookmarks(app: App[Any]) -> str:
-    result = await app.push_screen_wait(EditBookmarksDialog(conf_.bookmarks))
+async def _launch_edit_bookmarks() -> str:
+    result = await EditBookmarksDialog(conf_.bookmarks).run()
     return f"Result: {result}"
 
 
-async def _launch_edit_remotes(app: App[Any]) -> str:
-    result = await app.push_screen_wait(EditRemotesDialog(conf_.remotes))
+async def _launch_edit_remotes() -> str:
+    result = await EditRemotesDialog(conf_.remotes).run()
     return f"Result: {result}"
 
 
-async def _launch_copy_files(app: App[Any]) -> str:
+async def _launch_copy_files() -> str:
     src = [VPath("/home/user/Documents/report.pdf", _fs), VPath("/home/user/Documents/notes.txt", _fs)]
     dst = VPath("/home/user/Downloads", _fs)
-    result = await app.push_screen_wait(CopyMoveFilesDialog(source_paths=src, destination_path=dst, move=False))
+    result = await CopyMoveFilesDialog(source_paths=src, destination_path=dst, move=False).run()
     return f"Result: {result}"
 
 
-async def _launch_move_file(app: App[Any]) -> str:
+async def _launch_move_file() -> str:
     src = [VPath("/home/user/Documents/report.pdf", _fs)]
     dst = VPath("/home/user/Downloads", _fs)
-    result = await app.push_screen_wait(CopyMoveFilesDialog(source_paths=src, destination_path=dst, move=True))
+    result = await CopyMoveFilesDialog(source_paths=src, destination_path=dst, move=True).run()
     return f"Result: {result}"
 
 
-async def _launch_delete_files(app: App[Any]) -> str:
+async def _launch_delete_files() -> str:
     paths = [VPath("/home/user/Documents/old_report.pdf", _fs), VPath("/home/user/Downloads/archive.zip", _fs)]
-    result = await app.push_screen_wait(DeleteFilesDialog(paths=paths))
+    result = await DeleteFilesDialog(paths=paths).run()
     return f"Result: {result}"
+
+
+async def _launch_file_open() -> str:
+    dialog = FileDialog(mode=FileDialogMode.OPEN, start_path=Path.home(), title="Open File")
+    result = await dialog.run()
+    path = dialog.selected_path
+    return f"Result: {result}  path={path}"
+
+
+async def _launch_file_save() -> str:
+    filters = [
+        FileTypeFilter("Python files", ["*.py", "*.pyi"]),
+        FileTypeFilter("Text files", ["*.txt", "*.md"]),
+        FileTypeFilter("All files", ["*"]),
+    ]
+    dialog = FileDialog(mode=FileDialogMode.SAVE, start_path=Path.home(), title="Save File As", filters=filters)
+    result = await dialog.run()
+    path = dialog.selected_path
+    return f"Result: {result}  path={path}"
+
+
+async def _launch_file_dir() -> str:
+    dialog = FileDialog(mode=FileDialogMode.DIR, start_path=Path.home(), title="Select Directory")
+    result = await dialog.run()
+    path = dialog.selected_path
+    return f"Result: {result}  path={path}"
 
 
 # ── dialog registry ───────────────────────────────────────────────────────────
 
 _ENTRIES: list[DialogEntry] = [
+    DialogEntry("ConnectToDialog", "Pick a saved remote connection (uses real config).", _launch_connect_to),
+    DialogEntry("CredentialsDialog", "Username + password prompt for SSH authentication.", _launch_credentials),
+    DialogEntry("MessageDialog (info)", "Simple informational message with OK button.", _launch_message_info),
+    DialogEntry(
+        "MessageDialog (confirm)",
+        "Confirmation message with OK/Cancel — styled like the unknown-host prompt.",
+        _launch_message_confirm,
+    ),
     DialogEntry("DecisionDialog", "Simple yes/no decision prompt.", _launch_decision),
     DialogEntry(
         "OverwriteDecisionDialog",
@@ -133,6 +198,9 @@ _ENTRIES: list[DialogEntry] = [
     DialogEntry("CopyMoveFilesDialog (copy)", "Copy multiple files to a destination.", _launch_copy_files),
     DialogEntry("CopyMoveFilesDialog (move)", "Move a single file — shows rename input.", _launch_move_file),
     DialogEntry("DeleteFilesDialog", "Delete confirmation for multiple files.", _launch_delete_files),
+    DialogEntry("FileDialog (open)", "File picker in open mode — select an existing file.", _launch_file_open),
+    DialogEntry("FileDialog (save)", "File picker in save mode — with file-type filters.", _launch_file_save),
+    DialogEntry("FileDialog (dir)", "Directory picker mode — select a folder.", _launch_file_dir),
 ]
 
 _ENTRY_MAP: dict[str, DialogEntry] = {e.name.lower(): e for e in _ENTRIES}
@@ -166,7 +234,7 @@ class _RunnerApp(App[str | None]):
     async def _run(self) -> None:
         await asyncio.sleep(0.05)  # let the app settle before pushing a modal
         try:
-            result = await self._entry.launcher(self)
+            result = await self._entry.launcher()
         except Exception as exc:  # noqa: BLE001
             result = f"Error: {exc}"
         self.exit(result)
@@ -195,7 +263,7 @@ class _ScreenshotApp(App[str]):
     async def _run(self) -> None:
         await asyncio.sleep(0.1)  # let the app settle
         with contextlib.suppress(Exception):
-            await self._entry.launcher(self)
+            await self._entry.launcher()
         self._svg = self.export_screenshot()
         self.exit(self._svg)
 
