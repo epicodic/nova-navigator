@@ -1,7 +1,7 @@
 """Dialog tester — launch and visually test Nova Navigator dialogs in isolation.
 
 CLI usage:
-  uv run dialog_tester --list                       # print all dialogs as JSON
+  uv run dialog_tester --list                       # list all available dialogs
   uv run dialog_tester DecisionDialog               # launch dialog interactively
   uv run dialog_tester DecisionDialog --screenshot  # render headlessly, print SVG to stdout
 """
@@ -11,13 +11,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import json
 import sys
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from rich.console import Console
 from textual import work
 from textual.app import App, ComposeResult
 from textual.widgets import Static
@@ -284,8 +284,11 @@ class _ScreenshotApp(App[str]):
 
 
 def _cmd_list() -> None:
-    entries = [{"name": e.name, "description": e.description} for e in _ENTRIES]
-    print(json.dumps(entries, indent=2))
+    console = Console()
+    for entry in _ENTRIES:
+        console.print(entry.name)
+        console.print(f"  [grey50]{entry.description}[/grey50]")
+        console.print()
 
 
 def _cmd_run(name: str) -> None:
@@ -319,7 +322,7 @@ def main() -> None:
             "  uv run dialog_tester DecisionDialog --screenshot\n"
         ),
     )
-    parser.add_argument("--list", action="store_true", help="Print all dialogs as JSON and exit.")
+    parser.add_argument("--list", action="store_true", help="List all available dialogs and exit.")
     parser.add_argument("name", nargs="?", metavar="NAME", help="Dialog name to launch.")
     parser.add_argument("--screenshot", action="store_true", help="Render headlessly and print SVG to stdout.")
     args = parser.parse_args()
