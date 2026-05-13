@@ -196,6 +196,19 @@ For implementing long-running async operations: see `docs/scheduler.md` for the 
 
 ---
 
+## Dialogs
+
+Every new dialog class **must** be registered in `src/tools/dialog_tester.py`.
+Add a `DialogEntry` to `_ENTRIES` with a `factory` lambda that constructs the dialog with representative arguments.
+If the dialog exposes extra state after dismissal (e.g. `selected_path`, `credentials`), supply a `result_fn` lambda to include that in the printed result.
+
+```sh
+uv run dialog_tester --list          # verify the entry appears
+uv run dialog_tester MyNewDialog     # smoke-test it interactively
+```
+
+---
+
 ## Writing GUI Tests
 
 Textual widgets are tested using `App.run_test()`, which returns an async context manager yielding a `Pilot`.
