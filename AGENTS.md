@@ -76,6 +76,7 @@ Always run `uv run qa` after changes and confirm zero failures before claiming w
 | `docs/scheduler.md` | Async task scheduler framework — read before touching `scheduler/` or long-running operations |
 | `docs/directory_browser.md` | Directory browser widget design — read before touching `widgets/directory_browser.py` |
 | `docs/terminal.md` | Terminal sub-package architecture — read before touching `terminal/` |
+| `docs/remote-uri-scheme.md` | `remote://` URI scheme design — read before touching `vfs/` or remote connection handling |
 
 Steps:
 1. List `docs/` to see available documentation.
