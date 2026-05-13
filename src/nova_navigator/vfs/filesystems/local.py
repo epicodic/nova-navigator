@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -14,6 +15,8 @@ import watchdog.observers
 
 from ..filesystem import Filesystem, FilesystemCapabilities, Stat, StreamReaderLike, StreamWriterLike
 from ..vpath import VPath
+
+logging.getLogger("watchdog").setLevel(logging.WARNING)
 
 
 class LocalFilesystem(Filesystem):
