@@ -24,12 +24,15 @@ from textual.widgets import Static
 
 from nova_navigator.config import conf_
 from nova_navigator.decision import Decision
+from nova_navigator.dialogs.connect_to_dialog import ConnectToDialog
+from nova_navigator.dialogs.credentials_dialog import CredentialsDialog
 from nova_navigator.dialogs.decision_dialog import DecisionDialog, OverwriteDecisionDialog
 from nova_navigator.dialogs.edit_bookmarks_dialog import EditBookmarksDialog
 from nova_navigator.dialogs.edit_remotes_dialog import EditRemotesDialog
 from nova_navigator.dialogs.file_dialog import FileDialog, FileDialogMode, FileTypeFilter
 from nova_navigator.dialogs.files_dialog import CopyMoveFilesDialog, DeleteFilesDialog
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
+from nova_navigator.dialogs.message_dialog import MessageDialog
 from nova_navigator.nova_navigator_core import NovaNavigatorCore
 from nova_navigator.scheduler.context import DecisionRequest
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
@@ -51,6 +54,33 @@ class DialogEntry:
 
 
 # ── launcher functions ────────────────────────────────────────────────────────
+
+
+async def _launch_connect_to() -> str:
+    result = await ConnectToDialog(conf_.remotes).run()
+    return f"Result: {result}"
+
+
+async def _launch_credentials() -> str:
+    dialog = CredentialsDialog(hostname="example.com", username="admin")
+    result = await dialog.run()
+    creds = dialog.credentials if result == "OK" else None
+    return f"Result: {result}  creds={creds}"
+
+
+async def _launch_message_info() -> str:
+    result = await MessageDialog("Operation completed successfully.", title="Info").run()
+    return f"Result: {result}"
+
+
+async def _launch_message_confirm() -> str:
+    result = await MessageDialog(
+        "The authenticity of host 'example.com' can't be established.\n"
+        "ED25519 key fingerprint is SHA256:abc123xyz\n\nAdd to known hosts?",
+        title="Unknown Host",
+        buttons=[Decision.OK, Decision.CANCEL],
+    ).run()
+    return f"Result: {result}"
 
 
 async def _launch_decision() -> str:
@@ -144,6 +174,14 @@ async def _launch_file_dir() -> str:
 # ── dialog registry ───────────────────────────────────────────────────────────
 
 _ENTRIES: list[DialogEntry] = [
+    DialogEntry("ConnectToDialog", "Pick a saved remote connection (uses real config).", _launch_connect_to),
+    DialogEntry("CredentialsDialog", "Username + password prompt for SSH authentication.", _launch_credentials),
+    DialogEntry("MessageDialog (info)", "Simple informational message with OK button.", _launch_message_info),
+    DialogEntry(
+        "MessageDialog (confirm)",
+        "Confirmation message with OK/Cancel — styled like the unknown-host prompt.",
+        _launch_message_confirm,
+    ),
     DialogEntry("DecisionDialog", "Simple yes/no decision prompt.", _launch_decision),
     DialogEntry(
         "OverwriteDecisionDialog",
