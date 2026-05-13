@@ -9,7 +9,7 @@ from .files_dialog import CopyMoveFilesDialog, DeleteFilesDialog
 from .icon_picker_dialog import IconPickerDialog
 from .job_registry import JobRegistry
 from .jobs_dialog import JobsDialog
-from .message_dialog import MessageDialog
+from .message_box import MessageBox, MessageBoxVariant, MessageDialog
 
 # from .processes_dialog import ProcessesDialog
 
@@ -29,5 +29,7 @@ __all__ = [
     "IconPickerDialog",
     "JobRegistry",
     "JobsDialog",
+    "MessageBox",
+    "MessageBoxVariant",
     "MessageDialog",
 ]

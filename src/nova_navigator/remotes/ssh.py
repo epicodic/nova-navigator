@@ -9,7 +9,7 @@ import paramiko
 
 from nova_navigator.config.remotes import RemoteConnection
 from nova_navigator.decision import Decision
-from nova_navigator.dialogs import CredentialsDialog, MessageDialog
+from nova_navigator.dialogs import CredentialsDialog, MessageBox
 from nova_navigator.vfs.filesystems import SSHFilesystem, UnknownHostKeyError
 
 _logger = logging.getLogger(__name__)
@@ -31,11 +31,12 @@ async def connect_ssh(conn: RemoteConnection) -> SSHFilesystem | None:
         fs = await asyncio.to_thread(SSHFilesystem, ssh.host, port, username, ssh.identity_file, password)
     except UnknownHostKeyError as exc:
         _logger.warning("Unknown host key for %r: %s %s", conn.name, exc.key_type, exc.fingerprint)
-        confirm = MessageDialog(
+        confirm = MessageBox(
             f"The authenticity of host {exc.hostname!r} can't be established.\n"
             f"{exc.key_type} key fingerprint is {exc.fingerprint}\n\nAdd to known hosts?",
             title="Unknown Host",
             buttons=[Decision.OK, Decision.CANCEL],
+            variant="warning",
         )
         if await confirm.run() != "OK":
             return None
@@ -47,13 +48,13 @@ async def connect_ssh(conn: RemoteConnection) -> SSHFilesystem | None:
             fs = await _prompt_credentials(ssh.host, port, username)
         except Exception as exc2:
             _logger.exception("SSH connection error for %r: %s", conn.name, exc2)
-            await MessageDialog(f"Could not connect to {conn.name!r}:\n{exc2}").run()
+            await MessageBox(f"Could not connect to {conn.name!r}:\n{exc2}", variant="error").run()
             return None
     except paramiko.AuthenticationException:
         fs = await _prompt_credentials(ssh.host, port, username)
     except Exception as exc:
         _logger.exception("SSH connection error for %r: %s", conn.name, exc)
-        await MessageDialog(f"Could not connect to {conn.name!r}:\n{exc}").run()
+        await MessageBox(f"Could not connect to {conn.name!r}:\n{exc}", variant="error").run()
         return None
 
     return fs
@@ -74,5 +75,5 @@ async def _prompt_credentials(hostname: str, port: int, username: str | None) ->
         )
     except Exception as exc:
         _logger.exception("SSH password auth failed for %r: %s", hostname, exc)
-        await MessageDialog(f"Could not connect to {hostname!r}:\n{exc}").run()
+        await MessageBox(f"Could not connect to {hostname!r}:\n{exc}", variant="error").run()
         return None

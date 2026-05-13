@@ -33,7 +33,7 @@ from nova_navigator.dialogs.edit_remotes_dialog import EditRemotesDialog
 from nova_navigator.dialogs.file_dialog import FileDialog, FileDialogMode, FileTypeFilter
 from nova_navigator.dialogs.files_dialog import CopyMoveFilesDialog, DeleteFilesDialog
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
-from nova_navigator.dialogs.message_dialog import MessageDialog
+from nova_navigator.dialogs.message_box import MessageBox
 from nova_navigator.nova_navigator_core import NovaNavigatorCore
 from nova_navigator.scheduler.context import DecisionRequest
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
@@ -85,14 +85,29 @@ _ENTRIES: list[DialogEntry] = [
         result_fn=lambda d, r: f"Result: {r}  creds={d.credentials if r == 'OK' else None}",
     ),
     DialogEntry(
-        "MessageDialog (info)",
+        "MessageBox (default)",
         "Simple informational message with OK button.",
-        lambda: MessageDialog("Operation completed successfully.", title="Info"),
+        lambda: MessageBox("Operation completed successfully.", title="Info"),
     ),
     DialogEntry(
-        "MessageDialog (confirm)",
+        "MessageBox (success)",
+        "Success message with green background.",
+        lambda: MessageBox("File copied successfully.", title="Success", variant="success"),
+    ),
+    DialogEntry(
+        "MessageBox (warning)",
+        "Warning message with yellow background.",
+        lambda: MessageBox("Disk space is running low.", title="Warning", variant="warning"),
+    ),
+    DialogEntry(
+        "MessageBox (error)",
+        "Error message with red background.",
+        lambda: MessageBox("Operation failed: permission denied.", title="Error", variant="error"),
+    ),
+    DialogEntry(
+        "MessageBox (confirm)",
         "Confirmation message with OK/Cancel — styled like the unknown-host prompt.",
-        lambda: MessageDialog(
+        lambda: MessageBox(
             "The authenticity of host 'example.com' can't be established.\n"
             "ED25519 key fingerprint is SHA256:abc123xyz\n\nAdd to known hosts?",
             title="Unknown Host",

@@ -4,7 +4,7 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Label
 
-from nova_navigator.dialogs.message_dialog import MessageDialog
+from nova_navigator.dialogs.message_box import MessageDialog
 
 
 def _make_app(dialog: MessageDialog) -> type[App[None]]:
