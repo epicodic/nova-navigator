@@ -544,7 +544,6 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
                 # event_filter=[watchdog.events.DirModifiedEvent],
             )
 
-
     # Data management
 
     def reload(self) -> None:

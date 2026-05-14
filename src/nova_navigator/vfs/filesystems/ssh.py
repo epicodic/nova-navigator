@@ -251,7 +251,9 @@ class SSHFilesystem(Filesystem):
 
     @override
     def read(self, path: VPath) -> StreamReaderLike:
-        return self._sftp_client.open(path.path.as_posix(), "rb")
+        f = self._sftp_client.open(path.path.as_posix(), "rb")
+        f.prefetch()
+        return f
 
     @override
     def write(self, path: VPath) -> StreamWriterLike:
