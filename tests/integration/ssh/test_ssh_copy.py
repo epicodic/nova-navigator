@@ -45,7 +45,11 @@ async def test_copy_local_to_remote_file_appears(ssh_app_ctx: SshAppCtx) -> None
 
     with patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog()):
         await ssh_app_ctx.pilot.press("f5")
-        await poll_until(ssh_app_ctx.pilot, lambda: (ssh_app_ctx.remote_dir / "hello.txt").exists())
+        await poll_until(
+            ssh_app_ctx.pilot,
+            lambda: (ssh_app_ctx.remote_dir / "hello.txt").exists()
+            and (ssh_app_ctx.remote_dir / "hello.txt").stat().st_size > 0,
+        )
 
     assert (ssh_app_ctx.remote_dir / "hello.txt").exists()
     assert (ssh_app_ctx.remote_dir / "hello.txt").read_text() == "content"
@@ -94,7 +98,11 @@ async def test_copy_local_to_remote_filename_with_spaces(ssh_app_ctx: SshAppCtx)
 
     with patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog()):
         await ssh_app_ctx.pilot.press("f5")
-        await poll_until(ssh_app_ctx.pilot, lambda: (ssh_app_ctx.remote_dir / "my file.txt").exists())
+        await poll_until(
+            ssh_app_ctx.pilot,
+            lambda: (ssh_app_ctx.remote_dir / "my file.txt").exists()
+            and (ssh_app_ctx.remote_dir / "my file.txt").stat().st_size > 0,
+        )
 
     assert (ssh_app_ctx.remote_dir / "my file.txt").read_text() == "spaced"
 

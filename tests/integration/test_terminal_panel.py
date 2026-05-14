@@ -65,8 +65,7 @@ async def test_user_cd_in_terminal_updates_active_panel(app_ctx: AppCtx) -> None
     app_ctx.screen._terminal.post_message(
         Terminal.PathChanged(app_ctx.screen._terminal, PurePosixPath(target), user_initiated=True)
     )
-    await poll_until(app_ctx.pilot,
-        lambda: app_ctx.screen.active_panel().path.path == PurePosixPath(target))
+    await poll_until(app_ctx.pilot, lambda: app_ctx.screen.active_panel().path.path == PurePosixPath(target))
 
     assert app_ctx.screen.active_panel().path.path == PurePosixPath(target)
 

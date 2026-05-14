@@ -116,9 +116,7 @@ async def test_copy_multiple_files_all_appear_in_destination(app_ctx: AppCtx) ->
 
     with patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog()):
         await app_ctx.pilot.press("f5")
-        await poll_until(app_ctx.pilot, lambda: all(
-            (app_ctx.dst_dir / n).exists() for n in names
-        ))
+        await poll_until(app_ctx.pilot, lambda: all((app_ctx.dst_dir / n).exists() for n in names))
 
     for name in names:
         assert (app_ctx.dst_dir / name).exists(), f"{name} missing from destination"
@@ -148,8 +146,7 @@ async def test_copy_overwrites_existing_file_when_user_confirms(app_ctx: AppCtx)
     p_dec = patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.YES))
     with p_copy, p_dec:
         await app_ctx.pilot.press("f5")
-        await poll_until(app_ctx.pilot,
-            lambda: (app_ctx.dst_dir / "file.txt").read_text() == "new content")
+        await poll_until(app_ctx.pilot, lambda: (app_ctx.dst_dir / "file.txt").read_text() == "new content")
 
     assert (app_ctx.dst_dir / "file.txt").read_text() == "new content"
 

@@ -28,9 +28,10 @@ async def test_remote_panel_lists_regular_file(ssh_app_ctx: SshAppCtx) -> None:
     (ssh_app_ctx.remote_dir / "hello.txt").write_text("content")
 
     ssh_app_ctx.screen._right_panel.set_path(VPath(ssh_app_ctx.remote_dir, ssh_app_ctx.ssh_fs))
-    await poll_until(ssh_app_ctx.pilot, lambda: any(
-        item.name == "hello.txt" for item in ssh_app_ctx.screen._right_panel._shown_items
-    ))
+    await poll_until(
+        ssh_app_ctx.pilot,
+        lambda: any(item.name == "hello.txt" for item in ssh_app_ctx.screen._right_panel._shown_items),
+    )
 
     names = [item.name for item in ssh_app_ctx.screen._right_panel._shown_items]
     assert "hello.txt" in names
@@ -43,9 +44,9 @@ async def test_remote_panel_lists_directory(ssh_app_ctx: SshAppCtx) -> None:
     (ssh_app_ctx.remote_dir / "subdir").mkdir()
 
     ssh_app_ctx.screen._right_panel.set_path(VPath(ssh_app_ctx.remote_dir, ssh_app_ctx.ssh_fs))
-    await poll_until(ssh_app_ctx.pilot, lambda: any(
-        item.name == "subdir" for item in ssh_app_ctx.screen._right_panel._shown_items
-    ))
+    await poll_until(
+        ssh_app_ctx.pilot, lambda: any(item.name == "subdir" for item in ssh_app_ctx.screen._right_panel._shown_items)
+    )
 
     names = [item.name for item in ssh_app_ctx.screen._right_panel._shown_items]
     assert "subdir" in names
@@ -59,9 +60,9 @@ async def test_remote_panel_lists_dotfile(ssh_app_ctx: SshAppCtx) -> None:
 
     ssh_app_ctx.screen._right_panel.show_hidden_files = True
     ssh_app_ctx.screen._right_panel.set_path(VPath(ssh_app_ctx.remote_dir, ssh_app_ctx.ssh_fs))
-    await poll_until(ssh_app_ctx.pilot, lambda: any(
-        item.name == ".hidden" for item in ssh_app_ctx.screen._right_panel._shown_items
-    ))
+    await poll_until(
+        ssh_app_ctx.pilot, lambda: any(item.name == ".hidden" for item in ssh_app_ctx.screen._right_panel._shown_items)
+    )
 
     names = [item.name for item in ssh_app_ctx.screen._right_panel._shown_items]
     assert ".hidden" in names
@@ -86,8 +87,7 @@ async def test_enter_on_remote_subdir_navigates_into_it(ssh_app_ctx: SshAppCtx) 
     await ssh_app_ctx.pilot.pause()
 
     await ssh_app_ctx.pilot.press("enter")
-    await poll_until(ssh_app_ctx.pilot,
-        lambda: ssh_app_ctx.screen._left_panel.path.path == PurePosixPath(subdir))
+    await poll_until(ssh_app_ctx.pilot, lambda: ssh_app_ctx.screen._left_panel.path.path == PurePosixPath(subdir))
 
     assert ssh_app_ctx.screen._left_panel.path.path == PurePosixPath(subdir)
 
@@ -106,8 +106,9 @@ async def test_enter_on_dotdot_navigates_to_parent(ssh_app_ctx: SshAppCtx) -> No
 
     # Row 0 is always the ".." (UpPath) entry; Enter selects it and navigates up
     await ssh_app_ctx.pilot.press("enter")
-    await poll_until(ssh_app_ctx.pilot,
-        lambda: ssh_app_ctx.screen._left_panel.path.path == PurePosixPath(ssh_app_ctx.remote_dir))
+    await poll_until(
+        ssh_app_ctx.pilot, lambda: ssh_app_ctx.screen._left_panel.path.path == PurePosixPath(ssh_app_ctx.remote_dir)
+    )
 
     assert ssh_app_ctx.screen._left_panel.path.path == PurePosixPath(ssh_app_ctx.remote_dir)
 
