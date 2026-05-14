@@ -19,7 +19,7 @@ import pytest
 
 from nova_navigator.terminal import Terminal
 from nova_navigator.vfs import VPath
-from tests.integration.conftest import AppCtx, set_panels
+from tests.integration.conftest import AppCtx, poll_until, set_panels
 
 # ---------------------------------------------------------------------------
 # Panel → Terminal
@@ -65,7 +65,8 @@ async def test_user_cd_in_terminal_updates_active_panel(app_ctx: AppCtx) -> None
     app_ctx.screen._terminal.post_message(
         Terminal.PathChanged(app_ctx.screen._terminal, PurePosixPath(target), user_initiated=True)
     )
-    await app_ctx.pilot.pause(delay=0.2)
+    await poll_until(app_ctx.pilot,
+        lambda: app_ctx.screen.active_panel().path.path == PurePosixPath(target))
 
     assert app_ctx.screen.active_panel().path.path == PurePosixPath(target)
 

@@ -21,7 +21,7 @@ import pytest
 from nova_navigator.decision import Decision
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
-from tests.integration.conftest import auto_confirm_copy_dialog, auto_confirm_decision_dialog
+from tests.integration.conftest import auto_confirm_copy_dialog, auto_confirm_decision_dialog, poll_until
 from tests.integration.ssh.conftest import SshAppCtx, set_ssh_panels, set_ssh_panels_remote_left
 
 _COPY_DIALOG_PATH = "nova_navigator.filemanager.jobs.CopyMoveFilesDialog"
@@ -45,7 +45,7 @@ async def test_copy_local_to_remote_file_appears(ssh_app_ctx: SshAppCtx) -> None
 
     with patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog()):
         await ssh_app_ctx.pilot.press("f5")
-        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
+        await poll_until(ssh_app_ctx.pilot, lambda: (ssh_app_ctx.remote_dir / "hello.txt").exists())
 
     assert (ssh_app_ctx.remote_dir / "hello.txt").exists()
     assert (ssh_app_ctx.remote_dir / "hello.txt").read_text() == "content"
@@ -61,7 +61,9 @@ async def test_copy_local_to_remote_binary_content_preserved(ssh_app_ctx: SshApp
 
     with patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog()):
         await ssh_app_ctx.pilot.press("f5")
-        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
+        await poll_until(ssh_app_ctx.pilot,
+            lambda: (ssh_app_ctx.remote_dir / "binary.bin").exists()
+            and (ssh_app_ctx.remote_dir / "binary.bin").stat().st_size == len(data))
 
     assert (ssh_app_ctx.remote_dir / "binary.bin").read_bytes() == data
 
@@ -76,7 +78,9 @@ async def test_copy_local_to_remote_large_file(ssh_app_ctx: SshAppCtx) -> None:
 
     with patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog()):
         await ssh_app_ctx.pilot.press("f5")
-        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
+        await poll_until(ssh_app_ctx.pilot,
+            lambda: (ssh_app_ctx.remote_dir / "large.bin").exists()
+            and (ssh_app_ctx.remote_dir / "large.bin").stat().st_size == len(data))
 
     assert (ssh_app_ctx.remote_dir / "large.bin").read_bytes() == data
 
@@ -90,7 +94,7 @@ async def test_copy_local_to_remote_filename_with_spaces(ssh_app_ctx: SshAppCtx)
 
     with patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog()):
         await ssh_app_ctx.pilot.press("f5")
-        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
+        await poll_until(ssh_app_ctx.pilot, lambda: (ssh_app_ctx.remote_dir / "my file.txt").exists())
 
     assert (ssh_app_ctx.remote_dir / "my file.txt").read_text() == "spaced"
 
@@ -111,7 +115,7 @@ async def test_copy_local_to_remote_no_spurious_overwrite_dialog(ssh_app_ctx: Ss
     p_dec = patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.YES))
     with p_copy, p_dec as mock_decision:
         await ssh_app_ctx.pilot.press("f5")
-        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
+        await poll_until(ssh_app_ctx.pilot, lambda: (ssh_app_ctx.remote_dir / "newfile.txt").exists())
 
     mock_decision.assert_not_called()
 
@@ -130,7 +134,7 @@ async def test_copy_remote_to_local_file_appears(ssh_app_ctx: SshAppCtx) -> None
 
     with patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog()):
         await ssh_app_ctx.pilot.press("f5")
-        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
+        await poll_until(ssh_app_ctx.pilot, lambda: (ssh_app_ctx.local_dir / "remote_file.txt").exists())
 
     assert (ssh_app_ctx.local_dir / "remote_file.txt").exists()
     assert (ssh_app_ctx.local_dir / "remote_file.txt").read_text() == "from remote"
@@ -146,7 +150,9 @@ async def test_copy_remote_to_local_binary_content_preserved(ssh_app_ctx: SshApp
 
     with patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog()):
         await ssh_app_ctx.pilot.press("f5")
-        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
+        await poll_until(ssh_app_ctx.pilot,
+            lambda: (ssh_app_ctx.local_dir / "binary.bin").exists()
+            and (ssh_app_ctx.local_dir / "binary.bin").stat().st_size == len(data))
 
     assert (ssh_app_ctx.local_dir / "binary.bin").read_bytes() == data
 
@@ -185,7 +191,8 @@ async def test_copy_local_to_remote_overwrites_when_confirmed(ssh_app_ctx: SshAp
     p_dec = patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.YES))
     with p_copy, p_dec:
         await ssh_app_ctx.pilot.press("f5")
-        await ssh_app_ctx.pilot.pause(delay=_COPY_WAIT)
+        await poll_until(ssh_app_ctx.pilot,
+            lambda: (ssh_app_ctx.remote_dir / "file.txt").read_text() == "new content")
 
     assert (ssh_app_ctx.remote_dir / "file.txt").read_text() == "new content"
 

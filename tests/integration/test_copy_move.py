@@ -17,6 +17,7 @@ from tests.integration.conftest import (
     auto_cancel_dialog,
     auto_confirm_copy_dialog,
     auto_confirm_decision_dialog,
+    poll_until,
     set_panels,
 )
 
@@ -37,7 +38,7 @@ async def test_copy_single_file_appears_in_destination(app_ctx: AppCtx) -> None:
 
     with patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog()):
         await app_ctx.pilot.press("f5")
-        await app_ctx.pilot.pause(delay=0.5)
+        await poll_until(app_ctx.pilot, lambda: (app_ctx.dst_dir / "hello.txt").exists())
 
     assert (app_ctx.dst_dir / "hello.txt").exists()
     assert (app_ctx.dst_dir / "hello.txt").read_text() == "content"
@@ -53,7 +54,7 @@ async def test_copy_single_file_preserves_content(app_ctx: AppCtx) -> None:
 
     with patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog()):
         await app_ctx.pilot.press("f5")
-        await app_ctx.pilot.pause(delay=0.5)
+        await poll_until(app_ctx.pilot, lambda: (app_ctx.dst_dir / "binary.bin").exists())
 
     assert (app_ctx.dst_dir / "binary.bin").read_bytes() == data
 
@@ -67,7 +68,7 @@ async def test_copy_single_file_with_rename(app_ctx: AppCtx) -> None:
 
     with patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog(filename="renamed.txt")):
         await app_ctx.pilot.press("f5")
-        await app_ctx.pilot.pause(delay=0.5)
+        await poll_until(app_ctx.pilot, lambda: (app_ctx.dst_dir / "renamed.txt").exists())
 
     assert (app_ctx.dst_dir / "renamed.txt").exists()
     assert not (app_ctx.dst_dir / "original.txt").exists()
@@ -115,7 +116,9 @@ async def test_copy_multiple_files_all_appear_in_destination(app_ctx: AppCtx) ->
 
     with patch(_COPY_DIALOG_PATH, return_value=auto_confirm_copy_dialog()):
         await app_ctx.pilot.press("f5")
-        await app_ctx.pilot.pause(delay=0.5)
+        await poll_until(app_ctx.pilot, lambda: all(
+            (app_ctx.dst_dir / n).exists() for n in names
+        ))
 
     for name in names:
         assert (app_ctx.dst_dir / name).exists(), f"{name} missing from destination"
@@ -145,7 +148,8 @@ async def test_copy_overwrites_existing_file_when_user_confirms(app_ctx: AppCtx)
     p_dec = patch(_DECISION_DIALOG_PATH, return_value=auto_confirm_decision_dialog(Decision.YES))
     with p_copy, p_dec:
         await app_ctx.pilot.press("f5")
-        await app_ctx.pilot.pause(delay=0.5)
+        await poll_until(app_ctx.pilot,
+            lambda: (app_ctx.dst_dir / "file.txt").read_text() == "new content")
 
     assert (app_ctx.dst_dir / "file.txt").read_text() == "new content"
 
