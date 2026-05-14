@@ -3,9 +3,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
-from functools import lru_cache
-from typing import cast, override
+from typing import override
 
 import paramiko
 
@@ -97,6 +97,21 @@ class _CaptureUnknownHostPolicy(paramiko.MissingHostKeyPolicy):
 class SSHFilesystem(Filesystem):
     """Filesystem implementation for remote hosts accessed over SSH/SFTP."""
 
+    class _PipelinedWriter:
+        """Wraps a paramiko SFTPFile for pipelined writes with a close callback."""
+
+        def __init__(self, f: paramiko.SFTPFile, on_close: Callable[[], None]) -> None:
+            self._f = f
+            self._on_close = on_close
+
+        def write(self, data: bytes) -> int:
+            result = self._f.write(data)
+            return result if isinstance(result, int) else len(data)
+
+        def close(self) -> None:
+            self._f.close()
+            self._on_close()
+
     _ssh_client: paramiko.SSHClient
     _sftp_client: paramiko.SFTPClient
 
@@ -140,6 +155,7 @@ class SSHFilesystem(Filesystem):
         if accept_host_key and ssh_client is None:
             self._ssh_client.save_host_keys(os.path.expanduser("~/.ssh/known_hosts"))
         self._sftp_client = self._ssh_client.open_sftp()
+        self._stat_cache: dict[tuple[str, bool], dict[str, StatEntry]] = {}
 
     def __eq__(self, value: object) -> bool:
         return isinstance(value, SSHFilesystem) and self._ssh_client == value._ssh_client
@@ -170,13 +186,22 @@ class SSHFilesystem(Filesystem):
         # TODO
         return VPath("/home", self)
 
-    @lru_cache(maxsize=64)  # noqa: B019
     def _dir_stat(self, path: str, follow_symlinks: bool) -> dict[str, StatEntry]:
-        command = _STAT_COMMAND_FOLLOW_LINKS if follow_symlinks else _STAT_COMMAND
-        _, stdout, _ = self._ssh_client.exec_command(f"cd {path} && {command}")
-        output = stdout.read().decode()
+        key = (path, follow_symlinks)
+        if key not in self._stat_cache:
+            command = _STAT_COMMAND_FOLLOW_LINKS if follow_symlinks else _STAT_COMMAND
+            _, stdout, _ = self._ssh_client.exec_command(f"cd {path} && {command}")
+            self._stat_cache[key] = _parse_stat_output(stdout.read().decode())
+        return self._stat_cache[key]
 
-        return _parse_stat_output(output)
+    @override
+    def refresh(self, path: VPath | None = None) -> None:
+        if path is None:
+            self._stat_cache.clear()
+        else:
+            p = str(path)
+            self._stat_cache.pop((p, True), None)
+            self._stat_cache.pop((p, False), None)
 
     @override
     def iterdir(self, path: VPath) -> list[VPath]:
@@ -230,28 +255,35 @@ class SSHFilesystem(Filesystem):
 
     @override
     def write(self, path: VPath) -> StreamWriterLike:
-        return cast("StreamWriterLike", self._sftp_client.open(path.path.as_posix(), "wb"))
+        f = self._sftp_client.open(path.path.as_posix(), "wb")
+        f.set_pipelined(True)
+        return self._PipelinedWriter(f, lambda: self.refresh(self.parent(path)))
 
     @override
     def remove(self, path: VPath) -> None:
         self._assert_vpath(path)
         self._sftp_client.remove(path.path.as_posix())
+        self.refresh(self.parent(path))
 
     @override
     def rename(self, src_path: VPath, dst_path: VPath) -> None:
         self._assert_vpath(src_path)
         self._assert_vpath(dst_path)
         self._sftp_client.rename(src_path.path.as_posix(), dst_path.path.as_posix())
+        self.refresh(self.parent(src_path))
+        self.refresh(self.parent(dst_path))
 
     @override
     def rmdir(self, path: VPath) -> None:
         self._assert_vpath(path)
         self._sftp_client.rmdir(path.path.as_posix())
+        self.refresh(self.parent(path))
 
     @override
     def mkdir(self, path: VPath) -> None:
         self._assert_vpath(path)
         self._sftp_client.mkdir(path.path.as_posix())
+        self.refresh(self.parent(path))
 
     @override
     def copy_stat(self, path: VPath, stat: Stat) -> None:

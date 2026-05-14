@@ -104,11 +104,20 @@ class Filesystem(ABC):
         If a parent directory in the path does not exist, FileNotFoundError is raised.
         """
 
-    def copy_stat(self, path: VPath, stat: Stat) -> None:  # noqa: B027
+    @abstractmethod
+    def copy_stat(self, path: VPath, stat: Stat) -> None:
         """Apply file attributes from *stat* (modification time, permissions) to *path*.
 
-        The default implementation is a no-op for filesystems that do not
-        support setting attributes (e.g. read-only archive filesystems).
+        Filesystems that do not support setting attributes (e.g. read-only archive
+        filesystems) should implement this as a no-op.
+        """
+
+    @abstractmethod
+    def refresh(self, path: VPath | None = None) -> None:
+        """Discard any cached data for *path* (or all cached data if *path* is None).
+
+        The next read after this call will fetch fresh data from the source.
+        Filesystems without caching should implement this as a no-op.
         """
 
     @abstractmethod

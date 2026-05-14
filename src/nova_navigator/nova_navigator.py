@@ -74,6 +74,7 @@ class MainScreen(Screen[None]):
         Binding("alt+right", "go_forward", "Go Forward", show=False),
         Binding("alt+up", "go_up", "Go Up"),
         Binding("ctrl+shift+g", "connect_to", "Connect to Remote", show=False),
+        Binding("ctrl+r", "refresh", "Refresh", show=False, priority=True),
     ]
 
     class _TerminalMode(Enum):
@@ -170,7 +171,7 @@ class MainScreen(Screen[None]):
             mc.action("Manage Bookmarks", action="edit_bookmarks", name="edit_bookmarks"),
         )
         self._menu_bar.add_menu("View", name="view").add(
-            mc.action("Refresh", name="refresh"),
+            mc.action("Refresh", shortcut="Ctrl+R", action="refresh", name="refresh"),
             mc.separator(),
             mc.action(
                 "Show Hidden Files",
@@ -616,6 +617,10 @@ class MainScreen(Screen[None]):
             prefill=(DEFAULT_BOOKMARKS_GROUP, path.name, str(path.path)),
         )
         await dialog.run()
+
+    def _action_refresh(self) -> None:
+        self._left_panel.reload()
+        self._right_panel.reload()
 
     async def _action_filter(self) -> None:
         await self.active_panel().action_filter()

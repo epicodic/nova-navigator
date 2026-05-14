@@ -181,6 +181,12 @@ For implementing long-running async operations: see `docs/scheduler.md` for the 
 - Naming: `snake_case` functions/variables/members, `UpperCamelCase` types/classes, `_` prefix for private names
 - Constants: `UPPER_CASE`
 - Docstrings: Google style, encouraged for public API, not required by linter; multiline docstrings must start immediately after the opening `"""` (no blank line)
+- **Never suppress lint or type warnings with `# noqa` or `# type: ignore` comments.**
+  Fix the root cause instead.
+  For example, a B027 warning ("empty method in abstract base class") means the method should be decorated with `@abstractmethod`; all concrete subclasses must then provide an implementation (even a one-line `pass` for no-op cases).
+- **Never suppress lint or type warnings with `# noqa` or `# type: ignore` comments.**
+  Fix the root cause instead.
+  For example, a B027 warning ("empty method in abstract base class") means the method should be decorated with `@abstractmethod`; all concrete subclasses must then provide an implementation (even a one-line `pass` for no-op cases).
 
 ---
 

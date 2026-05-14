@@ -520,6 +520,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         self.border_title = path.compact_path_str
         self._path = path
         self.post_message(DirectoryBrowser.PathChanged(self, path))
+        path.filesystem.refresh(path)
         self.update(self.WhatChanged.ALL)
 
         if old_name is not None:
@@ -543,7 +544,12 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
                 # event_filter=[watchdog.events.DirModifiedEvent],
             )
 
+
     # Data management
+
+    def reload(self) -> None:
+        self._path.filesystem.refresh()
+        self.update(self.WhatChanged.ALL)
 
     class WhatChanged(int, Enum):
         ALL = 0
