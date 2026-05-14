@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+import contextlib
 import logging
 import threading
 from collections.abc import Callable
@@ -358,15 +358,18 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
 
         def __init__(self, browser: DirectoryBrowser) -> None:
             self.browser = browser
-            self._loop = asyncio.get_event_loop()
             self._timer = None
             self._lock = threading.Lock()
-
-        async def handle(self) -> None:
-            self.browser.update(self.browser.WhatChanged.ALL)
+            self._stopped = False
 
         def on_timer(self) -> None:
-            self._loop.call_soon_threadsafe(asyncio.create_task, self.handle())
+            with self._lock:
+                if self._stopped:
+                    return
+            with contextlib.suppress(Exception):  # app may be shutting down
+                self.browser.app.call_from_thread(
+                    self.browser.update, self.browser.WhatChanged.ALL
+                )
 
         def on_any_event(self, event: watchdog.events.FileSystemEvent) -> None:
             # logging.warning(f"Filesystem event: {event}")
@@ -382,6 +385,14 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
                     self.on_timer,
                 )
                 self._timer.start()
+
+        def stop(self) -> None:
+            """Cancel any pending debounce timer so no callbacks fire after teardown."""
+            with self._lock:
+                self._stopped = True
+                if self._timer is not None:
+                    self._timer.cancel()
+                    self._timer = None
 
     # members
 
@@ -400,6 +411,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
     _max_line_width: int
     # _observer: watchdog.observers.ObserverType
     _watch: watchdog.observers.api.ObservedWatch | None
+    _event_handler: _FileSystemEventHandler | None
     _filter_widget: FilterWidget
 
     show_hidden_files: Reactive[bool] = Reactive(default=False, repaint=False, always_update=False)
@@ -450,6 +462,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         self._observer = watchdog.observers.Observer()
         self._observer.start()
         self._watch = None
+        self._event_handler = None
         self._all_items = []
         self._shown_items = []
         self._selected_items = set()
@@ -464,6 +477,11 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
     def on_mount(self) -> None:
         super().on_mount()
         self.screen.mount(self._filter_widget)
+
+    def on_unmount(self) -> None:
+        if self._event_handler is not None:
+            self._event_handler.stop()
+        self._observer.stop()
 
     def _on_focus(self, event: events.Focus) -> None:
         self.post_message(DirectoryBrowser.Focus(self))
@@ -537,8 +555,9 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
 
         if isinstance(self._path.filesystem, LocalFilesystem):
             self.log(f"Watching path: {self._path.path}")
+            self._event_handler = self._FileSystemEventHandler(self)
             self._watch = self._observer.schedule(
-                self._FileSystemEventHandler(self),
+                self._event_handler,
                 self._path.path.as_posix(),
                 recursive=False,
                 # event_filter=[watchdog.events.DirModifiedEvent],
