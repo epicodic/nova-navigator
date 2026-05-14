@@ -76,6 +76,7 @@ Always run `uv run qa` after changes and confirm zero failures before claiming w
 | `docs/scheduler.md` | Async task scheduler framework — read before touching `scheduler/` or long-running operations |
 | `docs/directory_browser.md` | Directory browser widget design — read before touching `widgets/directory_browser.py` |
 | `docs/terminal.md` | Terminal sub-package architecture — read before touching `terminal/` |
+| `docs/remote-uri-scheme.md` | `remote://` URI scheme design — read before touching `vfs/` or remote connection handling |
 
 Steps:
 1. List `docs/` to see available documentation.
@@ -180,6 +181,12 @@ For implementing long-running async operations: see `docs/scheduler.md` for the 
 - Naming: `snake_case` functions/variables/members, `UpperCamelCase` types/classes, `_` prefix for private names
 - Constants: `UPPER_CASE`
 - Docstrings: Google style, encouraged for public API, not required by linter; multiline docstrings must start immediately after the opening `"""` (no blank line)
+- **Never suppress lint or type warnings with `# noqa` or `# type: ignore` comments.**
+  Fix the root cause instead.
+  For example, a B027 warning ("empty method in abstract base class") means the method should be decorated with `@abstractmethod`; all concrete subclasses must then provide an implementation (even a one-line `pass` for no-op cases).
+- **Never suppress lint or type warnings with `# noqa` or `# type: ignore` comments.**
+  Fix the root cause instead.
+  For example, a B027 warning ("empty method in abstract base class") means the method should be decorated with `@abstractmethod`; all concrete subclasses must then provide an implementation (even a one-line `pass` for no-op cases).
 
 ---
 
@@ -192,6 +199,19 @@ For implementing long-running async operations: see `docs/scheduler.md` for the 
 | `src/nova_widgets/` | Reusable Textual widgets package |
 | `config/default/` | Default TOML config files (bookmarks, filetypes, icons) |
 | `tests/` | Test suite (pytest) |
+
+---
+
+## Dialogs
+
+Every new dialog class **must** be registered in `src/tools/dialog_tester.py`.
+Add a `DialogEntry` to `_ENTRIES` with a `factory` lambda that constructs the dialog with representative arguments.
+If the dialog exposes extra state after dismissal (e.g. `selected_path`, `credentials`), supply a `result_fn` lambda to include that in the printed result.
+
+```sh
+uv run dialog_tester --list          # verify the entry appears
+uv run dialog_tester MyNewDialog     # smoke-test it interactively
+```
 
 ---
 
