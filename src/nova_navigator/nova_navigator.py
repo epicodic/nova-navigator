@@ -28,6 +28,7 @@ from nova_navigator.dialogs import (
 )
 from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
 from nova_navigator.dialogs.decision_dialog import make_decision_dialog
+from nova_navigator.dialogs.settings_dialog import SettingsDialog
 from nova_navigator.editor import Editor
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
 from nova_navigator.filemanager.tasks import dummy_task
@@ -76,6 +77,7 @@ class MainScreen(Screen[None]):
         Binding("alt+up", "go_up", "Go Up"),
         Binding("ctrl+shift+g", "connect_to", "Connect to Remote", show=False),
         Binding("ctrl+r", "refresh", "Refresh", show=False, priority=True),
+        Binding("ctrl+f1", "settings", "Settings", show=False),
     ]
 
     class _TerminalMode(Enum):
@@ -106,7 +108,7 @@ class MainScreen(Screen[None]):
 
         self._menu_bar.add_menu(
             "Ⓝ ",
-            mc.action("Settings", icon="gear", shortcut="Ctrl+F1"),
+            mc.action("Settings", icon="gear", shortcut="Ctrl+F1", action="settings"),
             mc.separator(),
             mc.action("About", icon="info"),
             mc.separator(),
@@ -582,6 +584,11 @@ class MainScreen(Screen[None]):
         parent_path = panel.path.parent
         if parent_path is not None:
             await self._open_path(parent_path, panel)
+
+    @work
+    async def _action_settings(self) -> None:
+        dialog = SettingsDialog(conf_.settings)
+        await dialog.run()
 
     @work
     async def _action_edit_bookmarks(self) -> None:

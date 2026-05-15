@@ -367,9 +367,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
                 if self._stopped:
                     return
             with contextlib.suppress(Exception):  # app may be shutting down
-                self.browser.app.call_from_thread(
-                    self.browser.update, self.browser.WhatChanged.ALL
-                )
+                self.browser.app.call_from_thread(self.browser.update, self.browser.WhatChanged.ALL)
 
         def on_any_event(self, event: watchdog.events.FileSystemEvent) -> None:
             # logging.warning(f"Filesystem event: {event}")

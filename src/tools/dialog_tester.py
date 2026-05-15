@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import sys
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
@@ -34,6 +33,7 @@ from nova_navigator.dialogs.file_dialog import FileDialog, FileDialogMode, FileT
 from nova_navigator.dialogs.files_dialog import CopyMoveFilesDialog, DeleteFilesDialog
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.dialogs.message_box import MessageBox
+from nova_navigator.dialogs.settings_dialog import SettingsDialog
 from nova_navigator.nova_navigator_core import NovaNavigatorCore
 from nova_navigator.scheduler.context import DecisionRequest
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
@@ -77,6 +77,11 @@ _ENTRIES: list[DialogEntry] = [
         "ConnectToDialog",
         "Pick a saved remote connection (uses real config).",
         lambda: ConnectToDialog(conf_.remotes),
+    ),
+    DialogEntry(
+        "SettingsDialog",
+        "Edit all application settings (uses real config).",
+        lambda: SettingsDialog(conf_.settings),
     ),
     DialogEntry(
         "CredentialsDialog",
@@ -271,8 +276,9 @@ class _ScreenshotApp(App[str]):
     @work
     async def _run(self) -> None:
         await asyncio.sleep(0.1)  # let the app settle
-        with contextlib.suppress(Exception):
-            await self._entry.launcher()
+        dialog = self._entry.factory()
+        self.push_screen(dialog)
+        await asyncio.sleep(0.2)  # let the dialog render
         self._svg = self.export_screenshot()
         self.exit(self._svg)
 

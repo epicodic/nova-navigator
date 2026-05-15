@@ -107,3 +107,12 @@ If the remote shell is bash, sh, fish, or any other shell, the glob is treated a
 
 Note: the `exec_command` approach was a deliberate design choice for performance (batches all stat data in one round-trip).
 Any fix must preserve that property.
+
+---
+
+## 10. Most editor dialogs write the changes in their implementation, this should be done at the caller side
+- inspect editor dialogs
+- many have an action_accept_dialog() method, that is invoked in on_button_pressed()
+- if this is a good pattern, it should go into the Dialog base class, no derived class should override on_button_pressed
+- the save logic must be moved to the caller side, so the dialog is only responsible for editing the model, not for saving it
+
