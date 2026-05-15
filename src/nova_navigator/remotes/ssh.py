@@ -38,7 +38,7 @@ async def connect_ssh(conn: RemoteConnection) -> SSHFilesystem | None:
             buttons=[Decision.OK, Decision.CANCEL],
             variant="warning",
         )
-        if await confirm.run() != "OK":
+        if await confirm.run() != Decision.OK:
             return None
         try:
             fs = await asyncio.to_thread(
@@ -66,7 +66,7 @@ async def _prompt_credentials(hostname: str, port: int, username: str | None) ->
     Returns the connected `SSHFilesystem`, or `None` if the user cancelled or auth failed.
     """
     cred_dialog = CredentialsDialog(hostname, username or "")
-    if await cred_dialog.run() != "OK":
+    if await cred_dialog.run() != Decision.OK:
         return None
     creds = cred_dialog.credentials
     try:

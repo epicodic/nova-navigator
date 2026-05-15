@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import subprocess
 import sys
@@ -587,24 +588,30 @@ class MainScreen(Screen[None]):
 
     @work
     async def _action_settings(self) -> None:
-        dialog = SettingsDialog(conf_.settings)
-        await dialog.run()
+        dialog = SettingsDialog(copy.deepcopy(conf_.settings))
+        if await dialog.run() == Decision.OK:
+            conf_.settings = dialog.config
+            conf_.settings.save()
 
     @work
     async def _action_edit_bookmarks(self) -> None:
-        dialog = EditBookmarksDialog(conf_.bookmarks)
-        await dialog.run()
+        dialog = EditBookmarksDialog(copy.deepcopy(conf_.bookmarks))
+        if await dialog.run() == Decision.OK:
+            conf_.bookmarks = dialog.config
+            conf_.bookmarks.save()
 
     @work
     async def _action_manage_remotes(self) -> None:
-        dialog = EditRemotesDialog(conf_.remotes)
-        await dialog.run()
+        dialog = EditRemotesDialog(copy.deepcopy(conf_.remotes))
+        if await dialog.run() == Decision.OK:
+            conf_.remotes = dialog.config
+            conf_.remotes.save()
 
     @work
     async def _action_connect_to(self) -> None:
         dialog = ConnectToDialog(conf_.remotes)
         result = await dialog.run()
-        if result != "OK":
+        if result != Decision.OK:
             return
         conn = dialog.selected_connection
         if conn is None:
@@ -632,10 +639,12 @@ class MainScreen(Screen[None]):
         if path is None:
             return
         dialog = EditBookmarksDialog(
-            conf_.bookmarks,
+            copy.deepcopy(conf_.bookmarks),
             prefill=(DEFAULT_BOOKMARKS_GROUP, path.name, str(path.path)),
         )
-        await dialog.run()
+        if await dialog.run() == Decision.OK:
+            conf_.bookmarks = dialog.config
+            conf_.bookmarks.save()
 
     def _action_refresh(self) -> None:
         self._left_panel.reload()

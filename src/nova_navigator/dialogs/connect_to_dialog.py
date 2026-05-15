@@ -7,9 +7,10 @@ from typing import ClassVar
 from textual import events
 from textual.app import ComposeResult
 from textual.message import Message
-from textual.widgets import Button, Label, ListItem, ListView
+from textual.widgets import Label, ListItem, ListView
 
 from nova_navigator.config.remotes import RemoteConfig, RemoteConnection
+from nova_navigator.decision import Decision
 from nova_navigator.icons import ico_
 
 from .dialog import DefaultButton, Dialog
@@ -95,14 +96,7 @@ class ConnectToDialog(Dialog):
 
     def on__remote_list_view_selection_confirmed(self, event: _RemoteListView.SelectionConfirmed) -> None:
         self.selected_connection = event.connection
-        self.dismiss("OK")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if self._button_accept and event.button.id == self._button_accept.id:
-            event.stop()
-            self.action_accept_dialog()
-        else:
-            super().on_button_pressed(event)
+        self.dismiss(Decision.OK)
 
     def action_accept_dialog(self) -> None:
         if not self._remotes._items:
@@ -111,4 +105,4 @@ class ConnectToDialog(Dialog):
         item = lv.highlighted_child
         if isinstance(item, _RemoteListItem):
             self.selected_connection = item.connection
-        self.dismiss("OK")
+        super().action_accept_dialog()

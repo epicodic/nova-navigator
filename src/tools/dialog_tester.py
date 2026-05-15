@@ -46,10 +46,10 @@ _TCSS = str(Path(__file__).parent.parent / "nova_navigator" / "nn.tcss")
 
 _LauncherFn = Callable[[], Coroutine[Any, Any, str]]
 _DialogFactory = Callable[[], Dialog]
-_ResultFn = Callable[[Any, str], str]
+_ResultFn = Callable[[Any, "Decision | None"], str]
 
 
-def _fmt(_dialog: Any, result: str) -> str:
+def _fmt(_dialog: Any, result: Decision | None) -> str:
     return f"Result: {result}"
 
 
@@ -87,7 +87,7 @@ _ENTRIES: list[DialogEntry] = [
         "CredentialsDialog",
         "Username + password prompt for SSH authentication.",
         lambda: CredentialsDialog(hostname="example.com", username="admin"),
-        result_fn=lambda d, r: f"Result: {r}  creds={d.credentials if r == 'OK' else None}",
+        result_fn=lambda d, r: f"Result: {r}  creds={d.credentials if r == Decision.OK else None}",
     ),
     DialogEntry(
         "MessageBox (default)",

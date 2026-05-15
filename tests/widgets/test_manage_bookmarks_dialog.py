@@ -1,7 +1,7 @@
 # tests/widgets/test_manage_bookmarks_dialog.py
 from __future__ import annotations
 
-from unittest.mock import patch
+import copy
 
 import pytest
 from textual.app import App, ComposeResult
@@ -262,33 +262,22 @@ async def test_move_group_up() -> None:
 
 @pytest.mark.asyncio
 async def test_ok_saves_to_config() -> None:
-    """OK button writes _working.groups back to the config and calls save()."""
+    """OK button writes _working.groups back to the config (caller is responsible for saving)."""
     cfg = _fixture_config()
-    save_called = False
-    saved_groups: list | None = None
-
-    def mock_save(self_: object) -> None:
-        nonlocal save_called, saved_groups
-        save_called = True
-        assert isinstance(self_, BookmarkConfig)
-        saved_groups = list(self_.groups)
 
     _dialog, _App = _make_dialog_app(cfg)
     app = _App()
 
-    with patch.object(BookmarkConfig, "save", mock_save):
-        async with app.run_test(size=(80, 40)) as pilot:
-            await pilot.pause()
-            # add a group so we can detect the change
-            await pilot.click(app.screen.query_one("#btn_add_group", Button))
-            await pilot.pause()
-            # press OK
-            await pilot.click(app.screen.query_one("#OK", Button))
-            await pilot.pause(0.1)
+    async with app.run_test(size=(80, 40)) as pilot:
+        await pilot.pause()
+        # add a group so we can detect the change
+        await pilot.click(app.screen.query_one("#btn_add_group", Button))
+        await pilot.pause()
+        # press OK
+        await pilot.click(app.screen.query_one("#OK", Button))
+        await pilot.pause(0.1)
 
-    assert save_called, "save() was not called"
-    assert saved_groups is not None
-    assert len(saved_groups) == 3  # 2 original + 1 new
+    assert len(cfg.groups) == 3  # 2 original + 1 new
 
 
 @pytest.mark.asyncio
@@ -298,7 +287,7 @@ async def test_cancel_does_not_modify_config() -> None:
     original_group_count = len(cfg.groups)
     original_names = [g.name for g in cfg.groups]
 
-    _dialog, _App = _make_dialog_app(cfg)
+    _dialog, _App = _make_dialog_app(copy.deepcopy(cfg))
     app = _App()
 
     async with app.run_test(size=(80, 40)) as pilot:

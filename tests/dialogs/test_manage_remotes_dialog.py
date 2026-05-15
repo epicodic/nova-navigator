@@ -1,6 +1,7 @@
 # tests/dialogs/test_manage_remotes_dialog.py
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -162,7 +163,7 @@ async def test_ok_saves_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 async def test_cancel_discards_changes() -> None:
     cfg = _fixture_config()
     original_name = cfg._items[0].name
-    _dialog, _App = _make_app(cfg)
+    _dialog, _App = _make_app(copy.deepcopy(cfg))
     app = _App()
     async with app.run_test() as pilot:
         await pilot.pause()

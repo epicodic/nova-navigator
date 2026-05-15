@@ -1,5 +1,6 @@
 import logging
 
+from nova_navigator.decision import Decision
 from nova_navigator.dialogs import DeleteFilesDialog
 from nova_navigator.vfs import VPath
 
@@ -27,7 +28,7 @@ async def copy_or_move_files_job(src_paths: list[VPath], dst_path: VPath, move: 
     )
 
     result = await dialog.run()
-    if result != "OK":
+    if result != Decision.OK:
         _logger.info("%s cancelled by user", "Move" if move else "Copy")
         return None
 
@@ -47,7 +48,7 @@ async def delete_files_job(paths: list[VPath]) -> Job | None:
     """Create a Job that erases the specified files."""
     dialog = DeleteFilesDialog(paths=paths)
     result = await dialog.run()
-    if result != "YES":
+    if result != Decision.YES:
         _logger.info("Delete cancelled by user")
         return None
 

@@ -12,7 +12,6 @@ from nova_navigator.config.model import BaseModel
 from nova_navigator.config.settings import Settings
 from nova_navigator.widgets._utils import _title_case
 from nova_navigator.widgets.model_editor import ModelEditor
-from nova_widgets import Button
 
 from .dialog import DefaultButton, Dialog
 
@@ -41,6 +40,10 @@ class SettingsDialog(Dialog):
         self._settings = settings
         self._editors = {}
 
+    @property
+    def config(self) -> Settings:
+        return self._settings
+
     def compose_content(self) -> ComposeResult:
         hints = get_type_hints(type(self._settings))
         tc = TabbedContent()
@@ -54,14 +57,7 @@ class SettingsDialog(Dialog):
             tc.compose_add_child(TabPane(_title_case(f.name), editor))
         yield tc
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if self._button_accept and event.button.id == self._button_accept.id:
-            self.action_accept_dialog()
-        else:
-            self.dismiss(event.button.id)
-
     def action_accept_dialog(self) -> None:
         for field_name, editor in self._editors.items():
             editor.apply(getattr(self._settings, field_name))
-        self._settings.save()
         super().action_accept_dialog()

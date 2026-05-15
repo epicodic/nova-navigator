@@ -38,8 +38,9 @@ class _IconCell(widgets.Static, can_focus=False):
 class IconPickerDialog(Dialog):
     """Modal dialog for selecting an icon from the ICONS iconset.
 
-    Returns the selected icon name (str) on OK, or dismisses with the
-    button id string (e.g. ``"CANCEL"``) if the user cancels.
+    Dismisses with ``Decision.OK`` when the user confirms a selection, or
+    ``Decision.CANCEL`` (and similar) otherwise.  After a ``Decision.OK``
+    dismissal, ``selected_icon`` holds the chosen icon name.
     """
 
     DEFAULT_CSS = (
@@ -113,6 +114,12 @@ class IconPickerDialog(Dialog):
         for cell in self.query(_IconCell):
             cell.set_class(cell._icon_name == icon_name, "-selected")
 
+    @property
+    def selected_icon(self) -> str | None:
+        """The icon name selected by the user, or None if nothing is selected."""
+        return self._selected_icon
+
     def action_accept_dialog(self) -> None:
         if self._selected_icon is not None:
-            self.dismiss(self._selected_icon)
+            super().action_accept_dialog()  # dismisses with Decision.OK
+        # If nothing selected, do not dismiss — keep dialog open.

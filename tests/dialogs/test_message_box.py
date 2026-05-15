@@ -4,6 +4,7 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Label
 
+from nova_navigator.decision import Decision
 from nova_navigator.dialogs.message_box import MessageDialog
 
 
@@ -31,17 +32,18 @@ async def test_renders_message() -> None:
 
 @pytest.mark.asyncio
 async def test_ok_dismisses() -> None:
-    dismissed: list[str] = []
-    dialog = MessageDialog("Error occurred")
+    dismissed: list[Decision | None] = []
 
-    def _capture(result: str) -> None:
-        dismissed.append(result)
+    class _App(App[None]):
+        def compose(self) -> ComposeResult:
+            return iter([])
 
-    dialog.dismiss = _capture  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+        async def on_mount(self) -> None:
+            await self.push_screen(MessageDialog("Error occurred"), callback=dismissed.append)
 
-    app = _make_app(dialog)()
+    app = _App()
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
-        assert dismissed == ["OK"]
+        assert dismissed == [Decision.OK]

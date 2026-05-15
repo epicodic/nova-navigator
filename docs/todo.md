@@ -110,9 +110,9 @@ Any fix must preserve that property.
 
 ---
 
-## 10. Most editor dialogs write the changes in their implementation, this should be done at the caller side
-- inspect editor dialogs
-- many have an action_accept_dialog() method, that is invoked in on_button_pressed()
-- if this is a good pattern, it should go into the Dialog base class, no derived class should override on_button_pressed
-- the save logic must be moved to the caller side, so the dialog is only responsible for editing the model, not for saving it
+## ~~10. Most editor dialogs write the changes in their implementation, this should be done at the caller side~~ ✅ DONE
+- `Dialog` is now `ModalScreen[Decision | None]`; `ButtonSpec` carries a `decision: Decision` field
+- `on_button_pressed` routing lives in the base class; no subclass overrides it any more
+- `action_accept_dialog` / `action_dismiss_dialog` are the only hooks subclasses use
+- All `.save()` calls moved to callers (`nova_navigator.py`, `bookmarks_dialog.py`, `jobs.py`, `ssh.py`)
 

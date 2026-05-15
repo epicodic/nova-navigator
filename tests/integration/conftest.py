@@ -34,6 +34,7 @@ import pytest
 import pytest_asyncio
 from textual.pilot import Pilot
 
+from nova_navigator.decision import Decision
 from nova_navigator.nova_navigator import MainScreen, NovaNavigator
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
@@ -148,28 +149,28 @@ async def poll_until(
 
 
 def auto_confirm_copy_dialog(filename: str | None = None) -> MagicMock:
-    """Mock CopyMoveFilesDialog that immediately returns 'OK'.
+    """Mock CopyMoveFilesDialog that immediately returns Decision.OK.
 
     Args:
         filename: Simulated edited filename; ``None`` means no rename.
     """
     dialog = MagicMock()
-    dialog.run = AsyncMock(return_value="OK")
+    dialog.run = AsyncMock(return_value=Decision.OK)
     dialog.filename = filename
     return dialog
 
 
 def auto_cancel_dialog() -> MagicMock:
-    """Mock dialog that immediately returns 'CANCEL'."""
+    """Mock dialog that immediately returns Decision.CANCEL."""
     dialog = MagicMock()
-    dialog.run = AsyncMock(return_value="CANCEL")
+    dialog.run = AsyncMock(return_value=Decision.CANCEL)
     return dialog
 
 
 def auto_confirm_delete_dialog() -> MagicMock:
-    """Mock DeleteFilesDialog that immediately returns 'YES'."""
+    """Mock DeleteFilesDialog that immediately returns Decision.YES."""
     dialog = MagicMock()
-    dialog.run = AsyncMock(return_value="YES")
+    dialog.run = AsyncMock(return_value=Decision.YES)
     return dialog
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 from collections.abc import Callable
 from typing import ClassVar, cast
 
@@ -172,7 +171,6 @@ class EditBookmarksDialog(Dialog):
         Binding("f8", "remove_item", "Remove", show=False),
     ]
 
-    _config: BookmarkConfig
     _working: BookmarkConfig
     _current_tag: _NodeTag | None
     _syncing: bool
@@ -185,8 +183,7 @@ class EditBookmarksDialog(Dialog):
         prefill: tuple[str, str, str] | None = None,
     ) -> None:
         super().__init__("Edit Bookmarks", buttons=[Decision.OK, Decision.CANCEL])
-        self._config = config
-        self._working = copy.deepcopy(config)
+        self._working = config
         self._current_tag = None
         self._syncing = False
         self._prefill_tag = None
@@ -455,35 +452,43 @@ class EditBookmarksDialog(Dialog):
 
     # ------------------------------------------------------------------ button actions
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        event.prevent_default()
-        match event.button.id:
-            case "OK":
-                self._action_ok()
-            case "CANCEL":
-                self.dismiss("CANCEL")
-            case "btn_add_group":
-                self.action_add_group()
-            case "btn_add_entry":
-                self.action_add_entry()
-            case "btn_remove":
-                self.action_remove_item()
-            case "btn_move_up":
-                self.action_move_up()
-            case "btn_move_down":
-                self.action_move_down()
-            case "btn_move_to_group":
-                self._run_move_to_group()
-            case "btn_pick_icon":
-                self._run_pick_icon()
+    @property
+    def config(self) -> BookmarkConfig:
+        return self._working
 
     def action_accept_dialog(self) -> None:
         self._action_ok()
 
+    @on(Button.Pressed, "#btn_add_group")
+    def _on_btn_add_group(self, _event: Button.Pressed) -> None:
+        self.action_add_group()
+
+    @on(Button.Pressed, "#btn_add_entry")
+    def _on_btn_add_entry(self, _event: Button.Pressed) -> None:
+        self.action_add_entry()
+
+    @on(Button.Pressed, "#btn_remove")
+    def _on_btn_remove(self, _event: Button.Pressed) -> None:
+        self.action_remove_item()
+
+    @on(Button.Pressed, "#btn_move_up")
+    def _on_btn_move_up(self, _event: Button.Pressed) -> None:
+        self.action_move_up()
+
+    @on(Button.Pressed, "#btn_move_down")
+    def _on_btn_move_down(self, _event: Button.Pressed) -> None:
+        self.action_move_down()
+
+    @on(Button.Pressed, "#btn_move_to_group")
+    def _on_btn_move_to_group(self, _event: Button.Pressed) -> None:
+        self._run_move_to_group()
+
+    @on(Button.Pressed, "#btn_pick_icon")
+    def _on_btn_pick_icon(self, _event: Button.Pressed) -> None:
+        self._run_pick_icon()
+
     def _action_ok(self) -> None:
-        self._config.groups = self._working.groups
-        self._config.save()
-        self.dismiss("OK")
+        self.dismiss(Decision.OK)
 
     def action_add_group(self) -> None:
         new_group = Group(name="New Group")
@@ -560,16 +565,15 @@ class EditBookmarksDialog(Dialog):
 
     def _run_pick_icon(self) -> None:
         current = self.query_one("#input_icon", Input).value or None
-        self.app.push_screen(
-            IconPickerDialog(initial_icon=current),
-            callback=self._on_icon_picked,
-        )
+        _dlg = IconPickerDialog(initial_icon=current)
 
-    def _on_icon_picked(self, result: str | None) -> None:
-        if result is None or result == "CANCEL":
-            return
-        input_icon = self.query_one("#input_icon", Input)
-        input_icon.value = result
+        def _on_icon_picked(result: Decision | None) -> None:
+            if result != Decision.OK:
+                return
+            if _dlg.selected_icon is not None:
+                self.query_one("#input_icon", Input).value = _dlg.selected_icon
+
+        self.app.push_screen(_dlg, callback=_on_icon_picked)
 
     def _run_move_to_group(self) -> None:
         tag = self._current_tag
