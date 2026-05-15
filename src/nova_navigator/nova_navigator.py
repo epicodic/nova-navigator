@@ -108,7 +108,7 @@ class MainScreen(Screen[None]):
         self._menu_bar = MenuBar()
 
         self._menu_bar.add_menu(
-            "Ⓝ ",
+            "𑁔",
             mc.action("Settings", icon="gear", shortcut="Ctrl+F1", action="settings"),
             mc.separator(),
             mc.action("About", icon="info"),
