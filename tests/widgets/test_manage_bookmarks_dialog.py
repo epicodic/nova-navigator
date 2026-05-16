@@ -139,7 +139,7 @@ async def test_add_group() -> None:
         await pilot.pause()
         tree = app.screen.query_one(Tree)
         assert len(list(tree.root.children)) == 3
-        assert dialog._working.groups[-1].name == "New Group"
+        assert dialog._config.groups[-1].name == "New Group"
 
 
 @pytest.mark.asyncio
@@ -156,8 +156,8 @@ async def test_add_entry() -> None:
         await pilot.pause()
         await pilot.click(app.screen.query_one("#btn_add_entry", Button))
         await pilot.pause()
-        assert len(dialog._working.groups[0].bookmarks) == 3
-        assert dialog._working.groups[0].bookmarks[-1].name == "New Entry"
+        assert len(dialog._config.groups[0].bookmarks) == 3
+        assert dialog._config.groups[0].bookmarks[-1].name == "New Entry"
 
 
 @pytest.mark.asyncio
@@ -174,8 +174,8 @@ async def test_remove_entry() -> None:
         await pilot.pause()
         await pilot.click(app.screen.query_one("#btn_remove", Button))
         await pilot.pause()
-        assert len(dialog._working.groups[0].bookmarks) == 1
-        assert dialog._working.groups[0].bookmarks[0].name == "Docs"
+        assert len(dialog._config.groups[0].bookmarks) == 1
+        assert dialog._config.groups[0].bookmarks[0].name == "Docs"
 
 
 @pytest.mark.asyncio
@@ -194,8 +194,8 @@ async def test_remove_group() -> None:
         await pilot.pause()
         await pilot.click(app.screen.query_one("#btn_remove", Button))
         await pilot.pause()
-        assert len(dialog._working.groups) == 1
-        assert dialog._working.groups[0].name == "Computer"
+        assert len(dialog._config.groups) == 1
+        assert dialog._config.groups[0].name == "Computer"
 
 
 @pytest.mark.asyncio
@@ -213,8 +213,8 @@ async def test_move_entry_up() -> None:
         await pilot.pause()
         await pilot.click(app.screen.query_one("#btn_move_up", Button))
         await pilot.pause()
-        assert dialog._working.groups[0].bookmarks[0].name == "Docs"
-        assert dialog._working.groups[0].bookmarks[1].name == "Home"
+        assert dialog._config.groups[0].bookmarks[0].name == "Docs"
+        assert dialog._config.groups[0].bookmarks[1].name == "Home"
 
 
 @pytest.mark.asyncio
@@ -231,8 +231,8 @@ async def test_move_entry_down() -> None:
         await pilot.pause()
         await pilot.press("alt+down")
         await pilot.pause()
-        assert dialog._working.groups[0].bookmarks[0].name == "Docs"
-        assert dialog._working.groups[0].bookmarks[1].name == "Home"
+        assert dialog._config.groups[0].bookmarks[0].name == "Docs"
+        assert dialog._config.groups[0].bookmarks[1].name == "Home"
 
 
 @pytest.mark.asyncio
@@ -251,8 +251,8 @@ async def test_move_group_up() -> None:
         await pilot.pause()
         await pilot.click(app.screen.query_one("#btn_move_up", Button))
         await pilot.pause()
-        assert dialog._working.groups[0].name == "Work"
-        assert dialog._working.groups[1].name == "Computer"
+        assert dialog._config.groups[0].name == "Work"
+        assert dialog._config.groups[1].name == "Computer"
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +262,7 @@ async def test_move_group_up() -> None:
 
 @pytest.mark.asyncio
 async def test_ok_saves_to_config() -> None:
-    """OK button writes _working.groups back to the config (caller is responsible for saving)."""
+    """OK button writes _config.groups back to the config (caller is responsible for saving)."""
     cfg = _fixture_config()
 
     _dialog, _App = _make_dialog_app(cfg)
@@ -362,7 +362,7 @@ async def test_prefill_adds_entry_to_existing_group() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
 
-        computer = dialog._working.groups[0]
+        computer = dialog._config.groups[0]
         assert len(computer.bookmarks) == 3
         assert computer.bookmarks[-1].name == "Desktop"
         assert computer.bookmarks[-1].path == "/home/user/Desktop"
@@ -390,8 +390,8 @@ async def test_prefill_creates_new_group_if_missing() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
 
-        assert len(dialog._working.groups) == 3
-        new_group = dialog._working.groups[-1]
+        assert len(dialog._config.groups) == 3
+        new_group = dialog._config.groups[-1]
         assert new_group.name == "New Group"
         assert len(new_group.bookmarks) == 1
         assert new_group.bookmarks[0].name == "Server"

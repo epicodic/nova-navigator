@@ -171,7 +171,7 @@ class EditBookmarksDialog(Dialog):
         Binding("f8", "remove_item", "Remove", show=False),
     ]
 
-    _working: BookmarkConfig
+    _config: BookmarkConfig
     _current_tag: _NodeTag | None
     _syncing: bool
     _prefill_tag: _NodeTag | None
@@ -183,13 +183,13 @@ class EditBookmarksDialog(Dialog):
         prefill: tuple[str, str, str] | None = None,
     ) -> None:
         super().__init__("Edit Bookmarks", buttons=[Decision.OK, Decision.CANCEL])
-        self._working = config
+        self._config = config
         self._current_tag = None
         self._syncing = False
         self._prefill_tag = None
         if prefill is not None:
             group_name, entry_name, entry_path = prefill
-            groups = self._working.groups
+            groups = self._config.groups
             gi = next((i for i, g in enumerate(groups) if g.name == group_name), None)
             if gi is None:
                 groups.append(Group(name=group_name))
@@ -241,7 +241,7 @@ class EditBookmarksDialog(Dialog):
         select_tag = self._prefill_tag
         if select_tag is None:
             gi = next(
-                (i for i, g in enumerate(self._working.groups) if g.name == DEFAULT_BOOKMARKS_GROUP),
+                (i for i, g in enumerate(self._config.groups) if g.name == DEFAULT_BOOKMARKS_GROUP),
                 None,
             )
             if gi is not None:
@@ -257,7 +257,7 @@ class EditBookmarksDialog(Dialog):
     def _rebuild_tree(self, select_tag: _NodeTag | None) -> None:
         tree: Tree[_NodeTag] = self.query_one(Tree)
         tree.clear()
-        for gi, group in enumerate(self._working.groups):
+        for gi, group in enumerate(self._config.groups):
             icon = ICONS.get_icon(group.icon).glyph + " " if group.icon else ""
             group_node = tree.root.add(
                 f"{icon}{group.name}",
@@ -327,7 +327,7 @@ class EditBookmarksDialog(Dialog):
 
             if tag[0] == "group":
                 gi = tag[1]
-                group = self._working.groups[gi]
+                group = self._config.groups[gi]
                 input_name.value = group.name
                 input_icon.value = group.icon or ""
                 input_path.value = ""
@@ -335,7 +335,7 @@ class EditBookmarksDialog(Dialog):
             else:
                 entry_tag = cast("_EntryTag", tag)
                 gi, ei = entry_tag[1], entry_tag[2]
-                entry = self._working.groups[gi].bookmarks[ei]
+                entry = self._config.groups[gi].bookmarks[ei]
                 input_name.value = entry.name
                 input_icon.value = entry.icon or ""
                 input_path.value = entry.path
@@ -345,17 +345,17 @@ class EditBookmarksDialog(Dialog):
             self._syncing = False
 
     def _update_button_states(self, tag: _NodeTag | None) -> None:
-        has_groups = len(self._working.groups) > 0
+        has_groups = len(self._config.groups) > 0
         something_selected = tag is not None
 
         is_protected = (
-            tag is not None and tag[0] == "group" and self._working.groups[tag[1]].name == DEFAULT_BOOKMARKS_GROUP
+            tag is not None and tag[0] == "group" and self._config.groups[tag[1]].name == DEFAULT_BOOKMARKS_GROUP
         )
         self.query_one("#btn_add_entry", Button).disabled = not has_groups
         self.query_one("#btn_remove", Button).disabled = not something_selected or is_protected
         self.query_one("#btn_move_up", Button).disabled = not self._can_move_up(tag)
         self.query_one("#btn_move_down", Button).disabled = not self._can_move_down(tag)
-        can_move_to = tag is not None and tag[0] == "entry" and len(self._working.groups) >= 2  # noqa: PLR2004
+        can_move_to = tag is not None and tag[0] == "entry" and len(self._config.groups) >= 2  # noqa: PLR2004
         self.query_one("#btn_move_to_group", Button).disabled = not can_move_to
 
     def _can_move_up(self, tag: _NodeTag | None) -> bool:
@@ -370,10 +370,10 @@ class EditBookmarksDialog(Dialog):
         if tag is None:
             return False
         if tag[0] == "group":
-            return tag[1] < len(self._working.groups) - 1
+            return tag[1] < len(self._config.groups) - 1
         entry_tag = cast("_EntryTag", tag)
         gi, ei = entry_tag[1], entry_tag[2]
-        return ei < len(self._working.groups[gi].bookmarks) - 1
+        return ei < len(self._config.groups[gi].bookmarks) - 1
 
     # ------------------------------------------------------------------ event handlers
 
@@ -394,11 +394,11 @@ class EditBookmarksDialog(Dialog):
         if tag is None:
             return
         if tag[0] == "group":
-            self._working.groups[tag[1]].name = event.value
+            self._config.groups[tag[1]].name = event.value
         else:
             entry_tag = cast("_EntryTag", tag)
             gi, ei = entry_tag[1], entry_tag[2]
-            self._working.groups[gi].bookmarks[ei].name = event.value
+            self._config.groups[gi].bookmarks[ei].name = event.value
         self._update_current_node_label()
 
     @on(Input.Changed, "#input_icon")
@@ -410,11 +410,11 @@ class EditBookmarksDialog(Dialog):
             return
         icon_val: str | None = event.value if event.value else None
         if tag[0] == "group":
-            self._working.groups[tag[1]].icon = icon_val
+            self._config.groups[tag[1]].icon = icon_val
         else:
             entry_tag = cast("_EntryTag", tag)
             gi, ei = entry_tag[1], entry_tag[2]
-            self._working.groups[gi].bookmarks[ei].icon = icon_val
+            self._config.groups[gi].bookmarks[ei].icon = icon_val
         self._update_current_node_label()
 
     @on(Input.Changed, "#input_path")
@@ -426,11 +426,11 @@ class EditBookmarksDialog(Dialog):
             return
         entry_tag = cast("_EntryTag", tag)
         gi, ei = entry_tag[1], entry_tag[2]
-        self._working.groups[gi].bookmarks[ei].path = event.value
+        self._config.groups[gi].bookmarks[ei].path = event.value
         self._update_current_node_label()
 
     def _update_current_node_label(self) -> None:
-        """Update the currently-selected tree node's label in-place from _working."""
+        """Update the currently-selected tree node's label in-place from _config."""
         tag = self._current_tag
         if tag is None:
             return
@@ -440,13 +440,13 @@ class EditBookmarksDialog(Dialog):
             return
         if tag[0] == "group":
             gi = tag[1]
-            group = self._working.groups[gi]
+            group = self._config.groups[gi]
             icon = ICONS.get_icon(group.icon).glyph + " " if group.icon else ""
             node.set_label(f"{icon}{group.name}")
         else:
             entry_tag = cast("_EntryTag", tag)
             gi, ei = entry_tag[1], entry_tag[2]
-            entry = self._working.groups[gi].bookmarks[ei]
+            entry = self._config.groups[gi].bookmarks[ei]
             eicon = ICONS.get_icon(entry.icon).glyph + " " if entry.icon else ""
             node.set_label(f"{eicon}{entry.name}  {entry.path}")
 
@@ -454,7 +454,7 @@ class EditBookmarksDialog(Dialog):
 
     @property
     def config(self) -> BookmarkConfig:
-        return self._working
+        return self._config
 
     def action_accept_dialog(self) -> None:
         self._action_ok()
@@ -492,8 +492,8 @@ class EditBookmarksDialog(Dialog):
 
     def action_add_group(self) -> None:
         new_group = Group(name="New Group")
-        self._working.groups.append(new_group)
-        new_tag: _NodeTag = ("group", len(self._working.groups) - 1)
+        self._config.groups.append(new_group)
+        new_tag: _NodeTag = ("group", len(self._config.groups) - 1)
         self._rebuild_tree(select_tag=new_tag)
         self._sync_form_to_selection(new_tag)
         self._update_button_states(new_tag)
@@ -505,8 +505,8 @@ class EditBookmarksDialog(Dialog):
         else:
             gi = tag[1]
         new_entry = Bookmark(name="New Entry")
-        self._working.groups[gi].bookmarks.append(new_entry)
-        new_tag: _NodeTag = ("entry", gi, len(self._working.groups[gi].bookmarks) - 1)
+        self._config.groups[gi].bookmarks.append(new_entry)
+        new_tag: _NodeTag = ("entry", gi, len(self._config.groups[gi].bookmarks) - 1)
         self._rebuild_tree(select_tag=new_tag)
         self._sync_form_to_selection(new_tag)
         self._update_button_states(new_tag)
@@ -516,11 +516,11 @@ class EditBookmarksDialog(Dialog):
         if tag is None:
             return
         if tag[0] == "group":
-            del self._working.groups[tag[1]]
+            del self._config.groups[tag[1]]
         else:
             entry_tag = cast("_EntryTag", tag)
             gi, ei = entry_tag[1], entry_tag[2]
-            del self._working.groups[gi].bookmarks[ei]
+            del self._config.groups[gi].bookmarks[ei]
         self._rebuild_tree(select_tag=None)
         self._sync_form_to_selection(None)
         self._update_button_states(None)
@@ -531,13 +531,13 @@ class EditBookmarksDialog(Dialog):
             return
         if tag[0] == "group":
             gi = tag[1]
-            lst = self._working.groups
+            lst = self._config.groups
             lst[gi - 1], lst[gi] = lst[gi], lst[gi - 1]
             new_tag: _NodeTag = ("group", gi - 1)
         else:
             entry_tag = cast("_EntryTag", tag)
             gi, ei = entry_tag[1], entry_tag[2]
-            lst2 = self._working.groups[gi].bookmarks
+            lst2 = self._config.groups[gi].bookmarks
             lst2[ei - 1], lst2[ei] = lst2[ei], lst2[ei - 1]
             new_tag = ("entry", gi, ei - 1)
         self._rebuild_tree(select_tag=new_tag)
@@ -550,13 +550,13 @@ class EditBookmarksDialog(Dialog):
             return
         if tag[0] == "group":
             gi = tag[1]
-            lst = self._working.groups
+            lst = self._config.groups
             lst[gi + 1], lst[gi] = lst[gi], lst[gi + 1]
             new_tag: _NodeTag = ("group", gi + 1)
         else:
             entry_tag = cast("_EntryTag", tag)
             gi, ei = entry_tag[1], entry_tag[2]
-            lst2 = self._working.groups[gi].bookmarks
+            lst2 = self._config.groups[gi].bookmarks
             lst2[ei + 1], lst2[ei] = lst2[ei], lst2[ei + 1]
             new_tag = ("entry", gi, ei + 1)
         self._rebuild_tree(select_tag=new_tag)
@@ -580,7 +580,7 @@ class EditBookmarksDialog(Dialog):
         if tag is None or tag[0] != "entry":
             return
         gi = tag[1]
-        options = [(g.name, idx) for idx, g in enumerate(self._working.groups) if idx != gi]
+        options = [(g.name, idx) for idx, g in enumerate(self._config.groups) if idx != gi]
         btn = self.query_one("#btn_move_to_group", Button)
         pos = (btn.region.x, btn.region.y + btn.region.height)
         self.query_one(_MoveToGroupOverlay).open(options, pos)
@@ -591,12 +591,12 @@ class EditBookmarksDialog(Dialog):
             return
         entry_tag = cast("_EntryTag", tag)
         gi, ei = entry_tag[1], entry_tag[2]
-        entry = self._working.groups[gi].bookmarks.pop(ei)
-        self._working.groups[target_gi].bookmarks.append(entry)
+        entry = self._config.groups[gi].bookmarks.pop(ei)
+        self._config.groups[target_gi].bookmarks.append(entry)
         new_tag: _NodeTag = (
             "entry",
             target_gi,
-            len(self._working.groups[target_gi].bookmarks) - 1,
+            len(self._config.groups[target_gi].bookmarks) - 1,
         )
         self._rebuild_tree(select_tag=new_tag)
         self._sync_form_to_selection(new_tag)

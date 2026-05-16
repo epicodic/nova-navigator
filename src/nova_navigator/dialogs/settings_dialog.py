@@ -32,26 +32,26 @@ class SettingsDialog(Dialog):
     }
     """
 
-    _settings: Settings
+    _config: Settings
     _editors: dict[str, ModelEditor]
 
     def __init__(self, settings: Settings) -> None:
         super().__init__(title="Settings", buttons=[DefaultButton.OK, DefaultButton.CANCEL])
-        self._settings = settings
+        self._config = settings
         self._editors = {}
 
     @property
     def config(self) -> Settings:
-        return self._settings
+        return self._config
 
     def compose_content(self) -> ComposeResult:
-        hints = get_type_hints(type(self._settings))
+        hints = get_type_hints(type(self._config))
         tc = TabbedContent()
-        for f in dataclasses.fields(type(self._settings)):
+        for f in dataclasses.fields(type(self._config)):
             field_type = hints.get(f.name)
             if not (field_type and isinstance(field_type, type) and issubclass(field_type, BaseModel)):
                 continue
-            section_value = getattr(self._settings, f.name)
+            section_value = getattr(self._config, f.name)
             editor = ModelEditor(section_value, id=f"editor_{f.name}")
             self._editors[f.name] = editor
             tc.compose_add_child(TabPane(_title_case(f.name), editor))
@@ -59,5 +59,5 @@ class SettingsDialog(Dialog):
 
     def action_accept_dialog(self) -> None:
         for field_name, editor in self._editors.items():
-            editor.apply(getattr(self._settings, field_name))
+            editor.apply(getattr(self._config, field_name))
         super().action_accept_dialog()
