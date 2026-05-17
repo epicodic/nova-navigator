@@ -684,6 +684,7 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
     """Nova Navigator App."""
 
     CSS_PATH = "nn.tcss"
+    ENABLE_COMMAND_PALETTE = False
     _main_screen: MainScreen
 
     def __init__(self) -> None:
