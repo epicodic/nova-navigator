@@ -110,6 +110,15 @@ class VPath:
         except ValueError:
             return str(self._path)
 
+    @property
+    def uri(self) -> str:
+        """Full URI for this path, including scheme and authority where applicable.
+
+        Returns ``ssh://user@host/path`` for SSH paths, ``azure://…`` for Azure,
+        and a home-relative string (``~/…``) or absolute path for local paths.
+        """
+        return self._filesystem.uri_for_path(self._path)
+
     def guess_mimetype(self) -> str | None:
         """Return the MIME type guessed from the filename, or ``None`` if unknown."""
         mimetype, _ = mimetypes.guess_type(self._path.as_posix())

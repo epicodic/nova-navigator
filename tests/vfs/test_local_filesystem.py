@@ -60,6 +60,18 @@ def test_home_returns_home_directory() -> None:
     assert str(fs.home().path) == os.path.expanduser("~")
 
 
+def test_path_expands_tilde() -> None:
+    fs = _fs()
+    vpath = fs.path("~/Documents")
+    assert str(vpath.path) == os.path.join(os.path.expanduser("~"), "Documents")
+
+
+def test_path_expands_tilde_alone() -> None:
+    fs = _fs()
+    vpath = fs.path("~")
+    assert str(vpath.path) == os.path.expanduser("~")
+
+
 @pytest.mark.asyncio
 async def test_iterdir_lists_contents(tmp_path: Path) -> None:
     fs = _fs()
