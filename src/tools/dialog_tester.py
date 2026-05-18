@@ -30,6 +30,7 @@ from nova_navigator.dialogs.edit_remotes_dialog import EditRemotesDialog
 from nova_navigator.dialogs.file_dialog import FileDialog, FileDialogMode, FileTypeFilter
 from nova_navigator.dialogs.files_dialog import CopyMoveFilesDialog, DeleteFilesDialog
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
+from nova_navigator.dialogs.input_name_dialog import InputNameDialog
 from nova_navigator.dialogs.message_box import MessageBox
 from nova_navigator.dialogs.response_dialog import OverwriteResponseDialog, ResponseDialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
@@ -152,6 +153,12 @@ _ENTRIES: list[DialogEntry] = [
         "IconPickerDialog",
         "Grid-based icon selection dialog.",
         lambda: IconPickerDialog(title="Pick an Icon"),
+    ),
+    DialogEntry(
+        "InputNameDialog",
+        "Single-line name prompt (used by New Directory / New File).",
+        lambda: InputNameDialog("New Directory", "Directory name:"),
+        result_fn=lambda d, r: f"Result: {r}  value={repr(d.value) if r is not None else None}",
     ),
     DialogEntry(
         "EditBookmarksDialog",
