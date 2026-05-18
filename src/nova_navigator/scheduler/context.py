@@ -55,6 +55,17 @@ class Progress:
     total: int = 0
     step_total: int = 0
     step_completed: int = 0
+    current_item: str = ""
+
+    @property
+    def effective_completed(self) -> float:
+        """Fractional completed count, including partial progress within the current step.
+
+        The result is clamped to *total* so it never exceeds 1.0 when used as
+        a ratio.
+        """
+        value = self.completed + self.step_completed / max(1, self.step_total)
+        return min(value, self.total) if self.total > 0 else value
 
 
 class TaskCancelled(Exception):
@@ -134,6 +145,11 @@ class TaskStatus:
         """Mark the current step as fully complete."""
         self.set_step_progress(self._progress.step_total, self._progress.step_total)
 
+    def set_current_item(self, item: str) -> None:
+        """Set the current item name (e.g. filename being processed)."""
+        self._progress.current_item = item
+        self._progress_callback(self)
+
     def is_complete(self) -> bool:
         """Return ``True`` if the task is fully complete (completed >= total)."""
         return (
@@ -207,6 +223,10 @@ class TaskContext:
         """Request a user response via the GUI; suspends until the user responds."""
         request = ResponseRequest(title, expected_responses, message, dialog_type, details)
         return await self._response_requester(request)
+
+    def set_current_item(self, item: str) -> None:
+        """Convenience wrapper — delegates to :meth:`TaskStatus.set_current_item`."""
+        self._status.set_current_item(item)
 
     async def subtask[R](self, coro: Coroutine[Any, Any, R]) -> asyncio.Task[R]:
         """Start *coro* as a concurrent asyncio task and yield control so it can begin."""

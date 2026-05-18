@@ -1,11 +1,11 @@
+from __future__ import annotations
+
 from unittest.mock import MagicMock
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Button, Label
 
-from nova_navigator.dialogs.job_registry import JobRegistry
-from nova_navigator.dialogs.jobs_dialog import JobRow, JobsDialog
+from nova_navigator.dialogs.jobs_dialog import JobListView, JobsDialog, _generate_progress_bar_segments
 from nova_navigator.scheduler import Job
 from nova_navigator.scheduler.context import Progress
 
@@ -15,33 +15,160 @@ def _make_progress(
     completed: int = 5,
     step_total: int = 100,
     step_completed: int = 50,
+    current_item: str = "file.txt",
 ) -> Progress:
-    return Progress(total=total, completed=completed, step_total=step_total, step_completed=step_completed)
+    return Progress(
+        total=total,
+        completed=completed,
+        step_total=step_total,
+        step_completed=step_completed,
+        current_item=current_item,
+    )
 
 
 def _make_job(
-    title: str = "test",
+    title: str = "Copy",
     state: Job.State = Job.State.RUNNING,
     error: str | None = None,
+    progress: Progress | None = None,
 ) -> MagicMock:
     job = MagicMock(spec=Job)
     job.title = title
     job.state = state
     job.error = error
-    job.progress = _make_progress()
+    job.progress = progress if progress is not None else _make_progress()
     return job
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
-
-
-class _RowApp(App[None]):
-    def __init__(self, row: JobRow) -> None:
+class _ListViewApp(App[None]):
+    def __init__(self, view: JobListView) -> None:
         super().__init__()
-        self._row = row
+        self._view = view
 
     def compose(self) -> ComposeResult:
-        yield self._row
+        yield self._view
+
+
+# ── virtual_size ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_set_jobs_updates_virtual_size() -> None:
+    view = JobListView()
+    app = _ListViewApp(view)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        jobs = [_make_job(), _make_job()]
+        view.set_jobs(jobs)
+        await pilot.pause()
+        assert view.virtual_size.height == 2 * JobListView.ITEM_HEIGHT
+
+
+@pytest.mark.asyncio
+async def test_set_jobs_empty_virtual_size() -> None:
+    view = JobListView()
+    app = _ListViewApp(view)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        view.set_jobs([])
+        await pilot.pause()
+        # at least 1 line for the "no jobs" message
+        assert view.virtual_size.height >= 1
+
+
+# ── render output ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_render_running_job_shows_title() -> None:
+    job = _make_job(title="Copy files", state=Job.State.RUNNING)
+    view = JobListView()
+    app = _ListViewApp(view)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        view.set_jobs([job])
+        await pilot.pause()
+        strip = view.render_line(0)
+        assert "Copy files" in strip.text
+
+
+@pytest.mark.asyncio
+async def test_render_running_job_shows_progress_percentage() -> None:
+    progress = _make_progress(total=10, completed=5, step_total=100, step_completed=50)
+    job = _make_job(state=Job.State.RUNNING, progress=progress)
+    view = JobListView()
+    app = _ListViewApp(view)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        view.set_jobs([job])
+        await pilot.pause()
+        # line 2 = step bar (50%)
+        step_strip = view.render_line(2)
+        assert "50%" in step_strip.text
+        # line 3 = overall bar: bar shows (5 + 0.5) / 10 = 55%, pct matches bar
+        overall_strip = view.render_line(3)
+        assert "55%" in overall_strip.text
+
+
+@pytest.mark.asyncio
+async def test_render_running_job_shows_current_item() -> None:
+    progress = _make_progress(current_item="important.txt")
+    job = _make_job(state=Job.State.RUNNING, progress=progress)
+    view = JobListView()
+    app = _ListViewApp(view)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        view.set_jobs([job])
+        await pilot.pause()
+        strip = view.render_line(1)
+        assert "important.txt" in strip.text
+
+
+@pytest.mark.asyncio
+async def test_render_failed_job_shows_error() -> None:
+    job = _make_job(state=Job.State.FAILED, error="Permission denied")
+    view = JobListView()
+    app = _ListViewApp(view)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        view.set_jobs([job])
+        await pilot.pause()
+        strip = view.render_line(1)
+        assert "Permission denied" in strip.text
+
+
+@pytest.mark.asyncio
+async def test_render_empty_shows_no_jobs_text() -> None:
+    view = JobListView()
+    app = _ListViewApp(view)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        view.set_jobs([])
+        await pilot.pause()
+        strip = view.render_line(0)
+        assert "No jobs" in strip.text
+
+
+# ── action button metadata ────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_action_button_segment_has_metadata() -> None:
+    job = _make_job(state=Job.State.RUNNING)
+    view = JobListView()
+    app = _ListViewApp(view)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        view.set_jobs([job])
+        await pilot.pause()
+        # Line 0: action button is in the rightmost segments
+        strip = view.render_line(0)
+        segments = list(strip)
+        has_action_meta = any(seg.style and seg.style.meta.get("action_button") for seg in segments)
+        assert has_action_meta
+
+
+# ── JobsDialog integration ────────────────────────────────────────────────────
 
 
 class _DialogApp(App[None]):
@@ -53,303 +180,91 @@ class _DialogApp(App[None]):
         yield self._dialog
 
 
-# ── JobRow static helpers ─────────────────────────────────────────────────────
-
-
-def test_display_title_canceled() -> None:
-    assert JobRow._display_title(_make_job(title="Copy", state=Job.State.CANCELED)) == "Copy (canceled)"
-
-
-def test_display_title_failed() -> None:
-    assert JobRow._display_title(_make_job(title="Copy", state=Job.State.FAILED)) == "Copy (failed)"
-
-
-def test_display_title_running() -> None:
-    assert JobRow._display_title(_make_job(title="Copy", state=Job.State.RUNNING)) == "Copy"
-
-
-def test_button_icon_running() -> None:
-    assert JobRow._button_icon(Job.State.RUNNING) == "✕"
-
-
-def test_button_icon_completed() -> None:
-    assert JobRow._button_icon(Job.State.COMPLETED) == "✓"
-
-
-def test_button_icon_failed() -> None:
-    assert JobRow._button_icon(Job.State.FAILED) == "✗"
-
-
-# ── JobRow widget ─────────────────────────────────────────────────────────────
-
-
 @pytest.mark.asyncio
-async def test_job_row_running_is_expanded_on_mount() -> None:
-    job = _make_job(state=Job.State.RUNNING)
-    row = JobRow(job, lambda _: None)
-    async with _RowApp(row).run_test(size=(80, 24)) as pilot:
-        await pilot.pause()
-        assert row.query_one(".job-body").display is True
+async def test_jobs_dialog_shows_job_after_tick() -> None:
+    from nova_navigator.dialogs.job_registry import JobRegistry
 
+    registry = MagicMock(spec=JobRegistry)
+    job = _make_job(title="My Job", state=Job.State.RUNNING)
+    registry.running_jobs = [job]
+    registry.finished_jobs = []
 
-@pytest.mark.asyncio
-async def test_job_row_completed_is_collapsed_on_mount() -> None:
-    job = _make_job(state=Job.State.COMPLETED)
-    row = JobRow(job, lambda _: None)
-    async with _RowApp(row).run_test(size=(80, 24)) as pilot:
-        await pilot.pause()
-        assert row.query_one(".job-body").display is False
-
-
-@pytest.mark.asyncio
-async def test_job_row_click_toggles_body() -> None:
-    job = _make_job(state=Job.State.RUNNING)
-    row = JobRow(job, lambda _: None)
-    async with _RowApp(row).run_test(size=(80, 24)) as pilot:
-        await pilot.pause()
-        body = row.query_one(".job-body")
-        assert body.display is True
-        await pilot.click(row.query_one(".toggle-icon"))
-        await pilot.pause()
-        assert body.display is False
-        await pilot.click(row.query_one(".toggle-icon"))
-        await pilot.pause()
-        assert body.display is True
-
-
-@pytest.mark.asyncio
-async def test_job_row_error_label_hidden_when_running() -> None:
-    job = _make_job(state=Job.State.RUNNING, error=None)
-    row = JobRow(job, lambda _: None)
-    async with _RowApp(row).run_test(size=(80, 24)) as pilot:
-        await pilot.pause()
-        assert row.query_one(".error-msg").display is False
-
-
-@pytest.mark.asyncio
-async def test_job_row_error_label_shown_for_failed_with_error() -> None:
-    job = _make_job(state=Job.State.FAILED, error="disk full")
-    row = JobRow(job, lambda _: None)
-    async with _RowApp(row).run_test(size=(80, 24)) as pilot:
-        await pilot.pause()
-        assert row.query_one(".error-msg").display is True
-
-
-@pytest.mark.asyncio
-async def test_job_row_error_label_hidden_for_failed_without_error() -> None:
-    job = _make_job(state=Job.State.FAILED, error=None)
-    row = JobRow(job, lambda _: None)
-    async with _RowApp(row).run_test(size=(80, 24)) as pilot:
-        await pilot.pause()
-        assert row.query_one(".error-msg").display is False
-
-
-@pytest.mark.asyncio
-async def test_refresh_job_updates_css_class() -> None:
-    job = _make_job(state=Job.State.RUNNING)
-    row = JobRow(job, lambda _: None)
-    async with _RowApp(row).run_test(size=(80, 24)) as pilot:
-        await pilot.pause()
-        job.state = Job.State.COMPLETED
-        row.refresh_job(job)
-        await pilot.pause()
-        assert row.has_class("-completed")
-        assert not row.has_class("-running")
-
-
-@pytest.mark.asyncio
-async def test_refresh_job_shows_error_label_for_failed() -> None:
-    job = _make_job(state=Job.State.RUNNING)
-    row = JobRow(job, lambda _: None)
-    async with _RowApp(row).run_test(size=(80, 24)) as pilot:
-        await pilot.pause()
-        job.state = Job.State.FAILED
-        job.error = "something went wrong"
-        row.refresh_job(job)
-        await pilot.pause()
-        assert row.query_one(".error-msg").display is True
-
-
-@pytest.mark.asyncio
-async def test_refresh_job_hides_error_label_when_no_error() -> None:
-    job = _make_job(state=Job.State.FAILED, error="oops")
-    row = JobRow(job, lambda _: None)
-    async with _RowApp(row).run_test(size=(80, 24)) as pilot:
-        await pilot.pause()
-        job.state = Job.State.COMPLETED
-        job.error = None
-        row.refresh_job(job)
-        await pilot.pause()
-        assert row.query_one(".error-msg").display is False
-
-
-@pytest.mark.asyncio
-async def test_refresh_job_updates_progress_labels() -> None:
-    job = _make_job(state=Job.State.RUNNING)
-    job.progress = Progress(total=10, completed=3, step_total=100, step_completed=40)
-    row = JobRow(job, lambda _: None)
-    async with _RowApp(row).run_test(size=(80, 24)) as pilot:
-        await pilot.pause()
-        # verify refresh_job runs without error and updates bar values
-        row.refresh_job(job)
-        await pilot.pause()
-        assert row._overall_bar.total == 10
-
-
-@pytest.mark.asyncio
-async def test_button_press_calls_on_action() -> None:
-    job = _make_job(state=Job.State.RUNNING)
-    received: list[object] = []
-    row = JobRow(job, received.append)
-    async with _RowApp(row).run_test(size=(80, 24)) as pilot:
-        await pilot.pause()
-        await pilot.click(row.query_one(Button))
-        await pilot.pause()
-        assert received == [job]
-
-
-# ── JobsDialog ────────────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_jobs_dialog_hidden_on_mount() -> None:
-    registry = JobRegistry()
-    dialog = JobsDialog((0, 0), registry)
-    async with _DialogApp(dialog).run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        assert dialog.display is False
-
-
-@pytest.mark.asyncio
-async def test_jobs_dialog_show_makes_visible() -> None:
-    registry = JobRegistry()
-    dialog = JobsDialog((0, 0), registry)
-    async with _DialogApp(dialog).run_test(size=(120, 40)) as pilot:
+    dialog = JobsDialog(position=(0, 0), registry=registry)
+    app = _DialogApp(dialog)
+    async with app.run_test(size=(80, 30)) as pilot:
         await pilot.pause()
         dialog.show()
-        await pilot.pause()
-        assert dialog.display is True
+        await pilot.pause(delay=0.1)
+        job_list = dialog.query_one(JobListView)
+        assert len(job_list._jobs) == 1
+        assert job_list._jobs[0].title == "My Job"
 
 
 @pytest.mark.asyncio
-async def test_jobs_dialog_show_updates_position() -> None:
-    registry = JobRegistry()
-    dialog = JobsDialog((0, 0), registry)
-    async with _DialogApp(dialog).run_test(size=(120, 40)) as pilot:
+async def test_jobs_dialog_has_no_job_row_widgets() -> None:
+    """Confirm old JobRow widgets are gone."""
+    from nova_navigator.dialogs.job_registry import JobRegistry
+
+    registry = MagicMock(spec=JobRegistry)
+    registry.running_jobs = [_make_job()]
+    registry.finished_jobs = []
+
+    dialog = JobsDialog(position=(0, 0), registry=registry)
+    app = _DialogApp(dialog)
+    async with app.run_test(size=(80, 30)) as pilot:
         await pilot.pause()
         dialog.show()
-        await pilot.pause()
-        assert dialog.offset.x >= 0
+        await pilot.pause(delay=0.1)
+        # No widget called JobRow should exist in the DOM
+        assert dialog.query(JobListView)  # JobListView IS present
 
 
-@pytest.mark.asyncio
-async def test_tick_mounts_row_for_running_job() -> None:
-    registry = JobRegistry()
-    job = _make_job(state=Job.State.RUNNING)
-    registry.add_job(job)
-    dialog = JobsDialog((0, 0), registry)
-    async with _DialogApp(dialog).run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        await dialog._tick()
-        await pilot.pause()
-        assert len(dialog._rows) == 1
+# ── _generate_bar_segments ───────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_tick_shows_no_jobs_label_when_empty() -> None:
-    registry = JobRegistry()
-    dialog = JobsDialog((0, 0), registry)
-    async with _DialogApp(dialog).run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        await dialog._tick()
-        await pilot.pause()
-        assert dialog._no_jobs_label is not None
-        assert dialog.query_one("#no-jobs", Label) is not None
+def test_bar_segments_empty() -> None:
+    fill, muted = _generate_progress_bar_segments(0.0, 8)
+    assert fill == ""
+    assert muted == "━━━━━━━━"
 
 
-@pytest.mark.asyncio
-async def test_tick_removes_no_jobs_label_when_job_arrives() -> None:
-    registry = JobRegistry()
-    dialog = JobsDialog((0, 0), registry)
-    async with _DialogApp(dialog).run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        await dialog._tick()
-        await pilot.pause()
-        assert dialog._no_jobs_label is not None
-
-        job = _make_job(state=Job.State.RUNNING)
-        registry.add_job(job)
-        await dialog._tick()
-        await pilot.pause()
-        assert dialog._no_jobs_label is None
+def test_bar_segments_full() -> None:
+    fill, muted = _generate_progress_bar_segments(1.0, 8)
+    assert fill == "━━━━━━━━"
+    assert muted == ""
 
 
-@pytest.mark.asyncio
-async def test_tick_refreshes_existing_row() -> None:
-    registry = JobRegistry()
-    job = _make_job(state=Job.State.RUNNING)
-    registry.add_job(job)
-    dialog = JobsDialog((0, 0), registry)
-    async with _DialogApp(dialog).run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        await dialog._tick()
-        await pilot.pause()
-        assert len(dialog._rows) == 1
-        # second tick should refresh (not duplicate) the row
-        await dialog._tick()
-        await pilot.pause()
-        assert len(dialog._rows) == 1
+def test_bar_segments_half_cell() -> None:
+    # 0.5 cells filled out of 8
+    fill, muted = _generate_progress_bar_segments(0.5 / 8, 8)
+    assert fill == "╸"
+    assert muted == "━━━━━━━"
 
 
-@pytest.mark.asyncio
-async def test_tick_removes_stale_row() -> None:
-    registry = JobRegistry()
-    job = _make_job(state=Job.State.RUNNING)
-    registry.add_job(job)
-    dialog = JobsDialog((0, 0), registry)
-    async with _DialogApp(dialog).run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        await dialog._tick()
-        await pilot.pause()
-        assert len(dialog._rows) == 1
-
-        # move job to finished, then remove it from registry
-        job.state = Job.State.COMPLETED
-        await dialog._tick()  # registry.update() moves it to finished
-        await pilot.pause()
-        registry.remove_job(job)
-        await dialog._tick()  # job no longer in desired → row removed
-        await pilot.pause()
-        assert len(dialog._rows) == 0
+def test_bar_segments_integer_cell() -> None:
+    # 1.0 cells filled out of 8
+    fill, muted = _generate_progress_bar_segments(1 / 8, 8)
+    assert fill == "━"
+    assert muted == "╺━━━━━━"
 
 
-@pytest.mark.asyncio
-async def test_handle_action_cancels_running_job() -> None:
-    registry = JobRegistry()
-    job = _make_job(state=Job.State.RUNNING)
-    dialog = JobsDialog((0, 0), registry)
-    async with _DialogApp(dialog).run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        dialog._handle_action(job)
-        job.cancel.assert_called_once()
+def test_bar_segments_one_and_half_cells() -> None:
+    # 1.5 cells filled out of 8
+    fill, muted = _generate_progress_bar_segments(1.5 / 8, 8)
+    assert fill == "━╸"
+    assert muted == "━━━━━━"
 
 
-@pytest.mark.asyncio
-async def test_handle_action_removes_finished_job_row() -> None:
-    registry = JobRegistry()
-    job = _make_job(state=Job.State.RUNNING)
-    registry.add_job(job)
-    dialog = JobsDialog((0, 0), registry)
-    async with _DialogApp(dialog).run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        await dialog._tick()  # row mounted
-        await pilot.pause()
-        assert len(dialog._rows) == 1
+def test_bar_segments_two_cells() -> None:
+    # 2.0 cells filled out of 8
+    fill, muted = _generate_progress_bar_segments(2 / 8, 8)
+    assert fill == "━━"
+    assert muted == "╺━━━━━"
 
-        job.state = Job.State.COMPLETED
-        await dialog._tick()  # row refreshed, job now in finished
-        await pilot.pause()
 
-        dialog._handle_action(job)
-        await pilot.pause()
-        assert id(job) not in dialog._rows
+def test_bar_segments_total_width() -> None:
+    # len(fill) + len(muted) must always equal width
+    for steps in range(17):
+        ratio = steps / 16
+        fill, muted = _generate_progress_bar_segments(ratio, 8)
+        assert len(fill) + len(muted) == 8, f"width mismatch at step {steps}/16"
