@@ -7,6 +7,7 @@ from .edit_remotes_dialog import EditRemotesDialog
 from .file_dialog import FileDialog, FileDialogMode, FileTypeFilter
 from .files_dialog import CopyMoveFilesDialog, DeleteFilesDialog
 from .icon_picker_dialog import IconPickerDialog
+from .input_name_dialog import InputNameDialog
 from .job_registry import JobRegistry
 from .jobs_dialog import JobsDialog
 from .message_box import MessageBox, MessageBoxVariant, MessageDialog
@@ -27,6 +28,7 @@ __all__ = [
     "FileDialogMode",
     "FileTypeFilter",
     "IconPickerDialog",
+    "InputNameDialog",
     "JobRegistry",
     "JobsDialog",
     "MessageBox",
