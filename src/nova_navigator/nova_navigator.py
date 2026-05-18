@@ -25,6 +25,7 @@ from nova_navigator.dialogs import (
     ConnectToDialog,
     EditBookmarksDialog,
     EditRemotesDialog,
+    InputNameDialog,
     JobsDialog,
     MessageBox,
 )
@@ -75,6 +76,7 @@ class MainScreen(Screen[None]):
         Binding("f4", "open_editor", "Edit"),
         Binding("f5", "copy_or_move_files(False)", "Copy"),
         Binding("f6", "copy_or_move_files(True)", "Move"),
+        Binding("f7", "new_directory", "New Directory"),
         Binding("f8", "delete_files", "Delete"),
         Binding("ctrl+b", "show_bookmarks", "Bookmark"),
         Binding("ctrl+h", "toggle_hidden", description="Show/Hide Hidden Files", show=False),
@@ -127,8 +129,8 @@ class MainScreen(Screen[None]):
         self._menu_bar.add_menu("File", name="file").add(
             mc.menu(
                 "New",
-                mc.action("Directory", icon="folder", shortcut="F7", name="directory"),
-                mc.action("File", icon="text", name="file"),
+                mc.action("Directory", icon="folder", shortcut="F7", action="new_directory", name="directory"),
+                mc.action("File", icon="text", action="new_file", name="file"),
                 name="new",
             ),
             mc.separator(),
@@ -605,6 +607,42 @@ class MainScreen(Screen[None]):
     def _action_copy_names(self) -> None:
         names = "\n".join(p.name for p in self.active_panel().selected_path_items)
         self.app.copy_to_clipboard(names)
+
+    @work
+    async def _action_new_directory(self) -> None:
+        dialog = InputNameDialog("New Directory", "Directory name:")
+        if await dialog.run() != Response.OK:
+            return
+        name = dialog.value.strip()
+        if not name:
+            return
+        new_path = self.active_panel().path / name
+        try:
+            new_path.filesystem.mkdir(new_path)
+        except FileExistsError:
+            await MessageBox(f"{name!r} already exists.", title="Cannot Create Directory", variant="error").run()
+            return
+        except OSError as exc:
+            await MessageBox(str(exc), title="Cannot Create Directory", variant="error").run()
+            return
+        self.active_panel().reload()
+
+    @work
+    async def _action_new_file(self) -> None:
+        dialog = InputNameDialog("New File", "File name:")
+        if await dialog.run() != Response.OK:
+            return
+        name = dialog.value.strip()
+        if not name:
+            return
+        new_path = self.active_panel().path / name
+        try:
+            writer = new_path.filesystem.write(new_path)
+            writer.close()
+        except OSError as exc:
+            await MessageBox(str(exc), title="Cannot Create File", variant="error").run()
+            return
+        self.active_panel().reload()
 
     async def _action_show_bookmarks(self) -> None:
         panel = self.active_panel()
