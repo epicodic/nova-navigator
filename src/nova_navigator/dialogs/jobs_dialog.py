@@ -1,168 +1,334 @@
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Sequence
+from typing import ClassVar, Final
 
+from rich.segment import Segment
+from rich.style import Style
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widget import Widget
-from textual.widgets import Button, Label, ProgressBar
+from textual.color import Color
+from textual.events import Leave, MouseDown, MouseMove
+from textual.geometry import Size
+from textual.scroll_view import ScrollView
+from textual.strip import Strip
 
 from nova_navigator.scheduler import Job
 
 from ..widgets.popup_widget import PopupWidget
-from ..widgets.separator import Separator
 from .job_registry import JobRegistry
 
 
-class JobRow(Widget):
-    """A single row in the jobs dialog representing one job."""
+def _generate_progress_bar_segments(ratio: float, width: int) -> tuple[str, str]:
+    """Return (fill_text, muted_text) for a sub-character-precision progress bar.
+
+    Characters:
+    - ━  full stroke (1.0 cell width) — used for both filled and empty runs
+    - ╸  left-half stroke (0.5 cells) — trailing edge of fill; part of fill_text
+    - ╺  right-half stroke (0.5 cells) — leading edge of empty; part of muted_text
+
+    There is always exactly one half-width boundary character between the filled
+    and empty regions.  len(fill_text) + len(muted_text) always equals *width*.
+    """
+    _BAR: Final = "━"
+    _HALF_LEFT: Final = "╺"  # right-half stroke — leading edge of the empty region
+    _HALF_RIGHT: Final = "╸"  # left-half stroke — trailing edge of the filled region
+
+    p_half: int = round(ratio * width * 2)  # quantise to half-cell steps
+    if p_half <= 0:
+        return "", _BAR * width
+    if p_half >= width * 2:
+        return _BAR * width, ""
+    full = p_half // 2
+    has_half = bool(p_half % 2)
+    empty = width - full - 1
+    if has_half:
+        return _BAR * full + _HALF_RIGHT, _BAR * empty
+    return _BAR * full, _HALF_LEFT + _BAR * empty
+
+
+class JobListView(ScrollView, can_focus=False):
+    """A virtualised list of job rows. No child widgets — all rendering is done in render_line()."""
+
+    ROW_HEIGHT: ClassVar[int] = 4
+    ITEM_HEIGHT: ClassVar[int] = 5  # ROW_HEIGHT + 1 separator line
+
+    COMPONENT_CLASSES: ClassVar[set[str]] = {
+        "job-list--running",
+        "job-list--completed",
+        "job-list--canceled",
+        "job-list--failed",
+        "job-list--separator",
+        "job-list--muted",
+        "job-list--error",
+        "job-list--bar-fill",
+        "job-list--bar-complete",
+        "job-list--bar-muted",
+        "job-list--btn",
+        "job-list--btn-hover",
+    }
 
     DEFAULT_CSS = """
-    JobRow {
-        height: auto;
-        padding: 0;
-        margin: 0;
-    }
-    JobRow.-running {
-        background: $panel;
-        &:hover { background: $secondary; }
-    }
-    JobRow.-completed {
-        background: $success 20%;
-        &:hover { background: $success 40%; }
-    }
-    JobRow.-canceled {
-        background: $error 15%;
-        &:hover { background: $error 30%; }
-    }
-    JobRow.-failed {
-        background: $error 20%;
-        &:hover { background: $error 40%; }
-    }
-    JobRow .job-header {
-        height: 1;
-        align: left middle;
-    }
-    JobRow .toggle-icon {
-        width: 2;
-        height: 1;
-    }
-    JobRow .job-title {
-        width: 1fr;
-        height: 1;
-    }
-    JobRow .eta-label {
-        width: 8;
-        height: 1;
-        content-align: right middle;
-        color: $text-muted;
-    }
-    JobRow Button {
-        width: 3;
-        min-width: 3;
-        max-width: 3;
-        height: 1;
+    JobListView {
+        height: 1fr;
         border: none;
-        padding: 0 0;
-        margin-left: 2;
-    }
-    JobRow .job-body {
-        height: auto;
-        padding: 0 0 0 2;
-    }
-    JobRow .progress-row {
-        height: 1;
-        padding: 0 0 0 1;
-    }
-    JobRow .progress-row ProgressBar {
-        width: 1fr;
-        margin: 0;
-    }
-    JobRow .progress-row ProgressBar Bar {
-        width: 1fr;
-    }
-    JobRow .pct-label {
-        width: 5;
-        content-align: right middle;
         padding: 0;
     }
-    JobRow .step-spacer {
-        width: 9;
-    }
-    JobRow .count-label {
-        width: 9;
-        content-align: right middle;
-        padding: 0;
-    }
-    JobRow .step-bar Bar {
-        color: $warning;
-    }
-    JobRow .error-msg {
-        color: $error;
-        padding: 0 1;
-    }
-
-
+    JobListView .job-list--running    { background: $panel; }
+    JobListView .job-list--completed  { background: $success 20%; }
+    JobListView .job-list--canceled   { background: $error 15%; }
+    JobListView .job-list--failed     { background: $error 20%; }
+    JobListView .job-list--separator  { color: $panel-lighten-2; }
+    JobListView .job-list--muted      { color: $text-muted; }
+    JobListView .job-list--error      { color: $error; }
+    JobListView .job-list--bar-fill   { color: $primary; }
+    JobListView .job-list--bar-complete { color: $success; }
+    JobListView .job-list--bar-muted  { color: $primary 20%; }
+    JobListView .job-list--btn        { background: $panel-lighten-2; }
+    JobListView .job-list--btn-hover  { background: $primary; }
     """
 
-    _job: Job
+    _jobs: list[Job]
+    _start_times: dict[int, float]
     _on_action: Callable[[Job], None]
-    _expanded: bool
-    _step_bar: ProgressBar
-    _overall_bar: ProgressBar
-    _step_pct_label: Label
-    _overall_count_label: Label
-    _overall_pct_label: Label
-    _step_row: Horizontal
-    _overall_row: Horizontal
-    _error_label: Label
-    _toggle_label: Label
-    _title_label: Label
-    _eta_label: Label
-    _action_button: Button
+    _cached_theme: str
+    _styles_by_state: dict[Job.State, Style]
+    _hover_styles_by_state: dict[Job.State, Style]
+    _bar_muted_style: Style
+    _btn_style: Style
+    _btn_hover_style: Style
+    _hovered_job_index: int | None
+    _hovered_btn: bool
 
-    def __init__(self, job: Job, on_action: Callable[[Job], None]) -> None:
+    def __init__(self, on_action: Callable[[Job], None] | None = None) -> None:
         super().__init__()
-        self._job = job
-        self._on_action = on_action
-        self._expanded = job.state == Job.State.RUNNING
-        self._step_bar = ProgressBar(total=1, show_eta=False, show_percentage=False, classes="step-bar")
-        self._overall_bar = ProgressBar(total=1, show_eta=False, show_percentage=False, classes="overall-bar")
-        self._step_pct_label = Label("0%", classes="pct-label")
-        self._overall_count_label = Label("0/0", classes="count-label")
-        self._overall_pct_label = Label("0%", classes="pct-label")
-        self._step_row = Horizontal(
-            self._step_bar, Label("", classes="step-spacer"), self._step_pct_label, classes="progress-row"
+        self._jobs = []
+        self._start_times = {}
+        self._on_action = on_action if on_action is not None else (lambda _: None)
+        self._cached_theme = ""
+        self._styles_by_state = {}
+        self._hover_styles_by_state = {}
+        self._bar_muted_style = Style()
+        self._btn_style = Style()
+        self._btn_hover_style = Style()
+        self._hovered_job_index = None
+        self._hovered_btn = False
+
+    def set_jobs(self, jobs: Sequence[Job]) -> None:
+        """Replace the displayed job list and trigger a repaint."""
+        live_ids = {id(j) for j in jobs}
+        self._start_times = {k: v for k, v in self._start_times.items() if k in live_ids}
+        self._jobs = list(jobs)
+        height = max(1, len(jobs) * self.ITEM_HEIGHT)
+        self.virtual_size = Size(self.size.width or 80, height)
+        self.refresh()
+
+    # ── rendering ─────────────────────────────────────────────────────────────
+
+    def _resolve_theme_styles(self) -> None:
+        """Compute alpha-composited styles from CSS component classes; cached per theme name.
+
+        Textual's get_component_rich_style drops alpha when converting to Rich Style.
+        We read the raw textual.color.Color (with .a preserved) from get_component_styles()
+        and composite it manually against the opaque panel background.
+        """
+        current = self.app.theme
+        if current == self._cached_theme:
+            return
+        self._cached_theme = current
+
+        # $panel is fully opaque — use it as the compositing base for all blended colors.
+        panel = self.get_component_styles("job-list--running").background
+
+        def composite_bg(name: str) -> Style:
+            bg = self.get_component_styles(name).background
+            if bg.a < 1.0:
+                bg = bg.blend(panel, 1 - bg.a, alpha=1.0)
+            return Style(bgcolor=bg.rich_color)
+
+        def composite_color(name: str) -> Style:
+            styles = self.get_component_styles(name)
+            if not styles.has_rule("color"):
+                return Style()
+            col = styles.color
+            if col.a < 1.0:
+                col = col.blend(panel, 1 - col.a, alpha=1.0)
+            return Style(color=col.rich_color)
+
+        self._styles_by_state = {
+            Job.State.RUNNING: composite_bg("job-list--running"),
+            Job.State.COMPLETED: composite_bg("job-list--completed"),
+            Job.State.CANCELED: composite_bg("job-list--canceled"),
+            Job.State.FAILED: composite_bg("job-list--failed"),
+        }
+        self._bar_muted_style = composite_color("job-list--bar-muted")
+
+        white = Color(255, 255, 255)
+        self._hover_styles_by_state = {}
+        for state, state_style in self._styles_by_state.items():
+            if state_style.bgcolor is not None:
+                bg = Color.from_rich_color(state_style.bgcolor)
+                self._hover_styles_by_state[state] = Style(bgcolor=bg.blend(white, 0.1).rich_color)
+            else:
+                self._hover_styles_by_state[state] = state_style
+
+        self._btn_style = composite_bg("job-list--btn")
+        self._btn_hover_style = composite_bg("job-list--btn-hover")
+
+    def render_line(self, y: int) -> Strip:
+        self._resolve_theme_styles()
+        _scroll_x, scroll_y = self.scroll_offset
+        logical_y = y + scroll_y
+
+        if not self._jobs:
+            if logical_y == 0:
+                text = "No jobs".center(self.size.width or 80)
+                return Strip([Segment(text, style=self.rich_style)])
+            return Strip([Segment(" " * (self.size.width or 80), style=self.rich_style)])
+
+        job_index = logical_y // self.ITEM_HEIGHT
+        y_in_item = logical_y % self.ITEM_HEIGHT
+
+        if job_index >= len(self._jobs):
+            return Strip([Segment(" " * (self.size.width or 80), style=self.rich_style)])
+
+        job = self._jobs[job_index]
+        return self._render_job_line(job, job_index, y_in_item)
+
+    def _render_job_line(self, job: Job, job_index: int, y_in_item: int) -> Strip:
+        width = self.size.width or 80
+        is_hovered = job_index == self._hovered_job_index
+        styles_map = self._hover_styles_by_state if is_hovered else self._styles_by_state
+        bg_style = styles_map.get(job.state, Style())
+        base = self.rich_style + bg_style
+
+        if y_in_item == self.ROW_HEIGHT:  # separator line — always neutral panel bg
+            sep_base = self.rich_style + self._styles_by_state.get(Job.State.RUNNING, Style())
+            sep_style = self.get_component_rich_style("job-list--separator", partial=True)
+            return Strip([Segment("─" * width, style=sep_base + sep_style)])
+
+        if y_in_item == 0:
+            return self._render_header_line(job, job_index, base, width)
+        if y_in_item == 1:
+            return self._render_item_line(job, base, width)
+        if y_in_item == self.ROW_HEIGHT - 2:
+            return self._render_step_bar_line(job, base, width)
+        # y_in_item == ROW_HEIGHT - 1
+        return self._render_overall_bar_line(job, base, width)
+
+    def _render_header_line(self, job: Job, job_index: int, base: Style, width: int) -> Strip:
+        eta = self._eta_str(job)
+        eta_width = 6  # e.g. " 9:59" or "59:59" with leading space = 6 chars
+        gap_width = 1  # space between ETA and button
+        btn_width = 3  # " ✕ "
+        title_width = max(1, width - eta_width - gap_width - btn_width)
+
+        title_text = self._display_title(job)
+        title_seg = Segment(title_text[:title_width].ljust(title_width), style=base)
+
+        eta_text = eta.rjust(eta_width) if eta else " " * eta_width
+        muted = self.get_component_rich_style("job-list--muted", partial=True)
+        eta_seg = Segment(eta_text, style=base + muted)
+        gap_seg = Segment(" ", style=base)
+
+        btn_icon = self._button_icon(job.state)
+        btn_text = f" {btn_icon} "
+        btn_meta = Style.from_meta({"job_index": job_index, "action_button": True})
+        is_btn_hovered = job_index == self._hovered_job_index and self._hovered_btn
+        btn_bg = self._btn_hover_style if is_btn_hovered else self._btn_style
+        btn_seg = Segment(btn_text, style=base + btn_bg + btn_meta)
+
+        return Strip([title_seg, eta_seg, gap_seg, btn_seg])
+
+    def _render_item_line(self, job: Job, base: Style, width: int) -> Strip:
+        indent = "  "
+        if job.state == Job.State.FAILED and job.error:
+            err_style = self.get_component_rich_style("job-list--error", partial=True)
+            text = (indent + job.error.split("\n")[0])[:width].ljust(width)
+            return Strip([Segment(text, style=base + err_style)])
+        muted = self.get_component_rich_style("job-list--muted", partial=True)
+        item = job.progress.current_item
+        text = (indent + item)[:width].ljust(width)
+        return Strip([Segment(text, style=base + muted)])
+
+    def _render_step_bar_line(self, job: Job, base: Style, width: int) -> Strip:
+        if job.state == Job.State.FAILED and job.error:
+            err_style = self.get_component_rich_style("job-list--error", partial=True)
+            lines = (job.error or "").split("\n")
+            text = ("  " + (lines[1] if len(lines) > 1 else ""))[:width].ljust(width)
+            return Strip([Segment(text, style=base + err_style)])
+
+        indent = "  "
+        pct_width = 5  # " XX%"
+        count_width = 9  # matches overall bar layout so both bars are the same length
+        bar_width = max(1, width - len(indent) - count_width - pct_width)
+        progress = job.progress
+        step_total = max(1, progress.step_total)
+        ratio = progress.step_completed / step_total
+        pct = f" {int(ratio * 100):3d}%"
+        fill_cls = "job-list--bar-complete" if ratio >= 1.0 else "job-list--bar-fill"
+        bar_style = self.get_component_rich_style(fill_cls, partial=True)
+        bar_muted = self._bar_muted_style
+        fill_text, muted_text = _generate_progress_bar_segments(ratio, bar_width)
+        bar_segs: list[Segment] = []
+        if fill_text:
+            bar_segs.append(Segment(fill_text, style=base + bar_style))
+        if muted_text:
+            bar_segs.append(Segment(muted_text, style=base + bar_muted))
+        return Strip(
+            [
+                Segment(indent, style=base),
+                *bar_segs,
+                Segment(" " * count_width, style=base),
+                Segment(pct, style=base),
+            ]
         )
-        self._overall_row = Horizontal(
-            self._overall_bar, self._overall_count_label, self._overall_pct_label, classes="progress-row"
-        )
-        self._error_label = Label(job.error or "", classes="error-msg")
-        self._toggle_label = Label(self._toggle_icon(), classes="toggle-icon")
-        self._title_label = Label(self._display_title(job), classes="job-title")
-        self._eta_label = Label("", classes="eta-label")
-        self._action_button = Button(self._button_icon(job.state), id="action", compact=True)
 
-    def _toggle_icon(self) -> str:
-        return "▼" if self._expanded else "▶"
+    def _render_overall_bar_line(self, job: Job, base: Style, width: int) -> Strip:
+        indent = "  "
+        pct_width = 5  # " XX%"
+        count_width = 9  # "  NNN/MMM" right-justified
+        bar_width = max(1, width - len(indent) - count_width - pct_width)
+        progress = job.progress
+        overall_total = max(1, progress.total)
+        bar_ratio = progress.effective_completed / overall_total
+        display_pct = int(bar_ratio * 100)
+        count = f"{progress.completed}/{overall_total}".rjust(count_width)
+        pct = f" {display_pct:3d}%"
+        fill_cls = "job-list--bar-complete" if bar_ratio >= 1.0 else "job-list--bar-fill"
+        bar_style = self.get_component_rich_style(fill_cls, partial=True)
+        bar_muted = self._bar_muted_style
+        fill_text, muted_text = _generate_progress_bar_segments(bar_ratio, bar_width)
+        bar_segs: list[Segment] = []
+        if fill_text:
+            bar_segs.append(Segment(fill_text, style=base + bar_style))
+        if muted_text:
+            bar_segs.append(Segment(muted_text, style=base + bar_muted))
+        return Strip([Segment(indent, style=base), *bar_segs, Segment(count, style=base), Segment(pct, style=base)])
 
-    def compose(self) -> ComposeResult:
-        with Horizontal(classes="job-header"):
-            yield self._toggle_label
-            yield self._title_label
-            yield self._eta_label
-            yield self._action_button
-        with Vertical(classes="job-body"):
-            yield self._step_row
-            yield self._overall_row
-            yield self._error_label
+    # ── helpers ───────────────────────────────────────────────────────────────
 
-    def on_mount(self) -> None:
-        self.query_one(".job-body").display = self._expanded
-        self._error_label.display = self._job.state == Job.State.FAILED and bool(self._job.error)
-
-    def on_click(self) -> None:
-        self._expanded = not self._expanded
-        self._toggle_label.update(self._toggle_icon())
-        self.query_one(".job-body").display = self._expanded
+    def _eta_str(self, job: Job) -> str:
+        if job.state != Job.State.RUNNING:
+            return ""
+        progress = job.progress
+        if progress.total == 0:
+            return ""
+        # Use fractional progress to match the value shown by the overall bar.
+        effective_completed = progress.effective_completed
+        if effective_completed == 0:
+            return ""
+        job_id = id(job)
+        if job_id not in self._start_times:
+            self._start_times[job_id] = time.monotonic()
+            return ""
+        elapsed = time.monotonic() - self._start_times[job_id]
+        if elapsed < 1:
+            return ""
+        rate = effective_completed / elapsed
+        remaining = (progress.total - effective_completed) / rate
+        if remaining <= 0:
+            return ""
+        m, s = divmod(int(remaining), 60)
+        return f"{m}:{s:02d}"
 
     @staticmethod
     def _display_title(job: Job) -> str:
@@ -178,46 +344,36 @@ class JobRow(Widget):
     def _button_icon(state: Job.State) -> str:
         return "✕" if state == Job.State.RUNNING else ("✓" if state == Job.State.COMPLETED else "✗")
 
-    def refresh_job(self, job: Job) -> None:
-        """Update this row in-place with current job state."""
-        self._job = job
-        self._title_label.update(self._display_title(job))
-        self._action_button.label = self._button_icon(job.state)
+    # ── mouse handling ────────────────────────────────────────────────────────
 
-        self.remove_class("-running", "-completed", "-canceled", "-failed")
-        self.add_class(f"-{job.state.name.lower()}")
-
-        progress = job.progress
-        step_total = max(1, progress.step_total)
-        overall_total = max(1, progress.total)
-        overall_effective = min(overall_total, progress.completed + progress.step_completed / step_total)
-        self._step_bar.update(total=step_total, progress=progress.step_completed)
-        self._overall_bar.update(total=overall_total, progress=overall_effective)
-        step_pct = int(progress.step_completed / step_total * 100)
-        overall_pct = int(overall_effective / overall_total * 100)
-        self._step_pct_label.update(f"{step_pct}%")
-        self._overall_count_label.update(f"{progress.completed}/{overall_total}")
-        self._overall_pct_label.update(f"{overall_pct}%")
-
-        if job.state == Job.State.RUNNING:
-            eta_secs: int | None = self._overall_bar._display_eta  # type: ignore[attr-defined]
-            if eta_secs is None:
-                self._eta_label.update("")
-            else:
-                m, s = divmod(eta_secs, 60)
-                self._eta_label.update(f"{m}:{s:02d}")
-        else:
-            self._eta_label.update("")
-
-        if job.state == Job.State.FAILED and job.error:
-            self._error_label.update(job.error)
-            self._error_label.display = True
-        else:
-            self._error_label.display = False
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
+    def _on_mouse_move(self, event: MouseMove) -> None:
+        _scroll_x, scroll_y = self.scroll_offset
+        logical_y = event.y + scroll_y
+        job_index = logical_y // self.ITEM_HEIGHT
+        y_in_item = logical_y % self.ITEM_HEIGHT
+        btn_width = 3
+        new_hover = job_index if 0 <= job_index < len(self._jobs) else None
+        new_btn = new_hover is not None and y_in_item == 0 and event.x >= (self.size.width or 80) - btn_width
+        if new_hover != self._hovered_job_index or new_btn != self._hovered_btn:
+            self._hovered_job_index = new_hover
+            self._hovered_btn = new_btn
+            self.refresh()
         event.stop()
-        self._on_action(self._job)
+
+    def _on_leave(self, event: Leave) -> None:
+        changed = self._hovered_job_index is not None or self._hovered_btn
+        self._hovered_job_index = None
+        self._hovered_btn = False
+        if changed:
+            self.refresh()
+
+    async def _on_mouse_down(self, event: MouseDown) -> None:
+        meta = event.style.meta
+        if meta.get("action_button"):
+            job_index = meta["job_index"]
+            if 0 <= job_index < len(self._jobs):
+                self._on_action(self._jobs[job_index])
+                event.stop()
 
 
 class JobsDialog(PopupWidget, can_focus=True):
@@ -236,38 +392,22 @@ class JobsDialog(PopupWidget, can_focus=True):
         height: auto;
         max-height: 30;
     }
-    JobsDialog VerticalScroll {
+    JobsDialog JobListView {
         height: auto;
         max-height: 28;
-        padding: 0;
-    }
-    JobsDialog #no-jobs {
-        width: 1fr;
-        content-align: center middle;
-        color: $text-muted;
-        padding: 1;
     }
     """
 
     _registry: JobRegistry
-    _rows: dict[int, JobRow]
-    _rules: dict[int, Separator]
-    _scroll: VerticalScroll
-    _no_jobs_label: Label | None
+    _job_list: JobListView
 
     def __init__(self, position: tuple[int, int], registry: JobRegistry) -> None:
-        super().__init__(
-            "Jobs",
-            position,
-        )
+        super().__init__("Jobs", position)
         self._registry = registry
-        self._rows = {}
-        self._rules = {}
-        self._no_jobs_label = None
-        self._scroll = VerticalScroll()
+        self._job_list = JobListView(on_action=self._handle_action)
 
     def compose(self) -> ComposeResult:
-        yield self._scroll
+        yield self._job_list
 
     def _update_position(self) -> None:
         x = self.screen.size.width - self._DIALOG_WIDTH - self._DIALOG_MARGIN_RIGHT
@@ -276,6 +416,7 @@ class JobsDialog(PopupWidget, can_focus=True):
     def show(self) -> None:
         self._update_position()
         super().show()
+        self.call_after_refresh(self._tick)
 
     def on_mount(self) -> None:
         self.display = False
@@ -283,52 +424,16 @@ class JobsDialog(PopupWidget, can_focus=True):
 
     async def _tick(self) -> None:
         self._registry.update()
-        desired: list[Job] = self._registry.running_jobs + self._registry.finished_jobs
-        desired_ids = {id(job) for job in desired}
-
-        # mount new rows
-        for job in desired:
-            if id(job) not in self._rows:
-                row = JobRow(job, self._handle_action)
-                row.add_class(f"-{job.state.name.lower()}")
-                rule = Separator()
-                self._rows[id(job)] = row
-                self._rules[id(job)] = rule
-                await self._scroll.mount(row)
-                await self._scroll.mount(rule)
-
-        # refresh existing rows
-        for job in desired:
-            row = self._rows.get(id(job))
-            if row is not None:
-                row.refresh_job(job)
-
-        # remove rows for jobs no longer in the registry
-        stale = [jid for jid in self._rows if jid not in desired_ids]
-        for jid in stale:
-            self._rows.pop(jid).remove()
-            rule = self._rules.pop(jid, None)
-            if rule is not None:
-                rule.remove()
-
-        # empty state label
-        if not desired:
-            if self._no_jobs_label is None:
-                self._no_jobs_label = Label("No jobs", id="no-jobs")
-                await self._scroll.mount(self._no_jobs_label)
-        else:
-            if self._no_jobs_label is not None:
-                self._no_jobs_label.remove()
-                self._no_jobs_label = None
+        if not self.display:
+            return
+        desired = self._registry.running_jobs + self._registry.finished_jobs
+        self._job_list.set_jobs(desired)
 
     def _handle_action(self, job: Job) -> None:
         if job.state == Job.State.RUNNING:
             job.cancel()
         else:
             self._registry.remove_job(job)
-            row = self._rows.pop(id(job), None)
-            if row is not None:
-                row.remove()
-            rule = self._rules.pop(id(job), None)
-            if rule is not None:
-                rule.remove()
+            # re-render immediately without waiting for next tick
+            desired = self._registry.running_jobs + self._registry.finished_jobs
+            self._job_list.set_jobs(desired)
