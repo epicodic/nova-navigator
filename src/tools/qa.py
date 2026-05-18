@@ -27,18 +27,37 @@ def run_step(label: str, style: str, cmd: list[str]) -> bool:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run QA checks (lint, format, typecheck, tests).")
     parser.add_argument(
-        "--code-quality", action="store_true", help="Run only code quality checks (format, lint, type checks)."
+        "--no-tests",
+        action="store_true",
+        help="Do not run tests, only code quality checks (format, lint, type checks).",
+    )
+    parser.add_argument(
+        "--no-integration-tests",
+        action="store_true",
+        help="Do not run integration tests.",
     )
     parser.add_argument("--fix", action="store_true", help="Apply autofixes where possible.")
     args = parser.parse_args()
 
     steps = [
-        ("Ruff Lint", "blue", ["uv", "run", "ruff", "check", "."] + (["--fix"] if args.fix else [])),
-        ("Ruff Format", "yellow", ["uv", "run", "ruff", "format", "."] + ([] if args.fix else ["--check"])),
+        (
+            "Ruff Lint",
+            "blue",
+            ["uv", "run", "ruff", "check", "."] + (["--fix"] if args.fix else []),
+        ),
+        (
+            "Ruff Format",
+            "yellow",
+            ["uv", "run", "ruff", "format", "."] + ([] if args.fix else ["--check"]),
+        ),
         ("Type Check", "green", ["uv", "run", "ty", "check", "."]),
     ]
-    if not args.code_quality:
-        (steps.append(("Tests", "magenta", ["uv", "run", "pytest", "tests/"])),)
+    if not args.no_tests:
+        test_args = []
+        if args.no_integration_tests:
+            test_args += ["-m", "not integration"]
+
+        steps.append(("Tests", "magenta", ["uv", "run", "pytest", *test_args]))
 
     failed = [label for label, style, cmd in steps if not run_step(label, style, cmd)]
 
