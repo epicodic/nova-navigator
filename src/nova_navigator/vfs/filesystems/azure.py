@@ -8,7 +8,7 @@ import io
 import logging
 import threading
 from collections.abc import AsyncIterator
-from pathlib import PurePosixPath
+from pathlib import PurePath, PurePosixPath
 from typing import override
 
 from azure.core.exceptions import HttpResponseError, ResourceExistsError, ResourceNotFoundError
@@ -125,10 +125,17 @@ class AzureFilesystem(Filesystem):
             _logger.info("ContainerClient created for %r / %r", account_url, container)
         else:
             self._client = client
+        self._account_url = account_url
+        self._container = container
 
     @override
     def cwd(self) -> VPath:
         return self.path("/")
+
+    @override
+    def uri_for_path(self, path: PurePath) -> str:
+        netloc = self._account_url.removeprefix("https://").removeprefix("http://")
+        return f"azure://{netloc}/{self._container}{path}"
 
     @override
     def root(self) -> VPath:

@@ -70,6 +70,20 @@ class Filesystem(ABC):
         """Create a :class:`~nova_navigator.vfs.vpath.VPath` bound to this filesystem."""
         return VPath(str(p), self)
 
+    def uri_for_path(self, path: PurePath) -> str:
+        """Return the URI string for *path* on this filesystem.
+
+        The default implementation returns a home-relative path (``~/…``) when the
+        path is inside the home directory, falling back to the absolute path string.
+        Override in subclasses to include a scheme and authority, e.g. ``ssh://…``.
+        """
+        home = self.home()
+        try:
+            rel_path = path.relative_to(home.path)
+            return str("~" / rel_path)
+        except ValueError:
+            return str(path)
+
     def resolve_link(self, path: VPath) -> VPath:
         """Return the resolved target path of the symbolic link at *path*."""
         self._assert_vpath(path)

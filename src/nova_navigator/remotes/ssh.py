@@ -7,10 +7,12 @@ import logging
 
 import paramiko
 
-from nova_navigator.config.remotes import RemoteConnection
+from nova_navigator.config.remotes import RemoteConnection, SshSettings
 from nova_navigator.dialogs import CredentialsDialog, MessageBox
 from nova_navigator.response import Response
 from nova_navigator.vfs.filesystems import SSHFilesystem, UnknownHostKeyError
+from nova_navigator.vfs.scheme_registry import SCHEME_REGISTRY
+from nova_navigator.vfs.vpath import VPath
 
 _logger = logging.getLogger(__name__)
 
@@ -77,3 +79,47 @@ async def _prompt_credentials(hostname: str, port: int, username: str | None) ->
         _logger.exception("SSH password auth failed for %r: %s", hostname, exc)
         await MessageBox(f"Could not connect to {hostname!r}:\n{exc}", variant="error").run()
         return None
+
+
+def _parse_netloc(netloc: str) -> tuple[str, str | None, int | None]:
+    """Parse ``[user@]host[:port]`` into ``(host, user, port)``."""
+    if "@" in netloc:
+        user_part, host_part = netloc.rsplit("@", 1)
+        user: str | None = user_part or None
+    else:
+        user = None
+        host_part = netloc
+
+    if ":" in host_part:
+        host, port_str = host_part.rsplit(":", 1)
+        port: int | None = int(port_str) if port_str.isdigit() else None
+    else:
+        host = host_part
+        port = None
+
+    return host, user, port
+
+
+class SshConnector:
+    """Connector that establishes an SSH connection from an ``ssh://`` URI.
+
+    Parses ``netloc`` as ``[user@]host[:port]`` and delegates to :func:`connect_ssh`,
+    which shows interactive UI dialogs for host-key confirmation and credentials.
+    Returns ``None`` if the user cancels any dialog.
+    """
+
+    async def resolve(self, path: str, netloc: str | None) -> VPath | None:
+        host, user, port = _parse_netloc(netloc or "")
+        if not host:
+            raise ValueError("No hostname in SSH URI")
+
+        conn = RemoteConnection(name=host, ssh=SshSettings(host=host, user=user, port=port))
+        fs = await connect_ssh(conn)
+        if fs is None:
+            return None
+        return VPath(path or "/", fs)
+
+
+def register_ssh_scheme() -> None:
+    """Register the ``ssh`` scheme in the process-wide :data:`~nova_navigator.vfs.scheme_registry.SCHEME_REGISTRY`."""
+    SCHEME_REGISTRY.register_scheme("ssh", SshConnector())

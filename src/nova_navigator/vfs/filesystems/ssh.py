@@ -7,6 +7,7 @@ import os
 import threading
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
+from pathlib import PurePath
 from typing import override
 
 import paramiko
@@ -159,6 +160,9 @@ class SSHFilesystem(Filesystem):
         self._sftp_client = self._ssh_client.open_sftp()
         self._stat_cache: dict[tuple[str, bool], dict[str, StatEntry]] = {}
         self._stat_cache_lock = threading.Lock()
+        self._hostname = hostname
+        self._port = port
+        self._username = username
 
     def __eq__(self, value: object) -> bool:
         return isinstance(value, SSHFilesystem) and self._ssh_client == value._ssh_client
@@ -168,6 +172,14 @@ class SSHFilesystem(Filesystem):
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self._ssh_client!r})"
+
+    @override
+    def uri_for_path(self, path: PurePath) -> str:
+        _DEFAULT_SSH_PORT = 22
+        netloc = self._username + "@" + self._hostname if self._username else self._hostname
+        if self._port != _DEFAULT_SSH_PORT:
+            netloc = netloc + ":" + str(self._port)
+        return f"ssh://{netloc}{path}"
 
     @override
     def is_same_device(self, path1: VPath, path2: VPath) -> bool:

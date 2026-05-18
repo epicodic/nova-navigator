@@ -266,6 +266,78 @@ class FilterWidget(PopupWidget, can_focus=True):
         self.browser.on_filter_widget_input_changed(event)
 
 
+class GoToPathWidget(PopupWidget, can_focus=True):
+    """Widget for navigating to an arbitrary path or URI."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "dismiss", "Dismiss", show=False),
+    ]
+    CLOSE_ACTION = PopupWidget.CloseAction.KEEP
+    CLOSE_ON_BLUR = False
+
+    DEFAULT_CSS = """
+    GoToPathWidget {
+        width: 60;
+        height: 1;
+        border: none;
+
+        Static {
+            width: 10;
+            padding-right: 1;
+            padding-left: 1;
+        }
+
+        Input {
+            width: 48;
+            padding-left: 1;
+        }
+    }
+    """
+
+    class Submitted(Message):
+        """Posted when the user submits a path or URI to navigate to."""
+
+        def __init__(self, path: str, browser: DirectoryBrowser) -> None:
+            super().__init__()
+            self.path = path
+            self.browser = browser
+
+    input: Input
+
+    def __init__(self, position: tuple[int, int], browser: DirectoryBrowser) -> None:
+        super().__init__("Go to Path", position)
+        self.browser = browser
+        self.input = Input(placeholder="Path or URI (e.g. ssh://user@host/path)…", compact=True)
+        self.display = False
+
+    def compose(self) -> ComposeResult:
+        yield Horizontal(
+            self.input,
+        )
+
+    def on_focus(self, event: events.Focus) -> None:
+        self.show()
+        self.input.focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.action_accept()
+
+    def action_accept(self) -> None:
+        value = self.input.value.strip()
+        if not value:
+            self.action_dismiss()
+            return
+        self.post_message(GoToPathWidget.Submitted(value, self.browser))
+        self.input.value = ""
+        self.hide()
+        self.browser.focus()
+
+    def action_dismiss(self) -> None:
+        self.input.value = ""
+        self.hide()
+        self.browser.focus()
+
+
 class DirectoryBrowser(CustomBorderMixin, ScrollView):
     DEFAULT_CSS = """
     DirectoryBrowser {
@@ -361,6 +433,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
     _columns: list[Column]
     _max_line_width: int
     _filter_widget: FilterWidget
+    _goto_widget: GoToPathWidget
 
     show_hidden_files: Reactive[bool] = Reactive(default=False, repaint=False, always_update=False)
     cursor_row: Reactive[int] = Reactive(default=0, repaint=False, always_update=True)
@@ -419,11 +492,16 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
             position=(10, 0),
             browser=self,
         )
+        self._goto_widget = GoToPathWidget(
+            position=(0, 0),
+            browser=self,
+        )
         self.set_path(path)
 
     def on_mount(self) -> None:
         super().on_mount()
         self.screen.mount(self._filter_widget)
+        self.screen.mount(self._goto_widget)
         self._load_directory()
         self._start_watch()
 
@@ -480,7 +558,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         else:
             self._name_under_cursor_hint = None
 
-        self.border_title = path.compact_path_str
+        self.border_title = path.uri
         self._path = path
         self.post_message(DirectoryBrowser.PathChanged(self, path))
         path.filesystem.refresh(path)
@@ -1029,6 +1107,14 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         self._filter_widget.offset = (self.region.x + 2, self.region.y)
 
         self._filter_widget.focus()
+
+    async def action_go_to_path(self) -> None:
+        # Position the go-to widget at the top of this browser on screen.
+        self._goto_widget.offset = (self.region.x + 2, self.region.y)
+
+        self._goto_widget.input.value = self._path.uri
+        self._goto_widget.input.action_end()
+        self._goto_widget.focus()
 
     def on_filter_widget_input_changed(self, event: Input.Changed) -> None:
         self.update(self.WhatChanged.FILTERING)
