@@ -52,7 +52,7 @@ from nova_navigator.vfs.filesystems import LocalFilesystem
 from nova_navigator.vfs.parse_uri import parse_uri
 from nova_navigator.vfs.scheme_registry import vfspath_from_uri
 from nova_navigator.widgets import DirectoryBrowser, Footer, JobStatusIcon
-from nova_navigator.widgets.directory_browser import GoToPathWidget
+from nova_navigator.widgets.directory_browser import GoToPathWidget, UpPath
 from nova_widgets.menu import Action, Menu, MenuBar
 from nova_widgets.menu import constructor as mc
 
@@ -73,6 +73,7 @@ class MainScreen(Screen[None]):
         Binding("ctrl+q", "quit", "Quit"),
         Binding("ctrl+o", "toggle_maximized_terminal", "Maximize Terminal", priority=True),
         Binding("ctrl+l", "toggle_terminal", "Enlarge Terminal", priority=True),
+        Binding("f2", "rename", "Rename"),
         Binding("f4", "open_editor", "Edit"),
         Binding("f5", "copy_or_move_files(False)", "Copy"),
         Binding("f6", "copy_or_move_files(True)", "Move"),
@@ -145,7 +146,7 @@ class MainScreen(Screen[None]):
             mc.action("Paste", name="paste"),
             mc.separator(),
             mc.action("Delete", shortcut="F8", action="delete_files", name="delete"),
-            mc.action("Rename", name="rename"),
+            mc.action("Rename", shortcut="F2", action="rename", name="rename"),
             mc.separator(),
             mc.action("Filter", shortcut="Ctrl+F", action="filter", name="filter"),
         )
@@ -607,6 +608,21 @@ class MainScreen(Screen[None]):
     def _action_copy_names(self) -> None:
         names = "\n".join(p.name for p in self.active_panel().selected_path_items)
         self.app.copy_to_clipboard(names)
+
+    @work
+    async def _action_rename(self) -> None:
+        panel = self.active_panel()
+        source = panel.path_item_under_cursor
+        if isinstance(source, UpPath):
+            return
+        job = await copy_or_move_files_job(
+            src_paths=[source],
+            dst_path=panel.path,
+            move=True,
+        )
+        if job is not None:
+            self.app.job_registry.add_job(job)
+            await job.start(self.app.request_callback)
 
     @work
     async def _action_new_directory(self) -> None:
