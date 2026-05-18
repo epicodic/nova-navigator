@@ -7,6 +7,7 @@ import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from io import BufferedReader, BufferedWriter
+from pathlib import PurePath
 from stat import S_IMODE, S_ISDIR, S_ISLNK
 from typing import Any, override
 
@@ -66,6 +67,10 @@ class LocalFilesystem(Filesystem):
             return stat1.st_dev == stat2.st_dev
         except (FileNotFoundError, OSError):
             return False
+
+    @override
+    def path(self, p: str | PurePath) -> VPath:
+        return VPath(os.path.expanduser(str(p)), self)
 
     @override
     def cwd(self) -> VPath:

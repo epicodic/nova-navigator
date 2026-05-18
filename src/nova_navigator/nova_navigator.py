@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import importlib.metadata
 import logging
 import subprocess
 import sys
@@ -38,16 +39,19 @@ from nova_navigator.nova_navigator_core import (
     NovaNavigatorCore,
     PanelRef,
 )
-from nova_navigator.remotes.azure import connect_azure
-from nova_navigator.remotes.ssh import connect_ssh
+from nova_navigator.remotes.azure import register_azure_scheme
+from nova_navigator.remotes.remote import RemoteConnector, register_remote_scheme
+from nova_navigator.remotes.ssh import register_ssh_scheme
 from nova_navigator.response import Response
 from nova_navigator.runtime_patches import apply_runtime_patches
 from nova_navigator.scheduler import Job, ResponseRequest
 from nova_navigator.terminal import Terminal
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
+from nova_navigator.vfs.parse_uri import parse_uri
 from nova_navigator.vfs.scheme_registry import vfspath_from_uri
 from nova_navigator.widgets import DirectoryBrowser, Footer, JobStatusIcon
+from nova_navigator.widgets.directory_browser import GoToPathWidget
 from nova_widgets.menu import Action, Menu, MenuBar
 from nova_widgets.menu import constructor as mc
 
@@ -115,8 +119,7 @@ class MainScreen(Screen[None]):
             "𑁔",
             mc.action("Settings", icon="gear", shortcut="Ctrl+F1", action="settings"),
             mc.separator(),
-            mc.action("About", icon="info"),
-            mc.separator(),
+            mc.action("About", icon="info", action="about"),
             mc.separator(),
             mc.action("Quit", shortcut="Ctrl+Q", action="quit"),
         )
@@ -139,7 +142,7 @@ class MainScreen(Screen[None]):
             mc.action("Copy Names", name="copy_names"),
             mc.action("Paste", name="paste"),
             mc.separator(),
-            mc.action("Delete", shortcut="F8", name="delete"),
+            mc.action("Delete", shortcut="F8", action="delete_files", name="delete"),
             mc.action("Rename", name="rename"),
             mc.separator(),
             mc.action("Filter", shortcut="Ctrl+F", action="filter", name="filter"),
@@ -420,10 +423,38 @@ class MainScreen(Screen[None]):
         self.app.job_registry.add_job(job)
         await job.start(self.app.request_callback)
 
+    @work
     async def on_bookmarks_dialog_bookmark_selected(self, event: BookmarksDialog.BookmarkSelected) -> None:
-        vpath = vfspath_from_uri(event.bookmark_path)
+        try:
+            vpath = await vfspath_from_uri(event.bookmark_path)
+        except ValueError as exc:
+            await MessageBox(str(exc), title="Cannot open bookmark", variant="error").run()
+            return
+        if vpath is None:
+            return
         _logger.info("Bookmark selected: %s", vpath)
         self.active_panel().set_path(vpath)
+
+    @work
+    async def on_go_to_path_widget_submitted(self, event: GoToPathWidget.Submitted) -> None:
+        try:
+            submitted = parse_uri(event.path).components[0]
+            current = parse_uri(event.browser.path.uri).components[0]
+            if submitted.scheme == current.scheme and submitted.netloc == current.netloc:
+                # Same scheme + authority — reuse the existing filesystem, no new connection.
+                vpath = event.browser.path.filesystem.path(submitted.path or "/")
+                event.browser.set_path(vpath)
+                return
+            vpath = await vfspath_from_uri(event.path)
+        except ValueError as exc:
+            await MessageBox(str(exc), title="Cannot navigate", variant="error").run()
+            return
+        if vpath is None:
+            return
+        event.browser.set_path(vpath)
+
+    async def _action_go_to_path(self) -> None:
+        await self.active_panel().action_go_to_path()
 
     def _update_actions(self, path: VPath | None) -> None:
         class AKey(NamedTuple):
@@ -591,6 +622,11 @@ class MainScreen(Screen[None]):
             await self._open_path(parent_path, panel)
 
     @work
+    async def _action_about(self) -> None:
+        version = importlib.metadata.version("nova-navigator")
+        await MessageBox(f"Nova Navigator {version}\nhttps://github.com/epicodic/nova-navigator/", title="About").run()
+
+    @work
     async def _action_settings(self) -> None:
         dialog = SettingsDialog(copy.deepcopy(conf_.settings))
         if await dialog.run() == Response.OK:
@@ -620,21 +656,10 @@ class MainScreen(Screen[None]):
         conn = dialog.selected_connection
         if conn is None:
             return
-        if conn.ssh is not None and conn.ssh.host:
-            fs = await connect_ssh(conn)
-        elif conn.azure is not None and conn.azure.account_url:
-            fs = await connect_azure(conn)
-        else:
-            _logger.warning(
-                "Connection %r has no usable settings (ssh.host=%r, azure.account_url=%r)",
-                conn.name,
-                conn.ssh.host if conn.ssh else None,
-                conn.azure.account_url if conn.azure else None,
-            )
+        vpath = await RemoteConnector(conf_.remotes).resolve("/", conn.name)
+        if vpath is None:
             return
-        if fs is None:
-            return
-        start_path = await asyncio.to_thread(fs.cwd)
+        start_path = await asyncio.to_thread(vpath.filesystem.cwd)
         self.active_panel().set_path(start_path)
 
     @work
@@ -695,6 +720,9 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         apply_runtime_patches()
         super().__init__()
         self._showing_exception_dialog = False
+        register_azure_scheme()
+        register_ssh_scheme()
+        register_remote_scheme(conf_.remotes)
 
     def action_help_quit(self) -> None:
         pass

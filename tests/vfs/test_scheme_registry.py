@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 
+from nova_navigator.remotes.azure import register_azure_scheme
 from nova_navigator.vfs.filesystems import LocalFilesystem
 from nova_navigator.vfs.scheme_registry import (
     SchemeRegistry,
@@ -13,15 +16,15 @@ from nova_navigator.vfs.vpath import VPath
 
 def test_register_and_find() -> None:
     registry = SchemeRegistry()
-    handler_called: list[tuple[str, str | None]] = []
 
-    def _handler(path: str, netloc: str | None) -> VPath:
-        handler_called.append((path, netloc))
-        return LocalFilesystem.singleton().path(path)
+    class _TestConnector:
+        async def resolve(self, path: str, netloc: str | None) -> VPath | None:
+            return LocalFilesystem.singleton().path(path)
 
-    registry.register_scheme("myscheme", _handler)
+    connector = _TestConnector()
+    registry.register_scheme("myscheme", connector)
     found = registry.find("myscheme")
-    assert found is _handler
+    assert found is connector
 
 
 def test_find_unknown_returns_none() -> None:
@@ -29,56 +32,76 @@ def test_find_unknown_returns_none() -> None:
     assert registry.find("notregistered") is None
 
 
-def test_vfspath_from_uri_local() -> None:
+@pytest.mark.asyncio
+async def test_vfspath_from_uri_local() -> None:
     register_common_schemes()
-    vpath = vfspath_from_uri("/usr")
+    vpath = await vfspath_from_uri("/usr")
+    assert vpath is not None
     assert str(vpath.path) == "/usr"
     assert isinstance(vpath.filesystem, LocalFilesystem)
 
 
-def test_vfspath_from_uri_file_scheme() -> None:
+@pytest.mark.asyncio
+async def test_vfspath_from_uri_file_scheme() -> None:
     register_common_schemes()
-    vpath = vfspath_from_uri("file:///usr")
+    vpath = await vfspath_from_uri("file:///usr")
+    assert vpath is not None
     assert str(vpath.path) == "/usr"
     assert isinstance(vpath.filesystem, LocalFilesystem)
 
 
-def test_vfspath_from_uri_unknown_scheme_raises() -> None:
+@pytest.mark.asyncio
+async def test_vfspath_from_uri_unknown_scheme_raises() -> None:
     with pytest.raises(ValueError, match="Unknown scheme"):
-        vfspath_from_uri("ftp://host/path")
+        await vfspath_from_uri("ftp://host/path")
 
 
-def test_vfspath_from_uri_no_scheme() -> None:
+@pytest.mark.asyncio
+async def test_vfspath_from_uri_no_scheme() -> None:
     register_common_schemes()
-    vpath = vfspath_from_uri("/usr/local/bin")
+    vpath = await vfspath_from_uri("/usr/local/bin")
+    assert vpath is not None
     assert str(vpath.path) == "/usr/local/bin"
 
 
-def test_vfspath_from_uri_azure_scheme() -> None:
+@pytest.mark.asyncio
+async def test_vfspath_from_uri_tilde_expands_to_home() -> None:
+    register_common_schemes()
+    vpath = await vfspath_from_uri("~/Documents")
+    assert vpath is not None
+    assert str(vpath.path) == os.path.join(os.path.expanduser("~"), "Documents")
+    assert isinstance(vpath.filesystem, LocalFilesystem)
+
+
+@pytest.mark.asyncio
+async def test_vfspath_from_uri_azure_scheme() -> None:
     from unittest.mock import patch
 
     from nova_navigator.vfs.filesystems.azure import AzureFilesystem
 
-    register_common_schemes()
+    register_azure_scheme()
     with (
         patch("nova_navigator.vfs.filesystems.azure.ContainerClient"),
         patch("nova_navigator.vfs.filesystems.azure.DefaultAzureCredential"),
     ):
-        vpath = vfspath_from_uri("azure://myaccount.blob.core.windows.net/mycontainer/folder/file.txt")
+        vpath = await vfspath_from_uri("azure://myaccount.blob.core.windows.net/mycontainer/folder/file.txt")
+    assert vpath is not None
     assert isinstance(vpath.filesystem, AzureFilesystem)
     assert str(vpath.path) == "/folder/file.txt"
 
 
-def test_vfspath_from_uri_azure_root() -> None:
+@pytest.mark.asyncio
+async def test_vfspath_from_uri_azure_root() -> None:
     from unittest.mock import patch
 
     from nova_navigator.vfs.filesystems.azure import AzureFilesystem
 
-    register_common_schemes()
+    register_azure_scheme()
     with (
         patch("nova_navigator.vfs.filesystems.azure.ContainerClient"),
         patch("nova_navigator.vfs.filesystems.azure.DefaultAzureCredential"),
     ):
-        vpath = vfspath_from_uri("azure://myaccount.blob.core.windows.net/mycontainer/")
+        vpath = await vfspath_from_uri("azure://myaccount.blob.core.windows.net/mycontainer/")
+    assert vpath is not None
     assert isinstance(vpath.filesystem, AzureFilesystem)
     assert str(vpath.path) == "/"

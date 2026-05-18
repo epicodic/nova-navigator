@@ -8,6 +8,8 @@ import logging
 from nova_navigator.config.remotes import RemoteConnection
 from nova_navigator.dialogs import MessageBox
 from nova_navigator.vfs.filesystems import AzureFilesystem
+from nova_navigator.vfs.scheme_registry import SCHEME_REGISTRY
+from nova_navigator.vfs.vpath import VPath
 
 _logger = logging.getLogger(__name__)
 
@@ -57,3 +59,20 @@ async def connect_azure(conn: RemoteConnection) -> AzureFilesystem | None:
         return None
     _logger.info("Azure connection established for %r", conn.name)
     return fs
+
+
+class _AzureConnector:
+    async def resolve(self, path: str, netloc: str | None) -> VPath | None:
+        account_url = f"https://{netloc}"
+        parts = path.lstrip("/").split("/", 1)
+        container = parts[0]
+        blob_path = "/" + parts[1] if len(parts) > 1 else "/"
+        if blob_path in ("//", "/"):
+            blob_path = "/"
+        fs = AzureFilesystem(account_url, container)
+        return fs.path(blob_path)
+
+
+def register_azure_scheme() -> None:
+    """Register the ``azure`` scheme in the process-wide :data:`~nova_navigator.vfs.scheme_registry.SCHEME_REGISTRY`."""
+    SCHEME_REGISTRY.register_scheme("azure", _AzureConnector())
