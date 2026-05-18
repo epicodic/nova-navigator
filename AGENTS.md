@@ -291,6 +291,27 @@ Run a single test with output visible:
 uv run pytest tests/nova_widgets/test_menu.py::test_mouse_click_triggers_hovered_item -s
 ```
 
+## Skills
+
+Process skills for agentic work live in `.agents/skills/`. Load the relevant skill before starting any non-trivial task.
+Keep this list updated as new skills are added or removed.
+
+| Situation | Skill |
+|-----------|-------|
+| Starting any conversation | `using-skills` |
+| Starting creative or feature work | `brainstorming` |
+| Implementing a feature or fixing a bug | `test-driven-development` |
+| Debugging unexpected behaviour | `systematic-debugging` |
+| Writing an implementation plan | `writing-plans` |
+| Executing a written plan (this session) | `subagent-driven-development` |
+| Executing a written plan (separate session) | `executing-plans` |
+| Receiving code review feedback | `receiving-code-review` |
+| Requesting code review | `requesting-code-review` |
+| About to claim work is complete | `verification-before-completion` |
+| Committing staged changes with a well-formed message | `git-commit` |
+| Writing or updating documentation pages in docs/ | `writing-documentation` |
+| Dispatching parallel agents | `dispatching-parallel-agents` |
+| Creating, updating, or debugging skills | `writing-skills` |
 
 
 

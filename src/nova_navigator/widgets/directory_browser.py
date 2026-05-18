@@ -275,7 +275,6 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "select_cursor", "Select", show=False),
-        Binding("ctrl+right", "follow_symlink", "Follow Symlink", show=False),
         Binding("up", "cursor_up", "Cursor up", show=False),
         Binding("down", "cursor_down", "Cursor down", show=False),
         Binding("right", "cursor_right", "Cursor right", show=False),

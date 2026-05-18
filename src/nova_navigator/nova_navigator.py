@@ -25,8 +25,10 @@ from nova_navigator.dialogs import (
     EditBookmarksDialog,
     EditRemotesDialog,
     JobsDialog,
+    MessageBox,
 )
 from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
+from nova_navigator.dialogs.dialog import ButtonSpec
 from nova_navigator.dialogs.response_dialog import make_response_dialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
 from nova_navigator.editor import Editor
@@ -39,6 +41,7 @@ from nova_navigator.nova_navigator_core import (
 from nova_navigator.remotes.azure import connect_azure
 from nova_navigator.remotes.ssh import connect_ssh
 from nova_navigator.response import Response
+from nova_navigator.runtime_patches import apply_runtime_patches
 from nova_navigator.scheduler import Job, ResponseRequest
 from nova_navigator.terminal import Terminal
 from nova_navigator.vfs import VPath
@@ -62,7 +65,7 @@ class CommandInput(Input):
 
 class MainScreen(Screen[None]):
     BINDINGS: ClassVar = [
-        Binding("^q", "quit", "Quit"),
+        Binding("ctrl+q", "quit", "Quit"),
         Binding("ctrl+o", "toggle_maximized_terminal", "Maximize Terminal", priority=True),
         Binding("ctrl+l", "toggle_terminal", "Enlarge Terminal", priority=True),
         Binding("f4", "open_editor", "Edit"),
@@ -76,6 +79,7 @@ class MainScreen(Screen[None]):
         Binding("alt+left", "go_back", "Go Back", show=False),
         Binding("alt+right", "go_forward", "Go Forward", show=False),
         Binding("alt+up", "go_up", "Go Up"),
+        Binding("alt+down", "follow_symlink", "Follow Symlink", show=False),
         Binding("ctrl+shift+g", "connect_to", "Connect to Remote", show=False),
         Binding("ctrl+r", "refresh", "Refresh", show=False, priority=True),
         Binding("ctrl+f1", "settings", "Settings", show=False),
@@ -688,7 +692,9 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
     _main_screen: MainScreen
 
     def __init__(self) -> None:
+        apply_runtime_patches()
         super().__init__()
+        self._showing_exception_dialog = False
 
     def action_help_quit(self) -> None:
         pass
@@ -696,7 +702,39 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
     def _handle_exception(self, error: Exception) -> None:
         sys.settrace(debug_analytics.trace_handler)
         debug_analytics.write_crash(error)
-        raise error
+        super()._handle_exception(error)
+
+    async def _handle_exception_recoverable(self, error: Exception) -> bool:
+        """Show an error dialog for an unhandled exception.
+
+        Returns False — the error dialog is shown asynchronously via a worker so
+        that the App's message loop is not blocked.  If the user chooses Abort,
+        the exception is passed to ``_handle_exception`` which terminates the app
+        with full crash reporting.
+        """
+        sys.settrace(debug_analytics.trace_handler)
+        debug_analytics.write_crash(error)
+        if self._showing_exception_dialog:
+            # Avoid recursive error dialogs — fall back to termination.
+            return True
+        self._showing_exception_dialog = True
+
+        async def _show_dialog() -> None:
+            result = await MessageBox(
+                str(error),
+                title=type(error).__name__,
+                buttons=[
+                    ButtonSpec(response=Response.OK, label="Continue"),
+                    ButtonSpec(response=Response.DISCARD, label="Abort", variant="error"),
+                ],
+                variant="error",
+            ).run()
+            self._showing_exception_dialog = False
+            if result == Response.DISCARD:
+                raise error
+
+        self.run_worker(_show_dialog)
+        return False
 
     async def on_mount(self) -> None:
         debug_analytics.install()
@@ -708,7 +746,11 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
     async def open_editor(self, path: VPath) -> None:
         editor_screen = Editor()
         self.push_screen(editor_screen)
-        editor_screen.open(path)
+        try:
+            editor_screen.open(path)
+        except Exception:
+            self.pop_screen()
+            raise
 
     async def execute_command(self, args: list[str], cwd: PurePath) -> None:
         with self.suspend():

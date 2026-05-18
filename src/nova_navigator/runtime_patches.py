@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from asyncio import CancelledError
 from collections.abc import Callable, Iterable
 from typing import Any, cast
 
 from textual import _xterm_parser, events
+from textual.message_pump import MessagePump
 
 _ESC = "\x1b"
 _ESC_PREFIXED_SINGLE_KEY_SEQUENCE_LENGTH = 2
@@ -17,9 +19,10 @@ _SPECIAL_ALT_KEYS: dict[str, str] = {
 def apply_runtime_patches() -> None:
     """Apply process-wide runtime patches required before app startup."""
     _patch_xterm_parser_key_overrides()
+    _patch_message_pump_exception_handling()
 
 
-# ----------------------------- XTermParser Alt+<Key> Patch -----------------------------
+# ----------------------------- XTermParser Alt+<Key> Patch ------------------------------
 
 type _SequenceToKeyEvents = Callable[[_xterm_parser.XTermParser, str, bool], Iterable[events.Key]]
 
@@ -68,3 +71,35 @@ def _parse_alt_prefixed_sequence(sequence: str) -> str | None:
     if key is None:
         return None
     return f"alt+{key}"
+
+
+# ----------------------------- MessagePump Exception Handling Patch ------------------
+
+_ORIGINAL_DISPATCH_MESSAGE = MessagePump._dispatch_message
+
+
+def _patch_message_pump_exception_handling() -> None:
+    """Patch MessagePump._dispatch_message to allow recoverable exception handling.
+
+    By default Textual's message loop always terminates after an unhandled
+    exception.  This patch intercepts exceptions inside ``_dispatch_message`` so
+    the app can show an error dialog and continue running if the user chooses to.
+    """
+    if MessagePump._dispatch_message is _patched_dispatch_message:
+        return
+    MessagePump._dispatch_message = cast("Any", _patched_dispatch_message)
+
+
+async def _patched_dispatch_message(self: MessagePump, message: Any) -> None:
+    try:
+        await _ORIGINAL_DISPATCH_MESSAGE(self, message)
+    except CancelledError:
+        raise
+    except Exception as error:
+        handler = getattr(self.app, "_handle_exception_recoverable", None)
+        if handler is not None:
+            should_terminate: bool = await handler(error)
+            if should_terminate:
+                raise
+        else:
+            raise
