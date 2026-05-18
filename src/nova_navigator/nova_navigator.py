@@ -139,7 +139,7 @@ class MainScreen(Screen[None]):
             mc.separator(),
             mc.action("Copy", shortcut="Ctrl+C", name="copy"),
             mc.action("Cut", shortcut="Ctrl+X", name="cut"),
-            mc.action("Copy Names", name="copy_names"),
+            mc.action("Copy Names", action="copy_names", name="copy_names"),
             mc.action("Paste", name="paste"),
             mc.separator(),
             mc.action("Delete", shortcut="F8", action="delete_files", name="delete"),
@@ -601,6 +601,10 @@ class MainScreen(Screen[None]):
 
     def _action_follow_symlink(self) -> None:
         self.active_panel().action_follow_symlink()
+
+    def _action_copy_names(self) -> None:
+        names = "\n".join(p.name for p in self.active_panel().selected_path_items)
+        self.app.copy_to_clipboard(names)
 
     async def _action_show_bookmarks(self) -> None:
         panel = self.active_panel()
