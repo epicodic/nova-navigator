@@ -68,6 +68,7 @@ class AppCtx:
     """Context object passed to every integration test."""
 
     pilot: Pilot[None]
+    app: NovaNavigator
     screen: MainScreen
     src_dir: Path
     dst_dir: Path
@@ -98,7 +99,7 @@ async def app_ctx(tmp_path: Path, headed: bool) -> object:  # yields AppCtx
         await pilot.pause()
         screen = app._main_screen
         fs = LocalFilesystem.singleton()
-        yield AppCtx(pilot=pilot, screen=screen, src_dir=src, dst_dir=dst, fs=fs)
+        yield AppCtx(pilot=pilot, app=app, screen=screen, src_dir=src, dst_dir=dst, fs=fs)
 
 
 # ---------------------------------------------------------------------------
