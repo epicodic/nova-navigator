@@ -287,3 +287,44 @@ async def test_erase_plain_files_total_known_upfront() -> None:
     assert first_total[0] == 5, f"Expected total=5 on first callback, got {first_total[0]}"
     assert status.progress.total == 5
     assert status.progress.completed == 5
+
+
+# ---------------------------------------------------------------------------
+# Multiple directories — progress
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_erase_multiple_directories_progress() -> None:
+    """Three directories, 2 files each: initial total=3, final total=9, completed=9.
+
+    erase_files counts the 3 top-level paths upfront; each recursive
+    erase_files call for a directory's children adds 2 more (x 3 dirs = +6),
+    giving a total of 9.  All 9 items complete: 2 files x 3 dirs + 3 dirs = 9.
+    """
+    events: list[tuple[int, int]] = []
+
+    def cb(s: TaskStatus) -> None:
+        events.append((s.progress.completed, s.progress.total))
+
+    status = TaskStatus(cancel_event=threading.Event(), progress_callback=cb)
+    fs = MockFilesystem(
+        {
+            "/home/user/A/a1.txt": b"a1",
+            "/home/user/A/a2.txt": b"a2",
+            "/home/user/B/b1.txt": b"b1",
+            "/home/user/B/b2.txt": b"b2",
+            "/home/user/C/c1.txt": b"c1",
+            "/home/user/C/c2.txt": b"c2",
+        }
+    )
+    paths = [fs.path(p) for p in ("/home/user/A", "/home/user/B", "/home/user/C")]
+
+    await run_task(
+        lambda ctx: erase_files(ctx, paths, EraseFilesOptions(ask_before_erase=False)),
+        status=status,
+    )
+
+    assert events[0][1] == 3, f"Expected initial total=3, got {events[0][1]}"
+    assert status.progress.total == 9
+    assert status.progress.completed == 9
