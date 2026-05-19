@@ -662,3 +662,122 @@ async def test_copy_file_partial_destination_removed_on_read_error() -> None:
         await run_task(lambda ctx: copy_file(ctx, src, dst))
 
     assert not dst_fs.exists("/home/user/file.txt"), "partial destination file was not cleaned up"
+
+
+# ---------------------------------------------------------------------------
+# Multiple directories / subdirectories — progress
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_copy_multiple_directories_progress() -> None:
+    """Three flat source directories, 2 files each: progress grows from 3 upfront to 9.
+
+    copy_files counts all top-level items (3) upfront; the total then grows as
+    _copy_dir discovers 2 files per directory (walk inc_total=2 x 3 = 6).
+    Each directory also closes with a root bracket (inc_completed=1 x 3 = 3),
+    giving total=9 and completed=9 at completion.
+    """
+    events: list[tuple[int, int]] = []
+
+    def cb(s: TaskStatus) -> None:
+        events.append((s.progress.completed, s.progress.total))
+
+    status = TaskStatus(cancel_event=threading.Event(), progress_callback=cb)
+    src_fs = MockFilesystem(
+        {
+            "/src/A/a1.txt": b"a1",
+            "/src/A/a2.txt": b"a2",
+            "/src/B/b1.txt": b"b1",
+            "/src/B/b2.txt": b"b2",
+            "/src/C/c1.txt": b"c1",
+            "/src/C/c2.txt": b"c2",
+        }
+    )
+    dst_fs = MockFilesystem()
+    srcs = [src_fs.path(p) for p in ("/src/A", "/src/B", "/src/C")]
+
+    await run_task(lambda ctx: copy_files(ctx, srcs, dst_fs.path("/home/user")), status=status)
+
+    assert events[0][1] == 3, f"Expected initial total=3, got {events[0][1]}"
+    assert status.progress.total == 9
+    assert status.progress.completed == 9
+
+
+@pytest.mark.asyncio
+async def test_copy_dir_immediate_subdir_count() -> None:
+    """Root with 3 empty subdirs: total must jump from 1 to 4 after the first walk step.
+
+    Before the fix, _copy_dir discarded the subdirs list from walk(), so the
+    total never grew beyond 1 until the subdirs were actually entered one by
+    one.  After the fix, inc_total = len(subdirs) + len(files) per walk
+    iteration, so the whole batch is counted the moment the root is visited.
+    """
+    events: list[tuple[int, int]] = []
+
+    def cb(s: TaskStatus) -> None:
+        events.append((s.progress.completed, s.progress.total))
+
+    status = TaskStatus(cancel_event=threading.Event(), progress_callback=cb)
+    src_fs = MockFilesystem(
+        {
+            "/src/root/sub1": None,
+            "/src/root/sub2": None,
+            "/src/root/sub3": None,
+        }
+    )
+    dst_fs = MockFilesystem()
+
+    await run_task(
+        lambda ctx: copy_files(ctx, [src_fs.path("/src/root")], dst_fs.path("/home/user/mycopy")),
+        status=status,
+    )
+
+    # Total must jump to 4 (1 upfront + 3 subdirs) when the root is walked —
+    # never pass through 2 or 3 on the way there.
+    first_non_unit_total = next(t for _, t in events if t > 1)
+    assert first_non_unit_total == 4, f"Expected total to jump to 4, got {first_non_unit_total}"
+    assert status.progress.completed == status.progress.total
+
+
+@pytest.mark.asyncio
+async def test_copy_dir_subdir_total_grows_monotonically() -> None:
+    """Single directory with 2 subdirs (2 files each): progress invariants and final counts.
+
+    Verifies that at every progress callback: completed ≤ total, total is
+    non-decreasing, and completed is non-decreasing.  Final counts must be
+    total=7 and completed=7.
+
+    Accounting: 1 (root upfront) + 2 (root's subdirs) + 2 (sub1 files) +
+    2 (sub2 files) = 7 total; 1 (sub1 dir bracket) + 1 (sub2 dir bracket) +
+    2 + 2 (files) + 1 (root bracket) = 7 completed.
+    """
+    events: list[tuple[int, int]] = []
+
+    def cb(s: TaskStatus) -> None:
+        events.append((s.progress.completed, s.progress.total))
+
+    status = TaskStatus(cancel_event=threading.Event(), progress_callback=cb)
+    src_fs = MockFilesystem(
+        {
+            "/src/root/sub1/f1.txt": b"f1",
+            "/src/root/sub1/f2.txt": b"f2",
+            "/src/root/sub2/f3.txt": b"f3",
+            "/src/root/sub2/f4.txt": b"f4",
+        }
+    )
+    dst_fs = MockFilesystem()
+
+    await run_task(
+        lambda ctx: copy_files(ctx, [src_fs.path("/src/root")], dst_fs.path("/home/user/mycopy")),
+        status=status,
+    )
+
+    prev_completed, prev_total = 0, 0
+    for completed, total in events:
+        assert completed <= total, f"completed={completed} exceeded total={total}"
+        assert total >= prev_total, f"total decreased from {prev_total} to {total}"
+        assert completed >= prev_completed, f"completed decreased from {prev_completed} to {completed}"
+        prev_completed, prev_total = completed, total
+    assert events[-1][1] == 7, f"Expected final total=7, got {events[-1][1]}"
+    assert events[-1][0] == 7, f"Expected final completed=7, got {events[-1][0]}"

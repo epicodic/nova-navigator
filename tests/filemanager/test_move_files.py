@@ -537,3 +537,115 @@ async def test_move_plain_files_total_known_upfront() -> None:
     assert first_total[0] == 5, f"Expected total=5 on first callback, got {first_total[0]}"
     assert status.progress.total == 5
     assert status.progress.completed == 5
+
+
+# ---------------------------------------------------------------------------
+# Multiple directories / subdirectories — progress
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_move_cross_device_multiple_directories_progress() -> None:
+    """Three flat directories, 2 files each, cross-device: progress grows from 3 to 9.
+
+    move_files counts all top-level items (3) upfront; _move_dir_contents
+    discovers 2 files per directory (walk inc_total=2 x 3 = 6).  The root
+    bracket from _move_path adds 3 more completed, giving total=9 and
+    completed=9 at completion.
+    """
+    events: list[tuple[int, int]] = []
+
+    def cb(s: TaskStatus) -> None:
+        events.append((s.progress.completed, s.progress.total))
+
+    status = TaskStatus(cancel_event=threading.Event(), progress_callback=cb)
+    src_fs = MockFilesystem(
+        {
+            "/src/A/a1.txt": b"a1",
+            "/src/A/a2.txt": b"a2",
+            "/src/B/b1.txt": b"b1",
+            "/src/B/b2.txt": b"b2",
+            "/src/C/c1.txt": b"c1",
+            "/src/C/c2.txt": b"c2",
+        }
+    )
+    dst_fs = MockFilesystem()
+    srcs = [src_fs.path(p) for p in ("/src/A", "/src/B", "/src/C")]
+
+    await run_task(lambda ctx: move_files(ctx, srcs, dst_fs.path("/home/user")), status=status)
+
+    assert events[0][1] == 3, f"Expected initial total=3, got {events[0][1]}"
+    assert status.progress.total == 9
+    assert status.progress.completed == 9
+
+
+@pytest.mark.asyncio
+async def test_move_dir_immediate_subdir_count() -> None:
+    """Root with 3 empty subdirs (cross-device): total must jump from 1 to 4 after root walk.
+
+    Mirrors test_copy_dir_immediate_subdir_count for the _move_dir_contents
+    code path.  Without the walk-subdirs fix the total would stay at 1 until
+    each subdir was entered individually.
+    """
+    events: list[tuple[int, int]] = []
+
+    def cb(s: TaskStatus) -> None:
+        events.append((s.progress.completed, s.progress.total))
+
+    status = TaskStatus(cancel_event=threading.Event(), progress_callback=cb)
+    src_fs = MockFilesystem(
+        {
+            "/src/root/sub1": None,
+            "/src/root/sub2": None,
+            "/src/root/sub3": None,
+        }
+    )
+    dst_fs = MockFilesystem()
+
+    await run_task(
+        lambda ctx: move_files(ctx, [src_fs.path("/src/root")], dst_fs.path("/home/user/mycopy")),
+        status=status,
+    )
+
+    first_non_unit_total = next(t for _, t in events if t > 1)
+    assert first_non_unit_total == 4, f"Expected total to jump to 4, got {first_non_unit_total}"
+    assert status.progress.completed == status.progress.total
+
+
+@pytest.mark.asyncio
+async def test_move_dir_subdir_total_grows_monotonically() -> None:
+    """Single directory with 2 subdirs (2 files each), cross-device: invariants and final counts.
+
+    Verifies that at every progress callback: completed ≤ total, total is
+    non-decreasing, and completed is non-decreasing.  Final total=7 and
+    completed=7 (same accounting as the equivalent copy test).
+    """
+    events: list[tuple[int, int]] = []
+
+    def cb(s: TaskStatus) -> None:
+        events.append((s.progress.completed, s.progress.total))
+
+    status = TaskStatus(cancel_event=threading.Event(), progress_callback=cb)
+    src_fs = MockFilesystem(
+        {
+            "/src/root/sub1/f1.txt": b"f1",
+            "/src/root/sub1/f2.txt": b"f2",
+            "/src/root/sub2/f3.txt": b"f3",
+            "/src/root/sub2/f4.txt": b"f4",
+        }
+    )
+    dst_fs = MockFilesystem()
+
+    await run_task(
+        lambda ctx: move_files(ctx, [src_fs.path("/src/root")], dst_fs.path("/home/user/mycopy")),
+        status=status,
+    )
+
+    prev_completed, prev_total = 0, 0
+    for completed, total in events:
+        assert completed <= total, f"completed={completed} exceeded total={total}"
+        assert total >= prev_total, f"total decreased from {prev_total} to {total}"
+        assert completed >= prev_completed, f"completed decreased from {prev_completed} to {completed}"
+        prev_completed, prev_total = completed, total
+    assert events[-1][1] == 7, f"Expected final total=7, got {events[-1][1]}"
+    assert events[-1][0] == 7, f"Expected final completed=7, got {events[-1][0]}"
