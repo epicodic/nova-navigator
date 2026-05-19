@@ -246,7 +246,10 @@ class JobListView(ScrollView, can_focus=False):
             return Strip([Segment(text, style=base + err_style)])
         muted = self.get_component_rich_style("job-list--muted", partial=True)
         item = job.progress.current_item
-        text = (indent + item)[:width].ljust(width)
+        available = width - len(indent)
+        if len(item) > available:
+            item = "…" + item[-(available - 1) :]
+        text = (indent + item).ljust(width)
         return Strip([Segment(text, style=base + muted)])
 
     def _render_step_bar_line(self, job: Job, base: Style, width: int) -> Strip:

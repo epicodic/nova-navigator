@@ -79,6 +79,7 @@ async def copy_file(
         options = FileCopyOptions()
 
     _logger.debug("copy_file %s -> %s", src_path.path, dst_path.path)
+    ctx.status.set_current_item(src_path.uri)
     reader = None
     writer = None
     _failed = False
@@ -257,6 +258,7 @@ async def _move_dir_contents(
             ctx.status.update_progress(inc_total=len(src_files))
         for f in src_files:
             ctx.status.check_cancelled()
+            ctx.status.set_current_item(f.uri)
             f_dst = dst_root / f.name
             if same_device:
                 f_dst_stat = f_dst.stat_or_none
@@ -304,6 +306,7 @@ async def _move_path(
     Increments the overall completed counter by one when done (including skip).
     """
     ctx.status.check_cancelled()
+    ctx.status.set_current_item(src_path.uri)
 
     # Cache is_directory before any rename/remove that might invalidate the path.
     is_dir = src_path.stat.is_directory
@@ -408,6 +411,7 @@ async def _erase_path(
     overall completed counter by one when done (including when skipped).
     """
     ctx.status.check_cancelled()
+    ctx.status.set_current_item(path.uri)
     _logger.debug("erase_path %s", path.path)
     if path.stat.is_directory:
         children = [child async for child in path.iterdir()]
