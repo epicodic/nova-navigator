@@ -4,10 +4,12 @@ import asyncio
 import copy
 import importlib.metadata
 import logging
+import os
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import PurePath
+from pathlib import PurePath, PurePosixPath
 from typing import ClassVar, NamedTuple, cast
 
 from textual import events, work
@@ -69,6 +71,20 @@ class CommandInput(Input):
     pass
 
 
+@dataclass
+class SyncBrowsing:
+    """State for synchronized browsing mode."""
+
+    left_base: VPath
+    right_base: VPath
+    left_prev: VPath = field(init=False)
+    right_prev: VPath = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.left_prev = self.left_base
+        self.right_prev = self.right_base
+
+
 class MainScreen(Screen[None]):
     BINDINGS: ClassVar = [
         Binding("ctrl+q", "quit", "Quit"),
@@ -108,9 +124,12 @@ class MainScreen(Screen[None]):
     _jobs_dialog: JobsDialog
     _job_status_icon: JobStatusIcon
 
+    _sync_state: SyncBrowsing | None
+
     def __init__(self) -> None:
         super().__init__()
         self._terminal_mode = self._TerminalMode.MINIMIZED
+        self._sync_state = None
 
     @property
     def app(self) -> NovaNavigator:  # type: ignore[override]
@@ -197,7 +216,7 @@ class MainScreen(Screen[None]):
                 name="show_hidden_files",
             ),
             mc.separator(),
-            mc.action("Synchronized Browsing", checkable=True),
+            mc.action("Synchronized Browsing", checkable=True, action="toggle_sync_browsing", name="sync_browsing"),
             mc.menu(
                 "Compare Directories",
                 mc.action("Enable", checkable=True),
@@ -386,6 +405,8 @@ class MainScreen(Screen[None]):
 
     def _on_directory_browser_path_changed(self, event: DirectoryBrowser.PathChanged) -> None:
         self._set_terminal_directory(event.path)
+        if self._sync_state is not None:
+            self._mirror_sync(event.browser, event.path)
 
     async def _on_directory_browser_item_changed(self, event: DirectoryBrowser.ItemChanged) -> None:
         self._update_actions(event.path)
@@ -393,6 +414,59 @@ class MainScreen(Screen[None]):
     def _on_terminal_path_changed(self, event: Terminal.PathChanged) -> None:
         if event.user_initiated:
             self.active_panel().set_path(VPath(event.cwd, LocalFilesystem.singleton()))
+
+    def _action_toggle_sync_browsing(self) -> None:
+        a = self._act("view.sync_browsing")
+        if a.checked:
+            self._sync_state = SyncBrowsing(self._left_panel.path, self._right_panel.path)
+            self._left_panel.add_class("-sync-active")
+            self._right_panel.add_class("-sync-active")
+        else:
+            self._sync_state = None
+            self._left_panel.remove_class("-sync-active")
+            self._right_panel.remove_class("-sync-active")
+
+    def _disable_sync_browsing(self, reason: str) -> None:
+        self._sync_state = None
+        self._act("view.sync_browsing").set_checked(False)
+        self._left_panel.remove_class("-sync-active")
+        self._right_panel.remove_class("-sync-active")
+        self.notify(reason, title="Synchronized Browsing Disabled", severity="warning")
+
+    def _mirror_sync(self, source: DirectoryBrowser, new_path: VPath) -> None:
+        sync = self._sync_state
+        assert sync is not None
+        if source is self._left_panel:
+            src_base, other_base, other = sync.left_base, sync.right_base, self._right_panel
+            prev_path = sync.left_prev
+        else:
+            src_base, other_base, other = sync.right_base, sync.left_base, self._left_panel
+            prev_path = sync.right_prev
+
+        if new_path.filesystem is not src_base.filesystem:
+            self._disable_sync_browsing(
+                "Synchronized browsing was disabled because the active panel switched filesystem."
+            )
+            return
+
+        rel = new_path.path.relative_to(src_base.path, walk_up=True)
+        target_path = PurePosixPath(os.path.normpath(str(other_base.path / rel)))
+        target = VPath(target_path, other_base.filesystem)
+
+        stat = target.stat_or_none
+        if stat is None or not stat.is_directory:
+            source.set_path(prev_path, record_history=False)
+            if isinstance(prev_path.filesystem, LocalFilesystem):
+                self._terminal.request_cd(prev_path.path)
+            msg = f"Mirror path does not exist: {target_path}"
+            self.app.call_after_refresh(self.app.notify, msg, title="Synchronized Browsing", severity="warning")
+            return
+
+        other.set_path(target, record_history=False)
+        if source is self._left_panel:
+            sync.left_prev = new_path
+        else:
+            sync.right_prev = new_path
 
     # jobs and tasks
 

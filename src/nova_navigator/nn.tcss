@@ -176,6 +176,15 @@ Button.-style-flat.-error:hover {
     }
 }
 
+#pane-left.-sync-active,
+#pane-right.-sync-active {
+    border: round $success;
+
+    &:focus {
+        border: round $success-lighten-2;
+    }
+}
+
 #command-line-container {
     height: 1;
 }
