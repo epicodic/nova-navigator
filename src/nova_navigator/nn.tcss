@@ -46,8 +46,8 @@ DirectoryBrowser {
         color: #88FF88;
     }
     .highlight-selected {
-        color: #FFFF00;
-        background: #555522
+        color: $primary-lighten-3;
+        background: $primary-darken-1;
     }
     .highlight-broken-symlink {
         color: #FF8888;
