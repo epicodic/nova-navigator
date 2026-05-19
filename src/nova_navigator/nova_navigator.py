@@ -761,7 +761,7 @@ class MainScreen(Screen[None]):
             return
         dialog = EditBookmarksDialog(
             copy.deepcopy(conf_.bookmarks),
-            prefill=(DEFAULT_BOOKMARKS_GROUP, path.name, str(path.path)),
+            prefill=(DEFAULT_BOOKMARKS_GROUP, path.name, path.uri),
         )
         if await dialog.run() == Response.OK:
             conf_.bookmarks = dialog.config
