@@ -225,8 +225,8 @@ class EditBookmarksDialog(Dialog):
                 id="form_row_name",
             ),
             Horizontal(
-                Label("Path: ", classes="form_label"),
-                Input(placeholder="Path", id="input_path"),
+                Label("URI: ", classes="form_label"),
+                Input(placeholder="URI", id="input_path"),
                 id="form_row_path",
             ),
             id="form_container",
