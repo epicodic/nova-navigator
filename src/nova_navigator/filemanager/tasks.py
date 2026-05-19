@@ -158,14 +158,17 @@ async def _copy_dir(
 ) -> None:
     file_tasks: list[asyncio.Task[None]] = []
     dir_stats: list[tuple[VPath, Stat]] = []
-    async for src_root, _src_dirs, src_files in src_path.walk():
+    async for src_root, src_dirs, src_files in src_path.walk():
         ctx.status.check_cancelled()
         dst_root = dst_path / src_root.path.relative_to(src_path.path)
         with contextlib.suppress(FileExistsError):
             dst_filesystem.mkdir(dst_root)
+        # The root directory is already counted by the caller; only subdirectories
+        # (src_root != src_path) complete a unit of work when they are entered.
+        if src_root.path != src_path.path:
+            ctx.status.update_progress(inc_completed=1)
         dir_stats.append((dst_root, src_root.stat))
-        if src_files:
-            ctx.status.update_progress(inc_total=len(src_files))
+        ctx.status.update_progress(inc_total=len(src_dirs) + len(src_files))
         for f in src_files:
             ctx.status.check_cancelled()
             t = await ctx.subtask(_copy_file_step(ctx, f, dst_root / f.name, options))
@@ -175,6 +178,7 @@ async def _copy_dir(
     # by child directory attribute changes.
     for dst_dir, src_stat in reversed(dir_stats):
         dst_filesystem.copy_stat(dst_dir, src_stat)
+    ctx.status.update_progress(inc_completed=1)
 
 
 async def copy_files(
@@ -205,15 +209,13 @@ async def copy_files(
         return
 
     if len(src_paths) == 1 and not dst_is_directory and src_paths[0].stat.is_directory:
-        # _copy_dir adds total incrementally as files are discovered during traversal.
+        ctx.status.update_progress(inc_total=1)
         await _copy_dir(ctx, src_paths[0], destination, dst_filesystem, options)
         return
 
-    # Add total for all plain files upfront (known without traversal);
-    # directories will contribute incrementally inside _copy_dir.
-    plain_count = sum(1 for p in src_paths if not p.stat.is_directory)
-    if plain_count:
-        ctx.status.update_progress(inc_total=plain_count)
+    # All top-level items are counted upfront so the total is visible immediately.
+    # Files within directories are added incrementally as they are discovered.
+    ctx.status.update_progress(inc_total=len(src_paths))
 
     subtasks: list[asyncio.Task[None]] = []
     for src_path in src_paths:
@@ -247,15 +249,18 @@ async def _move_dir_contents(
         actual_dst.filesystem.mkdir(actual_dst)
     src_dirs: list[VPath] = []
     dir_stats: list[tuple[VPath, Stat]] = []
-    async for src_root, _src_dirs, src_files in src_path.walk():
+    async for src_root, walk_subdirs, src_files in src_path.walk():
         ctx.status.check_cancelled()
         dst_root = actual_dst / src_root.path.relative_to(src_path.path)
         with contextlib.suppress(FileExistsError):
             actual_dst.filesystem.mkdir(dst_root)
+        # The root directory is already counted by the caller; only subdirectories
+        # (src_root != src_path) complete a unit of work when they are entered.
+        if src_root.path != src_path.path:
+            ctx.status.update_progress(inc_completed=1)
         src_dirs.append(src_root)
         dir_stats.append((dst_root, src_root.stat))
-        if src_files:
-            ctx.status.update_progress(inc_total=len(src_files))
+        ctx.status.update_progress(inc_total=len(walk_subdirs) + len(src_files))
         for f in src_files:
             ctx.status.check_cancelled()
             ctx.status.set_current_item(f.uri)
@@ -310,8 +315,6 @@ async def _move_path(
 
     # Cache is_directory before any rename/remove that might invalidate the path.
     is_dir = src_path.stat.is_directory
-    # Plain-file total is already added upfront in move_files; directories
-    # contribute via _move_dir_contents (per-file) or as a single operation below.
 
     dst_stat = dst_path.stat_or_none
     actual_dst = dst_path / src_path.name if (dst_stat is not None and dst_stat.is_directory) else dst_path
@@ -324,15 +327,11 @@ async def _move_path(
             # Destination directory already exists: walk per-file for fine-grained overwrite policy.
             # _move_dir_contents adds total and completed incrementally.
             await _move_dir_contents(ctx, src_path, actual_dst, options, same_device=True)
-            return
         else:
             if actual_dst_stat is not None:
                 if options.overwrite == "skip":
                     _logger.debug("move_path skip (exists) %s", actual_dst.path)
-                    ctx.status.update_progress(
-                        inc_total=1 if is_dir else 0,
-                        inc_completed=1,
-                    )
+                    ctx.status.update_progress(inc_completed=1)
                     return
                 if options.overwrite == "ask":
                     response = await ctx.request_response(
@@ -342,10 +341,7 @@ async def _move_path(
                     )
                     if response.is_rejected:
                         _logger.debug("move_path skip (user declined) %s", actual_dst.path)
-                        ctx.status.update_progress(
-                            inc_total=1 if is_dir else 0,
-                            inc_completed=1,
-                        )
+                        ctx.status.update_progress(inc_completed=1)
                         return
                 if actual_dst_stat.is_directory:
                     await erase_files(ctx, [actual_dst], EraseFilesOptions(ask_before_erase=False))
@@ -357,15 +353,13 @@ async def _move_path(
         if is_dir:
             # _move_dir_contents adds total and completed incrementally.
             await _move_dir_contents(ctx, src_path, actual_dst, options, same_device=False)
-            return
         else:
             copied = await copy_file(ctx, src_path, actual_dst, options)
             if copied:
                 src_path.filesystem.remove(src_path)
 
     _logger.debug("move_path done %s -> %s", src_path.path, actual_dst.path)
-    # Atomic rename of a whole directory tree counts as one operation.
-    ctx.status.update_progress(inc_total=1 if is_dir else 0, inc_completed=1)
+    ctx.status.update_progress(inc_completed=1)
 
 
 async def move_files(
@@ -383,12 +377,9 @@ async def move_files(
     if options is None:
         options = FileCopyOptions()
 
-    # Plain-file counts are known immediately; add them upfront so the total is
-    # visible from the first progress callback.  Directory totals grow
-    # incrementally inside _move_dir_contents as files are discovered.
-    plain_count = sum(1 for p in src_paths if not p.stat.is_directory)
-    if plain_count:
-        ctx.status.update_progress(inc_total=plain_count)
+    # All top-level items are counted upfront so the total is visible immediately.
+    # Files within directories are added incrementally as they are discovered.
+    ctx.status.update_progress(inc_total=len(src_paths))
 
     subtasks: list[asyncio.Task[None]] = []
     for src_path in src_paths:
