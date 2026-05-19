@@ -19,6 +19,7 @@ from textual.screen import Screen
 from textual.widgets import Input
 
 from nova_navigator import debug_analytics
+from nova_navigator.clipboard import ClipboardOperation, PathClipboard
 from nova_navigator.config import conf_
 from nova_navigator.dialogs import (
     BookmarksDialog,
@@ -140,10 +141,10 @@ class MainScreen(Screen[None]):
             mc.action("Follow Symlink", shortcut="Shift+Enter", action="follow_symlink", name="follow_symlink"),
             mc.action("Edit", shortcut="F4", action="open_editor", name="edit"),
             mc.separator(),
-            mc.action("Copy", shortcut="Ctrl+C", name="copy"),
-            mc.action("Cut", shortcut="Ctrl+X", name="cut"),
+            mc.action("Copy", shortcut="Ctrl+C", action="copy", name="copy"),
+            mc.action("Cut", shortcut="Ctrl+X", action="cut", name="cut"),
             mc.action("Copy Names", action="copy_names", name="copy_names"),
-            mc.action("Paste", name="paste"),
+            mc.action("Paste", action="paste", name="paste"),
             mc.separator(),
             mc.action("Delete", shortcut="F8", action="delete_files", name="delete"),
             mc.action("Rename", shortcut="F2", action="rename", name="rename"),
@@ -520,6 +521,7 @@ class MainScreen(Screen[None]):
                         is_directory=path is not None and path.stat.is_directory,
                         is_file=path is not None and not path.stat.is_directory,
                         is_executable=path is not None and path.stat.is_executable and not path.stat.is_directory,
+                        is_path_in_clipboard=not self.app._path_clipboard.empty(),
                         is_symlink=path is not None and path.stat.is_symlink,
                     )
                 )
@@ -604,6 +606,38 @@ class MainScreen(Screen[None]):
 
     def _action_follow_symlink(self) -> None:
         self.active_panel().action_follow_symlink()
+
+    def _action_copy(self) -> None:
+        source = self.active_panel().path_item_under_cursor
+        if isinstance(source, UpPath):
+            return
+        self.app._path_clipboard.set((source,), ClipboardOperation.COPY)
+        self._update_actions(source)
+
+    def _action_cut(self) -> None:
+        source = self.active_panel().path_item_under_cursor
+        if isinstance(source, UpPath):
+            return
+        self.app._path_clipboard.set((source,), ClipboardOperation.CUT)
+        self._update_actions(source)
+
+    @work
+    async def _action_paste(self) -> None:
+        if self.app._path_clipboard.empty():
+            return
+        paths, operation = self.app._path_clipboard.get()
+        dst = self.active_panel().path
+        job = await copy_or_move_files_job(
+            src_paths=list(paths),
+            dst_path=dst,
+            move=operation == ClipboardOperation.CUT,
+        )
+        if job is not None:
+            self.app.job_registry.add_job(job)
+            await job.start(self.app.request_callback)
+            if operation == ClipboardOperation.CUT:
+                self.app._path_clipboard.clear()
+                self._update_actions(self.active_panel().path_item_under_cursor)
 
     def _action_copy_names(self) -> None:
         names = "\n".join(p.name for p in self.active_panel().selected_path_items)
@@ -777,6 +811,7 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
     def __init__(self) -> None:
         apply_runtime_patches()
         super().__init__()
+        self._path_clipboard = PathClipboard(self)
         self._showing_exception_dialog = False
         register_azure_scheme()
         register_ssh_scheme()
