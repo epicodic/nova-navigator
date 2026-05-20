@@ -56,39 +56,39 @@ async def test_new_directory_does_nothing_on_cancel(app_ctx: AppCtx) -> None:
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_new_directory_shows_error_when_already_exists(app_ctx: AppCtx) -> None:
-    """Trying to create a directory that already exists shows an error dialog."""
+    """Trying to create a directory that already exists shows an error notification."""
     (app_ctx.src_dir / "clash").mkdir()
     (app_ctx.src_dir / "existing.txt").write_text("")
     await set_panels(app_ctx)
 
     with (
         patch(_INPUT_NAME_DIALOG_PATH, return_value=_auto_confirm_name_dialog("clash")),
-        patch("nova_navigator.nova_navigator.MessageBox") as mock_msgbox,
+        patch.object(app_ctx.screen, "notify") as mock_notify,
     ):
-        mock_msgbox.return_value.run = AsyncMock()
         await app_ctx.pilot.app.run_action("new_directory", app_ctx.screen)
         await app_ctx.pilot.pause()
 
-    mock_msgbox.assert_called_once()
+    mock_notify.assert_called_once()
+    assert mock_notify.call_args.kwargs["severity"] == "error"
 
 
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_new_directory_shows_error_on_permission_denied(app_ctx: AppCtx) -> None:
-    """A PermissionError (or any OSError) from mkdir shows an error dialog."""
+    """A PermissionError (or any OSError) from mkdir shows an error notification."""
     (app_ctx.src_dir / "existing.txt").write_text("")
     await set_panels(app_ctx)
 
     with (
         patch(_INPUT_NAME_DIALOG_PATH, return_value=_auto_confirm_name_dialog("denied")),
-        patch("nova_navigator.nova_navigator.MessageBox") as mock_msgbox,
+        patch.object(app_ctx.screen, "notify") as mock_notify,
         patch(
             "nova_navigator.vfs.filesystems.local.LocalFilesystem.mkdir",
             side_effect=PermissionError(13, "Permission denied"),
         ),
     ):
-        mock_msgbox.return_value.run = AsyncMock()
         await app_ctx.pilot.app.run_action("new_directory", app_ctx.screen)
         await app_ctx.pilot.pause()
 
-    mock_msgbox.assert_called_once()
+    mock_notify.assert_called_once()
+    assert mock_notify.call_args.kwargs["severity"] == "error"
