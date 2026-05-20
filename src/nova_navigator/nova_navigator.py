@@ -37,6 +37,7 @@ from nova_navigator.dialogs.dialog import ButtonSpec
 from nova_navigator.dialogs.response_dialog import make_response_dialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
 from nova_navigator.editor import Editor
+from nova_navigator.filemanager.compare import CompareMode, compare_directories
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
 from nova_navigator.filemanager.tasks import dummy_task
 from nova_navigator.nova_navigator_core import (
@@ -85,6 +86,13 @@ class SyncBrowsing:
         self.right_prev = self.right_base
 
 
+@dataclass
+class _CompareConfig:
+    """State for Compare Directories mode."""
+
+    mode: CompareMode | None  # None = name-presence only
+
+
 class MainScreen(Screen[None]):
     BINDINGS: ClassVar = [
         Binding("ctrl+q", "quit", "Quit"),
@@ -125,11 +133,13 @@ class MainScreen(Screen[None]):
     _job_status_icon: JobStatusIcon
 
     _sync_state: SyncBrowsing | None
+    _compare_config: _CompareConfig | None
 
     def __init__(self) -> None:
         super().__init__()
         self._terminal_mode = self._TerminalMode.MINIMIZED
         self._sync_state = None
+        self._compare_config = None
 
     @property
     def app(self) -> NovaNavigator:  # type: ignore[override]
@@ -219,14 +229,20 @@ class MainScreen(Screen[None]):
             mc.action("Synchronized Browsing", checkable=True, action="toggle_sync_browsing", name="sync_browsing"),
             mc.menu(
                 "Compare Directories",
-                mc.action("Enable", checkable=True),
+                mc.action("Enable", checkable=True, action="toggle_compare_enable", name="compare_enable"),
                 mc.separator(),
                 *mc.group(
-                    mc.action("By File Size", checkable=True),
-                    mc.action("By Modification Time", checkable=True),
+                    mc.action("By File Size", checkable=True, action="compare_by_size", name="compare_by_size"),
+                    mc.action(
+                        "By Modification Time",
+                        checkable=True,
+                        action="compare_by_mtime",
+                        name="compare_by_mtime",
+                    ),
                 ),
                 mc.separator(),
                 mc.action("Hide Identical Files", checkable=True),
+                name="compare_directories",
             ),
         )
 
@@ -411,6 +427,42 @@ class MainScreen(Screen[None]):
 
     def on_directory_browser_load_failed(self, event: DirectoryBrowser.LoadFailed) -> None:
         self.notify(str(event.error), title="Cannot read directory", severity="error")
+
+    def on_directory_browser_load_complete(self, event: DirectoryBrowser.LoadComplete) -> None:
+        self._refresh_compare()
+
+    def _refresh_compare(self) -> None:
+        if self._compare_config is None:
+            return
+        if self._left_panel._loading or self._right_panel._loading:
+            return
+        left_colors, right_colors = compare_directories(
+            self._left_panel.items,
+            self._right_panel.items,
+            self._compare_config.mode,
+        )
+        self._left_panel.set_item_colors(left_colors)
+        self._right_panel.set_item_colors(right_colors)
+
+    def _action_toggle_compare_enable(self) -> None:
+        a = self._act("view.compare_directories.compare_enable")
+        if a.checked:
+            self._compare_config = _CompareConfig(mode=None)
+            self._refresh_compare()
+        else:
+            self._compare_config = None
+            self._left_panel.set_item_colors(None)
+            self._right_panel.set_item_colors(None)
+
+    def _action_compare_by_size(self) -> None:
+        if self._compare_config is not None:
+            self._compare_config.mode = CompareMode.BY_SIZE
+            self._refresh_compare()
+
+    def _action_compare_by_mtime(self) -> None:
+        if self._compare_config is not None:
+            self._compare_config.mode = CompareMode.BY_MODIFICATION_TIME
+            self._refresh_compare()
 
     async def _on_directory_browser_item_changed(self, event: DirectoryBrowser.ItemChanged) -> None:
         self._update_actions(event.path)

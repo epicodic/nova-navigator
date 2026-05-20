@@ -421,6 +421,14 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
             self.error = error
             super().__init__()
 
+    class LoadComplete(Message):
+        """Posted when a directory listing finishes loading successfully."""
+
+        def __init__(self, browser: DirectoryBrowser, path: VPath) -> None:
+            self.browser = browser
+            self.path = path
+            super().__init__()
+
     # private classes
 
     @dataclass(frozen=True)
@@ -443,9 +451,16 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
     _load_cancel: threading.Event | None
     _loading: bool
     _pending: _PendingNavigation | None
+    _item_colors: dict[str, str]
 
     _empty_strip: Strip = Strip([])
     _columns: list[Column]
+
+    @property
+    def items(self) -> list[VPath]:
+        """The full list of items in the current directory (excludes the '..' entry)."""
+        return list(self._all_items)
+
     _max_line_width: int
     _filter_widget: FilterWidget
     _goto_widget: GoToPathWidget
@@ -498,6 +513,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         self._load_cancel = None
         self._loading = False
         self._pending = None
+        self._item_colors = {}
         self._name_under_cursor_hint: str | None = None
         self._all_items = []
         self._shown_items = []
@@ -603,6 +619,15 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         self.border_title = self._path.uri
         self._path.filesystem.refresh()
         self.update(self.WhatChanged.ALL)
+
+    def set_item_colors(self, item_colors: dict[str, str] | None) -> None:
+        """Set per-filename foreground color overrides.
+
+        Args:
+            item_colors: Maps filename to a Rich color string, or None to clear.
+        """
+        self._item_colors = item_colors or {}
+        self.refresh()
 
     class WhatChanged(int, Enum):
         ALL = 0
@@ -761,6 +786,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         self._apply_sort_and_filter(name_under_cursor=self._name_under_cursor_hint)
         self._name_under_cursor_hint = None
         self.refresh()
+        self.post_message(DirectoryBrowser.LoadComplete(self, self._path))
 
     @work(exclusive=True, group="watch")
     async def _start_watch(self) -> None:
@@ -783,18 +809,10 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
 
         color, background_color = conf_.filetypes.get_colors_for_filename(path.name)
         if color:
-            styles.append(
-                Style(
-                    color=color,
-                )
-            )
+            styles.append(Style(color=color))
 
         if background_color:
-            styles.append(
-                Style(
-                    bgcolor=background_color,
-                )
-            )
+            styles.append(Style(bgcolor=background_color))
 
         stat = path.stat
         hightlight_type_map: dict[str, bool] = {
@@ -809,6 +827,10 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         for style, value in hightlight_type_map.items():
             if value:
                 styles.append(self.get_component_rich_style(style, partial=True))
+
+        item_color = self._item_colors.get(path.name)
+        if item_color:  # item color overrides all other colors, including highlights
+            styles.append(Style(color=item_color))
 
         return styles
 
