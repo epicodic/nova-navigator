@@ -40,7 +40,18 @@ def _set_exec_output(mock_ssh: MagicMock, output: str) -> None:
     """Configure mock_ssh.exec_command to return *output* as decoded stdout."""
     stdout = MagicMock()
     stdout.read.return_value = output.encode()
+    stdout.channel.recv_exit_status.return_value = 0
     mock_ssh.exec_command.return_value = (MagicMock(), stdout, MagicMock())
+
+
+def _set_exec_error(mock_ssh: MagicMock, exit_code: int, stderr_text: str) -> None:
+    """Configure mock_ssh.exec_command to simulate a failed command (empty stdout)."""
+    stdout = MagicMock()
+    stdout.read.return_value = b""
+    stdout.channel.recv_exit_status.return_value = exit_code
+    stderr = MagicMock()
+    stderr.read.return_value = stderr_text.encode()
+    mock_ssh.exec_command.return_value = (MagicMock(), stdout, stderr)
 
 
 # ── _parse_stat_output ────────────────────────────────────────────────────────
@@ -194,6 +205,21 @@ def test_dir_stat_parses_exec_command_output() -> None:
     _set_exec_output(mock_ssh, output)
     result = fs._dir_stat("/home/user", follow_symlinks=False)
     assert set(result.keys()) == {"a.txt", "b.txt"}
+
+
+def test_dir_stat_raises_permission_error_when_cd_fails() -> None:
+    fs, mock_ssh, _ = _make_fs()
+    _set_exec_error(mock_ssh, exit_code=1, stderr_text="cd: /restricted: Permission denied\n")
+    with pytest.raises(PermissionError):
+        fs._dir_stat("/restricted", follow_symlinks=False)
+
+
+def test_dir_stat_returns_empty_for_empty_directory() -> None:
+    """A non-zero exit with no 'permission denied' in stderr is an empty dir (glob no-match)."""
+    fs, mock_ssh, _ = _make_fs()
+    _set_exec_error(mock_ssh, exit_code=1, stderr_text="zsh: no matches found: *(D)\n")
+    result = fs._dir_stat("/home/user/empty", follow_symlinks=False)
+    assert result == {}
 
 
 @pytest.mark.asyncio

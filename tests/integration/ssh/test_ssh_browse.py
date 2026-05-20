@@ -8,6 +8,7 @@ directory without going through the VFS.
 
 from __future__ import annotations
 
+import os
 from pathlib import PurePosixPath
 
 import pytest
@@ -124,3 +125,35 @@ async def test_left_panel_remote_right_panel_local(ssh_app_ctx: SshAppCtx) -> No
 
     names = [item.name for item in ssh_app_ctx.screen._left_panel._shown_items]
     assert "remote_file.txt" in names
+
+
+# ---------------------------------------------------------------------------
+# Permission denied
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_navigating_into_permission_denied_ssh_dir_leaves_path_unchanged(
+    ssh_app_ctx: SshAppCtx,
+) -> None:
+    """Attempting to enter a chmod-000 SSH directory leaves the panel at its original path."""
+    restricted = ssh_app_ctx.remote_dir / "restricted"
+    restricted.mkdir()
+    os.chmod(restricted, 0o000)
+
+    panel = ssh_app_ctx.screen._left_panel
+    panel.set_path(VPath(ssh_app_ctx.remote_dir, ssh_app_ctx.ssh_fs))
+    await poll_until(
+        ssh_app_ctx.pilot,
+        lambda: any(item.name == "restricted" for item in panel._shown_items),
+    )
+    original_path = panel.path
+
+    row = next(i for i, item in enumerate(panel._shown_items) if item.name == "restricted")
+    panel.cursor_row = row
+    await ssh_app_ctx.pilot.pause()
+    await ssh_app_ctx.pilot.press("enter")
+    await poll_until(ssh_app_ctx.pilot, lambda: not panel._loading)
+
+    assert panel.path == original_path

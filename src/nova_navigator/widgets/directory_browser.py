@@ -412,7 +412,21 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
             self.path = path
             super().__init__()
 
+    class LoadFailed(Message):
+        """Posted when a directory listing fails to start."""
+
+        def __init__(self, browser: DirectoryBrowser, path: VPath, error: OSError) -> None:
+            self.browser = browser
+            self.path = path
+            self.error = error
+            super().__init__()
+
     # private classes
+
+    @dataclass(frozen=True)
+    class _PendingNavigation:
+        path: VPath
+        record_history: bool
 
     # members
 
@@ -428,6 +442,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
 
     _load_cancel: threading.Event | None
     _loading: bool
+    _pending: _PendingNavigation | None
 
     _empty_strip: Strip = Strip([])
     _columns: list[Column]
@@ -482,6 +497,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         self._history_index = -1
         self._load_cancel = None
         self._loading = False
+        self._pending = None
         self._name_under_cursor_hint: str | None = None
         self._all_items = []
         self._shown_items = []
@@ -503,7 +519,6 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         self.screen.mount(self._filter_widget)
         self.screen.mount(self._goto_widget)
         self._load_directory()
-        self._start_watch()
 
     def _on_focus(self, event: events.Focus) -> None:
         self.post_message(DirectoryBrowser.Focus(self))
@@ -543,14 +558,8 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
             self.set_path(self._history[self._history_index], record_history=False)
 
     def set_path(self, path: VPath, *, record_history: bool = True) -> None:
-        if path == self._path:
+        if path == self._path and self._pending is None:
             return
-
-        if record_history:
-            # Truncate any forward history, then append
-            self._history = self._history[: self._history_index + 1]
-            self._history.append(path)
-            self._history_index = len(self._history) - 1
 
         if path == self._path.parent:
             # navigating up: place cursor on the directory we came from
@@ -558,11 +567,29 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         else:
             self._name_under_cursor_hint = None
 
-        self.border_title = path.uri
-        self._path = path
-        self.post_message(DirectoryBrowser.PathChanged(self, path))
+        self._pending = self._PendingNavigation(path, record_history)
+
         path.filesystem.refresh(path)
-        self.update(self.WhatChanged.ALL)
+
+        if self.is_attached:
+            self._load_directory()
+
+    def _commit_pending(self, target: VPath) -> None:
+        """Commit a pending navigation once the directory listing has started successfully."""
+        if self._pending is None or self._pending.path != target:
+            return  # Superseded by a newer navigation
+
+        record_history = self._pending.record_history
+        self._pending = None
+
+        if record_history:
+            self._history = self._history[: self._history_index + 1]
+            self._history.append(target)
+            self._history_index = len(self._history) - 1
+
+        self._path = target
+        self.border_title = target.uri
+        self.post_message(DirectoryBrowser.PathChanged(self, target))
 
         if self.is_attached:
             self._start_watch()
@@ -572,6 +599,8 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
     def reload(self) -> None:
         if not self._loading and self.cursor_row < len(self._shown_items):
             self._name_under_cursor_hint = self._shown_items[self.cursor_row].name
+        self._pending = None
+        self.border_title = self._path.uri
         self._path.filesystem.refresh()
         self.update(self.WhatChanged.ALL)
 
@@ -657,21 +686,49 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
     _BATCH_SIZE: ClassVar[int] = 200
     _INCREMENTAL_UPDATE_INTERVAL: ClassVar[float] = 0.3
 
+    def _handle_load_failure(
+        self,
+        target: VPath,
+        exc: OSError,
+        saved_all_items: list[VPath],
+        saved_shown_items: list[VPath],
+    ) -> None:
+        """Restore state and post LoadFailed after a navigation error before any items arrived."""
+        self._pending = None
+        self._all_items = saved_all_items
+        self._shown_items = saved_shown_items
+        self._name_under_cursor_hint = None
+        self._loading = False
+        self.refresh()
+        self.refresh_border()
+        self.post_message(DirectoryBrowser.LoadFailed(self, target, exc))
+
     @work(exclusive=True, group="load")
     async def _load_directory(self) -> None:
         """Load directory contents incrementally into _all_items."""
+        pending = self._pending
+        target = pending.path if pending is not None else self._path
+
         last_update = time.monotonic()
         cancel = threading.Event()
         self._load_cancel = cancel
+
+        saved_all_items = self._all_items
+        saved_shown_items = self._shown_items
+
         self._all_items = []
         self._shown_items = []
         self._loading = True
         self.refresh()
         self.refresh_border()
 
+        committed = False
         try:
             batch: list[VPath] = []
-            async for vpath in self._path.filesystem.iterdir(self._path, cancel=cancel):
+            async for vpath in target.filesystem.iterdir(target, cancel=cancel):
+                if pending is not None and not committed:
+                    self._commit_pending(target)
+                    committed = True
                 batch.append(vpath)
                 if len(batch) >= self._BATCH_SIZE:
                     self._all_items.extend(batch)
@@ -682,9 +739,20 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
                         last_update = now
                     batch.clear()
                     await asyncio.sleep(0)
+
+            if pending is not None and not committed:
+                # Empty directory — still a successful navigation.
+                self._commit_pending(target)
+                committed = True
+
             self._all_items.extend(batch)
-        except OSError:
-            self._all_items = []
+        except OSError as exc:
+            if pending is not None and not committed:
+                # Navigation failed before any item arrived — restore previous state.
+                self._handle_load_failure(target, exc, saved_all_items, saved_shown_items)
+                return
+            else:
+                self._all_items = []
         finally:
             cancel.set()
 

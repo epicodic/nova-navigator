@@ -1,5 +1,9 @@
 """Tests for DirectoryBrowser keyboard navigation and path-selection messages."""
 
+import threading
+from collections.abc import AsyncIterator
+from typing import override
+
 import pytest
 
 from nova_navigator.vfs.types import Stat
@@ -203,3 +207,37 @@ async def test_setting_cursor_row_with_empty_shown_items_does_not_crash() -> Non
         # This must not raise IndexError — the real crash site.
         browser.cursor_row = 0
         await pilot.pause()
+
+
+class _PermissionDeniedFilesystem(MockFilesystem):
+    """MockFilesystem that raises PermissionError when listing /home/user/restricted."""
+
+    @override
+    async def iterdir(self, path: VPath, *, cancel: threading.Event | None = None) -> AsyncIterator[VPath]:
+        if path.path.name == "restricted":
+            raise PermissionError(13, "Permission denied", str(path.path))
+        async for vp in super().iterdir(path, cancel=cancel):
+            yield vp
+
+
+@pytest.mark.asyncio
+async def test_permission_denied_leaves_path_unchanged() -> None:
+    """Navigating into an inaccessible directory leaves the browser at its original path."""
+    fs = _PermissionDeniedFilesystem(
+        {
+            "/home/user/file.txt": b"data",
+            "/home/user/restricted": None,
+        }
+    )
+    async with run_browser(fs) as (pilot, browser, _msgs):
+        original_path = browser.path
+
+        # Move cursor to 'restricted' and press Enter.
+        browser.cursor_row = next(i for i, p in enumerate(browser._shown_items) if p.name == "restricted")
+        await pilot.pause()
+
+        await pilot.press("enter")
+        await pilot.pause(delay=0.2)
+
+        assert browser.path == original_path
+        assert not browser._loading
