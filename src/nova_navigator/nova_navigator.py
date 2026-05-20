@@ -401,12 +401,16 @@ class MainScreen(Screen[None]):
 
     async def _on_directory_browser_path_selected(self, event: DirectoryBrowser.PathSelected) -> None:
         vpath = event.path
-        await self._open_path(vpath, event.browser)
+        if not vpath.stat.is_directory:
+            await self._open_path(vpath, event.browser)
 
     def _on_directory_browser_path_changed(self, event: DirectoryBrowser.PathChanged) -> None:
         self._set_terminal_directory(event.path)
         if self._sync_state is not None:
             self._mirror_sync(event.browser, event.path)
+
+    def on_directory_browser_load_failed(self, event: DirectoryBrowser.LoadFailed) -> None:
+        self.notify(str(event.error), title="Cannot read directory", severity="error")
 
     async def _on_directory_browser_item_changed(self, event: DirectoryBrowser.ItemChanged) -> None:
         self._update_actions(event.path)

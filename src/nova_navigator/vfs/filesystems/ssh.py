@@ -208,10 +208,17 @@ class SSHFilesystem(Filesystem):
                 return self._stat_cache[key]
         command = _STAT_COMMAND_FOLLOW_LINKS if follow_symlinks else _STAT_COMMAND
         try:
-            _, stdout, _ = self._ssh_client.exec_command(f"cd {path} && {command}")
-            result = _parse_stat_output(stdout.read().decode())
+            _, stdout, stderr = self._ssh_client.exec_command(f"cd {path} && {command}")
+            output = stdout.read().decode()
         except paramiko.SSHException as exc:
             raise OSError(str(exc)) from exc
+        if not output:
+            exit_code = stdout.channel.recv_exit_status()
+            if exit_code != 0:
+                err = stderr.read().decode().lower()
+                if "permission denied" in err or "operation not permitted" in err:
+                    raise PermissionError(13, "Permission denied", path)
+        result = _parse_stat_output(output)
         with self._stat_cache_lock:
             self._stat_cache[key] = result
         return result
