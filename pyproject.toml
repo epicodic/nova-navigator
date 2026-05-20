@@ -151,6 +151,7 @@ convention = "google"
 #######################################
 # pytest
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 addopts = "--import-mode=importlib"
 cache_dir = ".cache/pytest"
 asyncio_mode = "strict"
