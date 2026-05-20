@@ -57,20 +57,20 @@ async def test_new_file_does_nothing_on_cancel(app_ctx: AppCtx) -> None:
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_new_file_shows_error_on_oserror(app_ctx: AppCtx) -> None:
-    """An OSError from write shows an error dialog."""
+    """An OSError from write shows an error notification."""
     (app_ctx.src_dir / "existing.txt").write_text("")
     await set_panels(app_ctx)
 
     with (
         patch(_INPUT_NAME_DIALOG_PATH, return_value=_auto_confirm_name_dialog("denied.txt")),
-        patch("nova_navigator.nova_navigator.MessageBox") as mock_msgbox,
+        patch.object(app_ctx.screen, "notify") as mock_notify,
         patch(
             "nova_navigator.vfs.filesystems.local.LocalFilesystem.write",
             side_effect=PermissionError(13, "Permission denied"),
         ),
     ):
-        mock_msgbox.return_value.run = AsyncMock()
         await app_ctx.pilot.app.run_action("new_file", app_ctx.screen)
         await app_ctx.pilot.pause()
 
-    mock_msgbox.assert_called_once()
+    mock_notify.assert_called_once()
+    assert mock_notify.call_args.kwargs["severity"] == "error"

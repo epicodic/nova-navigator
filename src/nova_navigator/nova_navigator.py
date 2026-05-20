@@ -506,7 +506,7 @@ class MainScreen(Screen[None]):
         try:
             vpath = await vfspath_from_uri(event.bookmark_path)
         except ValueError as exc:
-            await MessageBox(str(exc), title="Cannot open bookmark", variant="error").run()
+            self.notify(str(exc), title="Cannot open bookmark", severity="error")
             return
         if vpath is None:
             return
@@ -525,7 +525,7 @@ class MainScreen(Screen[None]):
                 return
             vpath = await vfspath_from_uri(event.path)
         except ValueError as exc:
-            await MessageBox(str(exc), title="Cannot navigate", variant="error").run()
+            self.notify(str(exc), title="Cannot navigate", severity="error")
             return
         if vpath is None:
             return
@@ -744,10 +744,10 @@ class MainScreen(Screen[None]):
         try:
             new_path.filesystem.mkdir(new_path)
         except FileExistsError:
-            await MessageBox(f"{name!r} already exists.", title="Cannot Create Directory", variant="error").run()
+            self.notify(f"{name!r} already exists.", title="Cannot Create Directory", severity="error")
             return
         except OSError as exc:
-            await MessageBox(str(exc), title="Cannot Create Directory", variant="error").run()
+            self.notify(str(exc), title="Cannot Create Directory", severity="error")
             return
         self.active_panel().reload()
 
@@ -764,7 +764,7 @@ class MainScreen(Screen[None]):
             writer = new_path.filesystem.write(new_path)
             writer.close()
         except OSError as exc:
-            await MessageBox(str(exc), title="Cannot Create File", variant="error").run()
+            self.notify(str(exc), title="Cannot Create File", severity="error")
             return
         self.active_panel().reload()
 
