@@ -22,6 +22,7 @@ nn = "nova_navigator.main:main"
 qa = "tools.qa:main"
 dialog_tester = "tools.dialog_tester:main"
 widget_tester = "tools.widget_tester:main"
+ssh_terminal_demo = "tools.ssh_terminal_demo:main"
 
 [build-system]
 requires = ["uv_build"]
@@ -129,6 +130,7 @@ ignore = [
     "S101", # Use of assert detected.
     "S301", # Pickle usage
     "S603", # Starting a process
+    "S606", # Starting a process with a shell
     "S607", #  ...
 
     # tryceratops (TRY)
@@ -144,6 +146,9 @@ ignore = [
     "PLR2004", # Magic value used in comparison
 ]
 "debug.py" = ["T100"] # explicitly allow pydebug
+"src/tools/ssh_terminal_demo.py" = [
+    "S507",    # AutoAddPolicy is intentional behind the --accept-new-key flag
+]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

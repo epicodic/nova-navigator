@@ -303,7 +303,9 @@ class Terminal(Widget, can_focus=True):
         self._run_task = asyncio.create_task(self._run())
         # The shell will STOP after its first precmd.  Set draining so the
         # startup output (init code echo) is suppressed.
-        if self._driver.supports_stop_resume:
+        # Both conditions are required: the driver must support SIGSTOP and
+        # the backend must have a precmd pipe to signal when draining can end.
+        if self._driver.supports_stop_resume and self._backend.supports_precmd_pipe:
             self._draining = True
         init = self._driver.init_code(precmd_fd)
         if init:
@@ -369,7 +371,7 @@ class Terminal(Widget, can_focus=True):
             return
         if self._nav_pending == 0 and self._cwd is not None and path == self._cwd:
             return
-        if self._driver.supports_stop_resume:
+        if self._driver.supports_stop_resume and self._backend.supports_precmd_pipe:
             self._pending_yank = self.has_input()
             if self._pending_yank:
                 self._backend.write(_KILL_LINE.encode())
@@ -405,7 +407,7 @@ class Terminal(Widget, can_focus=True):
         """
         if not self._started:
             return
-        if mode == "silent" and self._driver.supports_stop_resume:
+        if mode == "silent" and self._driver.supports_stop_resume and self._backend.supports_precmd_pipe:
             self._draining = True
         self._backend.write(data.encode())
 

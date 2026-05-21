@@ -2,13 +2,12 @@
 
 This package provides the ``Terminal`` widget and its supporting abstractions:
 
-- ``PtyBackend`` / ``LocalPtyBackend`` — OS-level PTY process management.
+- ``PtyBackend`` / ``LocalPtyBackend`` / ``SshPtyBackend`` — PTY process backends.
 - ``ShellDriver`` / ``ZshDriver`` / ``BashDriver`` / ``FallbackDriver`` — shell-specific
   hook installation, argument quoting, and precmd parsing.
 - ``detect_driver()`` — auto-detect the appropriate driver from a command string.
 
-Architecture overview: see ``docs/terminal.md``.
-"""
+Architecture overview: see ``docs/terminal.md``."""
 
 from nova_navigator.terminal.pty_backend import LocalPtyBackend, PtyBackend
 from nova_navigator.terminal.shell_driver import (
@@ -18,6 +17,7 @@ from nova_navigator.terminal.shell_driver import (
     ZshDriver,
     detect_driver,
 )
+from nova_navigator.terminal.ssh_pty_backend import SshPtyBackend
 from nova_navigator.terminal.terminal import Terminal, TerminalDisplay, TerminalPyteScreen
 
 __all__ = [
@@ -26,6 +26,7 @@ __all__ = [
     "LocalPtyBackend",
     "PtyBackend",
     "ShellDriver",
+    "SshPtyBackend",
     "Terminal",
     "TerminalDisplay",
     "TerminalPyteScreen",

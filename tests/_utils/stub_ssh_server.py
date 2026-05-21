@@ -17,9 +17,13 @@ from __future__ import annotations
 
 import contextlib
 import errno as _errno
+import fcntl
 import os
+import pty
 import socket
+import struct
 import subprocess
+import termios
 import threading
 import time
 from pathlib import Path
@@ -213,6 +217,9 @@ class StubSSHServerInterface(paramiko.ServerInterface):
 
     def __init__(self, exec_delay: float = 0.0) -> None:
         self._exec_delay = exec_delay
+        self._pty_rows: int = 24
+        self._pty_cols: int = 80
+        self._pty_master_fd: int = -1
 
     def check_auth_password(self, username: str, password: str) -> int:
         """Accept any password."""
@@ -248,9 +255,73 @@ class StubSSHServerInterface(paramiko.ServerInterface):
         threading.Thread(target=_run, daemon=True, name="stub-ssh-exec").start()
         return True
 
+    def check_channel_pty_request(
+        self,
+        channel: paramiko.Channel,
+        term: str,
+        width: int,
+        height: int,
+        pixelwidth: int,
+        pixelheight: int,
+        modes: bytes,
+    ) -> bool:
+        """Store PTY dimensions for use by the shell request handler."""
+        self._pty_cols = width
+        self._pty_rows = height
+        return True
+
     def check_channel_shell_request(self, channel: paramiko.Channel) -> bool:
-        """Reject interactive shell requests (tests use exec only)."""
-        return False
+        """Fork a local /bin/sh with a PTY and bridge its I/O over the channel."""
+        pid, master_fd = pty.fork()
+        if pid == 0:
+            # Child: apply PTY size and exec the shell.
+            winsize = struct.pack("HH", self._pty_rows, self._pty_cols)
+            fcntl.ioctl(pty.STDOUT_FILENO, termios.TIOCSWINSZ, winsize)
+            env = os.environ.copy()
+            env["TERM"] = "xterm-256color"
+            env["LC_ALL"] = "en_US.UTF-8"
+            os.execvpe("/bin/sh", ["/bin/sh"], env)
+            raise RuntimeError("execvpe failed")
+
+        # Parent: store master fd for resize; bridge PTY <-> channel in threads.
+        self._pty_master_fd = master_fd
+
+        def _pty_to_channel() -> None:
+            try:
+                while True:
+                    data = os.read(master_fd, 65536)
+                    channel.send(data)
+            except OSError:
+                pass
+
+        def _channel_to_pty() -> None:
+            try:
+                while True:
+                    data = channel.recv(65536)
+                    if not data:
+                        break
+                    os.write(master_fd, data)
+            except OSError:
+                pass
+
+        threading.Thread(target=_pty_to_channel, daemon=True, name="stub-pty-out").start()
+        threading.Thread(target=_channel_to_pty, daemon=True, name="stub-pty-in").start()
+        return True
+
+    def check_channel_window_change_request(
+        self,
+        channel: paramiko.Channel,
+        width: int,
+        height: int,
+        pixelwidth: int,
+        pixelheight: int,
+    ) -> bool:
+        """Apply window size change to the forked PTY."""
+        if self._pty_master_fd >= 0:
+            winsize = struct.pack("HH", height, width)
+            with contextlib.suppress(OSError):
+                fcntl.ioctl(self._pty_master_fd, termios.TIOCSWINSZ, winsize)
+        return True
 
 
 # ---------------------------------------------------------------------------
