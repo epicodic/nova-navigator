@@ -128,7 +128,7 @@ class LocalPtyBackend(PtyBackend):
             env = os.environ.copy()
             env["TERM"] = "xterm-256color"
             env["LC_ALL"] = "en_US.UTF-8"
-            os.execvpe(argv[0], argv, env)  # noqa: S606
+            os.execvpe(argv[0], argv, env)
             raise RuntimeError("execvpe failed")
 
         # Parent process: close write end of the pre-cmd pipe.
