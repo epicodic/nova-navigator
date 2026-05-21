@@ -44,17 +44,18 @@ from nova_navigator.nova_navigator_core import (
     NovaNavigatorCore,
     PanelRef,
 )
-from nova_navigator.remotes.azure import register_azure_scheme
+from nova_navigator.plugins import PluginRegistry
+from nova_navigator.remotes.azure import AZURE_PLUGIN
 from nova_navigator.remotes.remote import RemoteConnector, register_remote_scheme
-from nova_navigator.remotes.ssh import register_ssh_scheme
+from nova_navigator.remotes.ssh import SSH_PLUGIN
 from nova_navigator.response import Response
 from nova_navigator.runtime_patches import apply_runtime_patches
 from nova_navigator.scheduler import Job, ResponseRequest
-from nova_navigator.terminal import Terminal
+from nova_navigator.terminal import Terminal, TerminalPool
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
 from nova_navigator.vfs.parse_uri import parse_uri
-from nova_navigator.vfs.scheme_registry import vfspath_from_uri
+from nova_navigator.vfs.scheme_registry import SCHEME_REGISTRY, vfspath_from_uri
 from nova_navigator.widgets import DirectoryBrowser, Footer, JobStatusIcon
 from nova_navigator.widgets.directory_browser import GoToPathWidget, UpPath
 from nova_widgets.menu import Action, Menu, MenuBar
@@ -124,7 +125,7 @@ class MainScreen(Screen[None]):
 
     _left_panel: DirectoryBrowser
     _right_panel: DirectoryBrowser
-    _terminal: Terminal
+    _terminal_pool: TerminalPool
     _terminal_mode: _TerminalMode
     _last_active_panel: DirectoryBrowser
 
@@ -140,6 +141,7 @@ class MainScreen(Screen[None]):
         self._terminal_mode = self._TerminalMode.MINIMIZED
         self._sync_state = None
         self._compare_config = None
+        self._terminal_pool = TerminalPool()
 
     @property
     def app(self) -> NovaNavigator:  # type: ignore[override]
@@ -263,11 +265,12 @@ class MainScreen(Screen[None]):
             self._right_panel,
         )
 
-        self._terminal = Terminal("/usr/bin/zsh", id="terminal", keep_alive=True)
-        self._terminal.styles.height = 1
-        self._terminal.start()
+        local_terminal = Terminal("/usr/bin/zsh", id="terminal", keep_alive=True)
+        local_terminal.styles.height = 1
+        local_terminal.start()
+        self._terminal_pool.set_local(local_terminal)
 
-        yield self._terminal
+        yield local_terminal
         self._jobs_dialog = JobsDialog(position=(0, 0), registry=self.app.job_registry)
         yield self._jobs_dialog
         yield Footer()
@@ -333,22 +336,22 @@ class MainScreen(Screen[None]):
                 return True
 
             case "shift+tab":
-                await self._terminal.on_key(events.Key("tab", character="\t"))
+                await self._terminal_pool.active_terminal.on_key(events.Key("tab", character="\t"))
                 return True
 
             case "enter":
-                if self._terminal.has_input():
-                    await self._terminal.on_key(event)
+                if self._terminal_pool.active_terminal.has_input():
+                    await self._terminal_pool.active_terminal.on_key(event)
                     return True
 
             case "ctrl+down":
                 path = self.active_panel().path_item_under_cursor
-                await self._terminal.send(f"{path.name}")
+                await self._terminal_pool.active_terminal.send(f"{path.name}")
                 return True
 
             case "ctrl+shift+down":
                 path = self.active_panel().path_item_under_cursor
-                await self._terminal.send(f"{path}")
+                await self._terminal_pool.active_terminal.send(f"{path}")
                 return True
 
         KEYS_TO_MAP_TO_TERMINAL = {
@@ -363,11 +366,11 @@ class MainScreen(Screen[None]):
         if event.key in KEYS_TO_MAP_TO_TERMINAL:
             mapped_key = KEYS_TO_MAP_TO_TERMINAL[event.key]
             mapped_key_event = events.Key(mapped_key, character=event.character)
-            await self._terminal.on_key(mapped_key_event)
+            await self._terminal_pool.active_terminal.on_key(mapped_key_event)
             return True
 
         if event.is_printable:
-            await self._terminal.on_key(event)
+            await self._terminal_pool.active_terminal.on_key(event)
             return True
 
         return False
@@ -380,7 +383,7 @@ class MainScreen(Screen[None]):
         else:
             self._left_panel.focus()
             self._last_active_panel = self._left_panel
-        self._set_terminal_directory(self._last_active_panel.path)
+        self._switch_terminal(self._last_active_panel.path)
 
     def action_toggle_maximized_terminal(self) -> None:
         if self._terminal_mode == self._TerminalMode.MAXIMIZED:
@@ -388,7 +391,7 @@ class MainScreen(Screen[None]):
             self.active_panel().focus()
         else:
             self._terminal_mode = self._TerminalMode.MAXIMIZED
-            self._terminal.focus()
+            self._terminal_pool.active_terminal.focus()
         self._resize_terminal()
 
     def action_toggle_terminal(self) -> None:
@@ -401,29 +404,45 @@ class MainScreen(Screen[None]):
         self._resize_terminal()
 
     def _resize_terminal(self) -> None:
-        self._terminal.styles.width = int(self.size.width)
+        t = self._terminal_pool.active_terminal
+        t.styles.width = int(self.size.width)
         match self._terminal_mode:
             case self._TerminalMode.MINIMIZED:
-                self._terminal.styles.height = 1
+                t.styles.height = 1
             case self._TerminalMode.ENLARGED:
-                self._terminal.styles.height = self.size.height // 2
+                t.styles.height = self.size.height // 2
             case self._TerminalMode.MAXIMIZED:
-                self._terminal.styles.height = self.size.height - 2
+                t.styles.height = self.size.height - 2
 
-    def _set_terminal_directory(self, path: VPath) -> None:
-        if not isinstance(path.filesystem, LocalFilesystem):
-            return
-        self._terminal.request_cd(path.path)
+    def _switch_terminal(self, path: VPath) -> None:
+        self._terminal_pool.switch_to(path.filesystem)
+        if isinstance(path.filesystem.unwrap(), LocalFilesystem):
+            self._terminal_pool.active_terminal.request_cd(path.path)
 
     async def _on_directory_browser_path_selected(self, event: DirectoryBrowser.PathSelected) -> None:
         vpath = event.path
         if not vpath.stat.is_directory:
             await self._open_path(vpath, event.browser)
 
-    def _on_directory_browser_path_changed(self, event: DirectoryBrowser.PathChanged) -> None:
-        self._set_terminal_directory(event.path)
+    @work
+    async def _on_directory_browser_path_changed(self, event: DirectoryBrowser.PathChanged) -> None:
+        await self._ensure_terminal_for(event.path)
+        self._switch_terminal(event.path)
         if self._sync_state is not None:
             self._mirror_sync(event.browser, event.path)
+
+    async def _ensure_terminal_for(self, path: VPath) -> None:
+        """Provision and register a terminal for path.filesystem if not yet registered."""
+        if self._terminal_pool.has_terminal(path.filesystem):
+            return
+        terminal = self._terminal_pool.create_for(path.filesystem)
+        if terminal is None:
+            return
+        # Register before the first await to prevent concurrent workers from
+        # provisioning the same filesystem twice.
+        self._terminal_pool.register(path.filesystem, terminal)
+        await self.mount(terminal, after=self._terminal_pool.active_terminal)
+        terminal.start()
 
     def on_directory_browser_load_failed(self, event: DirectoryBrowser.LoadFailed) -> None:
         self.notify(str(event.error), title="Cannot read directory", severity="error")
@@ -513,7 +532,7 @@ class MainScreen(Screen[None]):
         if stat is None or not stat.is_directory:
             source.set_path(prev_path, record_history=False)
             if isinstance(prev_path.filesystem, LocalFilesystem):
-                self._terminal.request_cd(prev_path.path)
+                self._terminal_pool.active_terminal.request_cd(prev_path.path)
             msg = f"Mirror path does not exist: {target_path}"
             self.app.call_after_refresh(self.app.notify, msg, title="Synchronized Browsing", severity="warning")
             return
@@ -943,8 +962,6 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         super().__init__()
         self._path_clipboard = PathClipboard(self)
         self._showing_exception_dialog = False
-        register_azure_scheme()
-        register_ssh_scheme()
         register_remote_scheme(conf_.remotes)
 
     def action_help_quit(self) -> None:
@@ -992,6 +1009,9 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         self.log("Starting Nova Navigator...")
         self._main_screen = MainScreen()
         self.install_screen(self._main_screen, "main_screen")
+        plugin_registry = PluginRegistry(SCHEME_REGISTRY, self._main_screen._terminal_pool)
+        plugin_registry.register(SSH_PLUGIN)
+        plugin_registry.register(AZURE_PLUGIN)
         self.push_screen("main_screen")
 
     async def open_editor(self, path: VPath) -> None:

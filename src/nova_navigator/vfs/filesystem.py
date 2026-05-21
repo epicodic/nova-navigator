@@ -195,3 +195,12 @@ class Filesystem(ABC):
 
         Raises ``OSError`` if *path* is not a symbolic link.
         """
+
+    def unwrap(self) -> Filesystem:
+        """Return the concrete filesystem behind any wrapper layers.
+
+        Base implementation returns ``self``.
+        Wrapper filesystems (e.g. ``RemoteFilesystem``) override this to
+        delegate to their inner filesystem recursively.
+        """
+        return self

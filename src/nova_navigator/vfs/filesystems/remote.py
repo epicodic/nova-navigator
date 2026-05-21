@@ -31,6 +31,10 @@ class RemoteFilesystem(Filesystem):
     def __repr__(self) -> str:
         return f"RemoteFilesystem({self._remote_name!r}, {self._inner!r})"
 
+    @override
+    def unwrap(self) -> Filesystem:
+        return self._inner.unwrap()
+
     # ------------------------------------------------------------------
     # Path re-binding helpers
     # ------------------------------------------------------------------

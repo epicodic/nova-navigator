@@ -4,9 +4,10 @@ import os
 
 import pytest
 
-from nova_navigator.remotes.azure import register_azure_scheme
+from nova_navigator.remotes.azure import AZURE_PLUGIN
 from nova_navigator.vfs.filesystems import LocalFilesystem
 from nova_navigator.vfs.scheme_registry import (
+    SCHEME_REGISTRY,
     SchemeRegistry,
     register_common_schemes,
     vfspath_from_uri,
@@ -79,7 +80,7 @@ async def test_vfspath_from_uri_azure_scheme() -> None:
 
     from nova_navigator.vfs.filesystems.azure import AzureFilesystem
 
-    register_azure_scheme()
+    SCHEME_REGISTRY.register_scheme("azure", AZURE_PLUGIN.connector)
     with (
         patch("nova_navigator.vfs.filesystems.azure.ContainerClient"),
         patch("nova_navigator.vfs.filesystems.azure.DefaultAzureCredential"),
@@ -96,7 +97,7 @@ async def test_vfspath_from_uri_azure_root() -> None:
 
     from nova_navigator.vfs.filesystems.azure import AzureFilesystem
 
-    register_azure_scheme()
+    SCHEME_REGISTRY.register_scheme("azure", AZURE_PLUGIN.connector)
     with (
         patch("nova_navigator.vfs.filesystems.azure.ContainerClient"),
         patch("nova_navigator.vfs.filesystems.azure.DefaultAzureCredential"),

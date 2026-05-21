@@ -7,8 +7,8 @@ import logging
 
 from nova_navigator.config.remotes import RemoteConnection
 from nova_navigator.dialogs import MessageBox
+from nova_navigator.plugins import FilesystemPlugin
 from nova_navigator.vfs.filesystems import AzureFilesystem
-from nova_navigator.vfs.scheme_registry import SCHEME_REGISTRY
 from nova_navigator.vfs.vpath import VPath
 
 _logger = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ async def connect_azure(conn: RemoteConnection) -> AzureFilesystem | None:
     return fs
 
 
-class _AzureConnector:
+class AzureConnector:
     async def resolve(self, path: str, netloc: str | None) -> VPath | None:
         account_url = f"https://{netloc}"
         parts = path.lstrip("/").split("/", 1)
@@ -73,6 +73,9 @@ class _AzureConnector:
         return fs.path(blob_path)
 
 
-def register_azure_scheme() -> None:
-    """Register the ``azure`` scheme in the process-wide :data:`~nova_navigator.vfs.scheme_registry.SCHEME_REGISTRY`."""
-    SCHEME_REGISTRY.register_scheme("azure", _AzureConnector())
+AZURE_PLUGIN = FilesystemPlugin(
+    scheme="azure",
+    fs_type=AzureFilesystem,
+    connector=AzureConnector(),
+    terminal_factory=None,  # virtual fallback terminal not yet implemented
+)
