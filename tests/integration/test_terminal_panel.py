@@ -13,7 +13,7 @@ Two directions are tested:
 from __future__ import annotations
 
 from pathlib import PurePosixPath
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -39,7 +39,7 @@ async def test_panel_navigation_triggers_terminal_request_cd(app_ctx: AppCtx) ->
     subdir.mkdir()
     await set_panels(app_ctx)
 
-    with patch.object(app_ctx.screen._terminal, "request_cd") as mock_cd:
+    with patch.object(app_ctx.screen._terminal_pool.active_terminal, "request_cd") as mock_cd:
         app_ctx.screen._left_panel.set_path(VPath(subdir, app_ctx.fs))
         await app_ctx.pilot.pause()
 
@@ -62,9 +62,8 @@ async def test_user_cd_in_terminal_updates_active_panel(app_ctx: AppCtx) -> None
     target = app_ctx.dst_dir  # a real directory distinct from the panel's current path
     await set_panels(app_ctx)
 
-    app_ctx.screen._terminal.post_message(
-        Terminal.PathChanged(app_ctx.screen._terminal, PurePosixPath(target), user_initiated=True)
-    )
+    terminal = app_ctx.screen._terminal_pool.active_terminal
+    terminal.post_message(Terminal.PathChanged(terminal, PurePosixPath(target), user_initiated=True))
     await poll_until(app_ctx.pilot, lambda: app_ctx.screen.active_panel().path.path == PurePosixPath(target))
 
     assert app_ctx.screen.active_panel().path.path == PurePosixPath(target)
@@ -81,9 +80,10 @@ async def test_programmatic_cd_does_not_update_panel(app_ctx: AppCtx) -> None:
     await set_panels(app_ctx)
     original_path = app_ctx.screen.active_panel().path.path
 
-    app_ctx.screen._terminal.post_message(
+    terminal = app_ctx.screen._terminal_pool.active_terminal
+    terminal.post_message(
         Terminal.PathChanged(
-            app_ctx.screen._terminal,
+            terminal,
             PurePosixPath(app_ctx.dst_dir),
             user_initiated=False,
         )
@@ -91,3 +91,80 @@ async def test_programmatic_cd_does_not_update_panel(app_ctx: AppCtx) -> None:
     await app_ctx.pilot.pause(delay=0.2)
 
     assert app_ctx.screen.active_panel().path.path == original_path
+
+
+# ---------------------------------------------------------------------------
+# Auto-provisioning: new filesystem → terminal created automatically
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ensure_terminal_for_provisions_new_filesystem(app_ctx: AppCtx) -> None:
+    """_ensure_terminal_for creates and registers a terminal for an unknown filesystem.
+
+    Flow: _ensure_terminal_for → create_for → mount → register
+    """
+    await set_panels(app_ctx)
+
+    mock_fs = MagicMock()
+    mock_fs.unwrap.return_value = mock_fs
+    mock_path = VPath(PurePosixPath("/mock"), mock_fs)
+
+    mock_terminal = MagicMock()
+    mock_terminal.display = False
+    mock_terminal.styles = MagicMock()
+    mock_terminal.styles.width = 80
+    mock_terminal.styles.height = 24
+
+    factory = MagicMock(return_value=mock_terminal)
+    app_ctx.screen._terminal_pool.register_factory(lambda fs: fs is mock_fs, factory)
+
+    assert not app_ctx.screen._terminal_pool.has_terminal(mock_path.filesystem)
+
+    with patch.object(app_ctx.screen, "mount", new_callable=AsyncMock):
+        await app_ctx.screen._ensure_terminal_for(mock_path)
+
+    factory.assert_called_once_with(mock_fs)
+    mock_terminal.start.assert_called_once()
+    # Terminal is registered before mount (race-safe)
+    assert app_ctx.screen._terminal_pool.has_terminal(mock_path.filesystem)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ensure_terminal_for_is_idempotent(app_ctx: AppCtx) -> None:
+    """_ensure_terminal_for does nothing when a terminal is already registered."""
+    await set_panels(app_ctx)
+
+    mock_fs = MagicMock()
+    mock_fs.unwrap.return_value = mock_fs
+    mock_path = VPath(PurePosixPath("/mock"), mock_fs)
+
+    factory = MagicMock(return_value=MagicMock())
+    app_ctx.screen._terminal_pool.register_factory(lambda fs: fs is mock_fs, factory)
+
+    with patch.object(app_ctx.screen, "mount", new_callable=AsyncMock):
+        await app_ctx.screen._ensure_terminal_for(mock_path)
+        await app_ctx.screen._ensure_terminal_for(mock_path)  # second call
+
+    factory.assert_called_once()  # factory only called on first visit
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ensure_terminal_for_no_factory_is_noop(app_ctx: AppCtx) -> None:
+    """_ensure_terminal_for does nothing when no factory matches the filesystem."""
+    await set_panels(app_ctx)
+
+    mock_fs = MagicMock()
+    mock_fs.unwrap.return_value = mock_fs
+    mock_path = VPath(PurePosixPath("/mock"), mock_fs)
+
+    # No factory registered for mock_fs
+
+    with patch.object(app_ctx.screen, "mount", new_callable=AsyncMock) as mock_mount:
+        await app_ctx.screen._ensure_terminal_for(mock_path)
+
+    mock_mount.assert_not_called()
+    assert not app_ctx.screen._terminal_pool.has_terminal(mock_path.filesystem)

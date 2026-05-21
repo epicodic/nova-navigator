@@ -214,7 +214,7 @@ async def test_sync_browsing_rolls_back_terminal_when_mirror_missing(app_ctx: Ap
     await set_panels(app_ctx)
     enable_sync(app_ctx)
 
-    with patch.object(app_ctx.screen._terminal, "request_cd") as mock_cd:
+    with patch.object(app_ctx.screen._terminal_pool.active_terminal, "request_cd") as mock_cd:
         app_ctx.screen._left_panel.set_path(VPath(app_ctx.src_dir / "sub", app_ctx.fs))
         await poll_until(
             app_ctx.pilot,
@@ -239,11 +239,12 @@ async def test_sync_browsing_terminal_nav_rolls_back_on_missing_mirror(app_ctx: 
     await set_panels(app_ctx)
     enable_sync(app_ctx)
 
-    with patch.object(app_ctx.screen._terminal, "request_cd") as mock_cd:
+    with patch.object(app_ctx.screen._terminal_pool.active_terminal, "request_cd") as mock_cd:
+        terminal = app_ctx.screen._terminal_pool.active_terminal
         # Simulate user typing "cd src_dir/sub" in the terminal
-        app_ctx.screen._terminal.post_message(
+        terminal.post_message(
             Terminal.PathChanged(
-                app_ctx.screen._terminal,
+                terminal,
                 PurePosixPath(app_ctx.src_dir / "sub"),
                 user_initiated=True,
             )

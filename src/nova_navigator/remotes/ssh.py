@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import cast
 
 import paramiko
 
 from nova_navigator.config.remotes import RemoteConnection, SshSettings
 from nova_navigator.dialogs import CredentialsDialog, MessageBox
+from nova_navigator.plugins import FilesystemPlugin
 from nova_navigator.response import Response
+from nova_navigator.terminal.ssh_pty_backend import SshPtyBackend
+from nova_navigator.terminal.terminal import Terminal
 from nova_navigator.vfs.filesystems import SSHFilesystem, UnknownHostKeyError
-from nova_navigator.vfs.scheme_registry import SCHEME_REGISTRY
 from nova_navigator.vfs.vpath import VPath
 
 _logger = logging.getLogger(__name__)
@@ -120,6 +123,13 @@ class SshConnector:
         return VPath(path or "/", fs)
 
 
-def register_ssh_scheme() -> None:
-    """Register the ``ssh`` scheme in the process-wide :data:`~nova_navigator.vfs.scheme_registry.SCHEME_REGISTRY`."""
-    SCHEME_REGISTRY.register_scheme("ssh", SshConnector())
+SSH_PLUGIN = FilesystemPlugin(
+    scheme="ssh",
+    fs_type=SSHFilesystem,
+    connector=SshConnector(),
+    terminal_factory=lambda fs: Terminal(
+        "ssh",
+        backend=SshPtyBackend(cast("SSHFilesystem", fs)._ssh_client),
+        keep_alive=False,
+    ),
+)

@@ -355,7 +355,14 @@ class Terminal(Widget, can_focus=True):
             self.send_queue.put_nowait(["stdin", char])
 
     def has_input(self) -> bool:
-        """Return True if the user has typed something on the current prompt line."""
+        """Return True if the user has typed something on the current prompt line.
+
+        Only meaningful when the driver supports prompt tracking
+        (supports_stop_resume).  Returns False for drivers like FallbackDriver
+        that cannot reliably detect the prompt position.
+        """
+        if not self._driver.supports_stop_resume:
+            return False
         log.info("cursor, prompt cursor:", self._screen.cursor.x, self._prompt_cursor_x)
         return self._screen.cursor.x > self._prompt_cursor_x
 
