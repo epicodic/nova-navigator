@@ -103,7 +103,7 @@ async def test_enlarged_terminal_sets_height_to_half_screen(app_ctx: AppCtx) -> 
     await app_ctx.pilot.pause()
 
     expected = app_ctx.screen.size.height // 2
-    assert app_ctx.screen._terminal.styles.height.value == expected  # type: ignore
+    assert app_ctx.screen._terminal_pool.active_terminal.styles.height.value == expected
 
 
 @pytest.mark.asyncio
@@ -114,7 +114,7 @@ async def test_maximized_terminal_sets_height_to_screen_minus_two(app_ctx: AppCt
     await app_ctx.pilot.pause()
 
     expected = app_ctx.screen.size.height - 2
-    assert app_ctx.screen._terminal.styles.height.value == expected  # type: ignore
+    assert app_ctx.screen._terminal_pool.active_terminal.styles.height.value == expected
 
 
 # ---------------------------------------------------------------------------

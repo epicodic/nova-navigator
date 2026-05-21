@@ -147,7 +147,7 @@ ignore = [
 ]
 "debug.py" = ["T100"] # explicitly allow pydebug
 "src/tools/ssh_terminal_demo.py" = [
-    "S507",    # AutoAddPolicy is intentional behind the --accept-new-key flag
+    "S507", # AutoAddPolicy is intentional behind the --accept-new-key flag
 ]
 
 [tool.ruff.lint.pydocstyle]

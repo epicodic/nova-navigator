@@ -1242,10 +1242,20 @@ def test_has_input_returns_false_when_cursor_at_prompt_position(terminal_instanc
     assert terminal_instance.has_input() is False
 
 
-def test_has_input_returns_true_when_cursor_past_prompt_position(terminal_instance: Terminal) -> None:
-    terminal_instance._prompt_cursor_x = 5
-    terminal_instance._screen.cursor.x = 8
-    assert terminal_instance.has_input() is True
+def test_has_input_returns_true_when_cursor_past_prompt_position() -> None:
+    # Requires a driver with supports_stop_resume=True (ZshDriver) to track prompts.
+    terminal = Terminal("/bin/zsh", driver=ZshDriver())
+    terminal._prompt_cursor_x = 5
+    terminal._screen.cursor.x = 8
+    assert terminal.has_input() is True
+
+
+def test_has_input_returns_false_for_fallback_driver_regardless_of_cursor() -> None:
+    # FallbackDriver cannot track prompt position, so has_input() always returns False.
+    terminal = Terminal("/bin/sh", driver=FallbackDriver())
+    terminal._prompt_cursor_x = 0
+    terminal._screen.cursor.x = 8  # cursor past start, but driver can't track
+    assert terminal.has_input() is False
 
 
 def test_has_input_returns_false_on_fresh_terminal(terminal_instance: Terminal) -> None:
