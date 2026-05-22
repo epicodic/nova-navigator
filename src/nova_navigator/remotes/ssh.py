@@ -12,8 +12,10 @@ from nova_navigator.config.remotes import RemoteConnection, SshSettings
 from nova_navigator.dialogs import CredentialsDialog, MessageBox
 from nova_navigator.plugins import FilesystemPlugin
 from nova_navigator.response import Response
+from nova_navigator.terminal.shell_driver import detect_driver
 from nova_navigator.terminal.ssh_pty_backend import SshPtyBackend
 from nova_navigator.terminal.terminal import Terminal
+from nova_navigator.vfs.filesystem import Filesystem
 from nova_navigator.vfs.filesystems import SSHFilesystem, UnknownHostKeyError
 from nova_navigator.vfs.vpath import VPath
 
@@ -123,13 +125,41 @@ class SshConnector:
         return VPath(path or "/", fs)
 
 
+async def _make_ssh_terminal(fs: Filesystem) -> Terminal | None:
+    """Create a Terminal for *fs* using the detected remote shell.
+
+    Opens a short-lived exec channel to run ``echo $SHELL`` and determine
+    whether the remote shell is zsh, bash, or a POSIX fallback.
+    SIGSTOP/SIGCONT is always disabled for remote shells.
+    """
+    ssh_fs = cast("SSHFilesystem", fs)
+
+    def _detect_shell() -> str:
+        try:
+            transport = ssh_fs._ssh_client.get_transport()
+            if transport is None:
+                return "/bin/sh"
+            channel = transport.open_session()
+            channel.exec_command("echo $SHELL")
+            shell_path = channel.recv(256).decode("utf-8", errors="replace").strip()
+            channel.close()
+            return shell_path or "/bin/sh"
+        except (OSError, paramiko.SSHException, EOFError):
+            return "/bin/sh"
+
+    shell_path = await asyncio.to_thread(_detect_shell)
+    driver = detect_driver(shell_path, stop_resume=False)
+    return Terminal(
+        "ssh",
+        backend=SshPtyBackend(ssh_fs._ssh_client),
+        driver=driver,
+        keep_alive=False,
+    )
+
+
 SSH_PLUGIN = FilesystemPlugin(
     scheme="ssh",
     fs_type=SSHFilesystem,
     connector=SshConnector(),
-    terminal_factory=lambda fs: Terminal(
-        "ssh",
-        backend=SshPtyBackend(cast("SSHFilesystem", fs)._ssh_client),
-        keep_alive=False,
-    ),
+    terminal_factory=_make_ssh_terminal,
 )

@@ -117,7 +117,7 @@ async def test_ensure_terminal_for_provisions_new_filesystem(app_ctx: AppCtx) ->
     mock_terminal.styles.width = 80
     mock_terminal.styles.height = 24
 
-    factory = MagicMock(return_value=mock_terminal)
+    factory = AsyncMock(return_value=mock_terminal)
     app_ctx.screen._terminal_pool.register_factory(lambda fs: fs is mock_fs, factory)
 
     assert not app_ctx.screen._terminal_pool.has_terminal(mock_path.filesystem)
@@ -141,7 +141,7 @@ async def test_ensure_terminal_for_is_idempotent(app_ctx: AppCtx) -> None:
     mock_fs.unwrap.return_value = mock_fs
     mock_path = VPath(PurePosixPath("/mock"), mock_fs)
 
-    factory = MagicMock(return_value=MagicMock())
+    factory = AsyncMock(return_value=MagicMock())
     app_ctx.screen._terminal_pool.register_factory(lambda fs: fs is mock_fs, factory)
 
     with patch.object(app_ctx.screen, "mount", new_callable=AsyncMock):

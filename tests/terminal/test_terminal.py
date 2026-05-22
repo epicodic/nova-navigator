@@ -32,6 +32,7 @@ class FakePtyBackend(PtyBackend):
     """Test double for PtyBackend that records calls without forking a process."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.writes: list[bytes] = []
         self.resume_count: int = 0
         self.opened: bool = False
@@ -39,13 +40,9 @@ class FakePtyBackend(PtyBackend):
         self.resize_calls: list[tuple[int, int]] = []
         self._attached: bool = False
 
-    @property
-    def supports_precmd_pipe(self) -> bool:
-        return True
-
     def open(self, command: str, rows: int, cols: int) -> int | None:
         self.opened = True
-        return 99
+        return None
 
     def write(self, data: bytes) -> None:
         self.writes.append(data)
@@ -786,7 +783,7 @@ async def test_pre_cmd_message_posts_terminal_pre_cmd_event() -> None:
         await pilot.pause()
         recv_q = await _start_recv_only(terminal)
         try:
-            await recv_q.put(["pre_cmd", "1:/home/user\n"])
+            await recv_q.put(["pre_cmd", "/home/user\n"])
             await pilot.pause(delay=0.15)
             assert len(received) == 1
             assert received[0].cwd == PurePath("/home/user")
@@ -1178,7 +1175,7 @@ async def test_draining_suppresses_display_rebuild_until_pre_cmd() -> None:
             assert terminal._display is initial_display  # no rebuild was scheduled
 
             # pre_cmd fires: _draining cleared, backend resumed, no screen reset
-            await recv_q.put(["pre_cmd", "1:/some/path\n"])
+            await recv_q.put(["pre_cmd", "/some/path\n"])
             await pilot.pause(delay=0.1)
             assert terminal._draining is False
             assert backend.resume_count == 1
@@ -1221,7 +1218,7 @@ async def test_normal_send_after_pre_cmd_resets_drain_appears_on_screen() -> Non
         try:
             terminal._draining = True
             await recv_q.put(["stdout", "SILENT_CONTENT"])
-            await recv_q.put(["pre_cmd", "1:/some/path\n"])
+            await recv_q.put(["pre_cmd", "/some/path\n"])
             await recv_q.put(["stdout", "VISIBLE_CONTENT"])
             await pilot.pause(delay=0.2)
             rendered = "".join(line.plain for line in terminal._display.lines)
@@ -1273,7 +1270,7 @@ async def test_has_input_false_after_pre_cmd_and_display_rebuild() -> None:
         await pilot.pause()
         recv_q = await _start_recv_only(terminal)
         try:
-            await recv_q.put(["pre_cmd", "1:/home/user\n"])
+            await recv_q.put(["pre_cmd", "/home/user\n"])
             await recv_q.put(["stdout", "$ "])  # prompt drawn; cursor sits right after it
             await pilot.pause(delay=0.15)
             assert terminal.has_input() is False
@@ -1291,7 +1288,7 @@ async def test_has_input_true_after_prompt_and_user_input() -> None:
         await pilot.pause()
         recv_q = await _start_recv_only(terminal)
         try:
-            await recv_q.put(["pre_cmd", "1:/home/user\n"])
+            await recv_q.put(["pre_cmd", "/home/user\n"])
             await recv_q.put(["stdout", "$ "])  # prompt
             await pilot.pause(delay=0.15)
             await recv_q.put(["stdout", "ls"])  # user typed "ls"
@@ -1439,7 +1436,7 @@ async def test_yank_and_end_of_line_sent_on_pre_cmd_when_pending() -> None:
             terminal._draining = True
             terminal._pending_yank = True
 
-            await recv_q.put(["pre_cmd", "1:/some/path\n"])
+            await recv_q.put(["pre_cmd", "/some/path\n"])
             await pilot.pause(delay=0.15)
 
             assert terminal._pending_yank is False
@@ -1466,7 +1463,7 @@ async def test_yank_not_sent_when_pending_yank_is_false() -> None:
             terminal._draining = True
             terminal._pending_yank = False
 
-            await recv_q.put(["pre_cmd", "1:/some/path\n"])
+            await recv_q.put(["pre_cmd", "/some/path\n"])
             await pilot.pause(delay=0.15)
 
             # No yank should have been written
@@ -1489,7 +1486,7 @@ async def test_prompt_cursor_x_snapshotted_at_rebuild_not_at_pre_cmd() -> None:
         await pilot.pause()
         recv_q = await _start_recv_only(terminal)
         try:
-            await recv_q.put(["pre_cmd", "1:/home/user\n"])
+            await recv_q.put(["pre_cmd", "/home/user\n"])
             # At this point the flag is set but no rebuild has happened yet.
             # cursor is still at 0 so _prompt_cursor_x should not have moved.
             await asyncio.sleep(0.005)
@@ -1534,7 +1531,7 @@ async def test_race_a_pre_cmd_during_draining_resumes_and_clears() -> None:
         # Stale pre_cmd from a previous navigation is already in the queue.
         recv_q: asyncio.Queue[list[object]] = asyncio.Queue()
         terminal.recv_queue = recv_q
-        await recv_q.put(["pre_cmd", "1:/old/path\n"])
+        await recv_q.put(["pre_cmd", "/old/path\n"])
 
         # Create the recv() task.
         terminal.recv_task_t = asyncio.create_task(terminal.recv())
@@ -1587,7 +1584,7 @@ async def test_race_c_two_navigations_first_pre_cmd_resumes_shell() -> None:
             assert terminal._nav_pending == 2
 
             # First pre_cmd: nav_pending 2→1, draining stays True, shell resumed.
-            await recv_q.put(["pre_cmd", "1:/tmp/A\n"])
+            await recv_q.put(["pre_cmd", "/home/user/A\n"])
             await pilot.pause(delay=0.05)
             assert terminal._draining is True  # still draining — second nav pending
             assert terminal._nav_pending == 1
@@ -1595,7 +1592,7 @@ async def test_race_c_two_navigations_first_pre_cmd_resumes_shell() -> None:
             assert terminal._snapshot_prompt_cursor is False  # not armed yet
 
             # Second pre_cmd: nav_pending 1→0, draining clears, snapshot armed.
-            await recv_q.put(["pre_cmd", "1:/tmp/B\n"])
+            await recv_q.put(["pre_cmd", "/home/user/B\n"])
             await pilot.pause(delay=0.05)
             assert terminal._draining is False
             assert terminal._nav_pending == 0
@@ -1687,12 +1684,12 @@ async def test_request_cd_path_changed_is_not_user_initiated() -> None:
             assert terminal._nav_pending == 1
 
             # Simulate precmd acknowledging the cd
-            await recv_q.put(["pre_cmd", "1234:/tmp/a"])
+            await recv_q.put(["pre_cmd", "/home/user/a"])
             await pilot.pause(delay=0.15)
 
             assert len(app.path_changed_events) == 1
             assert app.path_changed_events[0].user_initiated is False
-            assert app.path_changed_events[0].cwd == PurePath("/tmp/a")  # noqa: S108
+            assert app.path_changed_events[0].cwd == PurePath("/home/user/a")
         finally:
             await _stop_recv_only(terminal)
 
@@ -1710,12 +1707,12 @@ async def test_user_cd_path_changed_is_user_initiated() -> None:
             # No request_cd — user typed cd in the terminal
             assert terminal._nav_pending == 0
 
-            await recv_q.put(["pre_cmd", "1234:/tmp/b"])
+            await recv_q.put(["pre_cmd", "/home/user/b"])
             await pilot.pause(delay=0.15)
 
             assert len(app.path_changed_events) == 1
             assert app.path_changed_events[0].user_initiated is True
-            assert app.path_changed_events[0].cwd == PurePath("/tmp/b")  # noqa: S108
+            assert app.path_changed_events[0].cwd == PurePath("/home/user/b")
         finally:
             await _stop_recv_only(terminal)
 
@@ -1737,16 +1734,16 @@ async def test_rapid_request_cd_only_last_fires_path_changed() -> None:
             assert terminal._nav_pending == 3
 
             # First two precmds: intermediate, no PathChanged
-            await recv_q.put(["pre_cmd", "1234:/a"])
+            await recv_q.put(["pre_cmd", "/a"])
             await pilot.pause(delay=0.15)
             assert len(app.path_changed_events) == 0
 
-            await recv_q.put(["pre_cmd", "1234:/b"])
+            await recv_q.put(["pre_cmd", "/b"])
             await pilot.pause(delay=0.15)
             assert len(app.path_changed_events) == 0
 
             # Last precmd: PathChanged fires
-            await recv_q.put(["pre_cmd", "1234:/c"])
+            await recv_q.put(["pre_cmd", "/c"])
             await pilot.pause(delay=0.15)
             assert len(app.path_changed_events) == 1
             assert app.path_changed_events[0].cwd == PurePath("/c")
@@ -1863,3 +1860,47 @@ async def test_run_processes_set_size_message() -> None:
         assert backend.resize_calls[-1] == (30, 100)
 
         terminal.stop()
+
+
+# ---------------------------------------------------------------------------
+# Task 5: init_code() no-arg and _handle_pre_cmd uses path directly
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_backend_calls_init_code_with_no_args() -> None:
+    """init_code() must be called without arguments after the pipe removal."""
+    from unittest.mock import MagicMock
+
+    backend = FakePtyBackend()
+    driver = MagicMock()
+    driver.supports_stop_resume = False
+    driver.init_code.return_value = ""
+    driver.supports_precmd = True
+
+    terminal = Terminal("/bin/sh", backend=backend, driver=driver)
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.start()
+        try:
+            driver.init_code.assert_called_once_with()
+        finally:
+            terminal.stop()
+
+
+@pytest.mark.asyncio
+async def test_handle_pre_cmd_updates_cwd_from_plain_path() -> None:
+    """_handle_pre_cmd uses the raw string as a path directly (no parse_precmd_payload)."""
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver(stop_resume=False))
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            recv_q.put_nowait(["pre_cmd", "/home/user/work"])
+            await pilot.pause(delay=0.05)
+            assert terminal._cwd == PurePath("/home/user/work")
+        finally:
+            await _stop_recv_only(terminal)

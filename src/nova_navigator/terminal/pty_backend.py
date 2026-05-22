@@ -25,11 +25,16 @@ import io
 import logging
 import os
 import pty
+import re
 import shlex
 import signal
 import struct
 import termios
 from abc import ABC, abstractmethod
+
+_OSC_COMPLETE = re.compile(r"\033\](\d+);(.*?)(?:\007|\033\\)", re.DOTALL)
+_OSC_PARTIAL = re.compile(r"\033\].*$", re.DOTALL)
+_OSC_CWD = 7
 
 _logger = logging.getLogger(__name__)
 
@@ -45,6 +50,69 @@ class PtyBackend(ABC):
     → ``detach_readers()`` → ``teardown()``.
     """
 
+    def __init__(self) -> None:
+        self._osc_buf: str = ""
+
+    @property
+    def supports_precmd(self) -> bool:
+        """True if this backend delivers precmd CWD notifications.
+
+        Always True — all backends emit OSC 7 via the shell hook installed
+        by ``ShellDriver.init_code()``.
+        """
+        return True
+
+    def _process_chunk(
+        self,
+        data: bytes,
+        loop: asyncio.AbstractEventLoop,
+        recv_queue: asyncio.Queue[list[object]],
+    ) -> None:
+        """Decode *data*, strip OSC sequences, post stdout and pre_cmd messages.
+
+        Prepends any buffered incomplete OSC sequence from the previous chunk.
+        Complete sequences are dispatched to ``_on_osc``; the cleaned text is
+        posted as ``["stdout", ...]``.  A trailing incomplete sequence is saved
+        to ``_osc_buf`` for the next chunk.
+        """
+        text = self._osc_buf + data.decode("utf-8", errors="replace")
+        self._osc_buf = ""
+
+        def _dispatch(m: re.Match[str]) -> str:
+            self._on_osc(int(m.group(1)), m.group(2), loop, recv_queue)
+            return ""
+
+        clean = _OSC_COMPLETE.sub(_dispatch, text)
+
+        partial = _OSC_PARTIAL.search(clean)
+        if partial:
+            self._osc_buf = clean[partial.start() :]
+            clean = clean[: partial.start()]
+
+        if clean:
+            loop.call_soon_threadsafe(recv_queue.put_nowait, ["stdout", clean])
+
+    def _on_osc(
+        self,
+        code: int,
+        data: str,
+        loop: asyncio.AbstractEventLoop,
+        recv_queue: asyncio.Queue[list[object]],
+    ) -> None:
+        """Handle a decoded OSC sequence.
+
+        OSC 7 carries a ``file:///path`` URI and is posted as
+        ``["pre_cmd", path]``.  All other codes are silently discarded.
+        """
+        if code == _OSC_CWD and data.startswith("file://"):
+            remainder = data[len("file://") :]
+            if remainder.startswith("/"):
+                path = remainder
+            else:
+                slash = remainder.find("/")
+                path = remainder[slash:] if slash != -1 else "/"
+            loop.call_soon_threadsafe(recv_queue.put_nowait, ["pre_cmd", path])
+
     @abstractmethod
     def open(self, command: str, rows: int, cols: int) -> int | None:
         """Start the shell process.
@@ -55,7 +123,7 @@ class PtyBackend(ABC):
             cols: Initial terminal width.
 
         Returns:
-            The precmd pipe child-side fd number, or None if not supported.
+            Always ``None`` — CWD is now tracked in-band via OSC 7 sequences.
         """
 
     @abstractmethod
@@ -92,38 +160,26 @@ class PtyBackend(ABC):
     def teardown(self) -> None:
         """Terminate the shell process and close all file objects."""
 
-    @property
-    @abstractmethod
-    def supports_precmd_pipe(self) -> bool:
-        """True if this backend has an out-of-band precmd pipe."""
-
 
 class LocalPtyBackend(PtyBackend):
     """PTY backend for local shell processes.
 
-    Uses ``pty.fork()`` to create a pseudo-terminal and ``os.pipe()`` for the
-    out-of-band precmd communication channel.
+    Uses ``pty.fork()`` to create a pseudo-terminal.
+    CWD is tracked via OSC 7 sequences scanned by the inherited
+    ``_process_chunk`` method.
     """
 
     def __init__(self) -> None:
+        super().__init__()
         self._pid: int = -1
         self._master_fd: int = -1
         self._p_out: io.FileIO | None = None
-        self._p_out_pre_cmd: io.FileIO | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
 
-    @property
-    def supports_precmd_pipe(self) -> bool:
-        return True
-
     def open(self, command: str, rows: int, cols: int) -> int | None:
-        fd_pre_cmd_parent, fd_pre_cmd_child = os.pipe()
-
         pid, fd = pty.fork()
         if pid == 0:
             # Child process
-            os.close(fd_pre_cmd_parent)
-            os.set_inheritable(fd_pre_cmd_child, True)
             argv = shlex.split(command)
             env = os.environ.copy()
             env["TERM"] = "xterm-256color"
@@ -131,14 +187,11 @@ class LocalPtyBackend(PtyBackend):
             os.execvpe(argv[0], argv, env)
             raise RuntimeError("execvpe failed")
 
-        # Parent process: close write end of the pre-cmd pipe.
-        os.close(fd_pre_cmd_child)
         self._pid = pid
         self._master_fd = fd
         self._p_out = os.fdopen(fd, "w+b", 0)
-        self._p_out_pre_cmd = os.fdopen(fd_pre_cmd_parent, "w+b", 0)
         self.resize(rows, cols)
-        return fd_pre_cmd_child
+        return None
 
     def write(self, data: bytes) -> None:
         assert self._p_out is not None
@@ -160,51 +213,26 @@ class LocalPtyBackend(PtyBackend):
     ) -> None:
         self._loop = loop
         p_out = self._p_out
-        p_out_pre_cmd = self._p_out_pre_cmd
         assert p_out is not None
-        assert p_out_pre_cmd is not None
 
         def on_output() -> None:
             try:
-                read = p_out.read(65536).decode()
-                recv_queue.put_nowait(["stdout", read])
+                data = p_out.read(65536)
+                self._process_chunk(data, loop, recv_queue)
             except UnicodeDecodeError as error:
                 _logger.warning("decode error: %s", error)
             except Exception:  # noqa: BLE001
                 loop.remove_reader(p_out)
                 recv_queue.put_nowait(["disconnect", 1])
 
-        def on_pre_cmd() -> None:
-            try:
-                recv_queue.put_nowait(["pre_cmd", p_out_pre_cmd.read(65536).decode()])
-            except UnicodeDecodeError:
-                pass
-            except Exception:  # noqa: BLE001
-                loop.remove_reader(p_out_pre_cmd)
-
         loop.add_reader(p_out, on_output)
-        loop.add_reader(p_out_pre_cmd, on_pre_cmd)
 
     def detach_readers(self) -> None:
-        if self._loop is not None:
-            if self._p_out is not None:
-                with contextlib.suppress(Exception):
-                    self._loop.remove_reader(self._p_out)
-            if self._p_out_pre_cmd is not None:
-                with contextlib.suppress(Exception):
-                    self._loop.remove_reader(self._p_out_pre_cmd)
+        if self._loop is not None and self._p_out is not None:
+            with contextlib.suppress(Exception):
+                self._loop.remove_reader(self._p_out)
 
     def teardown(self) -> None:
         with contextlib.suppress(OSError):
             if self._pid > 0:
                 os.kill(self._pid, signal.SIGTERM)
-        with contextlib.suppress(OSError):
-            if self._pid > 0:
-                os.waitpid(self._pid, os.WNOHANG)
-        with contextlib.suppress(OSError):
-            if self._p_out is not None:
-                self._p_out.close()
-        with contextlib.suppress(OSError):
-            if self._p_out_pre_cmd is not None:
-                self._p_out_pre_cmd.close()
-        self._pid = -1

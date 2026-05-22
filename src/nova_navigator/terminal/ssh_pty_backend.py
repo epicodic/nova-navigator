@@ -9,11 +9,10 @@ A single daemon thread reads from the blocking ``channel.recv()`` and
 forwards data into the asyncio ``recv_queue`` via ``call_soon_threadsafe``.
 ``add_reader`` cannot be used because paramiko channels are not OS fds.
 
-Option B extension point:
-When in-band precmd escape sequences are added, override ``_process_chunk``
-to scan each data chunk, strip precmd payloads, and post ``["pre_cmd", ...]``
-messages alongside the clean ``["stdout", ...]`` messages.  No changes to
-``PtyBackend`` or ``Terminal`` are required.
+CWD tracking is implemented via in-band OSC 7 escape sequences.
+The inherited ``PtyBackend._process_chunk`` scans stdout, strips OSC 7
+payloads, and posts ``["pre_cmd", path]`` messages alongside the clean
+``["stdout", ...]`` messages.
 """
 
 from __future__ import annotations
@@ -41,16 +40,13 @@ class SshPtyBackend(PtyBackend):
     """
 
     def __init__(self, ssh_client: paramiko.SSHClient) -> None:
+        super().__init__()
         self._ssh_client = ssh_client
         self._channel: paramiko.Channel | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._recv_queue: asyncio.Queue[list[object]] | None = None
         self._stop_event: threading.Event = threading.Event()
         self._reader_thread: threading.Thread | None = None
-
-    @property
-    def supports_precmd_pipe(self) -> bool:
-        return False
 
     def open(self, command: str, rows: int, cols: int) -> int | None:
         """Open a PTY session channel and start the shell.
@@ -83,12 +79,7 @@ class SshPtyBackend(PtyBackend):
                 self._channel.resize_pty(width=cols, height=rows)
 
     def resume(self) -> None:
-        """No-op in Option A (no SIGSTOP synchronisation over SSH).
-
-        Option B will implement this by opening a short-lived exec channel
-        and sending ``kill -CONT <pid>`` once the PID is known from the
-        in-band precmd payload.
-        """
+        """No-op — no SIGSTOP synchronisation over SSH."""
 
     def attach_readers(
         self,
@@ -122,20 +113,6 @@ class SshPtyBackend(PtyBackend):
             name="ssh-pty-reader",
         )
         self._reader_thread.start()
-
-    def _process_chunk(
-        self,
-        data: bytes,
-        loop: asyncio.AbstractEventLoop,
-        recv_queue: asyncio.Queue[list[object]],
-    ) -> None:
-        """Forward a raw data chunk as a stdout message.
-
-        Option B hook: override this to strip in-band precmd escape sequences
-        and post ``["pre_cmd", ...]`` messages before the clean stdout.
-        """
-        text = data.decode("utf-8", errors="replace")
-        loop.call_soon_threadsafe(recv_queue.put_nowait, ["stdout", text])
 
     def detach_readers(self) -> None:
         """Signal the reader thread to stop without generating a disconnect message."""

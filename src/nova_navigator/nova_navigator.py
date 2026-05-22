@@ -142,6 +142,7 @@ class MainScreen(Screen[None]):
         self._sync_state = None
         self._compare_config = None
         self._terminal_pool = TerminalPool()
+        self._provisioning: set[int] = set()
 
     @property
     def app(self) -> NovaNavigator:  # type: ignore[override]
@@ -416,8 +417,7 @@ class MainScreen(Screen[None]):
 
     def _switch_terminal(self, path: VPath) -> None:
         self._terminal_pool.switch_to(path.filesystem)
-        if isinstance(path.filesystem.unwrap(), LocalFilesystem):
-            self._terminal_pool.active_terminal.request_cd(path.path)
+        self._terminal_pool.active_terminal.request_cd(path.path)
 
     async def _on_directory_browser_path_selected(self, event: DirectoryBrowser.PathSelected) -> None:
         vpath = event.path
@@ -433,16 +433,19 @@ class MainScreen(Screen[None]):
 
     async def _ensure_terminal_for(self, path: VPath) -> None:
         """Provision and register a terminal for path.filesystem if not yet registered."""
-        if self._terminal_pool.has_terminal(path.filesystem):
+        fs_key = id(path.filesystem.unwrap())
+        if self._terminal_pool.has_terminal(path.filesystem) or fs_key in self._provisioning:
             return
-        terminal = self._terminal_pool.create_for(path.filesystem)
-        if terminal is None:
-            return
-        # Register before the first await to prevent concurrent workers from
-        # provisioning the same filesystem twice.
-        self._terminal_pool.register(path.filesystem, terminal)
-        await self.mount(terminal, after=self._terminal_pool.active_terminal)
-        terminal.start()
+        self._provisioning.add(fs_key)
+        try:
+            terminal = await self._terminal_pool.create_for(path.filesystem)
+            if terminal is None:
+                return
+            self._terminal_pool.register(path.filesystem, terminal)
+            await self.mount(terminal, after=self._terminal_pool.active_terminal)
+            terminal.start()
+        finally:
+            self._provisioning.discard(fs_key)
 
     def on_directory_browser_load_failed(self, event: DirectoryBrowser.LoadFailed) -> None:
         self.notify(str(event.error), title="Cannot read directory", severity="error")
@@ -487,8 +490,12 @@ class MainScreen(Screen[None]):
         self._update_actions(event.path)
 
     def _on_terminal_path_changed(self, event: Terminal.PathChanged) -> None:
-        if event.user_initiated:
-            self.active_panel().set_path(VPath(event.cwd, LocalFilesystem.singleton()))
+        if not event.user_initiated:
+            return
+        fs = self._terminal_pool.filesystem_for(event.terminal_widget)
+        if fs is None:
+            return
+        self.active_panel().set_path(VPath(event.cwd, fs))
 
     def _action_toggle_sync_browsing(self) -> None:
         a = self._act("view.sync_browsing")

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING
 
 from nova_navigator.vfs.filesystem import Filesystem
@@ -11,7 +11,7 @@ from nova_navigator.vfs.filesystems import LocalFilesystem
 if TYPE_CHECKING:
     from nova_navigator.terminal.terminal import Terminal
 
-TerminalFactory = Callable[[Filesystem], "Terminal"]
+TerminalFactory = Callable[[Filesystem], "Awaitable[Terminal | None]"]
 
 _FactoryEntry = tuple[Callable[[Filesystem], bool], TerminalFactory]
 
@@ -30,6 +30,9 @@ class TerminalPool:
         self._terminals: dict[int, Terminal] = (
             {id(LocalFilesystem.singleton()): local_terminal} if local_terminal is not None else {}
         )
+        self._filesystem_by_terminal: dict[int, Filesystem] = (
+            {id(local_terminal): LocalFilesystem.singleton()} if local_terminal is not None else {}
+        )
         self._factories: list[_FactoryEntry] = []
 
     def set_local(self, terminal: Terminal) -> None:
@@ -37,6 +40,7 @@ class TerminalPool:
         self._local = terminal
         self._active = terminal
         self._terminals[id(LocalFilesystem.singleton())] = terminal
+        self._filesystem_by_terminal[id(terminal)] = LocalFilesystem.singleton()
 
     def register_factory(
         self,
@@ -49,12 +53,17 @@ class TerminalPool:
     def register(self, fs: Filesystem, terminal: Terminal) -> None:
         """Associate an already-created terminal with *fs*."""
         self._terminals[id(fs.unwrap())] = terminal
+        self._filesystem_by_terminal[id(terminal)] = fs
+
+    def filesystem_for(self, terminal: Terminal) -> Filesystem | None:
+        """Return the filesystem registered for *terminal*, or None if not found."""
+        return self._filesystem_by_terminal.get(id(terminal))
 
     def has_terminal(self, fs: Filesystem) -> bool:
         """Return True if a terminal is already registered for *fs*."""
         return id(fs.unwrap()) in self._terminals
 
-    def create_for(self, fs: Filesystem) -> Terminal | None:
+    async def create_for(self, fs: Filesystem) -> Terminal | None:
         """Create a new terminal for *fs* using the registered factory.
 
         Returns None if no factory matches the resolved filesystem type.
@@ -63,7 +72,7 @@ class TerminalPool:
         resolved = fs.unwrap()
         for predicate, factory in self._factories:
             if predicate(resolved):
-                return factory(resolved)
+                return await factory(resolved)
         return None
 
     def switch_to(self, fs: Filesystem) -> None:
