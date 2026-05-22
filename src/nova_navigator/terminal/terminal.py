@@ -260,8 +260,8 @@ class Terminal(Widget, can_focus=True):
         self._screen = TerminalPyteScreen(self.ncol, self.nrow)
         self._stream = pyte.Stream(self._screen)
         self._prompt_cursor_x: int = 0
+        self._prompt_cursor_y: int = 0
         self._pending_yank: bool = False
-        self._snapshot_prompt_cursor: bool = False
         # Counts navigations whose pre_cmd acknowledgement has not yet
         # arrived.  Draining ends only when this reaches zero, preventing
         # a rapid second cd from leaking its echo after the first pre_cmd
@@ -358,12 +358,13 @@ class Terminal(Widget, can_focus=True):
         """Return True if the user has typed something on the current prompt line.
 
         Only meaningful when the driver supports prompt tracking
-        (supports_stop_resume).  Returns False for drivers like FallbackDriver
+        (supports_prompt_ready).  Returns False for drivers like FallbackDriver
         that cannot reliably detect the prompt position.
         """
-        if not self._driver.supports_stop_resume:
+        if not self._driver.supports_prompt_ready:
             return False
-        log.info("cursor, prompt cursor:", self._screen.cursor.x, self._prompt_cursor_x)
+        if self._screen.cursor.y != self._prompt_cursor_y:
+            return self._screen.cursor.y > self._prompt_cursor_y
         return self._screen.cursor.x > self._prompt_cursor_x
 
     def request_cd(self, path: PurePath) -> None:
@@ -476,11 +477,14 @@ class Terminal(Widget, can_focus=True):
         # not just after navigations.
         if self._driver.supports_stop_resume:
             self._backend.resume()
-        if self._nav_pending == 0:
-            self._snapshot_prompt_cursor = True
-            if cwd_changed:
-                self.post_message(Terminal.PathChanged(self, cwd, user_initiated=not was_programmatic))
+        if self._nav_pending == 0 and cwd_changed:
+            self.post_message(Terminal.PathChanged(self, cwd, user_initiated=not was_programmatic))
         self.post_message(Terminal.PreCmd(self, cwd))
+
+    def _handle_prompt_ready(self) -> None:
+        """Snapshot cursor position as the prompt-end position."""
+        self._prompt_cursor_x = self._screen.cursor.x
+        self._prompt_cursor_y = self._screen.cursor.y
 
     async def recv(self) -> None:
         """Process messages from recv_queue: stdout, pre_cmd, setup, disconnect."""
@@ -501,6 +505,8 @@ class Terminal(Widget, can_focus=True):
                         if not self._draining:
                             self._feed_stdout(str(message[1]))
                             stdout_fed = True
+                    elif cmd == "prompt_ready":
+                        self._handle_prompt_ready()
                     elif cmd == "disconnect":
                         disconnected = True
                         break
@@ -576,9 +582,6 @@ class Terminal(Widget, can_focus=True):
             lines.append(line_text)
 
         self._display = TerminalDisplay(lines, self._screen.cursor.x, self._screen.cursor.y)
-        if self._snapshot_prompt_cursor:
-            self._snapshot_prompt_cursor = False
-            self._prompt_cursor_x = self._screen.cursor.x
         self.refresh()
 
     def _process_stdout(self, chars: str) -> None:

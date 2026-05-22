@@ -61,13 +61,19 @@ def _posix_octal_escape(arg: str) -> str:
 class ShellDriver(ABC):
     """Abstract base class for shell-specific terminal integration."""
 
-    def __init__(self, *, stop_resume: bool) -> None:
+    def __init__(self, *, stop_resume: bool, prompt_ready: bool) -> None:
         self._stop_resume = stop_resume
+        self._prompt_ready = prompt_ready
 
     @property
     def supports_stop_resume(self) -> bool:
         """True if init_code() includes ``kill -STOP $$``."""
         return self._stop_resume
+
+    @property
+    def supports_prompt_ready(self) -> bool:
+        """True if init_code() installs an OSC 133;B prompt-end hook."""
+        return self._prompt_ready
 
     def _hook_body(self) -> str:
         """Return the core of the precmd hook function body.
@@ -101,10 +107,14 @@ class ZshDriver(ShellDriver):
     """Shell driver for zsh."""
 
     def __init__(self, *, stop_resume: bool = True) -> None:
-        super().__init__(stop_resume=stop_resume)
+        super().__init__(stop_resume=stop_resume, prompt_ready=True)
 
     def init_code(self) -> str:
-        return f" setopt HIST_IGNORE_SPACE; _nn_precmd() {{ {self._hook_body()} }}; precmd_functions+=(_nn_precmd)\n"
+        zle_hook = " _nn_zle_init() { printf '\\033]133;B\\007' >/dev/tty }; zle -N zle-line-init _nn_zle_init"
+        return (
+            f" setopt HIST_IGNORE_SPACE; _nn_precmd() {{ {self._hook_body()} }};"
+            f" precmd_functions+=(_nn_precmd);{zle_hook}\n"
+        )
 
     def quote(self, arg: str) -> str:
         return _ansi_c_quote(arg)
@@ -114,13 +124,14 @@ class BashDriver(ShellDriver):
     """Shell driver for bash."""
 
     def __init__(self, *, stop_resume: bool = True) -> None:
-        super().__init__(stop_resume=stop_resume)
+        super().__init__(stop_resume=stop_resume, prompt_ready=True)
 
     def init_code(self) -> str:
         return (
             ' HISTCONTROL="${HISTCONTROL:+${HISTCONTROL}:}ignorespace";'
             f" _nn_precmd() {{ {self._hook_body()}; }};"
-            " PROMPT_COMMAND=${PROMPT_COMMAND:+${PROMPT_COMMAND}$'\\n'}_nn_precmd\n"
+            " PROMPT_COMMAND=${PROMPT_COMMAND:+${PROMPT_COMMAND}$'\\n'}_nn_precmd;"
+            " PS1=\"${PS1}\"$'\\[\\033]133;B\\007\\]'\n"
         )
 
     def quote(self, arg: str) -> str:
@@ -136,7 +147,7 @@ class FallbackDriver(ShellDriver):
     """
 
     def __init__(self, *, stop_resume: bool = False) -> None:
-        super().__init__(stop_resume=False)  # FallbackDriver never supports stop/resume
+        super().__init__(stop_resume=False, prompt_ready=False)  # FallbackDriver never supports either
 
     def init_code(self) -> str:
         return f" _nn_precmd() {{ {self._hook_body()} >/dev/tty; }}; PS1='$(_nn_precmd)'\"$PS1\"\n"

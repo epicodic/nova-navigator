@@ -1240,7 +1240,7 @@ def test_has_input_returns_false_when_cursor_at_prompt_position(terminal_instanc
 
 
 def test_has_input_returns_true_when_cursor_past_prompt_position() -> None:
-    # Requires a driver with supports_stop_resume=True (ZshDriver) to track prompts.
+    # Requires a driver with supports_prompt_ready=True (ZshDriver) to track prompts.
     terminal = Terminal("/bin/zsh", driver=ZshDriver())
     terminal._prompt_cursor_x = 5
     terminal._screen.cursor.x = 8
@@ -1260,22 +1260,32 @@ def test_has_input_returns_false_on_fresh_terminal(terminal_instance: Terminal) 
     assert terminal_instance.has_input() is False
 
 
-@pytest.mark.asyncio
-async def test_has_input_false_after_pre_cmd_and_display_rebuild() -> None:
-    """After a pre_cmd + prompt stdout sequence, has_input() must return False."""
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = TerminalTestApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        recv_q = await _start_recv_only(terminal)
-        try:
-            await recv_q.put(["pre_cmd", "/home/user\n"])
-            await recv_q.put(["stdout", "$ "])  # prompt drawn; cursor sits right after it
-            await pilot.pause(delay=0.15)
-            assert terminal.has_input() is False
-        finally:
-            await _stop_recv_only(terminal)
+def test_prompt_ready_message_sets_cursor_snapshot() -> None:
+    """_handle_prompt_ready() must snapshot the cursor position into _prompt_cursor_x/_prompt_cursor_y."""
+    terminal = Terminal("/bin/zsh", driver=ZshDriver())
+    terminal._stream.feed("$ ")  # moves cursor to x=2
+    terminal._handle_prompt_ready()
+    assert terminal._prompt_cursor_x == terminal._screen.cursor.x
+    assert terminal._prompt_cursor_y == terminal._screen.cursor.y
+
+
+def test_has_input_returns_true_for_ssh_zsh_driver() -> None:
+    """has_input() must work for SSH terminals using ZshDriver (supports_prompt_ready=True)."""
+    # SSH-style: no stop/resume, but supports prompt_ready
+    terminal = Terminal("/bin/zsh", driver=ZshDriver(stop_resume=False))
+    terminal._stream.feed("$ ")
+    terminal._handle_prompt_ready()
+    terminal._stream.feed("ls")
+    assert terminal.has_input() is True
+
+
+def test_has_input_false_after_pre_cmd_and_prompt_ready() -> None:
+    """has_input() must return False right after ["prompt_ready"] with no user input."""
+    terminal = Terminal("/bin/zsh", driver=ZshDriver())
+    terminal._stream.feed("$ ")
+    terminal._handle_prompt_ready()
+    # cursor is exactly at prompt position — no user input yet
+    assert terminal.has_input() is False
 
 
 @pytest.mark.asyncio
@@ -1291,6 +1301,8 @@ async def test_has_input_true_after_prompt_and_user_input() -> None:
             await recv_q.put(["pre_cmd", "/home/user\n"])
             await recv_q.put(["stdout", "$ "])  # prompt
             await pilot.pause(delay=0.15)
+            await recv_q.put(["prompt_ready"])  # snapshot prompt cursor position
+            await pilot.pause(delay=0.05)
             await recv_q.put(["stdout", "ls"])  # user typed "ls"
             await pilot.pause(delay=0.15)
             assert terminal.has_input() is True
@@ -1476,9 +1488,9 @@ async def test_yank_not_sent_when_pending_yank_is_false() -> None:
 
 
 @pytest.mark.asyncio
-async def test_prompt_cursor_x_snapshotted_at_rebuild_not_at_pre_cmd() -> None:
-    """_prompt_cursor_x must be set during _rebuild_display (after prompt is drawn),
-    not immediately when pre_cmd fires."""
+async def test_prompt_cursor_snapshotted_on_prompt_ready_not_at_pre_cmd() -> None:
+    """_prompt_cursor_x/_prompt_cursor_y must be set when ["prompt_ready"] arrives,
+    not when pre_cmd fires and not during _rebuild_display."""
     backend = FakePtyBackend()
     terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
     app = TerminalTestApp(terminal)
@@ -1487,16 +1499,20 @@ async def test_prompt_cursor_x_snapshotted_at_rebuild_not_at_pre_cmd() -> None:
         recv_q = await _start_recv_only(terminal)
         try:
             await recv_q.put(["pre_cmd", "/home/user\n"])
-            # At this point the flag is set but no rebuild has happened yet.
-            # cursor is still at 0 so _prompt_cursor_x should not have moved.
+            # pre_cmd fired but no prompt_ready yet — snapshot must not have moved.
             await asyncio.sleep(0.005)
             assert terminal._prompt_cursor_x == 0
 
-            # Now send prompt text and wait for the rebuild.
+            # Send prompt text and wait for rebuild — still no prompt_ready.
             await recv_q.put(["stdout", "$ "])
             await pilot.pause(delay=0.15)
-            # After rebuild the snapshot should reflect the cursor after the prompt.
+            assert terminal._prompt_cursor_x == 0  # rebuild does not snapshot
+
+            # prompt_ready arrives: snapshot taken at current cursor position.
+            await recv_q.put(["prompt_ready"])
+            await asyncio.sleep(0.005)
             assert terminal._prompt_cursor_x == terminal._screen.cursor.x
+            assert terminal._prompt_cursor_y == terminal._screen.cursor.y
         finally:
             await _stop_recv_only(terminal)
 
@@ -1589,20 +1605,19 @@ async def test_race_c_two_navigations_first_pre_cmd_resumes_shell() -> None:
             assert terminal._draining is True  # still draining — second nav pending
             assert terminal._nav_pending == 1
             assert backend.resume_count == 1
-            assert terminal._snapshot_prompt_cursor is False  # not armed yet
 
-            # Second pre_cmd: nav_pending 1→0, draining clears, snapshot armed.
+            # Second pre_cmd: nav_pending 1→0, draining clears.
             await recv_q.put(["pre_cmd", "/home/user/B\n"])
             await pilot.pause(delay=0.05)
             assert terminal._draining is False
             assert terminal._nav_pending == 0
             assert backend.resume_count == 2
-            assert terminal._snapshot_prompt_cursor is True
 
-            # Prompt stdout triggers rebuild which snapshots cursor.
+            # Prompt stdout then prompt_ready snapshots cursor.
             await recv_q.put(["stdout", "\r\n/home/user/projects $ "])
             await pilot.pause(delay=0.15)
-            assert terminal._snapshot_prompt_cursor is False  # consumed by rebuild
+            await recv_q.put(["prompt_ready"])
+            await asyncio.sleep(0.005)
             assert terminal._prompt_cursor_x == terminal._screen.cursor.x
 
             # Cursor is at the end of the prompt; user has not typed anything.

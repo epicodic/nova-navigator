@@ -35,6 +35,7 @@ from abc import ABC, abstractmethod
 _OSC_COMPLETE = re.compile(r"\033\](\d+);(.*?)(?:\007|\033\\)", re.DOTALL)
 _OSC_PARTIAL = re.compile(r"\033\].*$", re.DOTALL)
 _OSC_CWD = 7
+_OSC_PROMPT = 133
 
 _logger = logging.getLogger(__name__)
 
@@ -71,26 +72,25 @@ class PtyBackend(ABC):
         """Decode *data*, strip OSC sequences, post stdout and pre_cmd messages.
 
         Prepends any buffered incomplete OSC sequence from the previous chunk.
-        Complete sequences are dispatched to ``_on_osc``; the cleaned text is
-        posted as ``["stdout", ...]``.  A trailing incomplete sequence is saved
-        to ``_osc_buf`` for the next chunk.
+        Complete sequences are dispatched to ``_on_osc``; surrounding text is
+        posted as ``["stdout", ...]`` in document order.  A trailing incomplete
+        sequence is saved to ``_osc_buf`` for the next chunk.
         """
         text = self._osc_buf + data.decode("utf-8", errors="replace")
         self._osc_buf = ""
-
-        def _dispatch(m: re.Match[str]) -> str:
+        pos = 0
+        for m in _OSC_COMPLETE.finditer(text):
+            if m.start() > pos:
+                loop.call_soon_threadsafe(recv_queue.put_nowait, ["stdout", text[pos : m.start()]])
             self._on_osc(int(m.group(1)), m.group(2), loop, recv_queue)
-            return ""
-
-        clean = _OSC_COMPLETE.sub(_dispatch, text)
-
-        partial = _OSC_PARTIAL.search(clean)
+            pos = m.end()
+        remaining = text[pos:]
+        partial = _OSC_PARTIAL.search(remaining)
         if partial:
-            self._osc_buf = clean[partial.start() :]
-            clean = clean[: partial.start()]
-
-        if clean:
-            loop.call_soon_threadsafe(recv_queue.put_nowait, ["stdout", clean])
+            self._osc_buf = remaining[partial.start() :]
+            remaining = remaining[: partial.start()]
+        if remaining:
+            loop.call_soon_threadsafe(recv_queue.put_nowait, ["stdout", remaining])
 
     def _on_osc(
         self,
@@ -112,6 +112,8 @@ class PtyBackend(ABC):
                 slash = remainder.find("/")
                 path = remainder[slash:] if slash != -1 else "/"
             loop.call_soon_threadsafe(recv_queue.put_nowait, ["pre_cmd", path])
+        elif code == _OSC_PROMPT and data == "B":
+            loop.call_soon_threadsafe(recv_queue.put_nowait, ["prompt_ready"])
 
     @abstractmethod
     def open(self, command: str, rows: int, cols: int) -> int | None:
