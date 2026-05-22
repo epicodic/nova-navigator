@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import PurePath
-
 from nova_navigator.terminal.shell_driver import (
     BashDriver,
     FallbackDriver,
@@ -80,12 +78,12 @@ def test_posix_octal_escape_slash() -> None:
 
 
 def test_posix_octal_escape_simple_path() -> None:
-    result = _posix_octal_escape("/tmp")  # noqa: S108
+    result = _posix_octal_escape("/var/data")
     # Each char is escaped individually
     assert "\\0057" in result  # /
-    assert "\\0164" in result  # t
-    assert "\\0155" in result  # m
-    assert "\\0160" in result  # p
+    assert "\\0166" in result  # v
+    assert "\\0141" in result  # a
+    assert "\\0162" in result  # r
 
 
 def test_posix_octal_escape_empty_string() -> None:
@@ -98,35 +96,22 @@ def test_posix_octal_escape_empty_string() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_zsh_driver_init_code_embeds_fd() -> None:
-    driver = ZshDriver()
-    code = driver.init_code(7)
-    assert ">&7" in code
-
-
 def test_zsh_driver_init_code_contains_kill_stop() -> None:
     driver = ZshDriver()
-    code = driver.init_code(7)
+    code = driver.init_code()
     assert "kill -STOP $$" in code
 
 
 def test_zsh_driver_init_code_uses_precmd_functions() -> None:
     driver = ZshDriver()
-    code = driver.init_code(5)
+    code = driver.init_code()
     assert "precmd_functions" in code
 
 
 def test_zsh_driver_init_code_ends_with_newline() -> None:
     driver = ZshDriver()
-    code = driver.init_code(3)
+    code = driver.init_code()
     assert code.endswith("\n")
-
-
-def test_zsh_driver_init_code_prints_pid_and_pwd() -> None:
-    driver = ZshDriver()
-    code = driver.init_code(3)
-    assert "$$" in code
-    assert "pwd" in code
 
 
 def test_zsh_driver_quote_simple_path() -> None:
@@ -143,7 +128,7 @@ def test_zsh_driver_quote_special_chars() -> None:
 
 def test_zsh_driver_cd_command() -> None:
     driver = ZshDriver()
-    cmd = driver.cd_command("/tmp")  # noqa: S108
+    cmd = driver.cd_command("/var/data")
     assert cmd.startswith("cd ")
     assert "$'" in cmd
 
@@ -153,53 +138,26 @@ def test_zsh_driver_supports_stop_resume() -> None:
     assert driver.supports_stop_resume is True
 
 
-def test_zsh_driver_parse_precmd_payload_normal() -> None:
-    driver = ZshDriver()
-    pid, cwd = driver.parse_precmd_payload("12345:/home/user\n")
-    assert pid == 12345
-    assert cwd == PurePath("/home/user")
-
-
-def test_zsh_driver_parse_precmd_payload_strips_whitespace() -> None:
-    driver = ZshDriver()
-    pid, cwd = driver.parse_precmd_payload("  99:/var/log  \n")
-    assert pid == 99
-    assert cwd == PurePath("/var/log")
-
-
-def test_zsh_driver_parse_precmd_payload_malformed_returns_fallback() -> None:
-    driver = ZshDriver()
-    pid, cwd = driver.parse_precmd_payload("garbage data\n")
-    assert pid is None
-    assert cwd == PurePath("/")
-
-
 # ---------------------------------------------------------------------------
 # BashDriver
 # ---------------------------------------------------------------------------
 
 
-def test_bash_driver_init_code_embeds_fd() -> None:
-    driver = BashDriver()
-    code = driver.init_code(5)
-    assert ">&5" in code
-
-
 def test_bash_driver_init_code_contains_kill_stop() -> None:
     driver = BashDriver()
-    code = driver.init_code(5)
+    code = driver.init_code()
     assert "kill -STOP $$" in code
 
 
 def test_bash_driver_init_code_uses_prompt_command() -> None:
     driver = BashDriver()
-    code = driver.init_code(5)
+    code = driver.init_code()
     assert "PROMPT_COMMAND" in code
 
 
 def test_bash_driver_init_code_ends_with_newline() -> None:
     driver = BashDriver()
-    code = driver.init_code(5)
+    code = driver.init_code()
     assert code.endswith("\n")
 
 
@@ -210,7 +168,7 @@ def test_bash_driver_supports_stop_resume() -> None:
 
 def test_bash_driver_quote_uses_ansi_c() -> None:
     driver = BashDriver()
-    result = driver.quote("/tmp/test")  # noqa: S108
+    result = driver.quote("/var/data")
     assert result.startswith("$'")
 
 
@@ -218,13 +176,6 @@ def test_bash_driver_cd_command() -> None:
     driver = BashDriver()
     cmd = driver.cd_command("/var/log")
     assert cmd.startswith("cd ")
-
-
-def test_bash_driver_parse_precmd_payload() -> None:
-    driver = BashDriver()
-    pid, cwd = driver.parse_precmd_payload("9999:/opt/app\n")
-    assert pid == 9999
-    assert cwd == PurePath("/opt/app")
 
 
 # ---------------------------------------------------------------------------
@@ -237,28 +188,15 @@ def test_fallback_driver_supports_stop_resume_is_false() -> None:
     assert driver.supports_stop_resume is False
 
 
-def test_fallback_driver_init_code_with_fd() -> None:
-    driver = FallbackDriver()
-    code = driver.init_code(4)
-    assert ">&4" in code
-    assert "kill" not in code
-
-
-def test_fallback_driver_init_code_without_fd() -> None:
-    driver = FallbackDriver()
-    code = driver.init_code(None)
-    assert code == ""
-
-
 def test_fallback_driver_init_code_ends_with_newline() -> None:
     driver = FallbackDriver()
-    code = driver.init_code(4)
+    code = driver.init_code()
     assert code.endswith("\n")
 
 
 def test_fallback_driver_cd_command_is_self_contained() -> None:
     driver = FallbackDriver()
-    cmd = driver.cd_command("/tmp/test")  # noqa: S108
+    cmd = driver.cd_command("/var/data")
     # Must be a complete statement, not just 'cd <quoted>'
     assert "printf" in cmd
     assert "cd" in cmd
@@ -266,23 +204,9 @@ def test_fallback_driver_cd_command_is_self_contained() -> None:
 
 def test_fallback_driver_cd_command_does_not_start_with_cd() -> None:
     driver = FallbackDriver()
-    cmd = driver.cd_command("/tmp/test")  # noqa: S108
+    cmd = driver.cd_command("/var/data")
     # FallbackDriver returns a multi-statement command, not 'cd ...'
     assert not cmd.startswith("cd ")
-
-
-def test_fallback_driver_parse_precmd_payload() -> None:
-    driver = FallbackDriver()
-    pid, cwd = driver.parse_precmd_payload("/home/user\n")
-    assert pid is None
-    assert cwd == PurePath("/home/user")
-
-
-def test_fallback_driver_parse_precmd_payload_strips_whitespace() -> None:
-    driver = FallbackDriver()
-    pid, cwd = driver.parse_precmd_payload("  /var/log  \n")
-    assert pid is None
-    assert cwd == PurePath("/var/log")
 
 
 # ---------------------------------------------------------------------------
@@ -313,3 +237,100 @@ def test_detect_driver_unknown_shell() -> None:
 def test_detect_driver_command_with_arguments() -> None:
     driver = detect_driver("/usr/bin/zsh --no-rcs")
     assert isinstance(driver, ZshDriver)
+
+
+# ---------------------------------------------------------------------------
+# OSC 7 emission — new init_code() signature (no precmd_fd argument)
+# ---------------------------------------------------------------------------
+
+
+def test_zsh_driver_init_code_takes_no_arguments() -> None:
+    driver = ZshDriver()
+    code = driver.init_code()  # must not raise TypeError
+    assert isinstance(code, str)
+
+
+def test_zsh_driver_init_code_contains_osc7_printf() -> None:
+    driver = ZshDriver()
+    code = driver.init_code()
+    assert r"\033]7;file://%s\007" in code
+
+
+def test_zsh_driver_init_code_stop_resume_true_contains_kill_stop() -> None:
+    driver = ZshDriver(stop_resume=True)
+    code = driver.init_code()
+    assert "kill -STOP $$" in code
+
+
+def test_zsh_driver_init_code_stop_resume_false_omits_kill_stop() -> None:
+    driver = ZshDriver(stop_resume=False)
+    code = driver.init_code()
+    assert "kill -STOP $$" not in code
+
+
+def test_zsh_driver_default_stop_resume_is_true() -> None:
+    driver = ZshDriver()
+    assert driver.supports_stop_resume is True
+
+
+def test_bash_driver_init_code_takes_no_arguments() -> None:
+    driver = BashDriver()
+    code = driver.init_code()
+    assert isinstance(code, str)
+
+
+def test_bash_driver_init_code_contains_osc7_printf() -> None:
+    driver = BashDriver()
+    code = driver.init_code()
+    assert r"\033]7;file://%s\007" in code
+
+
+def test_bash_driver_init_code_stop_resume_false_omits_kill_stop() -> None:
+    driver = BashDriver(stop_resume=False)
+    code = driver.init_code()
+    assert "kill -STOP $$" not in code
+
+
+def test_fallback_driver_init_code_takes_no_arguments() -> None:
+    driver = FallbackDriver()
+    code = driver.init_code()
+    assert isinstance(code, str)
+
+
+def test_fallback_driver_init_code_contains_osc7_printf() -> None:
+    driver = FallbackDriver()
+    code = driver.init_code()
+    assert r"\033]7;file://%s\007" in code
+
+
+def test_fallback_driver_init_code_redirects_to_dev_tty() -> None:
+    # FallbackDriver uses PS1 command substitution, so printf must redirect
+    # to /dev/tty to avoid the OSC 7 sequence appearing in the prompt text.
+    driver = FallbackDriver()
+    code = driver.init_code()
+    assert ">/dev/tty" in code
+
+
+def test_detect_driver_zsh_stop_resume_false() -> None:
+    driver = detect_driver("/usr/bin/zsh", stop_resume=False)
+    assert isinstance(driver, ZshDriver)
+    assert driver.supports_stop_resume is False
+
+
+def test_detect_driver_bash_stop_resume_false() -> None:
+    driver = detect_driver("/bin/bash", stop_resume=False)
+    assert isinstance(driver, BashDriver)
+    assert driver.supports_stop_resume is False
+
+
+def test_detect_driver_fallback_stop_resume_kwarg_ignored() -> None:
+    # FallbackDriver always has stop_resume=False regardless of kwarg
+    driver = detect_driver("/bin/sh", stop_resume=True)
+    assert isinstance(driver, FallbackDriver)
+    assert driver.supports_stop_resume is False
+
+
+def test_fallback_driver_constructor_always_sets_stop_resume_false() -> None:
+    # Even if caller passes stop_resume=True, FallbackDriver forces False
+    driver = FallbackDriver(stop_resume=True)
+    assert driver.supports_stop_resume is False

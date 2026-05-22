@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
+from nova_navigator.terminal.terminal import Terminal
 from nova_navigator.terminal.terminal_pool import TerminalPool
+from nova_navigator.vfs.filesystem import Filesystem
 from nova_navigator.vfs.filesystems import LocalFilesystem
 from nova_navigator.vfs.filesystems.remote import RemoteFilesystem
 
@@ -89,7 +93,8 @@ def test_switch_to_unwraps_remote_filesystem() -> None:
     assert pool.active_terminal is remote_terminal
 
 
-def test_create_for_uses_registered_factory() -> None:
+@pytest.mark.asyncio
+async def test_create_for_uses_registered_factory() -> None:
     local = _make_terminal()
     pool = TerminalPool(local)
 
@@ -97,22 +102,25 @@ def test_create_for_uses_registered_factory() -> None:
     inner_fs.unwrap.return_value = inner_fs
 
     created = _make_terminal()
-    factory = MagicMock(return_value=created)
+
+    async def factory(_fs: Filesystem) -> Terminal | None:
+        return created
+
     pool.register_factory(lambda fs: fs is inner_fs, factory)
 
-    result = pool.create_for(inner_fs)
+    result = await pool.create_for(inner_fs)
     assert result is created
-    factory.assert_called_once_with(inner_fs)
 
 
-def test_create_for_returns_none_when_no_factory_matches() -> None:
+@pytest.mark.asyncio
+async def test_create_for_returns_none_when_no_factory_matches() -> None:
     local = _make_terminal()
     pool = TerminalPool(local)
 
     unknown_fs = MagicMock()
     unknown_fs.unwrap.return_value = unknown_fs
 
-    result = pool.create_for(unknown_fs)
+    result = await pool.create_for(unknown_fs)
     assert result is None
 
 
@@ -128,6 +136,33 @@ def test_all_terminals_includes_local_and_registered() -> None:
     all_t = list(pool.all_terminals())
     assert local in all_t
     assert remote_terminal in all_t
+
+
+def test_filesystem_for_returns_local_filesystem_after_set_local() -> None:
+    local = _make_terminal()
+    pool = TerminalPool()
+    pool.set_local(local)
+    fs = pool.filesystem_for(local)
+    assert fs is LocalFilesystem.singleton()
+
+
+def test_filesystem_for_returns_filesystem_after_register() -> None:
+    local = _make_terminal()
+    remote_terminal = _make_terminal(display=False)
+    pool = TerminalPool(local)
+
+    inner_fs = MagicMock()
+    inner_fs.unwrap.return_value = inner_fs
+    pool.register(inner_fs, remote_terminal)
+
+    assert pool.filesystem_for(remote_terminal) is inner_fs
+
+
+def test_filesystem_for_returns_none_for_unregistered_terminal() -> None:
+    local = _make_terminal()
+    pool = TerminalPool(local)
+    unknown = _make_terminal()
+    assert pool.filesystem_for(unknown) is None
 
 
 def test_has_terminal_true_for_local() -> None:
@@ -166,3 +201,31 @@ def test_has_terminal_unwraps_remote_filesystem() -> None:
 
     wrapper_fs = RemoteFilesystem("wrap", inner_fs)
     assert pool.has_terminal(wrapper_fs) is True
+
+
+@pytest.mark.asyncio
+async def test_create_for_calls_async_factory_and_returns_terminal() -> None:
+    local = _make_terminal()
+    pool = TerminalPool(local)
+
+    inner_fs = MagicMock()
+    inner_fs.unwrap.return_value = inner_fs
+    fake_terminal = _make_terminal(display=False)
+
+    async def fake_factory(_fs: Filesystem) -> Terminal | None:
+        return fake_terminal
+
+    pool.register_factory(lambda fs: fs is inner_fs, fake_factory)
+    result = await pool.create_for(inner_fs)
+    assert result is fake_terminal
+
+
+@pytest.mark.asyncio
+async def test_create_for_returns_none_when_no_factory_matches_async() -> None:
+    local = _make_terminal()
+    pool = TerminalPool(local)
+
+    unknown_fs = MagicMock()
+    unknown_fs.unwrap.return_value = unknown_fs
+    result = await pool.create_for(unknown_fs)
+    assert result is None
