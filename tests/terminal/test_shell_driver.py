@@ -229,6 +229,40 @@ def test_detect_driver_sh() -> None:
     assert isinstance(driver, FallbackDriver)
 
 
+# ---------------------------------------------------------------------------
+# supports_prompt_ready
+# ---------------------------------------------------------------------------
+
+
+def test_zsh_driver_supports_prompt_ready_is_true() -> None:
+    driver = ZshDriver()
+    assert driver.supports_prompt_ready is True
+
+
+def test_bash_driver_supports_prompt_ready_is_true() -> None:
+    driver = BashDriver()
+    assert driver.supports_prompt_ready is True
+
+
+def test_fallback_driver_supports_prompt_ready_is_false() -> None:
+    driver = FallbackDriver()
+    assert driver.supports_prompt_ready is False
+
+
+def test_zsh_driver_init_code_contains_osc133b_zle_hook() -> None:
+    driver = ZshDriver()
+    code = driver.init_code()
+    assert "zle-line-init" in code
+    assert "\\033]133;B\\007" in code
+
+
+def test_bash_driver_init_code_contains_osc133b_in_ps1() -> None:
+    driver = BashDriver()
+    code = driver.init_code()
+    assert "\\033]133;B\\007" in code
+    assert "PS1" in code
+
+
 def test_detect_driver_unknown_shell() -> None:
     driver = detect_driver("/usr/bin/fish")
     assert isinstance(driver, FallbackDriver)
