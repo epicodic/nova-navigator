@@ -37,11 +37,12 @@ def test_ssh_pty_backend_is_a_pty_backend(
     assert isinstance(backend, PtyBackend)
 
 
-def test_supports_precmd_pipe_is_false(
-    ssh_backend: tuple[SshPtyBackend, StubSSHServer],
-) -> None:
-    backend, _ = ssh_backend
-    assert backend.supports_precmd_pipe is False
+def test_ssh_pty_backend_supports_precmd_is_true() -> None:
+    from unittest.mock import MagicMock
+
+    client = MagicMock(spec=paramiko.SSHClient)
+    backend = SshPtyBackend(client)
+    assert backend.supports_precmd is True
 
 
 def test_open_returns_none(
