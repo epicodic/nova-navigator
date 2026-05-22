@@ -99,7 +99,9 @@ async def test_process_chunk_strips_osc7_and_posts_pre_cmd() -> None:
     stdouts = [m for m in messages if m[0] == "stdout"]
     assert len(pre_cmds) == 1
     assert pre_cmds[0][1] == path
-    assert any("before" in str(m[1]) and "after" in str(m[1]) for m in stdouts)
+    stdout_text = "".join(str(m[1]) for m in stdouts)
+    assert "before" in stdout_text
+    assert "after" in stdout_text
 
 
 @pytest.mark.asyncio
@@ -162,6 +164,57 @@ async def test_process_chunk_ignores_unknown_osc_codes() -> None:
     assert not any(m[0] == "pre_cmd" for m in messages)
     stdouts = [m for m in messages if m[0] == "stdout"]
     assert any("normal text" in str(m[1]) for m in stdouts)
+
+
+@pytest.fixture
+def backend() -> LocalPtyBackend:
+    return LocalPtyBackend()
+
+
+def test_process_chunk_posts_stdout_before_trailing_osc(backend: LocalPtyBackend) -> None:
+    """Stdout that precedes OSC 133;B in the same chunk must arrive before prompt_ready."""
+    loop = asyncio.new_event_loop()
+    queue: asyncio.Queue[list[object]] = asyncio.Queue()
+    backend._process_chunk(b"prompt$ \033]133;B\007", loop, queue)
+    loop.run_until_complete(asyncio.sleep(0))
+
+    messages = []
+    while not queue.empty():
+        messages.append(queue.get_nowait())
+
+    # stdout must come before prompt_ready
+    stdout_idx = next(i for i, m in enumerate(messages) if m[0] == "stdout")
+    prompt_idx = next(i for i, m in enumerate(messages) if m[0] == "prompt_ready")
+    assert stdout_idx < prompt_idx
+
+
+def test_process_chunk_dispatches_osc133b_as_prompt_ready(backend: LocalPtyBackend) -> None:
+    """OSC 133;B must post ["prompt_ready"] to the queue."""
+    loop = asyncio.new_event_loop()
+    queue: asyncio.Queue[list[object]] = asyncio.Queue()
+    backend._process_chunk(b"\033]133;B\007", loop, queue)
+    loop.run_until_complete(asyncio.sleep(0))
+
+    messages = []
+    while not queue.empty():
+        messages.append(queue.get_nowait())
+
+    assert ["prompt_ready"] in messages
+
+
+def test_process_chunk_discards_unknown_osc133_subtypes(backend: LocalPtyBackend) -> None:
+    """OSC 133;A and OSC 133;D should be silently ignored (not crash)."""
+    loop = asyncio.new_event_loop()
+    queue: asyncio.Queue[list[object]] = asyncio.Queue()
+    backend._process_chunk(b"\033]133;A\007\033]133;D\007", loop, queue)
+    loop.run_until_complete(asyncio.sleep(0))
+
+    messages = []
+    while not queue.empty():
+        messages.append(queue.get_nowait())
+
+    # No prompt_ready for unknown subtypes
+    assert ["prompt_ready"] not in messages
 
 
 def test_resume_on_dead_process_does_not_raise() -> None:
