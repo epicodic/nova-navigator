@@ -3,15 +3,29 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 import pytest
 from textual.app import App, ComposeResult
+from textual.widgets import Select
 
 from nova_navigator.config.model import BaseModel, field_comment
 from nova_navigator.widgets.model_editor import ModelEditor
 from nova_widgets import Checkbox, Input
 
 # ── minimal test models ──────────────────────────────────────────────────────
+
+
+class _Color(StrEnum):
+    RED = "red"
+    GREEN = "green"
+    BLUE = "blue"
+
+
+@dataclass
+class _ModelWithEnum(BaseModel):
+    color: _Color = field(default=_Color.GREEN, metadata={"toml_comment": "A colour choice."})
+    label: str = field_comment("hi", "A string label.")
 
 
 @dataclass
@@ -137,3 +151,55 @@ async def test_apply_int_fallback_on_empty_input() -> None:
         target = _FlatModel(count=99)
         editor.apply(target)
         assert target.count == 99
+
+
+# ── enum field tests ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_enum_field_renders_select() -> None:
+    """Enum fields must produce a Select widget, not be silently skipped."""
+    model = _ModelWithEnum()
+    editor = ModelEditor(model)
+    async with _TestApp(editor).run_test() as pilot:
+        await pilot.pause()
+        assert len(list(editor.query(Select))) == 1
+
+
+@pytest.mark.asyncio
+async def test_enum_select_has_all_members_as_options() -> None:
+    """The Select widget must list every enum member."""
+    model = _ModelWithEnum()
+    editor = ModelEditor(model)
+    async with _TestApp(editor).run_test() as pilot:
+        await pilot.pause()
+        sel = editor.query_one(Select)
+        option_values = {value for _, value in sel._options if value is not Select.BLANK}  # type: ignore[attr-defined]
+        assert option_values == {_Color.RED, _Color.GREEN, _Color.BLUE}
+
+
+@pytest.mark.asyncio
+async def test_enum_select_initial_value_matches_model() -> None:
+    """Select must be pre-selected to the model's current enum value."""
+    model = _ModelWithEnum(color=_Color.BLUE)
+    editor = ModelEditor(model)
+    async with _TestApp(editor).run_test() as pilot:
+        await pilot.pause()
+        sel = editor.query_one(Select)
+        assert sel.value == _Color.BLUE
+
+
+@pytest.mark.asyncio
+async def test_enum_apply_writes_back_selected_value() -> None:
+    """apply() must write the currently selected enum member back to the target."""
+    model = _ModelWithEnum(color=_Color.GREEN)
+    editor = ModelEditor(model)
+    async with _TestApp(editor).run_test() as pilot:
+        await pilot.pause()
+        sel = editor.query_one(Select)
+        sel.value = _Color.RED
+        await pilot.pause()
+
+        target = _ModelWithEnum()
+        editor.apply(target)
+        assert target.color is _Color.RED

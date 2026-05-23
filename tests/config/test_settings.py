@@ -76,3 +76,24 @@ def test_settings_save_preserves_user_comment(tmp_path: Path, monkeypatch: pytes
     content = settings_file.read_text()
     assert "# user note" in content
     assert "true" in content
+
+
+def test_settings_ui_nerd_font_defaults_to_auto() -> None:
+    from nova_navigator.config.settings import NerdFontMode, Settings
+
+    s = Settings()
+    assert s.general.use_nerd_font is NerdFontMode.AUTO
+
+
+def test_settings_ui_nerd_font_round_trips_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+    from nova_navigator.config.settings import NerdFontMode, Settings
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    instance = Settings.load()
+    instance.general.use_nerd_font = NerdFontMode.YES
+    instance.save()
+
+    reloaded = Settings.load()
+    assert reloaded.general.use_nerd_font is NerdFontMode.YES
