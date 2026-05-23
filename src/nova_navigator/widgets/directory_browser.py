@@ -699,24 +699,6 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
 
             self._shown_items += [item for item in self._all_items if filter_func(item)]
 
-        # restore cursor position
-        self.cursor_row = 0
-        if old_item_under_cursor is not None:
-            for index, item in enumerate(self._shown_items):
-                if item == old_item_under_cursor:
-                    self.cursor_row = index
-                    break
-        elif cursor_hint is not None:
-            found = False
-            for index, item in enumerate(self._shown_items):
-                if item.name == cursor_hint.name:
-                    self.cursor_row = index
-                    found = True
-                    break
-            if not found and cursor_hint.row is not None:
-                self.cursor_row = cursor_hint.row
-        self.cursor_row = self.validate_cursor_row(self.cursor_row)
-
         # restore selected items
         self._selected_items = set()
         for item in old_selected_items:
@@ -724,7 +706,31 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
                 self._selected_items.add(item)
 
         self._max_line_width = 0
+        # Update virtual size before restoring the cursor so that
+        # scroll_to_region has correct bounds when _scroll_cursor_into_view runs.
         self._update_virtual_size()
+
+        # Compute the target row in a local variable and assign cursor_row once
+        # to avoid intermediate watch_cursor_row firings. Call
+        # _scroll_cursor_into_view explicitly afterwards so the cursor is
+        # guaranteed to be visible even when the row value has not changed.
+        new_cursor_row = 0
+        if old_item_under_cursor is not None:
+            for index, item in enumerate(self._shown_items):
+                if item == old_item_under_cursor:
+                    new_cursor_row = index
+                    break
+        elif cursor_hint is not None:
+            found = False
+            for index, item in enumerate(self._shown_items):
+                if item.name == cursor_hint.name:
+                    new_cursor_row = index
+                    found = True
+                    break
+            if not found and cursor_hint.row is not None:
+                new_cursor_row = cursor_hint.row
+        self.cursor_row = self.validate_cursor_row(new_cursor_row)
+        self._scroll_cursor_into_view()
 
     def _append_items(self, new_items: list[VPath]) -> None:
         """Append new items to _shown_items with filtering only (no sort)."""
