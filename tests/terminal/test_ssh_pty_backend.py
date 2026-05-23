@@ -14,7 +14,7 @@ from nova_navigator.terminal.ssh_pty_backend import SshPtyBackend
 from tests._utils.stub_ssh_server import StubSSHServer
 
 
-@pytest.fixture()
+@pytest.fixture
 def ssh_backend() -> Generator[tuple[SshPtyBackend, StubSSHServer], None, None]:
     server = StubSSHServer(root_dir=Path("/tmp"))
     server.start()

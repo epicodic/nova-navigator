@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import dataclasses
+from enum import Enum
 from typing import Any, get_type_hints
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widget import Widget
-from textual.widgets import Label
+from textual.widgets import Label, Select
 
 from nova_navigator.config.model import BaseModel
 from nova_navigator.widgets._utils import _title_case
@@ -19,6 +20,10 @@ _PRIMITIVE_TYPES: frozenset[type] = frozenset({bool, str, int, float})
 
 def _is_base_model_type(t: Any) -> bool:
     return isinstance(t, type) and issubclass(t, BaseModel)
+
+
+def _is_enum_type(t: Any) -> bool:
+    return isinstance(t, type) and issubclass(t, Enum)
 
 
 class ModelEditor(Widget):
@@ -59,7 +64,7 @@ class ModelEditor(Widget):
     }
     """
 
-    _field_controls: dict[str, Checkbox | Input]
+    _field_controls: dict[str, Checkbox | Input | Select[Any]]
     _field_types: dict[str, type]
 
     def __init__(self, model: BaseModel, **kwargs: Any) -> None:
@@ -85,21 +90,22 @@ class ModelEditor(Widget):
             if _is_base_model_type(field_type):
                 continue
 
-            # Only render the four supported primitives
-            if field_type not in _PRIMITIVE_TYPES:
-                continue
-
             current_value = getattr(self._model, f.name)
             comment = str(f.metadata.get("toml_comment", ""))
 
             if field_type is bool:
-                control: Checkbox | Input = Checkbox(value=bool(current_value), classes="me-control")
+                control: Checkbox | Input | Select[Any] = Checkbox(value=bool(current_value), classes="me-control")
             elif field_type is int:
                 control = Input(value=str(current_value), type="integer", classes="me-control")
             elif field_type is float:
                 control = Input(value=str(current_value), type="number", classes="me-control")
-            else:  # str
+            elif field_type is str:
                 control = Input(value=str(current_value), classes="me-control")
+            elif _is_enum_type(field_type):
+                options = [(m.name.capitalize(), m) for m in field_type]
+                control = Select(options, value=current_value, classes="me-control")
+            else:
+                continue
 
             self._field_controls[f.name] = control
             self._field_types[f.name] = field_type
@@ -126,6 +132,11 @@ class ModelEditor(Widget):
             field_type = self._field_types[field_name]
             if isinstance(control, Checkbox):
                 value: Any = bool(control.value)
+            elif isinstance(control, Select):
+                if control.value is Select.BLANK:
+                    value = getattr(target, field_name)
+                else:
+                    value = control.value
             elif field_type is int:
                 try:
                     value = int(control.value)
