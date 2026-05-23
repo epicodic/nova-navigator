@@ -60,6 +60,7 @@ _YANK = "\x19"  # Ctrl+Y — yank from kill ring
 _END_OF_LINE = "\x05"  # Ctrl+E — move cursor to end of line
 
 _PRE_CMD_MIN_LEN = 2  # minimum elements in a pre_cmd message (cmd + path); 3 means panel_id present
+_PRE_CMD_FROM_NN_IDX = 3  # index of the from_nn flag in a pre_cmd message
 
 
 _MOUSE_TRACKING_MODES: frozenset[str] = frozenset({"1000", "1002", "1003", "1006"})
@@ -547,7 +548,7 @@ class Terminal(Widget, can_focus=True):
                         self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
                     elif cmd == "pre_cmd":
                         panel_id = str(message[2]) if len(message) > _PRE_CMD_MIN_LEN else ""
-                        from_nn = bool(message[3]) if len(message) > 3 else True
+                        from_nn = bool(message[_PRE_CMD_FROM_NN_IDX]) if len(message) > _PRE_CMD_FROM_NN_IDX else True
                         self._handle_pre_cmd(str(message[1]), panel_id, from_nn)
                     elif cmd == "stdout":
                         if not self._draining:
