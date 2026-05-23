@@ -59,6 +59,8 @@ _KILL_LINE = "\x15"  # Ctrl+U — kill whole line to kill ring
 _YANK = "\x19"  # Ctrl+Y — yank from kill ring
 _END_OF_LINE = "\x05"  # Ctrl+E — move cursor to end of line
 
+_PRE_CMD_MIN_LEN = 2  # minimum elements in a pre_cmd message (cmd + path); 3 means panel_id present
+
 
 _MOUSE_TRACKING_MODES: frozenset[str] = frozenset({"1000", "1002", "1003", "1006"})
 _RECV_DRAIN_LIMIT: int = 100
@@ -215,12 +217,24 @@ class Terminal(Widget, can_focus=True):
         the terminal (not triggered by ``request_cd``).  Handlers should
         only update external state (e.g. directory browser panels) for
         user-initiated changes.
+
+        ``panel_id`` is the value of ``$_NN_PANEL`` from the shell at the
+        time the precmd hook ran.  It identifies which panel should receive
+        the path update.  Empty string means unset (startup or FallbackDriver).
         """
 
-        def __init__(self, terminal_widget: Terminal, cwd: PurePath, *, user_initiated: bool) -> None:
+        def __init__(
+            self,
+            terminal_widget: Terminal,
+            cwd: PurePath,
+            *,
+            user_initiated: bool,
+            panel_id: str = "",
+        ) -> None:
             self.terminal_widget = terminal_widget
             self.cwd = cwd
             self.user_initiated = user_initiated
+            self.panel_id = panel_id
             super().__init__()
 
     class Closed(Message):
@@ -367,19 +381,33 @@ class Terminal(Widget, can_focus=True):
             return self._screen.cursor.y > self._prompt_cursor_y
         return self._screen.cursor.x > self._prompt_cursor_x
 
-    def request_cd(self, path: PurePath) -> None:
+    def request_cd(self, path: PurePath, panel_id: str = "") -> None:
         """Issue a cd command to the shell without waiting for completion.
 
-        When the shell is idle (no programmatic navigations pending) and
-        already at *path*, the request is skipped.  ``Terminal.PathChanged``
-        will be posted once the cd completes and no further navigations are
-        pending.
+        When ``panel_id`` is given, ``_NN_PANEL=<panel_id>`` is prepended to the
+        command so the precmd hook embeds the panel ID in the OSC 7 payload.
+        This makes routing in ``_on_terminal_path_changed`` deterministic.
+
+        When ``panel_id`` is given and the terminal is already at ``path``, the
+        command ``_NN_PANEL=<panel_id>; true`` is sent instead of ``cd``, so the
+        shell env is updated without triggering ``chpwd`` hooks.
+
+        When ``panel_id`` is *not* given and the shell is already at ``path``,
+        the request is skipped entirely (original short-circuit behaviour).
+
+        Note: ``PathChanged`` is not posted when ``path == _cwd``; the command
+        only updates ``$_NN_PANEL`` for future shell navigations.
+
+        Has no effect on ``_NN_PANEL`` when the driver does not support
+        stop/resume (e.g. ``FallbackDriver``); the ``panel_id`` argument is
+        ignored in that case.
         """
         if not self._started:
             return
-        if self._nav_pending == 0 and self._cwd is not None and path == self._cwd:
-            return
         if self._driver.supports_stop_resume and self._backend.supports_precmd:
+            # Skip entirely only when no panel_id is requested AND already at target.
+            if not panel_id and self._nav_pending == 0 and self._cwd is not None and path == self._cwd:
+                return
             self._pending_yank = self.has_input()
             if self._pending_yank:
                 self._backend.write(_KILL_LINE.encode())
@@ -387,9 +415,17 @@ class Terminal(Widget, can_focus=True):
             self._draining = True
             if self._nav_future is None or self._nav_future.done():
                 self._nav_future = asyncio.get_running_loop().create_future()
-            cmd = " " + self._driver.cd_command(str(path)) + "\n"
+            panel_prefix = f"_NN_PANEL={panel_id}; " if panel_id else ""
+            # If this is the only pending nav and the path hasn't changed,
+            # just update _NN_PANEL without running cd (avoids chpwd hooks).
+            if self._nav_pending == 1 and self._cwd is not None and path == self._cwd:
+                cmd = f" {panel_prefix}true\n"
+            else:
+                cmd = f" {panel_prefix}{self._driver.cd_command(str(path))}\n"
             self._backend.write(cmd.encode())
         else:
+            if self._nav_pending == 0 and self._cwd is not None and path == self._cwd:
+                return
             cmd = " " + self._driver.cd_command(str(path)) + "\n"
             self._backend.write(cmd.encode())
 
@@ -454,8 +490,18 @@ class Terminal(Widget, can_focus=True):
     # recv loop
     # ------------------------------------------------------------------
 
-    def _handle_pre_cmd(self, raw: str) -> None:
-        """Process a pre_cmd message: update nav state, resume shell, post event."""
+    def _handle_pre_cmd(self, raw: str, panel_id: str = "", from_nn: bool = True) -> None:
+        """Process a pre_cmd message: update nav state, resume shell, post event.
+
+        When ``from_nn`` is False the event originated from a third-party chpwd
+        hook (e.g. oh-my-zsh) rather than from Nova Navigator's own precmd hook.
+        For drivers that support stop/resume (Zsh/Bash + NN hooks active) these
+        events are ignored so that ``_nav_pending`` is only decremented by NN's
+        own hook and third-party hooks cannot trigger spurious user-initiated
+        PathChanged events.
+        """
+        if self._driver.supports_stop_resume and self._backend.supports_precmd and not from_nn:
+            return
         cwd = PurePath(raw.strip())
         cwd_changed = cwd != self._cwd
         self._cwd = cwd
@@ -478,7 +524,7 @@ class Terminal(Widget, can_focus=True):
         if self._driver.supports_stop_resume:
             self._backend.resume()
         if self._nav_pending == 0 and cwd_changed:
-            self.post_message(Terminal.PathChanged(self, cwd, user_initiated=not was_programmatic))
+            self.post_message(Terminal.PathChanged(self, cwd, user_initiated=not was_programmatic, panel_id=panel_id))
         self.post_message(Terminal.PreCmd(self, cwd))
 
     def _handle_prompt_ready(self) -> None:
@@ -500,7 +546,9 @@ class Terminal(Widget, can_focus=True):
                         assert self.send_queue is not None
                         self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
                     elif cmd == "pre_cmd":
-                        self._handle_pre_cmd(str(message[1]))
+                        panel_id = str(message[2]) if len(message) > _PRE_CMD_MIN_LEN else ""
+                        from_nn = bool(message[3]) if len(message) > 3 else True
+                        self._handle_pre_cmd(str(message[1]), panel_id, from_nn)
                     elif cmd == "stdout":
                         if not self._draining:
                             self._feed_stdout(str(message[1]))

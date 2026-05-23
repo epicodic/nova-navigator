@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import logging
 import os
 import threading
 from collections.abc import AsyncIterator, Callable
@@ -14,6 +15,8 @@ import paramiko
 
 from ..filesystem import Filesystem, FilesystemCapabilities, Stat, StreamReaderLike, StreamWriterLike
 from ..vpath import VPath
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -33,8 +36,8 @@ class StatEntry:
 
 _STAT_COMMAND_ARGS = ["%s", "%a", "%U", "%Y", "%X", "%Z", "%F", "%n"]
 
-_STAT_COMMAND = f"stat -c '{','.join(_STAT_COMMAND_ARGS)}' *(D)"
-_STAT_COMMAND_FOLLOW_LINKS = f"stat -L -c '{','.join(_STAT_COMMAND_ARGS)}' *(D)"
+_STAT_COMMAND = f"find . -maxdepth 1 -mindepth 1 -exec stat -c '{','.join(_STAT_COMMAND_ARGS)}' {{}} +"
+_STAT_COMMAND_FOLLOW_LINKS = f"find . -maxdepth 1 -mindepth 1 -exec stat -L -c '{','.join(_STAT_COMMAND_ARGS)}' {{}} +"
 
 
 def _parse_stat_output(output: str) -> dict[str, StatEntry]:
@@ -43,7 +46,7 @@ def _parse_stat_output(output: str) -> dict[str, StatEntry]:
         parts = line.split(",")
         if len(parts) < len(_STAT_COMMAND_ARGS):
             continue  # malformed line
-        name = ",".join(parts[7:])
+        name = ",".join(parts[7:]).removeprefix("./")
         entry = StatEntry(
             size=int(parts[0]),
             permissions=int(parts[1], 8),
@@ -208,8 +211,12 @@ class SSHFilesystem(Filesystem):
                 return self._stat_cache[key]
         command = _STAT_COMMAND_FOLLOW_LINKS if follow_symlinks else _STAT_COMMAND
         try:
+            _logger.debug("Running SSH stat command: %s", command)
             _, stdout, stderr = self._ssh_client.exec_command(f"cd {path} && {command}")
             output = stdout.read().decode()
+            _logger.debug("stdou: %s", output)
+            stderr_output = stderr.read().decode()
+            _logger.debug("stderr: %s", stderr_output)
         except paramiko.SSHException as exc:
             raise OSError(str(exc)) from exc
         if not output:

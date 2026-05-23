@@ -1766,6 +1766,156 @@ async def test_rapid_request_cd_only_last_fires_path_changed() -> None:
             await _stop_recv_only(terminal)
 
 
+@pytest.mark.asyncio
+async def test_request_cd_with_panel_id_prepends_nn_panel_to_cd_command() -> None:
+    """request_cd with panel_id prepends '_NN_PANEL=left; ' before the cd command."""
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._started = True
+
+        terminal.request_cd(PurePath("/new/dir"), "left")
+        await asyncio.sleep(0)
+
+        cd_writes = [w for w in backend.writes if b"/new/dir" in w]
+        assert len(cd_writes) == 1
+        assert b"_NN_PANEL=left" in cd_writes[0]
+        assert b"_NN_PANEL=left" in cd_writes[0].split(b"/new/dir")[0]  # prefix comes first
+
+
+@pytest.mark.asyncio
+async def test_request_cd_same_path_with_panel_id_sends_true_not_cd() -> None:
+    """When path == _cwd and panel_id is given, 'true' is sent to update _NN_PANEL
+    without triggering a real cd (avoids chpwd hooks)."""
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._started = True
+        terminal._cwd = PurePath("/current/dir")
+
+        terminal.request_cd(PurePath("/current/dir"), "right")
+        await asyncio.sleep(0)
+
+        # Must write _NN_PANEL=right; true (not cd)
+        panel_writes = [w for w in backend.writes if b"_NN_PANEL=right" in w]
+        assert len(panel_writes) == 1
+        assert b"true" in panel_writes[0]
+        assert b"cd" not in panel_writes[0] or b"_NN_PANEL" in panel_writes[0].split(b"cd")[0]
+
+        # _nav_pending must be incremented (not short-circuited)
+        assert terminal._nav_pending == 1
+
+
+@pytest.mark.asyncio
+async def test_request_cd_same_path_with_panel_id_does_not_post_path_changed() -> None:
+    """Same-path request_cd with panel_id updates _NN_PANEL only; PathChanged must not fire."""
+    received: list[Terminal.PathChanged] = []
+
+    class CapturingApp(TerminalTestApp):
+        def on_terminal_path_changed(self, event: Terminal.PathChanged) -> None:
+            received.append(event)
+
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = CapturingApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._started = True
+            terminal._cwd = PurePath("/current/dir")
+
+            terminal.request_cd(PurePath("/current/dir"), "right")
+            await asyncio.sleep(0)
+
+            # pre_cmd arrives: _nav_pending 1→0, draining clears, but cwd_changed=False
+            await recv_q.put(["pre_cmd", "/current/dir\n", "right"])
+            await pilot.pause(delay=0.15)
+
+            # PathChanged must NOT be posted (path did not change)
+            assert len(received) == 0
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_request_cd_same_path_without_panel_id_short_circuits() -> None:
+    """When path == _cwd and no panel_id is given, the old short-circuit still fires:
+    nothing is written to the backend and _nav_pending stays at 0."""
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._started = True
+        terminal._cwd = PurePath("/current/dir")
+        terminal._nav_pending = 0
+        initial_write_count = len(backend.writes)
+
+        terminal.request_cd(PurePath("/current/dir"))  # no panel_id
+        await asyncio.sleep(0)
+
+        assert terminal._nav_pending == 0
+        assert len(backend.writes) == initial_write_count  # nothing written
+
+
+@pytest.mark.asyncio
+async def test_path_changed_event_carries_panel_id() -> None:
+    """When pre_cmd arrives with panel_id, the PathChanged message must carry it."""
+    received: list[Terminal.PathChanged] = []
+
+    class CapturingApp(TerminalTestApp):
+        def on_terminal_path_changed(self, event: Terminal.PathChanged) -> None:
+            received.append(event)
+
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = CapturingApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            # Simulate pre_cmd with panel_id from the updated pty_backend
+            await recv_q.put(["pre_cmd", "/home/user\n", "left"])
+            await pilot.pause(delay=0.15)
+
+            assert len(received) == 1
+            assert received[0].panel_id == "left"
+            assert received[0].user_initiated is True
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_path_changed_event_panel_id_empty_when_not_in_pre_cmd() -> None:
+    """Legacy pre_cmd with no panel_id element posts PathChanged with panel_id=''."""
+    received: list[Terminal.PathChanged] = []
+
+    class CapturingApp(TerminalTestApp):
+        def on_terminal_path_changed(self, event: Terminal.PathChanged) -> None:
+            received.append(event)
+
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = CapturingApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            # 2-element pre_cmd (old format / FallbackDriver)
+            await recv_q.put(["pre_cmd", "/home/user\n"])
+            await pilot.pause(delay=0.15)
+
+            assert len(received) == 1
+            assert received[0].panel_id == ""
+        finally:
+            await _stop_recv_only(terminal)
+
+
 # ---------------------------------------------------------------------------
 # respawn()
 # ---------------------------------------------------------------------------
@@ -1917,5 +2067,47 @@ async def test_handle_pre_cmd_updates_cwd_from_plain_path() -> None:
             recv_q.put_nowait(["pre_cmd", "/home/user/work"])
             await pilot.pause(delay=0.05)
             assert terminal._cwd == PurePath("/home/user/work")
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_third_party_chpwd_osc7_ignored_when_stop_resume_active() -> None:
+    """Non-NN OSC 7 (from_nn=False) is ignored by _handle_pre_cmd when NN hooks are active.
+
+    Third-party zsh chpwd hooks (oh-my-zsh, powerlevel10k, etc.) emit OSC 7 without
+    the panel= prefix.  When ZshDriver.supports_stop_resume is True, these events must
+    not decrement _nav_pending, update _cwd, or post PathChanged — otherwise rapid
+    panel toggling causes the display to cycle through directories.
+    """
+    backend = FakePtyBackend()
+    # ZshDriver() uses stop_resume=True by default — NN hooks are active.
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = PathChangedCapturingApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._started = True
+            terminal.request_cd(PurePath("/target"))
+            assert terminal._nav_pending == 1
+            initial_cwd = terminal._cwd
+
+            # Third-party chpwd fires first (from_nn=False) — must be ignored.
+            await recv_q.put(["pre_cmd", "/target", "", False])
+            await pilot.pause(delay=0.1)
+
+            assert terminal._nav_pending == 1, "non-NN event must not decrement _nav_pending"
+            assert terminal._cwd == initial_cwd, "non-NN event must not update _cwd"
+            assert len(app.path_changed_events) == 0, "non-NN event must not post PathChanged"
+
+            # NN precmd fires next (from_nn=True) — must be processed normally.
+            await recv_q.put(["pre_cmd", "/target", "left", True])
+            await pilot.pause(delay=0.1)
+
+            assert terminal._nav_pending == 0
+            assert terminal._cwd == PurePath("/target")
+            assert len(app.path_changed_events) == 1
+            assert app.path_changed_events[0].user_initiated is False
         finally:
             await _stop_recv_only(terminal)

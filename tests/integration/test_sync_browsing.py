@@ -221,8 +221,8 @@ async def test_sync_browsing_rolls_back_terminal_when_mirror_missing(app_ctx: Ap
             lambda: app_ctx.screen._left_panel.path.path == PurePosixPath(app_ctx.src_dir),
         )
 
-    # The terminal should have been asked to go back to src_dir
-    mock_cd.assert_called_with(PurePosixPath(app_ctx.src_dir))
+    # The terminal should have been asked to go back to src_dir (with left panel_id)
+    mock_cd.assert_called_with(PurePosixPath(app_ctx.src_dir), "left")
 
 
 @pytest.mark.asyncio
@@ -256,5 +256,5 @@ async def test_sync_browsing_terminal_nav_rolls_back_on_missing_mirror(app_ctx: 
 
     # Panel rolled back
     assert app_ctx.screen._left_panel.path.path == PurePosixPath(app_ctx.src_dir)
-    # Terminal also rolled back
-    mock_cd.assert_called_with(PurePosixPath(app_ctx.src_dir))
+    # Terminal also rolled back (with left panel_id)
+    mock_cd.assert_called_with(PurePosixPath(app_ctx.src_dir), "left")
