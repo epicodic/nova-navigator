@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path, PurePath
 
+import pytest
+
 from nova_navigator.dialogs import JobRegistry
 from nova_navigator.nova_navigator_core import (
     NovaNavigatorCore,
@@ -64,3 +66,35 @@ def test_open_path_executable_runs_directly(tmp_path: Path) -> None:
     core = _StubCore()
     asyncio.run(core.open_path(path))
     assert core.command_args == [str(script)]
+
+
+# ── NerdFont mode resolution ──────────────────────────────────────────────────
+
+
+def test_resolve_nerd_font_yes_returns_nerdfont_variant() -> None:
+    from nova_navigator.config.settings import NerdFontMode
+    from nova_navigator.icons import IconSet
+    from nova_navigator.nova_navigator_core import _resolve_nerd_font_variant
+
+    assert _resolve_nerd_font_variant(NerdFontMode.YES) is IconSet.Variants.NERDFONT
+
+
+def test_resolve_nerd_font_no_returns_unicode_variant() -> None:
+    from nova_navigator.config.settings import NerdFontMode
+    from nova_navigator.icons import IconSet
+    from nova_navigator.nova_navigator_core import _resolve_nerd_font_variant
+
+    assert _resolve_nerd_font_variant(NerdFontMode.NO) is IconSet.Variants.UNICODE
+
+
+def test_resolve_nerd_font_auto_uses_detection_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nova_navigator.nova_navigator_core as core_mod
+    from nova_navigator.config.settings import NerdFontMode
+    from nova_navigator.icons import IconSet
+    from nova_navigator.nova_navigator_core import _resolve_nerd_font_variant
+
+    monkeypatch.setattr(core_mod, "detect_nerd_font", lambda: True)
+    assert _resolve_nerd_font_variant(NerdFontMode.AUTO) is IconSet.Variants.NERDFONT
+
+    monkeypatch.setattr(core_mod, "detect_nerd_font", lambda: False)
+    assert _resolve_nerd_font_variant(NerdFontMode.AUTO) is IconSet.Variants.UNICODE

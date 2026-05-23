@@ -6,6 +6,7 @@ configuration using Python dataclasses.
 
 import dataclasses
 from dataclasses import fields as dc_fields
+from enum import Enum
 from types import UnionType
 from typing import Any, get_args, get_origin, get_type_hints
 
@@ -149,6 +150,8 @@ def from_toml[T: BaseModel](cls: type[T], table: Any, *, key: str = "", file_pat
                 kwargs[f.name] = [from_toml(elem_type, item) for item in raw]
             elif _is_config_model_type(inner_type):
                 kwargs[f.name] = from_toml(inner_type, raw)  # type: ignore[type-var]
+            elif isinstance(inner_type, type) and issubclass(inner_type, Enum):
+                kwargs[f.name] = inner_type(raw)
             else:
                 kwargs[f.name] = raw
         else:
@@ -196,7 +199,7 @@ def _populate_container(container: Any, obj: BaseModel) -> None:
         else:
             if "toml_comment" in f.metadata:
                 container.add(tomlkit.comment(f.metadata["toml_comment"]))
-            container.add(f.name, value)
+            container.add(f.name, value.value if isinstance(value, Enum) else value)
 
 
 def _explicit_docstring(cls: type) -> str | None:
@@ -305,7 +308,8 @@ def _update_toml_container(container: Any, obj: BaseModel) -> None:
         elif _is_config_model_type(inner_type) and isinstance(value, BaseModel):
             if f.name in container:
                 _update_toml_container(container[f.name], value)
-            # else: update-only semantics — new nested tables are not added
+            else:
+                container.add(f.name, _obj_to_table(value))
         elif value is not None:
             container[f.name] = value
 

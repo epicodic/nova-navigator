@@ -6,12 +6,32 @@ from pathlib import PurePath
 
 from nova_navigator import archive
 from nova_navigator.config import conf_, get_config_file_path
+from nova_navigator.config.settings import NerdFontMode
 from nova_navigator.dialogs import JobRegistry
 from nova_navigator.icons import ICONS, IconSet
+from nova_navigator.nerd_font_detect import detect_nerd_font
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import ArchiveFilesystem
 from nova_navigator.vfs.scheme_registry import register_common_schemes, vfspath_from_uri  # noqa: F401 (re-exported)
 from nova_widgets.menu import SYMBOL_TABLE, set_icon_provider
+
+# ---------------------------------------------------------------------------
+# NerdFont variant resolution
+# ---------------------------------------------------------------------------
+
+
+def _resolve_nerd_font_variant(mode: NerdFontMode) -> IconSet.Variants:
+    """Return the icon variant implied by *mode*.
+
+    ``YES`` and ``NO`` are explicit overrides.
+    ``AUTO`` delegates to :func:`~nova_navigator.nerd_font_detect.detect_nerd_font`.
+    """
+    if mode is NerdFontMode.YES:
+        return IconSet.Variants.NERDFONT
+    if mode is NerdFontMode.NO:
+        return IconSet.Variants.UNICODE
+    return IconSet.Variants.NERDFONT if detect_nerd_font() else IconSet.Variants.UNICODE
+
 
 # ---------------------------------------------------------------------------
 # PanelRef — reference to a file-browser panel
@@ -38,7 +58,8 @@ class NovaNavigatorCore:
         super().__init__()
         conf_.load_all_configs()
         ICONS.load_icons(get_config_file_path("icons.csv"))
-        ICONS.set_variant(IconSet.Variants.NERDFONT)
+        variant = _resolve_nerd_font_variant(conf_.settings.general.use_nerd_font)
+        ICONS.set_variant(variant)
         set_icon_provider(ICONS.get_icon)
         SYMBOL_TABLE["checkbox"] = (ICONS.get_icon("checkbox"), ICONS.get_icon("checkbox_checked"))
         SYMBOL_TABLE["radio"] = (ICONS.get_icon("radio"), ICONS.get_icon("radio_checked"))

@@ -325,3 +325,87 @@ def test_update_toml_doc_skips_list_config_model_fields() -> None:
     doc = tomlkit.loads(original_toml)
     obj = WithList(items=[Flat(name="a"), Flat(name="b")])
     update_toml_doc(doc, obj)  # must not raise
+
+
+def test_update_toml_doc_adds_missing_nested_section() -> None:
+    # When a nested section is absent from the file (e.g. added after first install),
+    # update_toml_doc must add it so the values are persisted.
+    original_toml = "title = 'outer'\n"  # no [inner] section
+    doc = tomlkit.loads(original_toml)
+    obj = Nested(inner=Flat(name="new", count=7), title="updated")
+    update_toml_doc(doc, obj)
+    assert doc["inner"]["name"] == "new"  # type: ignore
+    assert doc["inner"]["count"] == 7  # type: ignore
+
+
+def test_update_toml_doc_serializes_enum_as_string() -> None:
+    from dataclasses import dataclass
+    from enum import StrEnum
+
+    class Color(StrEnum):
+        RED = "red"
+        BLUE = "blue"
+
+    @dataclass
+    class WithEnum(BaseModel):
+        color: Color = Color.RED
+
+    doc = tomlkit.loads('color = "red"\n')
+    obj = WithEnum(color=Color.BLUE)
+    update_toml_doc(doc, obj)
+    assert doc["color"] == "blue"
+
+
+# ── Enum fields ───────────────────────────────────────────────────────────────
+
+
+def test_from_toml_deserializes_enum_field_from_string() -> None:
+    from dataclasses import dataclass
+    from enum import StrEnum
+
+    class Color(StrEnum):
+        RED = "red"
+        BLUE = "blue"
+
+    @dataclass
+    class WithEnum(BaseModel):
+        color: Color = Color.RED
+
+    doc = tomlkit.loads('color = "blue"')
+    obj = from_toml(WithEnum, doc)
+    assert obj.color is Color.BLUE
+
+
+def test_to_toml_serializes_enum_field_as_string() -> None:
+    from dataclasses import dataclass
+    from enum import StrEnum
+
+    class Color(StrEnum):
+        RED = "red"
+        BLUE = "blue"
+
+    @dataclass
+    class WithEnum(BaseModel):
+        color: Color = Color.RED
+
+    obj = WithEnum(color=Color.BLUE)
+    serialised = tomlkit.dumps(to_toml(obj))
+    assert '"blue"' in serialised or "blue" in serialised
+
+
+def test_enum_field_round_trips_through_toml() -> None:
+    from dataclasses import dataclass
+    from enum import StrEnum
+
+    class Color(StrEnum):
+        RED = "red"
+        BLUE = "blue"
+
+    @dataclass
+    class WithEnum(BaseModel):
+        color: Color = Color.RED
+
+    original = WithEnum(color=Color.BLUE)
+    doc = to_toml(original)
+    restored = from_toml(WithEnum, doc)
+    assert restored.color is Color.BLUE
