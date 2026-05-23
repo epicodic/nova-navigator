@@ -258,7 +258,7 @@ class StubSSHServerInterface(paramiko.ServerInterface):
     def check_channel_pty_request(
         self,
         channel: paramiko.Channel,
-        term: str,
+        term: bytes,
         width: int,
         height: int,
         pixelwidth: int,
@@ -355,6 +355,11 @@ class StubSSHServer:
         self.port: int = self._sock.getsockname()[1]
         self._sock.listen(16)
         self._thread: threading.Thread = threading.Thread(target=self._accept_loop, daemon=True, name="stub-ssh-accept")
+
+    @property
+    def host_key(self) -> paramiko.RSAKey:
+        """Return the server's RSA host key (for adding to a client's known hosts)."""
+        return self._host_key
 
     def start(self) -> None:
         """Start the accept loop in a daemon thread."""

@@ -15,12 +15,20 @@ from tests._utils.stub_ssh_server import StubSSHServer
 
 
 @pytest.fixture
-def ssh_backend() -> Generator[tuple[SshPtyBackend, StubSSHServer], None, None]:
-    server = StubSSHServer(root_dir=Path("/tmp"))
+def ssh_backend(tmp_path: Path) -> Generator[tuple[SshPtyBackend, StubSSHServer], None, None]:
+    server = StubSSHServer(root_dir=tmp_path)
     server.start()
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect("127.0.0.1", port=server.port, username="test", password="test")
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    client.get_host_keys().add(
+        f"[{server.host}]:{server.port}",
+        server.host_key.get_name(),
+        server.host_key,
+    )
+    temp_key = paramiko.RSAKey.generate(bits=1024)
+    client.connect(
+        "127.0.0.1", port=server.port, username="test", pkey=temp_key, look_for_keys=False, allow_agent=False
+    )
     backend = SshPtyBackend(ssh_client=client)
     try:
         yield backend, server
