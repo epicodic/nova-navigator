@@ -43,7 +43,7 @@ async def test_panel_navigation_triggers_terminal_request_cd(app_ctx: AppCtx) ->
         app_ctx.screen._left_panel.set_path(VPath(subdir, app_ctx.fs))
         await app_ctx.pilot.pause()
 
-    mock_cd.assert_called_once_with(PurePosixPath(subdir))
+    mock_cd.assert_called_once_with(PurePosixPath(subdir), "left")
 
 
 # ---------------------------------------------------------------------------

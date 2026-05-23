@@ -101,17 +101,30 @@ class PtyBackend(ABC):
     ) -> None:
         """Handle a decoded OSC sequence.
 
-        OSC 7 carries a ``file:///path`` URI and is posted as
-        ``["pre_cmd", path]``.  All other codes are silently discarded.
+        OSC 7 carries a CWD URI and is posted as ``["pre_cmd", path, panel_id, from_nn]``.
+        The payload may be ``panel=<id>;file:///path`` (NN format, ``from_nn=True``) or the
+        legacy ``file:///path`` (no panel prefix, ``from_nn=False``).  Both are handled.
+        ``from_nn`` signals whether the event originated from Nova Navigator's own precmd
+        hook; callers use this to ignore third-party chpwd hooks.
+        All other codes are silently discarded.
         """
-        if code == _OSC_CWD and data.startswith("file://"):
-            remainder = data[len("file://") :]
-            if remainder.startswith("/"):
-                path = remainder
-            else:
-                slash = remainder.find("/")
-                path = remainder[slash:] if slash != -1 else "/"
-            loop.call_soon_threadsafe(recv_queue.put_nowait, ["pre_cmd", path])
+        if code == _OSC_CWD:
+            panel_id = ""
+            payload = data
+            from_nn = data.startswith("panel=")
+            if from_nn:
+                semi = data.find(";", 6)
+                if semi != -1:
+                    panel_id = data[6:semi]
+                    payload = data[semi + 1 :]
+            if payload.startswith("file://"):
+                remainder = payload[len("file://") :]
+                if remainder.startswith("/"):
+                    path = remainder
+                else:
+                    slash = remainder.find("/")
+                    path = remainder[slash:] if slash != -1 else "/"
+                loop.call_soon_threadsafe(recv_queue.put_nowait, ["pre_cmd", path, panel_id, from_nn])
         elif code == _OSC_PROMPT and data == "B":
             loop.call_soon_threadsafe(recv_queue.put_nowait, ["prompt_ready"])
 

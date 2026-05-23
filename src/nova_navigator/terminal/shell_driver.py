@@ -79,10 +79,12 @@ class ShellDriver(ABC):
         """Return the core of the precmd hook function body.
 
         Emits an OSC 7 sequence reporting the current directory.
+        The payload format is ``panel=<id>;file:///path`` where ``<id>`` is the
+        value of ``$_NN_PANEL`` (empty string when unset).
         Appends ``kill -STOP $$`` when stop/resume is enabled.
         """
         stop_part = "; kill -STOP $$" if self._stop_resume else ""
-        return "printf '\\033]7;file://%s\\007' \"$(pwd)\"" + stop_part
+        return 'printf \'\\033]7;panel=%s;file://%s\\007\' "${_NN_PANEL:-}" "$(pwd)"' + stop_part
 
     @abstractmethod
     def init_code(self) -> str:

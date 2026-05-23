@@ -249,6 +249,32 @@ def test_fallback_driver_supports_prompt_ready_is_false() -> None:
     assert driver.supports_prompt_ready is False
 
 
+# ---------------------------------------------------------------------------
+# _hook_body panel embedding (OSC 7 format)
+# ---------------------------------------------------------------------------
+
+
+def test_hook_body_includes_nn_panel_placeholder() -> None:
+    """_hook_body() printf must include ${_NN_PANEL:-} as the first %s."""
+    driver = ZshDriver()
+    body = driver._hook_body()
+    assert "${_NN_PANEL:-}" in body
+
+
+def test_hook_body_osc7_format_has_panel_prefix() -> None:
+    """_hook_body() must emit panel=<id>;file:// format so the parser can extract the panel ID."""
+    driver = ZshDriver()
+    body = driver._hook_body()
+    assert "panel=" in body
+    assert "file://" in body
+
+
+def test_bash_hook_body_includes_nn_panel_placeholder() -> None:
+    driver = BashDriver()
+    body = driver._hook_body()
+    assert "${_NN_PANEL:-}" in body
+
+
 def test_zsh_driver_init_code_contains_osc133b_zle_hook() -> None:
     driver = ZshDriver()
     code = driver.init_code()
@@ -287,7 +313,7 @@ def test_zsh_driver_init_code_takes_no_arguments() -> None:
 def test_zsh_driver_init_code_contains_osc7_printf() -> None:
     driver = ZshDriver()
     code = driver.init_code()
-    assert r"\033]7;file://%s\007" in code
+    assert r"\033]7;panel=%s;file://%s\007" in code
 
 
 def test_zsh_driver_init_code_stop_resume_true_contains_kill_stop() -> None:
@@ -316,7 +342,7 @@ def test_bash_driver_init_code_takes_no_arguments() -> None:
 def test_bash_driver_init_code_contains_osc7_printf() -> None:
     driver = BashDriver()
     code = driver.init_code()
-    assert r"\033]7;file://%s\007" in code
+    assert r"\033]7;panel=%s;file://%s\007" in code
 
 
 def test_bash_driver_init_code_stop_resume_false_omits_kill_stop() -> None:
@@ -334,7 +360,7 @@ def test_fallback_driver_init_code_takes_no_arguments() -> None:
 def test_fallback_driver_init_code_contains_osc7_printf() -> None:
     driver = FallbackDriver()
     code = driver.init_code()
-    assert r"\033]7;file://%s\007" in code
+    assert r"\033]7;panel=%s;file://%s\007" in code
 
 
 def test_fallback_driver_init_code_redirects_to_dev_tty() -> None:
