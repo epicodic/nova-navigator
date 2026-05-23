@@ -436,6 +436,18 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         path: VPath
         record_history: bool
 
+    @dataclass
+    class _CursorHint:
+        """Saved cursor position used to restore the cursor after a directory reload.
+
+        name is the filename to search for.
+        row is the row index to fall back to if the named item is no longer present
+        (e.g. it was deleted), or None when no positional fallback is needed.
+        """
+
+        name: str
+        row: int | None = None
+
     # members
 
     HEADER_HEIGHT: ClassVar[int] = 1
@@ -514,7 +526,8 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         self._loading = False
         self._pending = None
         self._item_colors = {}
-        self._name_under_cursor_hint: str | None = None
+        # Saved cursor position before a reload; None when no hint is active.
+        self._cursor_hint: DirectoryBrowser._CursorHint | None = None
         self._all_items = []
         self._shown_items = []
         self._selected_items = set()
@@ -579,9 +592,9 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
 
         if path == self._path.parent:
             # navigating up: place cursor on the directory we came from
-            self._name_under_cursor_hint = self._path.name
+            self._cursor_hint = self._CursorHint(name=self._path.name)
         else:
-            self._name_under_cursor_hint = None
+            self._cursor_hint = None
 
         self._pending = self._PendingNavigation(path, record_history)
 
@@ -613,8 +626,17 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
     # Data management
 
     def reload(self) -> None:
+        """Reload the current directory from the filesystem.
+
+        Saves the name and row index of the item currently under the cursor so
+        that the cursor can be restored after the reload. If the item has been
+        deleted, the row hint positions the cursor on the next item instead.
+        """
         if not self._loading and self.cursor_row < len(self._shown_items):
-            self._name_under_cursor_hint = self._shown_items[self.cursor_row].name
+            self._cursor_hint = self._CursorHint(
+                name=self._shown_items[self.cursor_row].name,
+                row=self.cursor_row,
+            )
         self._pending = None
         self.border_title = self._path.uri
         self._path.filesystem.refresh()
@@ -634,9 +656,20 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         SORTING = 1
         FILTERING = 2
 
-    def _apply_sort_and_filter(self, *, name_under_cursor: str | None = None) -> None:
-        """Re-sort, re-filter, and restore cursor position from _all_items."""
-        if name_under_cursor is not None:
+    def _apply_sort_and_filter(
+        self,
+        *,
+        cursor_hint: _CursorHint | None = None,
+    ) -> None:
+        """Re-sort, re-filter, and restore cursor position from _all_items.
+
+        When cursor_hint is given the cursor is placed on the first item whose
+        name matches hint.name. If no such item is found (e.g. it was deleted),
+        hint.row is used as a positional fallback and is clamped to the new list
+        bounds. When cursor_hint is None the cursor is restored to the same item
+        object it was on before the operation.
+        """
+        if cursor_hint is not None:
             old_item_under_cursor = None
         else:
             old_item_under_cursor = (
@@ -673,11 +706,15 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
                 if item == old_item_under_cursor:
                     self.cursor_row = index
                     break
-        elif name_under_cursor is not None:
+        elif cursor_hint is not None:
+            found = False
             for index, item in enumerate(self._shown_items):
-                if item.name == name_under_cursor:
+                if item.name == cursor_hint.name:
                     self.cursor_row = index
+                    found = True
                     break
+            if not found and cursor_hint.row is not None:
+                self.cursor_row = cursor_hint.row
         self.cursor_row = self.validate_cursor_row(self.cursor_row)
 
         # restore selected items
@@ -722,7 +759,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         self._pending = None
         self._all_items = saved_all_items
         self._shown_items = saved_shown_items
-        self._name_under_cursor_hint = None
+        self._cursor_hint = None
         self._loading = False
         self.refresh()
         self.refresh_border()
@@ -783,8 +820,8 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
 
         self._loading = False
         self.refresh_border()
-        self._apply_sort_and_filter(name_under_cursor=self._name_under_cursor_hint)
-        self._name_under_cursor_hint = None
+        self._apply_sort_and_filter(cursor_hint=self._cursor_hint)
+        self._cursor_hint = None
         self.refresh()
         self.post_message(DirectoryBrowser.LoadComplete(self, self._path))
 
@@ -798,8 +835,12 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
             # Directory still works; user can press F5 to refresh manually.
 
     async def _on_directory_changed(self, path: VPath) -> None:
+        """Called by the filesystem watcher when the directory contents change."""
         if not self._loading and self.cursor_row < len(self._shown_items):
-            self._name_under_cursor_hint = self._shown_items[self.cursor_row].name
+            self._cursor_hint = self._CursorHint(
+                name=self._shown_items[self.cursor_row].name,
+                row=self.cursor_row,
+            )
         self.update(self.WhatChanged.ALL)
 
     # Rendering
