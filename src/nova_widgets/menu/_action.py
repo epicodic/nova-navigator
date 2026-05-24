@@ -47,6 +47,11 @@ class Action:
     _shortcut: str | None
     _text: str
     _group: ActionGroup | None = None
+    _description: str
+    _contexts: list[str]
+    _default_key: str | None
+    _show_in_bar: bool
+    _bar_priority: int
 
     def __init__(
         self,
@@ -60,6 +65,11 @@ class Action:
         checked: bool = False,
         action: str | None = None,
         is_separator: bool = False,
+        description: str = "",
+        contexts: list[str] | None = None,
+        default_key: str | None = None,
+        show_in_bar: bool = False,
+        bar_priority: int = 100,
     ) -> None:
         self._icon = ICON_PROVIDER(icon) if icon is not None else None
         self._enabled = enabled
@@ -70,6 +80,11 @@ class Action:
         self._checked = checked
         self._action = action
         self._is_separator = is_separator
+        self._description = description
+        self._contexts = list(contexts) if contexts is not None else []
+        self._default_key = default_key
+        self._show_in_bar = show_in_bar
+        self._bar_priority = bar_priority
 
     @property
     def action(self) -> str | None:
@@ -97,6 +112,10 @@ class Action:
     @property
     def shortcut(self) -> str | None:
         return self._shortcut
+
+    def set_shortcut(self, shortcut: str | None) -> None:
+        """Set the displayed shortcut string (e.g. after loading user config)."""
+        self._shortcut = shortcut
 
     @property
     def checkable(self) -> bool:
@@ -126,6 +145,26 @@ class Action:
     @property
     def is_separator(self) -> bool:
         return self._is_separator
+
+    @property
+    def description(self) -> str:
+        return self._description
+
+    @property
+    def contexts(self) -> list[str]:
+        return self._contexts
+
+    @property
+    def default_key(self) -> str | None:
+        return self._default_key
+
+    @property
+    def show_in_bar(self) -> bool:
+        return self._show_in_bar
+
+    @property
+    def bar_priority(self) -> int:
+        return self._bar_priority
 
     @property
     def group(self) -> ActionGroup | None:

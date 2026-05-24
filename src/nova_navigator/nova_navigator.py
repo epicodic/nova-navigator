@@ -14,7 +14,6 @@ from typing import ClassVar, NamedTuple, cast
 
 from textual import events, work
 from textual.app import App, ComposeResult
-from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.logging import TextualHandler
 from textual.screen import Screen
@@ -34,12 +33,14 @@ from nova_navigator.dialogs import (
 )
 from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
 from nova_navigator.dialogs.dialog import ButtonSpec
+from nova_navigator.dialogs.keybindings_dialog import KeybindingsDialog
 from nova_navigator.dialogs.response_dialog import make_response_dialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
 from nova_navigator.editor import Editor
 from nova_navigator.filemanager.compare import CompareMode, compare_directories
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
 from nova_navigator.filemanager.tasks import dummy_task
+from nova_navigator.keymap import KeybindingsConfig, NovaContextResolver
 from nova_navigator.nova_navigator_core import (
     NovaNavigatorCore,
     PanelRef,
@@ -56,8 +57,9 @@ from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
 from nova_navigator.vfs.parse_uri import parse_uri
 from nova_navigator.vfs.scheme_registry import SCHEME_REGISTRY, vfspath_from_uri
-from nova_navigator.widgets import DirectoryBrowser, Footer, JobStatusIcon
+from nova_navigator.widgets import DirectoryBrowser, JobStatusIcon
 from nova_navigator.widgets.directory_browser import GoToPathWidget, UpPath
+from nova_widgets.keymap import HintBar, KeymapRegistry
 from nova_widgets.menu import Action, Menu, MenuBar
 from nova_widgets.menu import constructor as mc
 
@@ -95,27 +97,204 @@ class _CompareConfig:
 
 
 class MainScreen(Screen[None]):
-    BINDINGS: ClassVar = [
-        Binding("ctrl+q", "quit", "Quit"),
-        Binding("ctrl+o", "toggle_maximized_terminal", "Maximize Terminal", priority=True),
-        Binding("ctrl+l", "toggle_terminal", "Enlarge Terminal", priority=True),
-        Binding("f2", "rename", "Rename"),
-        Binding("f4", "open_editor", "Edit"),
-        Binding("f5", "copy_or_move_files(False)", "Copy"),
-        Binding("f6", "copy_or_move_files(True)", "Move"),
-        Binding("f7", "new_directory", "New Directory"),
-        Binding("f8", "delete_files", "Delete"),
-        Binding("ctrl+b", "show_bookmarks", "Bookmark"),
-        Binding("ctrl+h", "toggle_hidden", description="Show/Hide Hidden Files", show=False),
-        Binding("ctrl+d", "start_dummy_operation", "Start Dummy Operation"),
-        Binding("ctrl+g", "go_to_path", "Go to Path", show=False),
-        Binding("alt+left", "go_back", "Go Back", show=False),
-        Binding("alt+right", "go_forward", "Go Forward", show=False),
-        Binding("alt+up", "go_up", "Go Up"),
-        Binding("alt+down", "follow_symlink", "Follow Symlink", show=False),
-        Binding("ctrl+shift+g", "connect_to", "Connect to Remote", show=False),
-        Binding("ctrl+r", "refresh", "Refresh", show=False, priority=True),
-        Binding("ctrl+f1", "settings", "Settings", show=False),
+    ACTIONS: ClassVar[list[Action]] = [
+        Action(
+            "Quit",
+            name="app.quit",
+            action="quit",
+            description="Quit Nova Navigator",
+            contexts=["browser", "terminal", "dialog"],
+            default_key="ctrl+q",
+            show_in_bar=True,
+            bar_priority=90,
+        ),
+        Action(
+            "Maximize Terminal",
+            name="app.toggle_maximized_terminal",
+            action="toggle_maximized_terminal",
+            description="Toggle terminal full-screen mode",
+            contexts=["browser", "terminal"],
+            default_key="ctrl+o",
+            show_in_bar=False,
+        ),
+        Action(
+            "Enlarge Terminal",
+            name="app.toggle_terminal",
+            action="toggle_terminal",
+            description="Enlarge the terminal panel",
+            contexts=["browser"],
+            default_key="ctrl+l",
+            show_in_bar=False,
+        ),
+        Action(
+            "Rename",
+            name="browser.rename",
+            action="rename",
+            description="Rename the file or directory under the cursor",
+            contexts=["browser", "browser.selection"],
+            default_key="f2",
+            show_in_bar=True,
+            bar_priority=10,
+        ),
+        Action(
+            "Edit",
+            name="browser.open_editor",
+            action="open_editor",
+            description="Open the file under the cursor in an editor",
+            contexts=["browser"],
+            default_key="f4",
+            show_in_bar=True,
+            bar_priority=15,
+        ),
+        Action(
+            "Copy",
+            name="browser.copy",
+            action="copy_or_move_files(False)",
+            description="Copy selected files to the other panel",
+            contexts=["browser", "browser.selection"],
+            default_key="f5",
+            show_in_bar=True,
+            bar_priority=20,
+        ),
+        Action(
+            "Move",
+            name="browser.move",
+            action="copy_or_move_files(True)",
+            description="Move selected files to the other panel",
+            contexts=["browser", "browser.selection"],
+            default_key="f6",
+            show_in_bar=True,
+            bar_priority=25,
+        ),
+        Action(
+            "New Dir",
+            name="browser.new_directory",
+            action="new_directory",
+            description="Create a new directory",
+            contexts=["browser"],
+            default_key="f7",
+            show_in_bar=True,
+            bar_priority=30,
+        ),
+        Action(
+            "Delete",
+            name="browser.delete",
+            action="delete_files",
+            description="Delete selected files",
+            contexts=["browser", "browser.selection"],
+            default_key="f8",
+            show_in_bar=True,
+            bar_priority=35,
+        ),
+        Action(
+            "Bookmarks",
+            name="app.show_bookmarks",
+            action="show_bookmarks",
+            description="Open bookmarks dialog",
+            contexts=["browser"],
+            default_key="ctrl+b",
+            show_in_bar=True,
+            bar_priority=80,
+        ),
+        Action(
+            "Hidden Files",
+            name="browser.toggle_hidden",
+            action="toggle_hidden",
+            description="Toggle display of hidden files",
+            contexts=["browser"],
+            default_key="ctrl+h",
+            show_in_bar=False,
+        ),
+        Action(
+            "Dummy Op",
+            name="app.start_dummy_operation",
+            action="start_dummy_operation",
+            description="Start dummy operation (development)",
+            contexts=["browser"],
+            default_key="ctrl+d",
+            show_in_bar=False,
+        ),
+        Action(
+            "Go to Path",
+            name="browser.go_to_path",
+            action="go_to_path",
+            description="Navigate to a typed path",
+            contexts=["browser"],
+            default_key="ctrl+g",
+            show_in_bar=False,
+        ),
+        Action(
+            "Settings",
+            name="app.settings",
+            action="settings",
+            description="Open application settings",
+            contexts=["browser", "dialog"],
+            default_key="ctrl+f1",
+            show_in_bar=False,
+        ),
+        Action(
+            "Connect Remote",
+            name="app.connect_to",
+            action="connect_to",
+            description="Connect to a remote server",
+            contexts=["browser"],
+            default_key="ctrl+shift+g",
+            show_in_bar=False,
+        ),
+        Action(
+            "Refresh",
+            name="browser.refresh",
+            action="refresh",
+            description="Refresh the file list",
+            contexts=["browser"],
+            default_key="ctrl+r",
+            show_in_bar=False,
+        ),
+        Action(
+            "Go Back",
+            name="browser.go_back",
+            action="go_back",
+            description="Navigate back in history",
+            contexts=["browser"],
+            default_key="alt+left",
+            show_in_bar=False,
+        ),
+        Action(
+            "Go Forward",
+            name="browser.go_forward",
+            action="go_forward",
+            description="Navigate forward in history",
+            contexts=["browser"],
+            default_key="alt+right",
+            show_in_bar=False,
+        ),
+        Action(
+            "Go Up",
+            name="browser.go_up",
+            action="go_up",
+            description="Navigate to the parent directory",
+            contexts=["browser"],
+            default_key="alt+up",
+            show_in_bar=False,
+        ),
+        Action(
+            "Follow Symlink",
+            name="browser.follow_symlink",
+            action="follow_symlink",
+            description="Follow symlink to destination",
+            contexts=["browser"],
+            default_key="alt+down",
+            show_in_bar=False,
+        ),
+        Action(
+            "Keybindings",
+            name="app.keybindings",
+            action="keybindings",
+            description="Open keybinding editor",
+            contexts=["browser"],
+            default_key=None,
+            show_in_bar=False,
+        ),
     ]
 
     class _TerminalMode(Enum):
@@ -143,6 +322,10 @@ class MainScreen(Screen[None]):
         self._compare_config = None
         self._terminal_pool = TerminalPool()
         self._provisioning: set[int] = set()
+        self._keymap_config = KeybindingsConfig()
+        self._keymap_registry: KeymapRegistry | None = None
+        self._context_resolver: NovaContextResolver | None = None
+        self._hint_bar = HintBar()
 
     @property
     def app(self) -> NovaNavigator:  # type: ignore[override]
@@ -154,6 +337,7 @@ class MainScreen(Screen[None]):
         self._menu_bar.add_menu(
             "𑁔",
             mc.action("Settings", icon="gear", shortcut="Ctrl+F1", action="settings"),
+            mc.action("Key Bindings…", icon="keyboard", action="keybindings"),
             mc.separator(),
             mc.action("About", icon="info", action="about"),
             mc.separator(),
@@ -274,7 +458,7 @@ class MainScreen(Screen[None]):
         yield local_terminal
         self._jobs_dialog = JobsDialog(position=(0, 0), registry=self.app.job_registry)
         yield self._jobs_dialog
-        yield Footer()
+        yield self._hint_bar
 
     def _act(self, name: str) -> Action:
         action = self._menu_bar.find_action(name)
@@ -298,6 +482,23 @@ class MainScreen(Screen[None]):
             case PanelRef.ACTIVE:
                 return self._last_active_panel
 
+    async def on_mount(self) -> None:
+        self._context_resolver = NovaContextResolver(self.app)
+        self._keymap_registry = KeymapRegistry(self._context_resolver)
+        self._reload_keymap()
+
+    def _reload_keymap(self) -> None:
+        assert self._keymap_registry is not None
+        all_actions: list[Action] = list(type(self).ACTIONS)
+        if hasattr(DirectoryBrowser, "ACTIONS"):
+            all_actions.extend(DirectoryBrowser.ACTIONS)
+        bindings = self._keymap_config.resolve(all_actions)
+        self._keymap_registry.reload(bindings, all_actions)
+        context = self._context_resolver.resolve() if self._context_resolver is not None else "browser"
+        active = [a for a in all_actions if context in a.contexts and a.show_in_bar]
+        style = conf_.settings.general.key_display_style
+        self._hint_bar.set_hints(active, style)
+
     def on_resize(self, event: events.Resize) -> None:
         self._resize_terminal()
         if self._jobs_dialog.display:
@@ -315,11 +516,15 @@ class MainScreen(Screen[None]):
         await super().on_event(event)
 
     async def _on_key(self, event: events.Key) -> None:
-        # self.log(f"MainScreen _on_key: {event.key}")
+        # Try keymap registry first (action dispatch)
+        if self._keymap_registry is not None:
+            consumed = await self._keymap_registry.handle_key(event.key, self.app)
+            if consumed:
+                event.stop()
+                return
+        # Fall through to terminal key forwarding
         if await self._handle_key(event):
-            # if the event was handled, stop its propagation
             event.stop()
-            return
 
     def _on_directory_browser_focus(self, event: DirectoryBrowser.Focus) -> None:
         self._last_active_panel = event.browser
@@ -935,6 +1140,54 @@ class MainScreen(Screen[None]):
     def _action_refresh(self) -> None:
         self._left_panel.reload()
         self._right_panel.reload()
+
+    def action_rename(self) -> None:
+        self._action_rename()
+
+    def action_open_editor(self) -> None:
+        self._action_open_editor()
+
+    def action_new_directory(self) -> None:
+        self._action_new_directory()
+
+    def action_show_bookmarks(self) -> None:
+        self._action_show_bookmarks()
+
+    def action_toggle_hidden(self) -> None:
+        self._action_toggle_hidden()
+
+    def action_go_to_path(self) -> None:
+        self._action_go_to_path()
+
+    def action_go_back(self) -> None:
+        self._action_go_back()
+
+    def action_go_forward(self) -> None:
+        self._action_go_forward()
+
+    def action_go_up(self) -> None:
+        self._action_go_up()
+
+    def action_follow_symlink(self) -> None:
+        self._action_follow_symlink()
+
+    def action_connect_to(self) -> None:
+        self._action_connect_to()
+
+    def action_refresh(self) -> None:
+        self._action_refresh()
+
+    def action_settings(self) -> None:
+        self._action_settings()
+
+    async def action_keybindings(self) -> None:
+        dialog = KeybindingsDialog(
+            actions=list(type(self).ACTIONS),
+            config=self._keymap_config,
+        )
+        result = await self.app.push_screen_wait(dialog)
+        if result is not None:
+            self._reload_keymap()
 
     async def _action_filter(self) -> None:
         await self.active_panel().action_filter()

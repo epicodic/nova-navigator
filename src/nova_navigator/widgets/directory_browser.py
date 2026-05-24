@@ -26,6 +26,7 @@ from textual.widgets.data_table import ColumnKey
 
 from nova_widgets import unicode
 from nova_widgets.custom_border import CustomBorderMixin
+from nova_widgets.menu._action import Action
 
 from ..config import conf_
 from ..format_utils import format_size
@@ -355,9 +356,37 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         Binding("pagedown", "page_down", "Page down", show=False),
         Binding("home", "scroll_top", "Top", show=False),
         Binding("end", "scroll_bottom", "Bottom", show=False),
-        Binding("insert", "insert_select", "Select", show=False),
-        Binding("ctrl+a", "select_all", "Select All", show=False),
-        Binding("ctrl+f", "filter", "Filter", show=True),
+    ]
+
+    ACTIONS: ClassVar[list[Action]] = [
+        Action(
+            "Toggle Selection",
+            name="browser.insert_select",
+            action="insert_select",
+            description="Toggle selection on item under cursor and advance cursor",
+            contexts=["browser"],
+            default_key="insert",
+            show_in_bar=False,
+        ),
+        Action(
+            "Select All",
+            name="browser.select_all",
+            action="select_all",
+            description="Select all visible items",
+            contexts=["browser"],
+            default_key="ctrl+a",
+            show_in_bar=False,
+        ),
+        Action(
+            "Filter",
+            name="browser.filter",
+            action="filter",
+            description="Filter files in the directory",
+            contexts=["browser"],
+            default_key="ctrl+f",
+            show_in_bar=True,
+            bar_priority=50,
+        ),
     ]
 
     COMPONENT_CLASSES: ClassVar[set[str]] = {
@@ -567,6 +596,11 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
                 return []
             return [self.path_item_under_cursor]
         return list(self._selected_items)
+
+    @property
+    def has_selection(self) -> bool:
+        """True when one or more items are explicitly selected."""
+        return len(self._selected_items) > 0
 
     @property
     def can_go_back(self) -> bool:
