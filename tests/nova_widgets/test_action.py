@@ -106,12 +106,12 @@ def test_action_custom_description() -> None:
 
 
 def test_action_custom_default_key() -> None:
-    a = Action("Copy", default_key="f5")
+    a = Action("Copy", key="f5")
     assert a.default_key == "f5"
 
 
 def test_action_show_in_bar_true() -> None:
-    a = Action("Copy", show_in_bar=True)
+    a = Action("Copy", show=True)
     assert a.show_in_bar is True
 
 
@@ -121,7 +121,7 @@ def test_action_custom_bar_priority() -> None:
 
 
 def test_action_set_shortcut() -> None:
-    a = Action("Copy", default_key="f5")
+    a = Action("Copy", key="f5")
     a.set_shortcut("f6")
     assert a.shortcut == "f6"
 
