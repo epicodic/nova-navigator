@@ -903,9 +903,7 @@ async def test_on_scroll_down_ignored_when_not_started() -> None:
     app = TerminalTestApp(terminal)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await terminal.on_mouse_scroll_down(
-            events.MouseScrollDown(None, 5, 3, 0, 0, 1, shift=False, meta=False, ctrl=False)
-        )
+        await terminal.on_mouse_scroll_down(events.MouseScrollDown(None, 5, 3, 0, 0, 1, shift=False, meta=False, ctrl=False))
         assert terminal.send_queue is None
 
 
@@ -920,9 +918,7 @@ async def test_on_scroll_down_ignored_when_mouse_tracking_disabled() -> None:
         terminal._started = True
         terminal.mouse_tracking = False
 
-        await terminal.on_mouse_scroll_down(
-            events.MouseScrollDown(None, 5, 3, 0, 0, 1, shift=False, meta=False, ctrl=False)
-        )
+        await terminal.on_mouse_scroll_down(events.MouseScrollDown(None, 5, 3, 0, 0, 1, shift=False, meta=False, ctrl=False))
 
         assert terminal.send_queue.empty()
 
@@ -938,9 +934,7 @@ async def test_on_scroll_down_puts_scroll_message_in_send_queue() -> None:
         terminal._started = True
         terminal.mouse_tracking = True
 
-        await terminal.on_mouse_scroll_down(
-            events.MouseScrollDown(None, 5, 3, 0, 0, 1, shift=False, meta=False, ctrl=False)
-        )
+        await terminal.on_mouse_scroll_down(events.MouseScrollDown(None, 5, 3, 0, 0, 1, shift=False, meta=False, ctrl=False))
 
         assert terminal.send_queue.qsize() == 1
         item = terminal.send_queue.get_nowait()
@@ -959,9 +953,7 @@ async def test_on_scroll_up_puts_scroll_message_in_send_queue() -> None:
         terminal._started = True
         terminal.mouse_tracking = True
 
-        await terminal.on_mouse_scroll_up(
-            events.MouseScrollUp(None, 5, 3, 0, 0, 1, shift=False, meta=False, ctrl=False)
-        )
+        await terminal.on_mouse_scroll_up(events.MouseScrollUp(None, 5, 3, 0, 0, 1, shift=False, meta=False, ctrl=False))
 
         assert terminal.send_queue.qsize() == 1
         item = terminal.send_queue.get_nowait()
@@ -975,9 +967,7 @@ async def test_on_scroll_up_ignored_when_not_started() -> None:
     app = TerminalTestApp(terminal)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await terminal.on_mouse_scroll_up(
-            events.MouseScrollUp(None, 5, 3, 0, 0, 1, shift=False, meta=False, ctrl=False)
-        )
+        await terminal.on_mouse_scroll_up(events.MouseScrollUp(None, 5, 3, 0, 0, 1, shift=False, meta=False, ctrl=False))
         assert terminal.send_queue is None
 
 
@@ -992,9 +982,7 @@ async def test_on_scroll_up_ignored_when_mouse_tracking_disabled() -> None:
         terminal._started = True
         terminal.mouse_tracking = False
 
-        await terminal.on_mouse_scroll_up(
-            events.MouseScrollUp(None, 5, 3, 0, 0, 1, shift=False, meta=False, ctrl=False)
-        )
+        await terminal.on_mouse_scroll_up(events.MouseScrollUp(None, 5, 3, 0, 0, 1, shift=False, meta=False, ctrl=False))
 
         assert terminal.send_queue.empty()
 

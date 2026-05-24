@@ -55,11 +55,7 @@ async def test_move_overwrite_skip() -> None:
     """skip policy leaves the destination unchanged and does not move the source."""
     fs = MockFilesystem({"/src/file.txt": b"new", "/home/user/file.txt": b"original"})
 
-    requests = await run_task(
-        lambda ctx: move_files(
-            ctx, [fs.path("/src/file.txt")], fs.path("/home/user"), FileCopyOptions(overwrite="skip")
-        )
-    )
+    requests = await run_task(lambda ctx: move_files(ctx, [fs.path("/src/file.txt")], fs.path("/home/user"), FileCopyOptions(overwrite="skip")))
 
     assert len(requests) == 0
     assert fs.exists("/src/file.txt")
@@ -72,9 +68,7 @@ async def test_move_overwrite_ask_yes() -> None:
     fs = MockFilesystem({"/src/file.txt": b"new", "/home/user/file.txt": b"old"})
 
     requests = await run_task(
-        lambda ctx: move_files(
-            ctx, [fs.path("/src/file.txt")], fs.path("/home/user"), FileCopyOptions(overwrite="ask")
-        ),
+        lambda ctx: move_files(ctx, [fs.path("/src/file.txt")], fs.path("/home/user"), FileCopyOptions(overwrite="ask")),
         [Response.YES],
     )
 
@@ -89,9 +83,7 @@ async def test_move_overwrite_ask_no() -> None:
     fs = MockFilesystem({"/src/file.txt": b"new", "/home/user/file.txt": b"original"})
 
     requests = await run_task(
-        lambda ctx: move_files(
-            ctx, [fs.path("/src/file.txt")], fs.path("/home/user"), FileCopyOptions(overwrite="ask")
-        ),
+        lambda ctx: move_files(ctx, [fs.path("/src/file.txt")], fs.path("/home/user"), FileCopyOptions(overwrite="ask")),
         [Response.NO],
     )
 
@@ -156,11 +148,7 @@ async def test_move_overwrite_existing_directory() -> None:
     fs = MockFilesystem({"/src/dir": None, "/home/user/dir/file.txt": b"old"})
     # /src/dir is empty; /home/user/dir exists with a file
 
-    await run_task(
-        lambda ctx: move_files(
-            ctx, [fs.path("/src/dir")], fs.path("/home/user/dir"), FileCopyOptions(overwrite="overwrite")
-        )
-    )
+    await run_task(lambda ctx: move_files(ctx, [fs.path("/src/dir")], fs.path("/home/user/dir"), FileCopyOptions(overwrite="overwrite")))
 
     assert not fs.exists("/src/dir")
     assert fs.exists("/home/user/dir")
@@ -204,11 +192,7 @@ async def test_move_cross_device_skip_does_not_delete_source() -> None:
     src_fs = MockFilesystem({"/src/file.txt": b"new"})
     dst_fs = MockFilesystem({"/home/user/file.txt": b"original"})
 
-    await run_task(
-        lambda ctx: move_files(
-            ctx, [src_fs.path("/src/file.txt")], dst_fs.path("/home/user"), FileCopyOptions(overwrite="skip")
-        )
-    )
+    await run_task(lambda ctx: move_files(ctx, [src_fs.path("/src/file.txt")], dst_fs.path("/home/user"), FileCopyOptions(overwrite="skip")))
 
     assert src_fs.exists("/src/file.txt")
     assert read_all(dst_fs, "/home/user/file.txt") == b"original"
@@ -221,9 +205,7 @@ async def test_move_cross_device_ask_no_does_not_delete_source() -> None:
     dst_fs = MockFilesystem({"/home/user/file.txt": b"original"})
 
     requests = await run_task(
-        lambda ctx: move_files(
-            ctx, [src_fs.path("/src/file.txt")], dst_fs.path("/home/user"), FileCopyOptions(overwrite="ask")
-        ),
+        lambda ctx: move_files(ctx, [src_fs.path("/src/file.txt")], dst_fs.path("/home/user"), FileCopyOptions(overwrite="ask")),
         [Response.NO],
     )
 
@@ -256,11 +238,7 @@ async def test_move_cross_device_directory_skip_does_not_erase_source() -> None:
     src_fs = MockFilesystem({"/src/mydir/file.txt": b"new"})
     dst_fs = MockFilesystem({"/home/user/mydir/file.txt": b"original"})
 
-    await run_task(
-        lambda ctx: move_files(
-            ctx, [src_fs.path("/src/mydir")], dst_fs.path("/home/user"), FileCopyOptions(overwrite="skip")
-        )
-    )
+    await run_task(lambda ctx: move_files(ctx, [src_fs.path("/src/mydir")], dst_fs.path("/home/user"), FileCopyOptions(overwrite="skip")))
 
     assert src_fs.exists("/src/mydir/file.txt")
     assert read_all(dst_fs, "/home/user/mydir/file.txt") == b"original"
@@ -273,9 +251,7 @@ async def test_move_cross_device_directory_ask_no_does_not_erase_source() -> Non
     dst_fs = MockFilesystem({"/home/user/mydir/file.txt": b"original"})
 
     requests = await run_task(
-        lambda ctx: move_files(
-            ctx, [src_fs.path("/src/mydir")], dst_fs.path("/home/user"), FileCopyOptions(overwrite="ask")
-        ),
+        lambda ctx: move_files(ctx, [src_fs.path("/src/mydir")], dst_fs.path("/home/user"), FileCopyOptions(overwrite="ask")),
         [Response.NO],
     )
 
@@ -450,9 +426,7 @@ async def test_move_skipped_path_counted_in_completed() -> None:
 
     status = make_status()
     await run_task(
-        lambda ctx: move_files(
-            ctx, [fs.path("/src/file.txt")], fs.path("/home/user"), FileCopyOptions(overwrite="skip")
-        ),
+        lambda ctx: move_files(ctx, [fs.path("/src/file.txt")], fs.path("/home/user"), FileCopyOptions(overwrite="skip")),
         status=status,
     )
 

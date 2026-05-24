@@ -91,9 +91,7 @@ class AsyncTaskScheduler:
                 if title in self._responses_to_all:
                     return self._responses_to_all[title]
 
-                gui_future: asyncio.Future[Response] = asyncio.run_coroutine_threadsafe(
-                    _create_future_in_loop(), gui_loop
-                ).result()
+                gui_future: asyncio.Future[Response] = asyncio.run_coroutine_threadsafe(_create_future_in_loop(), gui_loop).result()
                 asyncio.run_coroutine_threadsafe(
                     cast("Coroutine[Any, Any, None]", self._gui_request_callback(request, gui_future)),
                     gui_loop,
