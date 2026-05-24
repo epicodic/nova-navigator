@@ -73,11 +73,7 @@ class CopyMoveFilesDialog(Dialog):
         for path in self.source_paths[0 : self.MAX_DISPLAYED_FILES]:
             self._source_files.append(NoSelectListView.ListItem(Static(path.name)))
         if len(self.source_paths) > self.MAX_DISPLAYED_FILES:
-            self._source_files.append(
-                NoSelectListView.ListItem(
-                    Static(f"... and {len(self.source_paths) - self.MAX_DISPLAYED_FILES} more files")
-                )
-            )
+            self._source_files.append(NoSelectListView.ListItem(Static(f"... and {len(self.source_paths) - self.MAX_DISPLAYED_FILES} more files")))
 
 
 class DeleteFilesDialog(Dialog):

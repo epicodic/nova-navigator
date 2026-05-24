@@ -152,10 +152,7 @@ class TaskStatus:
 
     def is_complete(self) -> bool:
         """Return ``True`` if the task is fully complete (completed >= total)."""
-        return (
-            self._progress.completed >= self._progress.total
-            and self._progress.step_completed >= self._progress.step_total
-        )
+        return self._progress.completed >= self._progress.total and self._progress.step_completed >= self._progress.step_total
 
 
 GuiRequestCallback = Callable[[ResponseRequest, asyncio.Future[Response]], Awaitable[None]]

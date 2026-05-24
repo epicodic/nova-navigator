@@ -26,9 +26,7 @@ def ssh_backend(tmp_path: Path) -> Generator[tuple[SshPtyBackend, StubSSHServer]
         server.host_key,
     )
     temp_key = paramiko.RSAKey.generate(bits=1024)
-    client.connect(
-        "127.0.0.1", port=server.port, username="test", pkey=temp_key, look_for_keys=False, allow_agent=False
-    )
+    client.connect("127.0.0.1", port=server.port, username="test", pkey=temp_key, look_for_keys=False, allow_agent=False)
     backend = SshPtyBackend(ssh_client=client)
     try:
         yield backend, server

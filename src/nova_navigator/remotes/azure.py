@@ -50,10 +50,7 @@ async def connect_azure(conn: RemoteConnection) -> AzureFilesystem | None:
             exc,
         )
         await MessageBox(
-            f"Could not connect to {conn.name!r}:\n"
-            f"account_url: {azure.account_url}\n"
-            f"container:   {azure.container}\n\n"
-            f"{exc}",
+            f"Could not connect to {conn.name!r}:\naccount_url: {azure.account_url}\ncontainer:   {azure.container}\n\n{exc}",
             variant="error",
         ).run()
         return None

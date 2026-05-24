@@ -118,11 +118,7 @@ class ArchiveFilesystem(Filesystem):
         pass  # no caching in ArchiveFilesystem
 
     def __eq__(self, value: object) -> bool:
-        return (
-            isinstance(value, ArchiveFilesystem)
-            and self._archive == value._archive
-            and self._archive_parent == value._archive_parent
-        )
+        return isinstance(value, ArchiveFilesystem) and self._archive == value._archive and self._archive_parent == value._archive_parent
 
     def __hash__(self) -> int:
         return hash((self._archive, self._archive_parent))

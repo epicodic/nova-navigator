@@ -79,12 +79,7 @@ class FileTypeConfig(ListConfig):
     def _find_section_for_path(self, path: PurePath) -> Section:
         mimetype = mimetypes.guess_type(path.as_posix())[0]
         for section in self._sections:
-            if (
-                section.mimetype
-                and mimetype
-                and section.mimetype_pattern is not None
-                and section.mimetype_pattern.search(mimetype)
-            ):
+            if section.mimetype and mimetype and section.mimetype_pattern is not None and section.mimetype_pattern.search(mimetype):
                 return section
             if section.regex and section.regex_pattern is not None and section.regex_pattern.search(path.as_posix()):
                 return section

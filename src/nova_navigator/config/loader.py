@@ -156,10 +156,7 @@ class ListConfig(ConfigBase):
         """Write current items back to the config file."""
         non_model_items = [i for i in self._items if not isinstance(i, BaseModel)]
         if non_model_items:
-            raise RuntimeError(
-                f"{type(self).__name__}.save(): cannot save — _items contains non-ConfigModel objects. "
-                "Set _item_cls on the class so items can be properly deserialised."
-            )
+            raise RuntimeError(f"{type(self).__name__}.save(): cannot save — _items contains non-ConfigModel objects. Set _item_cls on the class so items can be properly deserialised.")
         doc = list_to_toml(self._items)
         _APP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         file_path = _APP_CONFIG_DIR / f"{self.CONFIG_NAME}.toml"
