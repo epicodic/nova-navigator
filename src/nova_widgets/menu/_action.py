@@ -65,8 +65,8 @@ class Action:
         action: str | None = None,
         is_separator: bool = False,
         description: str = "",
-        default_key: str | None = None,
-        show_in_bar: bool = False,
+        key: str | None = None,
+        show: bool = False,
         bar_priority: int = 100,
     ) -> None:
         self._icon = ICON_PROVIDER(icon) if icon is not None else None
@@ -79,8 +79,8 @@ class Action:
         self._action = action
         self._is_separator = is_separator
         self._description = description
-        self._default_key = default_key
-        self._show_in_bar = show_in_bar
+        self._default_key = key
+        self._show_in_bar = show
         self._bar_priority = bar_priority
 
     @property

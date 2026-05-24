@@ -53,7 +53,7 @@ package = true
 [tool.ruff]
 cache-dir = ".cache/ruff"
 indent-width = 4
-line-length = 120
+line-length = 200
 target-version = "py312"
 include = ["src/**/*.py", "tests/**/*.py"]
 

@@ -359,31 +359,9 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
     ]
 
     ACTIONS: ClassVar[list[Action]] = [
-        Action(
-            "Toggle Selection",
-            name="browser.insert_select",
-            action="insert_select",
-            description="Toggle selection on item under cursor and advance cursor",
-            default_key="insert",
-            show_in_bar=False,
-        ),
-        Action(
-            "Select All",
-            name="browser.select_all",
-            action="select_all",
-            description="Select all visible items",
-            default_key="ctrl+a",
-            show_in_bar=False,
-        ),
-        Action(
-            "Filter",
-            name="browser.filter",
-            action="filter",
-            description="Filter files in the directory",
-            default_key="ctrl+f",
-            show_in_bar=True,
-            bar_priority=50,
-        ),
+        Action("Toggle Selection", name="browser.insert_select", action="insert_select", description="Toggle selection on item under cursor and advance cursor", key="insert", show=False),
+        Action("Select All", name="browser.select_all", action="select_all", description="Select all visible items", key="ctrl+a", show=False),
+        Action("Filter", name="browser.filter", action="filter", description="Filter files in the directory", key="ctrl+f", show=True, bar_priority=50),
     ]
 
     COMPONENT_CLASSES: ClassVar[set[str]] = {
@@ -703,9 +681,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
         if cursor_hint is not None:
             old_item_under_cursor = None
         else:
-            old_item_under_cursor = (
-                self._shown_items[self.cursor_row] if self.cursor_row < len(self._shown_items) else None
-            )
+            old_item_under_cursor = self._shown_items[self.cursor_row] if self.cursor_row < len(self._shown_items) else None
         old_selected_items = self._selected_items
 
         column_sorter = self._columns[self.sort_column].sorter
@@ -993,18 +969,10 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
 
         first_column_width = remaining
 
-        icon_segment = Segment(
-            unicode.ljust(row_texts[0], self._columns[0].width), style=style + Style.from_meta({"column": 1})
-        )
-        name_segment = Segment(
-            _ljust(row_texts[1], first_column_width) + " ", style=style + Style.from_meta({"column": 1})
-        )
-        size_segment = Segment(
-            _rjust(row_texts[2], self._columns[2].width) + "  ", style=style + Style.from_meta({"column": 2})
-        )
-        modified_segment = Segment(
-            _rjust(row_texts[3], self._columns[3].width) + " ", style=style + Style.from_meta({"column": 3})
-        )
+        icon_segment = Segment(unicode.ljust(row_texts[0], self._columns[0].width), style=style + Style.from_meta({"column": 1}))
+        name_segment = Segment(_ljust(row_texts[1], first_column_width) + " ", style=style + Style.from_meta({"column": 1}))
+        size_segment = Segment(_rjust(row_texts[2], self._columns[2].width) + "  ", style=style + Style.from_meta({"column": 2}))
+        modified_segment = Segment(_rjust(row_texts[3], self._columns[3].width) + " ", style=style + Style.from_meta({"column": 3}))
 
         return Strip([icon_segment, name_segment, size_segment, modified_segment])
 

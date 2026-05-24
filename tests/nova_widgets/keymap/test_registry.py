@@ -15,8 +15,8 @@ from nova_widgets.menu._action import Action
 
 class _BrowserWidget(Widget):
     ACTIONS: ClassVar[list[Action]] = [
-        Action("Copy", name="browser.copy", action="copy", default_key="f5"),
-        Action("Filter", name="browser.filter", action="filter", default_key="ctrl+f"),
+        Action("Copy", name="browser.copy", action="copy", key="f5"),
+        Action("Filter", name="browser.filter", action="filter", key="ctrl+f"),
     ]
 
 
@@ -92,7 +92,7 @@ class _RealFocusableWidget(Widget, can_focus=True):
     """Widget with a widget-level action (simulates DirectoryBrowser.insert_select)."""
 
     ACTIONS: ClassVar[list[Action]] = [
-        Action("Select", name="widget.select", action="select", default_key="insert"),
+        Action("Select", name="widget.select", action="select", key="insert"),
     ]
 
     def __init__(self) -> None:
@@ -107,7 +107,7 @@ class _RealDispatchScreen(Widget):
     """Screen-equivalent widget with a screen-level action."""
 
     ACTIONS: ClassVar[list[Action]] = [
-        Action("Copy", name="screen.copy", action="copy_files", default_key="f5"),
+        Action("Copy", name="screen.copy", action="copy_files", key="f5"),
     ]
 
     def __init__(self) -> None:
@@ -139,7 +139,7 @@ async def test_dispatch_widget_action_reaches_focused_widget() -> None:
     registry = KeymapRegistry(HintBar())
     # bind insert → widget.select (action lives on the focused widget)
     actions = [
-        Action("Select", name="widget.select", action="select", default_key="insert"),
+        Action("Select", name="widget.select", action="select", key="insert"),
     ]
     registry.reload({"widget.select": "insert"}, actions)
 
@@ -239,7 +239,7 @@ class _RealFocusableWidget(Widget, can_focus=True):
     """Widget with a widget-level action (simulates DirectoryBrowser.insert_select)."""
 
     ACTIONS: ClassVar[list[Action]] = [
-        Action("Select", name="widget.select", action="select", default_key="insert"),
+        Action("Select", name="widget.select", action="select", key="insert"),
     ]
 
     def __init__(self) -> None:
@@ -254,7 +254,7 @@ class _RealDispatchScreen(Widget):
     """Screen-equivalent widget with a screen-level action."""
 
     ACTIONS: ClassVar[list[Action]] = [
-        Action("Copy", name="screen.copy", action="copy_files", default_key="f5"),
+        Action("Copy", name="screen.copy", action="copy_files", key="f5"),
     ]
 
     def __init__(self) -> None:
@@ -287,7 +287,7 @@ async def test_dispatch_widget_action_reaches_focused_widget() -> None:
     registry = KeymapRegistry(resolver)
     # bind insert → widget.select (action lives on the focused widget)
     actions = [
-        Action("Select", name="widget.select", action="select", default_key="insert"),
+        Action("Select", name="widget.select", action="select", key="insert"),
     ]
     registry.reload({"widget.select": "insert"}, actions)
 

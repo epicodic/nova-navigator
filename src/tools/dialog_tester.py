@@ -117,8 +117,7 @@ _ENTRIES: list[DialogEntry] = [
         "MessageBox (confirm)",
         "Confirmation message with OK/Cancel — styled like the unknown-host prompt.",
         lambda: MessageBox(
-            "The authenticity of host 'example.com' can't be established.\n"
-            "ED25519 key fingerprint is SHA256:abc123xyz\n\nAdd to known hosts?",
+            "The authenticity of host 'example.com' can't be established.\nED25519 key fingerprint is SHA256:abc123xyz\n\nAdd to known hosts?",
             title="Unknown Host",
             buttons=[Response.OK, Response.CANCEL],
         ),
@@ -194,9 +193,7 @@ _ENTRIES: list[DialogEntry] = [
     DialogEntry(
         "DeleteFilesDialog",
         "Delete confirmation for multiple files.",
-        lambda: DeleteFilesDialog(
-            paths=[VPath("/home/user/Documents/old_report.pdf", _fs), VPath("/home/user/Downloads/archive.zip", _fs)]
-        ),
+        lambda: DeleteFilesDialog(paths=[VPath("/home/user/Documents/old_report.pdf", _fs), VPath("/home/user/Downloads/archive.zip", _fs)]),
     ),
     DialogEntry(
         "KeybindingsDialog",
@@ -208,32 +205,32 @@ _ENTRIES: list[DialogEntry] = [
                     name="browser.copy",
                     action="copy",
                     description="Copy files to the other panel",
-                    default_key="f5",
-                    show_in_bar=True,
+                    key="f5",
+                    show=True,
                 ),
                 NavAction(
                     "Move",
                     name="browser.move",
                     action="move",
                     description="Move files to the other panel",
-                    default_key="f6",
-                    show_in_bar=True,
+                    key="f6",
+                    show=True,
                 ),
                 NavAction(
                     "Delete",
                     name="browser.delete",
                     action="delete",
                     description="Delete selected files",
-                    default_key="f8",
-                    show_in_bar=True,
+                    key="f8",
+                    show=True,
                 ),
                 NavAction(
                     "Settings",
                     name="app.settings",
                     action="settings",
                     description="Open application settings",
-                    default_key="ctrl+f1",
-                    show_in_bar=False,
+                    key="ctrl+f1",
+                    show=False,
                 ),
             ],
             config=KeybindingsConfig(config_dir=Path.home() / ".config" / "nova-navigator"),
@@ -372,12 +369,7 @@ def main() -> None:
         prog="dialog_tester",
         description="Nova Navigator dialog tester.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "Examples:\n"
-            "  uv run dialog_tester --list\n"
-            "  uv run dialog_tester ResponseDialog\n"
-            "  uv run dialog_tester ResponseDialog --screenshot\n"
-        ),
+        epilog=("Examples:\n  uv run dialog_tester --list\n  uv run dialog_tester ResponseDialog\n  uv run dialog_tester ResponseDialog --screenshot\n"),
     )
     parser.add_argument("--list", action="store_true", help="List all available dialogs and exit.")
     parser.add_argument("name", nargs="?", metavar="NAME", help="Dialog name to launch.")

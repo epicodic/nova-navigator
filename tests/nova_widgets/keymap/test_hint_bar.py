@@ -32,8 +32,8 @@ async def test_hint_bar_mounts_without_error() -> None:
 @pytest.mark.asyncio
 async def test_hint_bar_shows_normal_hints() -> None:
     actions = [
-        Action("Copy", name="browser.copy", default_key="f5", show_in_bar=True, bar_priority=10),
-        Action("Quit", name="app.quit", default_key="ctrl+q", show_in_bar=True, bar_priority=20),
+        Action("Copy", name="browser.copy", key="f5", show=True, bar_priority=10),
+        Action("Quit", name="app.quit", key="ctrl+q", show=True, bar_priority=20),
     ]
     actions[0].set_shortcut("f5")
     actions[1].set_shortcut("ctrl+q")
