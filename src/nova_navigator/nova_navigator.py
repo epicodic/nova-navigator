@@ -1141,45 +1141,6 @@ class MainScreen(Screen[None]):
         self._left_panel.reload()
         self._right_panel.reload()
 
-    def action_rename(self) -> None:
-        self._action_rename()
-
-    def action_open_editor(self) -> None:
-        self._action_open_editor()
-
-    def action_new_directory(self) -> None:
-        self._action_new_directory()
-
-    def action_show_bookmarks(self) -> None:
-        self._action_show_bookmarks()
-
-    def action_toggle_hidden(self) -> None:
-        self._action_toggle_hidden()
-
-    def action_go_to_path(self) -> None:
-        self._action_go_to_path()
-
-    def action_go_back(self) -> None:
-        self._action_go_back()
-
-    def action_go_forward(self) -> None:
-        self._action_go_forward()
-
-    def action_go_up(self) -> None:
-        self._action_go_up()
-
-    def action_follow_symlink(self) -> None:
-        self._action_follow_symlink()
-
-    def action_connect_to(self) -> None:
-        self._action_connect_to()
-
-    def action_refresh(self) -> None:
-        self._action_refresh()
-
-    def action_settings(self) -> None:
-        self._action_settings()
-
     async def action_keybindings(self) -> None:
         dialog = KeybindingsDialog(
             actions=list(type(self).ACTIONS),
