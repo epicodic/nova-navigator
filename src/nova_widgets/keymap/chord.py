@@ -5,23 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
-def _context_matches(registered: set[str], current: str) -> bool:
-    """Return True if *current* matches any registered context (hierarchically).
-
-    A registered context of ``"browser"`` matches the exact context ``"browser"``
-    and any sub-context like ``"browser.selection"`` or ``"browser.detail"``.
-    Wildcards are not needed: specifying a parent context covers all children.
-    """
-    return current in registered or any(current.startswith(c + ".") for c in registered)
-
-
 @dataclass
 class TrieNode:
     """A node in the key-sequence trie."""
 
     children: dict[str, TrieNode] = field(default_factory=dict)
     action_name: str | None = None
-    reachable_contexts: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -40,18 +29,18 @@ class ChordStateMachine:
         self._root = TrieNode()
         self._current: TrieNode = self._root
 
-    def build_trie(self, bindings: dict[str, tuple[str, list[str]]]) -> None:
-        """Build the trie from a mapping of action_name to (key_sequence, contexts).
+    def build_trie(self, bindings: dict[str, str]) -> None:
+        """Build the trie from a mapping of action_name to key_sequence.
 
         Args:
-            bindings: Maps action name to (key_sequence, list_of_context_strings).
-                      Key sequences use Textual notation; multi-chord chords are
+            bindings: Maps action name to key sequence string.
+                      Key sequences use Textual notation; multi-chord sequences are
                       space-separated, e.g. "ctrl+x ctrl+s".
         """
         self._root = TrieNode()
         self._current = self._root
 
-        for action_name, (key_seq, contexts) in bindings.items():
+        for action_name, key_seq in bindings.items():
             if not key_seq:
                 continue
             chords = key_seq.strip().split(" ")
@@ -61,16 +50,12 @@ class ChordStateMachine:
                     node.children[chord] = TrieNode()
                 node = node.children[chord]
             node.action_name = action_name
-            node.reachable_contexts = set(contexts)
 
-        self._propagate_contexts(self._root)
-
-    def feed(self, key: str, context: str) -> ChordResult:
-        """Feed a single key press and current context into the state machine.
+    def feed(self, key: str) -> ChordResult:
+        """Feed a single key press into the state machine.
 
         Args:
             key: Textual key name, e.g. "ctrl+x" or "f5".
-            context: Current application context string, e.g. "browser".
 
         Returns:
             ChordResult indicating whether the key was consumed and what action matched.
@@ -81,7 +66,7 @@ class ChordStateMachine:
 
         node = self._current.children.get(key)
 
-        if node is None or not _context_matches(node.reachable_contexts, context):
+        if node is None:
             self._current = self._root
             return ChordResult(consumed=False)
 
@@ -92,11 +77,7 @@ class ChordStateMachine:
 
         # Prefix node — enter pending state
         self._current = node
-        continuations = [
-            (k, child.action_name)
-            for k, child in node.children.items()
-            if _context_matches(child.reachable_contexts, context)
-        ]
+        continuations = [(k, child.action_name) for k, child in node.children.items()]
         return ChordResult(consumed=True, continuations=continuations)
 
     def reset(self) -> None:
@@ -107,10 +88,3 @@ class ChordStateMachine:
     def is_pending(self) -> bool:
         """True when a prefix chord has been started."""
         return self._current is not self._root
-
-    def _propagate_contexts(self, node: TrieNode) -> set[str]:
-        contexts: set[str] = set(node.reachable_contexts)
-        for child in node.children.values():
-            contexts |= self._propagate_contexts(child)
-        node.reachable_contexts = contexts
-        return contexts

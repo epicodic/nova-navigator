@@ -1,14 +1,30 @@
-"""HintBar widget — context-sensitive MC-style status bar with which-key overlay."""
+"""HintBar widget — MC-style status bar with which-key overlay."""
 
 from __future__ import annotations
 
 from rich.text import Text
 from textual.app import RenderResult
+from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
 
 from nova_widgets.keymap.format import KeyDisplayStyle, format_key
 from nova_widgets.menu._action import Action
+
+
+class HintsChanged(Message):
+    """Posted by any widget when its hint bar priorities change.
+
+    The registry stores these per-widget so priorities are restored when focus
+    returns.  Pass an empty dict to reset to default ordering.
+    """
+
+    def __init__(self, widget: Widget, priorities: dict[str, int]) -> None:
+        super().__init__()
+        self.widget = widget
+        """The widget whose priorities changed."""
+        self.priorities = priorities
+        """Maps action name to effective bar_priority for the widget's current state."""
 
 
 class HintBar(Widget):
@@ -41,13 +57,10 @@ class HintBar(Widget):
         """Update the normal-mode hints.
 
         Args:
-            actions: Actions to display; filtered to show_in_bar ones and sorted by bar_priority.
+            actions: Pre-filtered and pre-sorted actions to display.
             style: Key display style.
         """
-        self._hints = sorted(
-            [a for a in actions if a.show_in_bar and a.shortcut],
-            key=lambda a: a.bar_priority,
-        )
+        self._hints = list(actions)
         self._style = style
         self.refresh()
 

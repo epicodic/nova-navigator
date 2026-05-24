@@ -48,7 +48,6 @@ class Action:
     _text: str
     _group: ActionGroup | None = None
     _description: str
-    _contexts: list[str]
     _default_key: str | None
     _show_in_bar: bool
     _bar_priority: int
@@ -66,7 +65,6 @@ class Action:
         action: str | None = None,
         is_separator: bool = False,
         description: str = "",
-        contexts: list[str] | None = None,
         default_key: str | None = None,
         show_in_bar: bool = False,
         bar_priority: int = 100,
@@ -81,7 +79,6 @@ class Action:
         self._action = action
         self._is_separator = is_separator
         self._description = description
-        self._contexts = list(contexts) if contexts is not None else []
         self._default_key = default_key
         self._show_in_bar = show_in_bar
         self._bar_priority = bar_priority
@@ -149,10 +146,6 @@ class Action:
     @property
     def description(self) -> str:
         return self._description
-
-    @property
-    def contexts(self) -> list[str]:
-        return self._contexts
 
     @property
     def default_key(self) -> str | None:
