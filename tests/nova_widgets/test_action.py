@@ -85,11 +85,6 @@ def test_action_default_description_empty() -> None:
     assert a.description == ""
 
 
-def test_action_default_contexts_empty() -> None:
-    a = Action("Open")
-    assert a.contexts == []
-
-
 def test_action_default_key_none() -> None:
     a = Action("Open")
     assert a.default_key is None
@@ -110,11 +105,6 @@ def test_action_custom_description() -> None:
     assert a.description == "Copy files to the other panel"
 
 
-def test_action_custom_contexts() -> None:
-    a = Action("Copy", contexts=["browser", "browser.selection"])
-    assert a.contexts == ["browser", "browser.selection"]
-
-
 def test_action_custom_default_key() -> None:
     a = Action("Copy", default_key="f5")
     assert a.default_key == "f5"
@@ -128,14 +118,6 @@ def test_action_show_in_bar_true() -> None:
 def test_action_custom_bar_priority() -> None:
     a = Action("Copy", bar_priority=10)
     assert a.bar_priority == 10
-
-
-def test_action_contexts_default_is_not_shared() -> None:
-    """Each Action instance must have its own contexts list."""
-    a = Action("Open")
-    b = Action("Close")
-    a.contexts.append("browser")
-    assert b.contexts == []
 
 
 def test_action_set_shortcut() -> None:

@@ -63,12 +63,11 @@ class KeybindingsDialog(Dialog):
         yield self._description_label
 
     def on_mount(self) -> None:
-        self._table.add_columns("Action", "Key Binding", "Contexts")
+        self._table.add_columns("Action", "Key Binding")
         bindings = self._config.resolve(self._actions)
         for action in self._actions:
             key = bindings.get(action.name or "", "") if action.name else ""
-            contexts = ", ".join(action.contexts) if action.contexts else ""
-            self._table.add_row(action.text, key or "(none)", contexts)
+            self._table.add_row(action.text, key or "(none)")
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         idx = event.cursor_row

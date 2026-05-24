@@ -86,6 +86,7 @@ Always run `uv run qa` after changes and confirm zero failures before claiming w
 | `docs/directory_browser.md` | Directory browser widget design — read before touching `widgets/directory_browser.py` |
 | `docs/terminal.md` | Terminal sub-package architecture — read before touching `terminal/` |
 | `docs/remote-uri-scheme.md` | `remote://` URI scheme design — read before touching `vfs/` or remote connection handling |
+| `docs/keymap.md` | Keymap system architecture — read before touching `nova_widgets/keymap/`, `nova_navigator/keymap/`, or key-handling code |
 
 Steps:
 1. List `docs/` to see available documentation.

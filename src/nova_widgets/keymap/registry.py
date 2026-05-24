@@ -1,27 +1,17 @@
-"""KeymapRegistry and ContextResolver Protocol."""
+"""KeymapRegistry — central key dispatch coordinator."""
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
+from weakref import WeakKeyDictionary
 
 from textual.app import App
 from textual.widget import Widget
 
 from nova_widgets.keymap.chord import ChordResult, ChordStateMachine
+from nova_widgets.keymap.format import KeyDisplayStyle
+from nova_widgets.keymap.hint_bar import HintBar
 from nova_widgets.menu._action import Action
-
-
-@runtime_checkable
-class ContextResolver(Protocol):
-    """Protocol for resolving the current application context."""
-
-    def resolve(self) -> str:
-        """Return the current dispatch context string, e.g. 'browser'."""
-        ...
-
-    def hover_context(self) -> str | None:
-        """Return context for the widget under the mouse pointer, or None."""
-        ...
 
 
 class KeymapRegistry:
@@ -29,13 +19,18 @@ class KeymapRegistry:
 
     Walks the focused widget tree collecting ACTIONS, feeds key events into the
     ChordStateMachine, and dispatches matched actions via app.run_action().
+    Owns the HintBar update logic, including per-widget priority overrides.
     """
 
-    def __init__(self, context_resolver: ContextResolver) -> None:
-        self._context_resolver = context_resolver
+    def __init__(self, hint_bar: HintBar) -> None:
+        self._hint_bar = hint_bar
         self._chord = ChordStateMachine()
         self._action_map: dict[str, Action] = {}
+        self._all_actions: list[Action] = []
         self._bindings: dict[str, str] = {}
+        self._key_display_style: KeyDisplayStyle = KeyDisplayStyle.CLASSIC
+        self._focused_widget: Widget | None = None
+        self._widget_priority_overrides: WeakKeyDictionary[Widget, dict[str, int]] = WeakKeyDictionary()
         self._pending_chord_info: tuple[str, list[tuple[str, str | None]]] | None = None
 
     def reload(self, bindings: dict[str, str], actions: list[Action] | None = None) -> None:
@@ -52,6 +47,7 @@ class KeymapRegistry:
         self._bindings = dict(bindings)
 
         if actions is not None:
+            self._all_actions = list(actions)
             self._action_map = {a.name: a for a in actions if a.name is not None}
             for action in actions:
                 if action.name and action.name in bindings:
@@ -59,18 +55,13 @@ class KeymapRegistry:
                 elif action.name and action.default_key:
                     action.set_shortcut(action.default_key)
 
-        self._rebuild_trie()
+        self._chord.build_trie(self._bindings)
+        self._refresh_hint_bar()
 
-    def _rebuild_trie(self) -> None:
-        """Rebuild the chord trie from current bindings and action map."""
-        trie_input: dict[str, tuple[str, list[str]]] = {}
-        for action_name, key_seq in self._bindings.items():
-            if not key_seq:
-                continue
-            action = self._action_map.get(action_name)
-            contexts = action.contexts if action is not None else []
-            trie_input[action_name] = (key_seq, contexts)
-        self._chord.build_trie(trie_input)
+    def set_key_display_style(self, style: KeyDisplayStyle) -> None:
+        """Update the key display style and refresh the hint bar."""
+        self._key_display_style = style
+        self._refresh_hint_bar()
 
     def collect_actions(self, app: App[Any]) -> list[Action]:
         """Collect all ACTIONS from the focused widget tree.
@@ -127,27 +118,25 @@ class KeymapRegistry:
         Returns:
             True if the key was consumed, False if it should propagate to widgets.
         """
-        context = self._context_resolver.resolve()
-
         # If the action map is empty (reload was called without actions), populate
-        # it from the live widget tree and rebuild the trie with correct contexts.
+        # it from the live widget tree and rebuild the trie.
         if not self._action_map:
             live_actions = self.collect_actions(app)
+            self._all_actions = live_actions
             self._action_map = {a.name: a for a in live_actions if a.name is not None}
-            self._rebuild_trie()
+            self._chord.build_trie(self._bindings)
 
-        result: ChordResult = self._chord.feed(key, context)
+        result: ChordResult = self._chord.feed(key)
 
         if not result.consumed:
             return False
 
         if result.action_name is not None:
             self._pending_chord_info = None
+            self._hint_bar.clear_chord()
             action = self._action_map.get(result.action_name)
             if action is not None and action.action is not None:
-                # Dispatch: focused widget first (e.g. DirectoryBrowser.action_insert_select),
-                # then the active screen (e.g. MainScreen.action_copy_or_move_files),
-                # then the app itself (e.g. App-level actions).
+                # Dispatch: focused widget first, then the active screen, then the app.
                 dispatched = False
                 if app.focused is not None:
                     dispatched = await app.run_action(action.action, app.focused)
@@ -157,9 +146,50 @@ class KeymapRegistry:
                     await app.run_action(action.action)
             return True
 
-        # Chord prefix consumed — store pending chord info for callers to inspect
+        # Chord prefix consumed — store pending chord info and update hint bar
         self._pending_chord_info = (key, result.continuations or [])
+        self._hint_bar.show_chord_pending(key, result.continuations or [])
         return True
+
+    def update_hint_priorities(self, widget: Widget, overrides: dict[str, int]) -> None:
+        """Store per-widget hint priority overrides and refresh if widget is focused.
+
+        Called when a widget posts a HintsChanged message.
+
+        Args:
+            widget: The widget whose hint priorities changed.
+            overrides: Maps action name to effective bar_priority for this widget's state.
+        """
+        self._widget_priority_overrides[widget] = overrides
+        if widget is self._focused_widget:
+            self._refresh_hint_bar()
+
+    def on_focus_changed(self, focused_widget: Widget | None) -> None:
+        """Called when the focused widget changes.
+
+        Args:
+            focused_widget: The newly focused widget, or None.
+        """
+        self._focused_widget = focused_widget
+        self._refresh_hint_bar()
+
+    def _refresh_hint_bar(self) -> None:
+        """Recompute the hint bar display from current actions and priority overrides."""
+        focused = self._focused_widget
+        overrides: dict[str, int]
+        if focused is None:
+            overrides = {}
+        else:
+            overrides = self._widget_priority_overrides.get(focused) or {}
+
+        def effective_priority(action: Action) -> int:
+            return overrides.get(action.name or "", action.bar_priority)
+
+        visible = sorted(
+            [a for a in self._all_actions if a.show_in_bar and a.shortcut],
+            key=effective_priority,
+        )
+        self._hint_bar.set_hints(visible, self._key_display_style)
 
     @property
     def is_chord_pending(self) -> bool:
@@ -178,11 +208,6 @@ def _get_widget_actions(widget: Widget) -> list[Action]:
     if actions is None:
         return []
     return list(actions)
-
-
-def _has_actions(widget: Widget) -> bool:
-    """Return True if the widget class defines an ACTIONS attribute."""
-    return hasattr(type(widget), "ACTIONS")
 
 
 def _collect_subtree_actions(widget: Widget, seen_names: set[str], result: list[Action]) -> None:
