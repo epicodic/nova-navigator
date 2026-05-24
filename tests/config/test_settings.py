@@ -78,6 +78,26 @@ def test_settings_save_preserves_user_comment(tmp_path: Path, monkeypatch: pytes
     assert "true" in content
 
 
+def test_general_settings_default_key_display_style() -> None:
+    from nova_navigator.config.settings import GeneralSettings
+    from nova_widgets.keymap.format import KeyDisplayStyle
+
+    s = GeneralSettings()
+    assert s.key_display_style == KeyDisplayStyle.CLASSIC
+
+
+def test_settings_key_display_style_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+    from nova_widgets.keymap.format import KeyDisplayStyle
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    from nova_navigator.config.settings import Settings
+
+    s = Settings.load()
+    assert s.general.key_display_style == KeyDisplayStyle.CLASSIC
+
+
 def test_settings_ui_nerd_font_defaults_to_auto() -> None:
     from nova_navigator.config.settings import NerdFontMode, Settings
 

@@ -31,14 +31,17 @@ from nova_navigator.dialogs.file_dialog import FileDialog, FileDialogMode, FileT
 from nova_navigator.dialogs.files_dialog import CopyMoveFilesDialog, DeleteFilesDialog
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.dialogs.input_name_dialog import InputNameDialog
+from nova_navigator.dialogs.keybindings_dialog import KeybindingsDialog
 from nova_navigator.dialogs.message_box import MessageBox
 from nova_navigator.dialogs.response_dialog import OverwriteResponseDialog, ResponseDialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
+from nova_navigator.keymap.config import KeybindingsConfig
 from nova_navigator.nova_navigator_core import NovaNavigatorCore
 from nova_navigator.response import Response
 from nova_navigator.scheduler.context import ResponseRequest
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_navigator.vfs.vpath import VPath
+from nova_widgets.menu._action import Action as NavAction
 
 _fs = LocalFilesystem.singleton()
 
@@ -193,6 +196,51 @@ _ENTRIES: list[DialogEntry] = [
         "Delete confirmation for multiple files.",
         lambda: DeleteFilesDialog(
             paths=[VPath("/home/user/Documents/old_report.pdf", _fs), VPath("/home/user/Downloads/archive.zip", _fs)]
+        ),
+    ),
+    DialogEntry(
+        "KeybindingsDialog",
+        "View and edit key bindings.",
+        lambda: KeybindingsDialog(
+            actions=[
+                NavAction(
+                    "Copy",
+                    name="browser.copy",
+                    action="copy",
+                    description="Copy files to the other panel",
+                    contexts=["browser"],
+                    default_key="f5",
+                    show_in_bar=True,
+                ),
+                NavAction(
+                    "Move",
+                    name="browser.move",
+                    action="move",
+                    description="Move files to the other panel",
+                    contexts=["browser"],
+                    default_key="f6",
+                    show_in_bar=True,
+                ),
+                NavAction(
+                    "Delete",
+                    name="browser.delete",
+                    action="delete",
+                    description="Delete selected files",
+                    contexts=["browser"],
+                    default_key="f8",
+                    show_in_bar=True,
+                ),
+                NavAction(
+                    "Settings",
+                    name="app.settings",
+                    action="settings",
+                    description="Open application settings",
+                    contexts=["browser", "dialog"],
+                    default_key="ctrl+f1",
+                    show_in_bar=False,
+                ),
+            ],
+            config=KeybindingsConfig(config_dir=Path.home() / ".config" / "nova-navigator"),
         ),
     ),
     DialogEntry(
