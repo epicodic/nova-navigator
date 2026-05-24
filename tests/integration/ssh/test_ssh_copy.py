@@ -47,8 +47,7 @@ async def test_copy_local_to_remote_file_appears(ssh_app_ctx: SshAppCtx) -> None
         await ssh_app_ctx.pilot.press("f5")
         await poll_until(
             ssh_app_ctx.pilot,
-            lambda: (ssh_app_ctx.remote_dir / "hello.txt").exists()
-            and (ssh_app_ctx.remote_dir / "hello.txt").stat().st_size > 0,
+            lambda: (ssh_app_ctx.remote_dir / "hello.txt").exists() and (ssh_app_ctx.remote_dir / "hello.txt").stat().st_size > 0,
         )
 
     assert (ssh_app_ctx.remote_dir / "hello.txt").exists()
@@ -67,8 +66,7 @@ async def test_copy_local_to_remote_binary_content_preserved(ssh_app_ctx: SshApp
         await ssh_app_ctx.pilot.press("f5")
         await poll_until(
             ssh_app_ctx.pilot,
-            lambda: (ssh_app_ctx.remote_dir / "binary.bin").exists()
-            and (ssh_app_ctx.remote_dir / "binary.bin").stat().st_size == len(data),
+            lambda: (ssh_app_ctx.remote_dir / "binary.bin").exists() and (ssh_app_ctx.remote_dir / "binary.bin").stat().st_size == len(data),
         )
 
     assert (ssh_app_ctx.remote_dir / "binary.bin").read_bytes() == data
@@ -86,8 +84,7 @@ async def test_copy_local_to_remote_large_file(ssh_app_ctx: SshAppCtx) -> None:
         await ssh_app_ctx.pilot.press("f5")
         await poll_until(
             ssh_app_ctx.pilot,
-            lambda: (ssh_app_ctx.remote_dir / "large.bin").exists()
-            and (ssh_app_ctx.remote_dir / "large.bin").stat().st_size == len(data),
+            lambda: (ssh_app_ctx.remote_dir / "large.bin").exists() and (ssh_app_ctx.remote_dir / "large.bin").stat().st_size == len(data),
         )
 
     assert (ssh_app_ctx.remote_dir / "large.bin").read_bytes() == data
@@ -104,8 +101,7 @@ async def test_copy_local_to_remote_filename_with_spaces(ssh_app_ctx: SshAppCtx)
         await ssh_app_ctx.pilot.press("f5")
         await poll_until(
             ssh_app_ctx.pilot,
-            lambda: (ssh_app_ctx.remote_dir / "my file.txt").exists()
-            and (ssh_app_ctx.remote_dir / "my file.txt").stat().st_size > 0,
+            lambda: (ssh_app_ctx.remote_dir / "my file.txt").exists() and (ssh_app_ctx.remote_dir / "my file.txt").stat().st_size > 0,
         )
 
     assert (ssh_app_ctx.remote_dir / "my file.txt").read_text() == "spaced"
@@ -164,8 +160,7 @@ async def test_copy_remote_to_local_binary_content_preserved(ssh_app_ctx: SshApp
         await ssh_app_ctx.pilot.press("f5")
         await poll_until(
             ssh_app_ctx.pilot,
-            lambda: (ssh_app_ctx.local_dir / "binary.bin").exists()
-            and (ssh_app_ctx.local_dir / "binary.bin").stat().st_size == len(data),
+            lambda: (ssh_app_ctx.local_dir / "binary.bin").exists() and (ssh_app_ctx.local_dir / "binary.bin").stat().st_size == len(data),
         )
 
     assert (ssh_app_ctx.local_dir / "binary.bin").read_bytes() == data

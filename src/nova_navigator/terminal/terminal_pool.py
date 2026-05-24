@@ -27,12 +27,8 @@ class TerminalPool:
     def __init__(self, local_terminal: Terminal | None = None) -> None:
         self._local: Terminal | None = local_terminal
         self._active: Terminal | None = local_terminal
-        self._terminals: dict[int, Terminal] = (
-            {id(LocalFilesystem.singleton()): local_terminal} if local_terminal is not None else {}
-        )
-        self._filesystem_by_terminal: dict[int, Filesystem] = (
-            {id(local_terminal): LocalFilesystem.singleton()} if local_terminal is not None else {}
-        )
+        self._terminals: dict[int, Terminal] = {id(LocalFilesystem.singleton()): local_terminal} if local_terminal is not None else {}
+        self._filesystem_by_terminal: dict[int, Filesystem] = {id(local_terminal): LocalFilesystem.singleton()} if local_terminal is not None else {}
         self._factories: list[_FactoryEntry] = []
 
     def set_local(self, terminal: Terminal) -> None:

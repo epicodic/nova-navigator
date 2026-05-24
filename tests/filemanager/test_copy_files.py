@@ -311,9 +311,7 @@ async def test_copy_paths_overwrite_force() -> None:
     dst_fs = MockFilesystem({"/dst/a.txt": b"old-a", "/dst/b.txt": b"old-b"})
 
     srcs = [src_fs.path("/src/a.txt"), src_fs.path("/src/b.txt")]
-    requests = await run_task(
-        lambda ctx: copy_files(ctx, srcs, dst_fs.path("/dst"), FileCopyOptions(overwrite="overwrite"))
-    )
+    requests = await run_task(lambda ctx: copy_files(ctx, srcs, dst_fs.path("/dst"), FileCopyOptions(overwrite="overwrite")))
 
     assert requests == []
     assert read_all(dst_fs, "/dst/a.txt") == b"new-a"
@@ -456,9 +454,7 @@ async def test_copy_paths_cancelled_mid_list() -> None:
 
     with pytest.raises(TaskCancelled):
         await run_task(
-            lambda ctx: copy_files(
-                ctx, [src_fs.path("/src/a.txt"), src_fs.path("/src/b.txt")], dst_fs.path("/home/user")
-            ),
+            lambda ctx: copy_files(ctx, [src_fs.path("/src/a.txt"), src_fs.path("/src/b.txt")], dst_fs.path("/home/user")),
             status=status,
         )
 
@@ -553,9 +549,7 @@ async def test_copy_paths_skip_does_not_overflow_progress() -> None:
     dst_fs = MockFilesystem({"/dst/file.txt": b"original"})
 
     await run_task(
-        lambda ctx: copy_files(
-            ctx, [src_fs.path("/src/file.txt")], dst_fs.path("/dst"), FileCopyOptions(overwrite="skip")
-        ),
+        lambda ctx: copy_files(ctx, [src_fs.path("/src/file.txt")], dst_fs.path("/dst"), FileCopyOptions(overwrite="skip")),
         status=status,
     )
 

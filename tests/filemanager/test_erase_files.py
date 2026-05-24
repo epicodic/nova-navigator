@@ -128,9 +128,7 @@ async def test_erase_recursive_nested_directory() -> None:
         }
     )
 
-    await run_task(
-        lambda ctx: erase_files(ctx, [fs.path("/home/user/root")], EraseFilesOptions(ask_before_erase=False))
-    )
+    await run_task(lambda ctx: erase_files(ctx, [fs.path("/home/user/root")], EraseFilesOptions(ask_before_erase=False)))
 
     for p in (
         "/home/user/root/top.txt",
@@ -148,9 +146,7 @@ async def test_erase_ask_before_erase_false_skips_prompt() -> None:
     """ask_before_erase=False deletes a non-empty directory without prompting."""
     fs = MockFilesystem({"/home/user/dir/file.txt": b"data"})
 
-    requests = await run_task(
-        lambda ctx: erase_files(ctx, [fs.path("/home/user/dir")], EraseFilesOptions(ask_before_erase=False))
-    )
+    requests = await run_task(lambda ctx: erase_files(ctx, [fs.path("/home/user/dir")], EraseFilesOptions(ask_before_erase=False)))
 
     assert len(requests) == 0
     assert not fs.exists("/home/user/dir")

@@ -54,12 +54,8 @@ async def test_rename_on_parent_entry_does_nothing(app_ctx: AppCtx) -> None:
     """When the cursor is on the '..' entry, rename is a no-op."""
     (app_ctx.src_dir / "file.txt").write_text("")
     # Set panels but do NOT press down, so cursor stays on '..'
-    app_ctx.screen._left_panel.set_path(
-        __import__("nova_navigator.vfs", fromlist=["VPath"]).VPath(app_ctx.src_dir, app_ctx.fs)
-    )
-    app_ctx.screen._right_panel.set_path(
-        __import__("nova_navigator.vfs", fromlist=["VPath"]).VPath(app_ctx.dst_dir, app_ctx.fs)
-    )
+    app_ctx.screen._left_panel.set_path(__import__("nova_navigator.vfs", fromlist=["VPath"]).VPath(app_ctx.src_dir, app_ctx.fs))
+    app_ctx.screen._right_panel.set_path(__import__("nova_navigator.vfs", fromlist=["VPath"]).VPath(app_ctx.dst_dir, app_ctx.fs))
     app_ctx.screen._left_panel.focus()
     await app_ctx.pilot.pause()
     # cursor is on '..' — rename should be a no-op (no dialog shown)

@@ -17,9 +17,7 @@ from ._symbol_table import SYMBOL_TABLE
 
 BorderStyle = Literal["round", "solid", "heavy"]
 
-BOX_CHARS: dict[
-    BorderStyle, tuple[tuple[str, str, str], tuple[str, str, str], tuple[str, str, str], tuple[str, str, str]]
-] = {
+BOX_CHARS: dict[BorderStyle, tuple[tuple[str, str, str], tuple[str, str, str], tuple[str, str, str], tuple[str, str, str]]] = {
     "round": (
         ("╭", "─", "╮"),
         ("│", " ", "│"),
@@ -424,9 +422,7 @@ class Menu(Widget, Action, ActionCollection, can_focus=True):
         self._item_width = 0
         for action in self._actions:
             if action.shortcut is not None:
-                self._item_width = max(
-                    self._item_width, len(action.text) + len(action.shortcut) + self.LABEL_SHORTCUT_GAP
-                )
+                self._item_width = max(self._item_width, len(action.text) + len(action.shortcut) + self.LABEL_SHORTCUT_GAP)
             else:
                 self._item_width = max(self._item_width, len(action.text))
 

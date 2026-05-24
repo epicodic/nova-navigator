@@ -260,9 +260,7 @@ class MockFilesystem(Filesystem):
 
         # If renaming a directory, update all child paths
         if isinstance(src_node, _DirNode):
-            children_to_move = [
-                (p, n) for p, n in self._nodes.items() if p != dst_posix and self._is_descendant(p, src_posix)
-            ]
+            children_to_move = [(p, n) for p, n in self._nodes.items() if p != dst_posix and self._is_descendant(p, src_posix)]
             for old_path, node in children_to_move:
                 # Calculate new path by replacing src prefix with dst
                 relative = old_path.relative_to(src_posix)

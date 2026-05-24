@@ -64,10 +64,7 @@ def test_settings_save_preserves_user_comment(tmp_path: Path, monkeypatch: pytes
     from nova_navigator.config.settings import Settings
 
     settings_file = tmp_path / "settings.toml"
-    settings_file.write_text(
-        "# user note\n[general]\nshow_hidden_files = false\nconfirm_delete = true\n"
-        "[network]\nssh_timeout = 30\nproxy = ''\n"
-    )
+    settings_file.write_text("# user note\n[general]\nshow_hidden_files = false\nconfirm_delete = true\n[network]\nssh_timeout = 30\nproxy = ''\n")
 
     instance = Settings.load()
     instance.general.show_hidden_files = True

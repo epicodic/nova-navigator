@@ -348,9 +348,7 @@ class EditBookmarksDialog(Dialog):
         has_groups = len(self._config.groups) > 0
         something_selected = tag is not None
 
-        is_protected = (
-            tag is not None and tag[0] == "group" and self._config.groups[tag[1]].name == DEFAULT_BOOKMARKS_GROUP
-        )
+        is_protected = tag is not None and tag[0] == "group" and self._config.groups[tag[1]].name == DEFAULT_BOOKMARKS_GROUP
         self.query_one("#btn_add_entry", Button).disabled = not has_groups
         self.query_one("#btn_remove", Button).disabled = not something_selected or is_protected
         self.query_one("#btn_move_up", Button).disabled = not self._can_move_up(tag)

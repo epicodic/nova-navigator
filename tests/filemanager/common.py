@@ -12,10 +12,7 @@ def make_status(
     cancel_event: threading.Event | None = None,
 ) -> TaskStatus:
     def progress_callback(status: TaskStatus) -> None:
-        print(
-            f"Progress: {status.progress.completed}/{status.progress.total} "
-            f"(step {status.progress.step_completed}/{status.progress.step_total})"
-        )
+        print(f"Progress: {status.progress.completed}/{status.progress.total} (step {status.progress.step_completed}/{status.progress.step_total})")
 
     cb = progress_callback if print_progress else (lambda _: None)
     return TaskStatus(
@@ -49,9 +46,7 @@ async def run_task(
     async def gui_callback(request: ResponseRequest, future: asyncio.Future[Response]) -> None:
         requests.append(request)
         if not pending:
-            raise AssertionError(
-                f"Task yielded an unexpected ResponseRequest {request.title!r} but no responses remain in the list"
-            )
+            raise AssertionError(f"Task yielded an unexpected ResponseRequest {request.title!r} but no responses remain in the list")
         future.set_result(pending.pop(0))
 
     await AsyncTaskScheduler.execute(gui_callback, task_fn, status)

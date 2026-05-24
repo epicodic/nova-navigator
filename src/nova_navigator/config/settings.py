@@ -25,9 +25,7 @@ class GeneralSettings(BaseModel):
 
     show_hidden_files: bool = field_comment(False, "Show hidden files in the file browser.")
     confirm_delete: bool = field_comment(True, "Ask for confirmation before deleting files.")
-    use_binary_sizes: bool = field_comment(
-        False, "Use binary (base-1024) size magnitudes instead of decimal (base-1000)."
-    )
+    use_binary_sizes: bool = field_comment(False, "Use binary (base-1024) size magnitudes instead of decimal (base-1000).")
     use_nerd_font: NerdFontMode = field(
         default=NerdFontMode.AUTO,
         metadata={"toml_comment": "NerdFont icon rendering: yes (always on), no (always off), auto (detect)."},

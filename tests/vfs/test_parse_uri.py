@@ -27,9 +27,7 @@ def test_single_schema() -> None:
     assert result == expected
 
     result = parse_uri("ssh://user@host:22/path/to/remote/file.txt")
-    expected = ParseResult(
-        components=[URIComponent(scheme="ssh", netloc="user@host:22", path="/path/to/remote/file.txt")]
-    )
+    expected = ParseResult(components=[URIComponent(scheme="ssh", netloc="user@host:22", path="/path/to/remote/file.txt")])
     assert result == expected
 
 
