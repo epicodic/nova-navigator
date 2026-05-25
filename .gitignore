@@ -9,6 +9,7 @@ wheels/
 
 # just for local development
 .agents
+docs/agents
 
 # test files
 tests/stress_test/
