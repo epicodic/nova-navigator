@@ -335,22 +335,7 @@ class MainScreen(Screen[None]):
     def _action_quit(self) -> None:
         self.app.exit()
 
-    async def on_event(self, event: events.Event) -> None:
-        if isinstance(event, events.Key):  # noqa: SIM102
-            # recover Ctrl+H (the "real" backspace has character \x7f)
-            if event.key == "backspace" and event.character == "\x08":
-                event.key = "ctrl+h"
-
-        await super().on_event(event)
-
     async def _on_key(self, event: events.Key) -> None:
-        # Try keymap registry first (action dispatch)
-        if self._keymap_registry is not None:
-            consumed = await self._keymap_registry.handle_key(event.key, self.app)
-            if consumed:
-                event.stop()
-                return
-        # Fall through to terminal key forwarding
         if await self._handle_key(event):
             event.stop()
 
@@ -1022,6 +1007,16 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
 
     def action_help_quit(self) -> None:
         pass
+
+    async def on_event(self, event: events.Event) -> None:
+        if isinstance(event, events.Key):
+            # Recover Ctrl+H (the "real" backspace sends character \x08)
+            if event.key == "backspace" and event.character == "\x08":
+                event.key = "ctrl+h"
+            screen = self.screen
+            if isinstance(screen, MainScreen) and screen._keymap_registry is not None and await screen._keymap_registry.handle_key(event.key, self):
+                return
+        await super().on_event(event)
 
     def _handle_exception(self, error: Exception) -> None:
         sys.settrace(debug_analytics.trace_handler)

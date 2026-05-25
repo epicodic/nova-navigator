@@ -361,7 +361,7 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
     ACTIONS: ClassVar[list[Action]] = [
         Action("Toggle Selection", name="browser.insert_select", action="insert_select", description="Toggle selection on item under cursor and advance cursor", key="insert", show=False),
         Action("Select All", name="browser.select_all", action="select_all", description="Select all visible items", key="ctrl+a", show=False),
-        Action("Filter", name="browser.filter", action="filter", description="Filter files in the directory", key="ctrl+f k", show=True, bar_priority=50),
+        Action("Filter", name="browser.filter", action="filter", description="Filter files in the directory", key="ctrl+f", show=True, bar_priority=50),
     ]
 
     COMPONENT_CLASSES: ClassVar[set[str]] = {
