@@ -5,12 +5,15 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import PurePosixPath
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.message import Message
 from textual.pilot import Pilot
 
 from nova_navigator.vfs.vpath import VPath
 from nova_navigator.widgets.directory_browser import DirectoryBrowser
+from nova_widgets.keymap.hint_bar import HintBar
+from nova_widgets.keymap.registry import KeymapRegistry
 from tests._utils.mock_filesystem import MockFilesystem, _FileNode  # type: ignore[attr-defined]
 
 
@@ -23,9 +26,16 @@ class DirectoryBrowserTestApp(App[None]):
         super().__init__()
         self._browser = browser
         self.messages = []
+        actions = list(DirectoryBrowser.ACTIONS)
+        bindings = {a.name: a.default_key for a in actions if a.name and a.default_key}
+        self._keymap = KeymapRegistry(HintBar())
+        self._keymap.reload(bindings, actions)
 
     def compose(self) -> ComposeResult:
         yield self._browser
+
+    async def on_key(self, event: events.Key) -> None:
+        await self._keymap.handle_key(event.key, self)
 
     def on_directory_browser_path_selected(self, message: DirectoryBrowser.PathSelected) -> None:
         self.messages.append(message)
