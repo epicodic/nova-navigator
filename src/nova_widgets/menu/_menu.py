@@ -369,7 +369,7 @@ class Menu(Widget, Action, ActionCollection, can_focus=True):
 
         fill_size = self._item_width - len(action.text)
         if action.shortcut:
-            fill_size -= len(action.shortcut) + self.LABEL_SHORTCUT_GAP
+            fill_size -= len(str(action.shortcut)) + self.LABEL_SHORTCUT_GAP
 
         item_text = action.text + " " * fill_size
 
@@ -391,7 +391,7 @@ class Menu(Widget, Action, ActionCollection, can_focus=True):
                 shortcut_style += Style(bgcolor=item_style.bgcolor)
             else:
                 shortcut_style = item_style
-            segments.append(Segment(" " * self.LABEL_SHORTCUT_GAP + action.shortcut, shortcut_style))
+            segments.append(Segment(" " * self.LABEL_SHORTCUT_GAP + str(action.shortcut), shortcut_style))
 
         if isinstance(action, Menu):
             segments.append(Segment(" 🞂", item_style))
@@ -422,7 +422,7 @@ class Menu(Widget, Action, ActionCollection, can_focus=True):
         self._item_width = 0
         for action in self._actions:
             if action.shortcut is not None:
-                self._item_width = max(self._item_width, len(action.text) + len(action.shortcut) + self.LABEL_SHORTCUT_GAP)
+                self._item_width = max(self._item_width, len(action.text) + len(str(action.shortcut)) + self.LABEL_SHORTCUT_GAP)
             else:
                 self._item_width = max(self._item_width, len(action.text))
 

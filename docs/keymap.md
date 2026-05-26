@@ -13,8 +13,8 @@ The implementation is split across two packages.
 
 | Module | Contents |
 |--------|----------|
-| `chord.py` | Trie-based chord state machine |
-| `format.py` | `KeyDisplayStyle` enum + `format_key()` |
+| `key_sequence.py` | `Key`, `KeyChord`, `KeySequence`, `KeyFormatStyle` |
+| `key_sequence_state_machine.py` | Trie-based `KeySequenceStateMachine` |
 | `hint_bar.py` | `HintBar` widget + `HintsChanged` message |
 | `registry.py` | `KeymapRegistry` |
 
@@ -61,6 +61,45 @@ ACTIONS: ClassVar[list[Action]] = [
 
 ---
 
+## Key Representation (`key_sequence.py`)
+
+`key_sequence.py` defines the data model for all key representations.
+
+### `KeyFormatStyle`
+
+A `StrEnum` controlling how keys are rendered in the UI.
+
+| Value | Example |
+|-------|---------|
+| `CLASSIC` | `Ctrl+X` |
+| `EMACS` | `C-x` |
+| `CARET` | `^X` |
+
+### `Key`
+
+A single physical key, e.g. `Key("ctrl")` or `Key("f5")`.
+`Key.parse(s)` normalises the name to lowercase.
+`key.is_modifier` returns `True` for `ctrl`, `alt`, `shift`, and `meta`.
+`key.format(style)` renders the key for display.
+
+### `KeyChord`
+
+One or more keys pressed simultaneously, e.g. `Ctrl+X` or `F5`.
+Keys are stored in canonical order — modifiers (`ctrl < alt < shift < meta`) first, then the base key — so `KeyChord.parse("x+ctrl") == KeyChord.parse("ctrl+x")`.
+`KeyChord.parse(s)` accepts a Textual key string such as `"ctrl+x"`.
+`chord.format(style)` renders the chord for display.
+
+### `KeySequence`
+
+An ordered series of key chords pressed one after another, e.g. `Ctrl+X` followed by `Ctrl+S`.
+`KeySequence.parse(s)` splits a space-separated Textual key string into chords.
+`seq.format(style)` renders the full sequence for display.
+`seq.suffix_after(prefix)` returns the sub-sequence following the first contiguous occurrence of `prefix`.
+It is used in chord-pending mode to show only the keys still to be pressed.
+If `prefix` is not found, `self` is returned unchanged.
+
+---
+
 ## Key Sequences
 
 Key names follow Textual notation: `"f5"`, `"ctrl+c"`, `"alt+left"`, `"shift+enter"`.
@@ -68,9 +107,9 @@ Multi-chord sequences are space-separated: `"ctrl+x ctrl+s"`.
 
 ---
 
-## Chord State Machine (`ChordStateMachine`)
+## Key-Sequence State Machine (`KeySequenceStateMachine`)
 
-The state machine lives in `nova_widgets/keymap/chord.py`.
+The state machine lives in `nova_widgets/keymap/key_sequence_state_machine.py`.
 It maintains a trie of key sequences and tracks the current position within it.
 
 ### How it works
@@ -78,22 +117,22 @@ It maintains a trie of key sequences and tracks the current position within it.
 1. `build_trie(bindings)` inserts every `action_name → key_sequence` pair into the trie.
    Each leaf node stores the action name.
 
-2. `feed(key)` processes one key press:
-   - If `"escape"` is pressed, the state machine resets to IDLE and returns `consumed=False` (escape is never consumed).
-   - If the key matches a child of the current node, the machine advances.
+2. `feed(chord)` accepts a `KeyChord` and processes one key press:
+   - If the chord is `escape`, the state machine resets to IDLE and returns `consumed=False` (escape is never consumed).
+   - If the chord matches a child of the current node, the machine advances.
      - **Leaf hit**: the action name is returned and the machine resets to IDLE.
-     - **Prefix hit**: the machine enters a pending state and returns the list of valid next keys (`continuations`).
+     - **Prefix hit**: the machine enters a pending state and returns the list of valid next chords (`continuations`).
    - If no match, the machine resets to IDLE and returns `consumed=False`.
 
 3. `reset()` unconditionally returns to IDLE.
 
-### ChordResult fields
+### `SequenceResult` fields
 
 | Field | Meaning |
 |-------|---------|
 | `consumed` | `True` if the key was handled (action fired or prefix accepted) |
 | `action_name` | Set when a complete sequence was recognised |
-| `continuations` | Set on a prefix hit; list of `(key, action_name)` for next chord |
+| `continuations` | Set on a prefix hit; list of `(KeyChord, action_name)` for next chord |
 
 ---
 
@@ -115,12 +154,12 @@ It:
 
 1. Stores the `{action_name: key_sequence}` mapping.
 2. Iterates over `actions`, writing the effective shortcut back into each `Action.shortcut` so menus and the hint bar display the current binding.
-3. Rebuilds the chord trie.
+3. Rebuilds the key-sequence trie.
 4. Refreshes the hint bar.
 
 ### `set_key_display_style(style)`
 
-Updates the `KeyDisplayStyle` and immediately refreshes the hint bar.
+Updates the `KeyFormatStyle` and immediately refreshes the hint bar.
 Call this before or after `reload`.
 
 ### `handle_key(key, app) -> bool`
@@ -128,13 +167,16 @@ Call this before or after `reload`.
 Called from `MainScreen._on_key` before any other key handling.
 Returns `True` if the key was consumed.
 
-Dispatch order when a complete chord is resolved:
+`key` is a Textual key name string such as `"ctrl+x"` or `"f5"`.
+It is converted to a `KeyChord` internally before being fed to the state machine.
 
-1. `app.run_action(action, app.focused)` — tries the focused widget first (e.g. `DirectoryBrowser._action_insert_select`).
-2. `app.run_action(action, app.screen)` — tries the active screen (e.g. `MainScreen._action_rename`).
+When a complete sequence is resolved, the dispatch order is:
+
+1. `app.run_action(action, app.focused)` — tries the focused widget first.
+2. `app.run_action(action, app.screen)` — tries the active screen.
 3. `app.run_action(action)` — falls back to the app itself.
 
-Textual's `_dispatch_action` tries `_action_{name}` before `action_{name}` on each target.
+When a key is not consumed and a pending sequence was in progress (including when `Escape` is pressed), the pending state is cleared and the hint bar returns to normal mode.
 
 ### `on_focus_changed(widget)`
 
@@ -146,6 +188,19 @@ Stores the new focused widget and refreshes the hint bar with any saved priority
 Called when a widget posts a `HintsChanged` message.
 Stores the per-widget overrides in a `WeakKeyDictionary` (auto-cleaned when the widget is unmounted).
 If the widget is currently focused, the hint bar is refreshed immediately.
+
+---
+
+## HintBar
+
+`HintBar` operates in two modes.
+
+**Normal mode** shows MC-style key/label badges for all actions visible in the current context.
+
+**Chord-pending mode** activates when the user has pressed a prefix chord.
+It displays the prefix entered so far, a `→` separator, and badges for the available continuation keys.
+Only the keys still to be pressed are shown for each continuation — the already-entered prefix is stripped using `KeySequence.suffix_after`.
+Pressing `Escape` or any unrecognised key cancels the sequence and returns to normal mode.
 
 ---
 

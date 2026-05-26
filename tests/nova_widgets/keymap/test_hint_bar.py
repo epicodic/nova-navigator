@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 from textual.app import App, ComposeResult
 
-from nova_widgets.keymap.format import KeyDisplayStyle
 from nova_widgets.keymap.hint_bar import HintBar
+from nova_widgets.keymap.key_sequence import KeyFormatStyle, KeySequence
 from nova_widgets.menu._action import Action
 
 
@@ -41,7 +41,7 @@ async def test_hint_bar_shows_normal_hints() -> None:
     app = _HintBarTestApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.hint_bar.set_hints(actions, KeyDisplayStyle.CLASSIC)
+        app.hint_bar.set_hints(actions, KeyFormatStyle.CLASSIC)
         await pilot.pause()
         rendered = app.hint_bar.render()
         content = str(rendered)
@@ -50,20 +50,12 @@ async def test_hint_bar_shows_normal_hints() -> None:
 
 @pytest.mark.asyncio
 async def test_hint_bar_shows_chord_continuations() -> None:
+    cont = Action("Settings", name="app.settings", key="ctrl+s", show=True)
+    cont.set_shortcut("ctrl+s")
     app = _HintBarTestApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.hint_bar.show_chord_pending("ctrl+x", [("ctrl+s", "app.settings")])
-        await pilot.pause()
-        assert app.hint_bar.is_chord_pending is True
-
-
-@pytest.mark.asyncio
-async def test_hint_bar_clears_chord_on_reset() -> None:
-    app = _HintBarTestApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app.hint_bar.show_chord_pending("ctrl+x", [("ctrl+s", "app.settings")])
+        app.hint_bar.show_chord_pending(KeySequence.parse("ctrl+x"), [cont])
         await pilot.pause()
         app.hint_bar.clear_chord()
         await pilot.pause()

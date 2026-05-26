@@ -21,13 +21,14 @@ class DirectoryBrowserTestApp(App[None]):
     """Minimal app hosting a DirectoryBrowser and collecting its messages."""
 
     messages: list[Message]
+    _keymap: KeymapRegistry
 
     def __init__(self, browser: DirectoryBrowser) -> None:
         super().__init__()
         self._browser = browser
         self.messages = []
         actions = list(DirectoryBrowser.ACTIONS)
-        bindings = {a.name: a.default_key for a in actions if a.name and a.default_key}
+        bindings = {a.name: a.default_key for a in actions if a.name and a.default_key is not None}
         self._keymap = KeymapRegistry(HintBar())
         self._keymap.reload(bindings, actions)
 

@@ -8,7 +8,7 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
 
-from nova_widgets.keymap.format import KeyDisplayStyle, format_key
+from nova_widgets.keymap.key_sequence import KeyFormatStyle, KeySequence
 from nova_widgets.menu._action import Action
 
 
@@ -49,11 +49,11 @@ class HintBar(Widget):
     def __init__(self) -> None:
         super().__init__()
         self._hints: list[Action] = []
-        self._style: KeyDisplayStyle = KeyDisplayStyle.CLASSIC
-        self._chord_prefix: str = ""
-        self._chord_continuations: list[tuple[str, str | None]] = []
+        self._style: KeyFormatStyle = KeyFormatStyle.CLASSIC
+        self._chord_prefix: KeySequence = KeySequence(())
+        self._chord_continuations: list[Action] = []
 
-    def set_hints(self, actions: list[Action], style: KeyDisplayStyle) -> None:
+    def set_hints(self, actions: list[Action], style: KeyFormatStyle) -> None:
         """Update the normal-mode hints.
 
         Args:
@@ -66,14 +66,14 @@ class HintBar(Widget):
 
     def show_chord_pending(
         self,
-        prefix: str,
-        continuations: list[tuple[str, str | None]],
+        prefix: KeySequence,
+        continuations: list[Action],
     ) -> None:
         """Switch to chord-pending mode.
 
         Args:
-            prefix: The key chord pressed so far, e.g. "ctrl+x".
-            continuations: List of (next_key, action_name) tuples.
+            prefix: The key sequence pressed so far.
+            continuations: List of actions available as chord continuations.
         """
         self._chord_prefix = prefix
         self._chord_continuations = continuations
@@ -82,14 +82,14 @@ class HintBar(Widget):
 
     def clear_chord(self) -> None:
         """Return to normal mode."""
-        self._chord_prefix = ""
+        self._chord_prefix = KeySequence(())
         self._chord_continuations = []
         self.is_chord_pending = False
         self.refresh()
 
     def render(self) -> RenderResult:
         if self.is_chord_pending:
-            return self._render_chord_mode()
+            return self._render_key_sequence_mode()
         return self._render_normal_mode()
 
     def _render_normal_mode(self) -> Text:
@@ -97,20 +97,22 @@ class HintBar(Widget):
         for action in self._hints:
             if action.shortcut is None:
                 continue
-            key_display = format_key(action.shortcut, self._style)
+            key_display = action.shortcut.format(self._style)
             text.append(f" {key_display} ", style="bold reverse")
             text.append(f" {action.text} ", style="")
             text.append(" ")
         return text
 
-    def _render_chord_mode(self) -> Text:
+    def _render_key_sequence_mode(self) -> Text:
         text = Text(no_wrap=True, overflow="ellipsis")
-        prefix_display = format_key(self._chord_prefix, self._style)
+        prefix_display = self._chord_prefix.format(self._style)
         text.append(f" {prefix_display} → ", style="bold yellow")
-        for key, action_name in self._chord_continuations:
-            key_display = format_key(key, self._style)
-            label = action_name.split(".")[-1].replace("_", " ").capitalize() if action_name else key
+        for action in self._chord_continuations:
+            if action.shortcut is None:
+                continue
+            remaining = action.shortcut.suffix_after(self._chord_prefix)
+            key_display = remaining.format(self._style) or str(action.shortcut)
             text.append(f" {key_display} ", style="bold reverse")
-            text.append(f" {label} ", style="")
+            text.append(f" {action.text} ", style="")
         text.append("  [Esc] cancel", style="dim")
         return text

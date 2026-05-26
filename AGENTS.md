@@ -82,6 +82,7 @@ Always run `uv run qa` after changes and confirm zero failures before claiming w
 | File | Topic |
 |------|-------|
 | `docs/coding_conventions.md` | Naming, style, and code patterns for this project |
+| `docs/dialog.md` | Dialog base class — read before creating new dialogs |
 | `docs/scheduler.md` | Async task scheduler framework — read before touching `scheduler/` or long-running operations |
 | `docs/directory_browser.md` | Directory browser widget design — read before touching `widgets/directory_browser.py` |
 | `docs/terminal.md` | Terminal sub-package architecture — read before touching `terminal/` |

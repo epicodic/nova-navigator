@@ -119,6 +119,9 @@ class MainScreen(Screen[None]):
         Action("Go Up", name="browser.go_up", action="go_up", description="Navigate to the parent directory", key="alt+up", show=False),
         Action("Follow Symlink", name="browser.follow_symlink", action="follow_symlink", description="Follow symlink to destination", key="alt+down", show=False),
         Action("Keybindings", name="app.keybindings", action="keybindings", description="Open keybinding editor", key=None, show=False),
+        Action("Inaaavert Selection", name="selection.invert", action="invert_selection", description="Invert the current selection", key="ctrl+s i", show=True),
+        Action("Select All", name="selection.select_all", action="select_all", description="Select all items in the current directory", key="ctrl+s a", show=True),
+        Action("Select None", name="selection.select_none", action="select_none", description="Deselect all items in the current directory", key="ctrl+s n", show=True),
     ]
 
     class _TerminalMode(Enum):
@@ -952,6 +955,7 @@ class MainScreen(Screen[None]):
         self._left_panel.reload()
         self._right_panel.reload()
 
+    @work
     async def action_keybindings(self) -> None:
         dialog = KeybindingsDialog(
             actions=list(type(self).ACTIONS),

@@ -8,7 +8,7 @@ from typing import ClassVar
 
 from nova_navigator.config.loader import ModelConfig
 from nova_navigator.config.model import BaseModel, field_comment
-from nova_widgets.keymap.format import KeyDisplayStyle
+from nova_widgets.keymap.key_sequence import KeyFormatStyle
 
 
 class NerdFontMode(StrEnum):
@@ -30,8 +30,8 @@ class GeneralSettings(BaseModel):
         default=NerdFontMode.AUTO,
         metadata={"toml_comment": "NerdFont icon rendering: yes (always on), no (always off), auto (detect)."},
     )
-    key_display_style: KeyDisplayStyle = field(
-        default=KeyDisplayStyle.CLASSIC,
+    key_display_style: KeyFormatStyle = field(
+        default=KeyFormatStyle.CLASSIC,
         metadata={"toml_comment": "Key display style: classic (Ctrl+V), emacs (C-v), caret (^V)."},
     )
 

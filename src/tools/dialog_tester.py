@@ -31,7 +31,7 @@ from nova_navigator.dialogs.file_dialog import FileDialog, FileDialogMode, FileT
 from nova_navigator.dialogs.files_dialog import CopyMoveFilesDialog, DeleteFilesDialog
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.dialogs.input_name_dialog import InputNameDialog
-from nova_navigator.dialogs.keybindings_dialog import KeybindingsDialog
+from nova_navigator.dialogs.keybindings_dialog import KeybindingsDialog, KeyCaptureDialog
 from nova_navigator.dialogs.message_box import MessageBox
 from nova_navigator.dialogs.response_dialog import OverwriteResponseDialog, ResponseDialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
@@ -194,6 +194,20 @@ _ENTRIES: list[DialogEntry] = [
         "DeleteFilesDialog",
         "Delete confirmation for multiple files.",
         lambda: DeleteFilesDialog(paths=[VPath("/home/user/Documents/old_report.pdf", _fs), VPath("/home/user/Downloads/archive.zip", _fs)]),
+    ),
+    DialogEntry(
+        "KeyCaptureDialog",
+        "Capture a key sequence for a single action.",
+        lambda: KeyCaptureDialog(
+            NavAction(
+                "Copy",
+                name="browser.copy",
+                description="Copy files to the other panel",
+                key="f5",
+                show=True,
+            )
+        ),
+        result_fn=lambda d, r: f"Result: {r}  value={repr(d.value) if r is not None else None}",
     ),
     DialogEntry(
         "KeybindingsDialog",
