@@ -59,6 +59,7 @@ from nova_navigator.vfs.parse_uri import parse_uri
 from nova_navigator.vfs.scheme_registry import SCHEME_REGISTRY, vfspath_from_uri
 from nova_navigator.widgets import DirectoryBrowser, JobStatusIcon
 from nova_navigator.widgets.directory_browser import GoToPathWidget, UpPath
+from nova_widgets.actions_support import ActionsSupport
 from nova_widgets.keymap import HintBar, HintsChanged, KeymapRegistry
 from nova_widgets.menu import Action, Menu, MenuBar
 from nova_widgets.menu import constructor as mc
@@ -96,32 +97,32 @@ class _CompareConfig:
     mode: CompareMode | None  # None = name-presence only
 
 
-class MainScreen(Screen[None]):
+class MainScreen(ActionsSupport, Screen[None]):
     ACTIONS: ClassVar[list[Action]] = [
-        Action("Quit", name="app.quit", action="quit", description="Quit Nova Navigator", key="ctrl+q", show=True, bar_priority=90),
-        Action("Maximize Terminal", name="app.toggle_maximized_terminal", action="toggle_maximized_terminal", description="Toggle terminal full-screen mode", key="ctrl+o", show=False),
-        Action("Enlarge Terminal", name="app.toggle_terminal", action="toggle_terminal", description="Enlarge the terminal panel", key="ctrl+l", show=False),
-        Action("Rename", name="browser.rename", action="rename", description="Rename the file or directory under the cursor", key="f2", show=True, bar_priority=10),
-        Action("Edit", name="browser.open_editor", action="open_editor", description="Open the file under the cursor in an editor", key="f4", show=True, bar_priority=15),
-        Action("Copy", name="browser.copy", action="copy_or_move_files(False)", description="Copy selected files to the other panel", key="f5", show=True, bar_priority=20),
-        Action("Move", name="browser.move", action="copy_or_move_files(True)", description="Move selected files to the other panel", key="f6", show=True, bar_priority=25),
-        Action("New Dir", name="browser.new_directory", action="new_directory", description="Create a new directory", key="f7", show=True, bar_priority=30),
-        Action("Delete", name="browser.delete", action="delete_files", description="Delete selected files", key="f8", show=True, bar_priority=35),
-        Action("Bookmarks", name="app.show_bookmarks", action="show_bookmarks", description="Open bookmarks dialog", key="ctrl+b", show=True, bar_priority=80),
-        Action("Hidden Files", name="browser.toggle_hidden", action="toggle_hidden", description="Toggle display of hidden files", key="ctrl+h", show=False),
-        Action("Dummy Op", name="app.start_dummy_operation", action="start_dummy_operation", description="Start dummy operation (development)", key="ctrl+d", show=False),
-        Action("Go to Path", name="browser.go_to_path", action="go_to_path", description="Navigate to a typed path", key="ctrl+g", show=False),
-        Action("Settings", name="app.settings", action="settings", description="Open application settings", key="ctrl+f1", show=False),
-        Action("Connect Remote", name="app.connect_to", action="connect_to", description="Connect to a remote server", key="ctrl+shift+g", show=False),
-        Action("Refresh", name="browser.refresh", action="refresh", description="Refresh the file list", key="ctrl+r", show=False),
-        Action("Go Back", name="browser.go_back", action="go_back", description="Navigate back in history", key="alt+left", show=False),
-        Action("Go Forward", name="browser.go_forward", action="go_forward", description="Navigate forward in history", key="alt+right", show=False),
-        Action("Go Up", name="browser.go_up", action="go_up", description="Navigate to the parent directory", key="alt+up", show=False),
-        Action("Follow Symlink", name="browser.follow_symlink", action="follow_symlink", description="Follow symlink to destination", key="alt+down", show=False),
-        Action("Keybindings", name="app.keybindings", action="keybindings", description="Open keybinding editor", key=None, show=False),
-        Action("Inaaavert Selection", name="selection.invert", action="invert_selection", description="Invert the current selection", key="ctrl+s i", show=True),
-        Action("Select All", name="selection.select_all", action="select_all", description="Select all items in the current directory", key="ctrl+s a", show=True),
-        Action("Select None", name="selection.select_none", action="select_none", description="Deselect all items in the current directory", key="ctrl+s n", show=True),
+        Action("Quit", name="app.quit", action="quit", description="Quit Nova Navigator", shortcut="ctrl+q", show=True, bar_priority=90),
+        Action("Maximize Terminal", name="app.toggle_maximized_terminal", action="toggle_maximized_terminal", description="Toggle terminal full-screen mode", shortcut="ctrl+o", show=False),
+        Action("Enlarge Terminal", name="app.toggle_terminal", action="toggle_terminal", description="Enlarge the terminal panel", shortcut="ctrl+l", show=False),
+        Action("Rename", name="browser.rename", action="rename", description="Rename the file or directory under the cursor", shortcut="f2", show=True, bar_priority=10),
+        Action("Edit", name="browser.open_editor", action="open_editor", description="Open the file under the cursor in an editor", shortcut="f4", show=True, bar_priority=15),
+        Action("Copy", name="browser.copy", action="copy_or_move_files(False)", description="Copy selected files to the other panel", shortcut="f5", show=True, bar_priority=20),
+        Action("Move", name="browser.move", action="copy_or_move_files(True)", description="Move selected files to the other panel", shortcut="f6", show=True, bar_priority=25),
+        Action("Directory", name="browser.new_directory", action="new_directory", description="Create a new directory", shortcut="f7", show=True, bar_priority=30, icon="folder"),
+        Action("Delete", name="browser.delete", action="delete_files", description="Delete selected files", shortcut="f8", show=True, bar_priority=35),
+        Action("Bookmarks", name="app.show_bookmarks", action="show_bookmarks", description="Open bookmarks dialog", shortcut="ctrl+b", show=True, bar_priority=80),
+        Action("Hidden Files", name="browser.toggle_hidden", action="toggle_hidden", description="Toggle display of hidden files", shortcut="ctrl+h", show=False),
+        Action("Dummy Op", name="app.start_dummy_operation", action="start_dummy_operation", description="Start dummy operation (development)", shortcut="ctrl+d", show=False),
+        Action("Go to Path\u2026", name="browser.go_to_path", action="go_to_path", description="Navigate to a typed path", shortcut="ctrl+g", show=False),
+        Action("Settings", name="app.settings", action="settings", description="Open application settings", shortcut="ctrl+f1", show=False, icon="gear"),
+        Action("Connect to\u2026", name="app.connect_to", action="connect_to", description="Connect to a remote server", shortcut="ctrl+shift+g", show=False),
+        Action("Refresh", name="browser.refresh", action="refresh", description="Refresh the file list", shortcut="ctrl+r", show=False),
+        Action("Go Back", name="browser.go_back", action="go_back", description="Navigate back in history", shortcut="alt+left", show=False),
+        Action("Go Forward", name="browser.go_forward", action="go_forward", description="Navigate forward in history", shortcut="alt+right", show=False),
+        Action("Go Up", name="browser.go_up", action="go_up", description="Navigate to the parent directory", shortcut="alt+up", show=False),
+        Action("Follow Symlink", name="browser.follow_symlink", action="follow_symlink", description="Follow symlink to destination", shortcut="alt+down", show=False),
+        Action("Key Bindings\u2026", name="app.keybindings", action="keybindings", description="Open keybinding editor", show=False, icon="keyboard"),
+        Action("Invert Selection", name="selection.invert", action="invert_selection", description="Invert the current selection", shortcut="ctrl+s i", show=True),
+        Action("Select All", name="selection.select_all", action="select_all", description="Select all items in the current directory", shortcut="ctrl+s a", show=True),
+        Action("Select None", name="selection.select_none", action="select_none", description="Deselect all items in the current directory", shortcut="ctrl+s n", show=True),
     ]
 
     class _TerminalMode(Enum):
@@ -162,79 +163,77 @@ class MainScreen(Screen[None]):
 
         self._menu_bar.add_menu(
             "𑁔",
-            mc.action("Settings", icon="gear", shortcut="Ctrl+F1", action="settings"),
-            mc.action("Key Bindings…", icon="keyboard", action="keybindings"),
+            self._act("app.settings"),
+            self._act("app.keybindings"),
             mc.separator(),
             mc.action("About", icon="info", action="about"),
             mc.separator(),
-            mc.action("Quit", shortcut="Ctrl+Q", action="quit"),
+            self._act("app.quit"),
         )
 
         self._menu_bar.add_menu("File", name="file").add(
             mc.menu(
                 "New",
-                mc.action("Directory", icon="folder", shortcut="F7", action="new_directory", name="directory"),
+                self._act("browser.new_directory"),
                 mc.action("File", icon="text", action="new_file", name="file"),
                 name="new",
             ),
             mc.separator(),
-            mc.action("Open", shortcut="Enter", action="open_path", name="open"),
+            mc.action("Open", action="open_path", name="open"),
             mc.action("Open in Other Panel", action="open_in_other_panel", name="open_in_other_panel"),
-            mc.action("Follow Symlink", shortcut="Shift+Enter", action="follow_symlink", name="follow_symlink"),
-            mc.action("Edit", shortcut="F4", action="open_editor", name="edit"),
+            self._act("browser.follow_symlink"),
+            self._act("browser.open_editor"),
             mc.separator(),
-            mc.action("Copy", shortcut="Ctrl+C", action="copy", name="copy"),
-            mc.action("Cut", shortcut="Ctrl+X", action="cut", name="cut"),
+            mc.action("Copy", action="copy", name="copy"),
+            mc.action("Cut", action="cut", name="cut"),
             mc.action("Copy Names", action="copy_names", name="copy_names"),
             mc.action("Paste", action="paste", name="paste"),
             mc.separator(),
-            mc.action("Delete", shortcut="F8", action="delete_files", name="delete"),
-            mc.action("Rename", shortcut="F2", action="rename", name="rename"),
+            self._act("browser.delete"),
+            self._act("browser.rename"),
             mc.separator(),
-            mc.action("Filter", shortcut="Ctrl+F", action="filter", name="filter"),
+            mc.action("Filter", action="filter", name="filter"),
         )
 
         self._menu_bar.add_menu("Selection", name="selection").add(
-            mc.action("Select All", shortcut="Ctrl+A", action="select_all"),
-            mc.action("Select None", shortcut="Ctrl+S,N", action="select_none"),
-            mc.action("Invert Selection", shortcut="Ctrl+S,I", action="invert_selection"),
+            self._act("selection.select_all"),
+            self._act("selection.select_none"),
+            self._act("selection.invert"),
             mc.separator(),
             mc.action(
                 "Toggle Selection",
                 name="toggle_selection",
                 action="toggle_selection_under_cursor",
-                shortcut="Ctrl+Click/Ins",
             ),
             mc.separator(),
             mc.action("Select By Pattern…", name="select_by_pattern"),
         )
 
         self._menu_bar.add_menu("Go", name="go").add(
-            mc.action("Go to Path…", shortcut="Ctrl+G", action="go_to_path", name="go_to_path"),
+            self._act("browser.go_to_path"),
             mc.separator(),
-            mc.action("Go Back", shortcut="Alt+Left", action="go_back", name="go_back"),
-            mc.action("Go Forward", shortcut="Alt+Right", action="go_forward", name="go_forward"),
-            mc.action("Go Up", shortcut="Alt+Up", action="go_up", name="go_up"),
+            self._act("browser.go_back"),
+            self._act("browser.go_forward"),
+            self._act("browser.go_up"),
             mc.separator(),
-            mc.action("Connect to…", shortcut="Ctrl+Shift+G", action="connect_to", name="connect_to"),
+            self._act("app.connect_to"),
             mc.separator(),
             mc.action("Manage Remotes…", action="manage_remotes", name="manage_remotes"),
         )
 
         self._menu_bar.add_menu("Bookmarks", name="bookmarks").add(
-            mc.action("Show Bookmarks", shortcut="Ctrl+B", action="show_bookmarks", name="show_bookmarks"),
+            self._act("app.show_bookmarks"),
             mc.separator(),
             mc.action("Add to Bookmarks", action="add_to_bookmarks", name="add_to_bookmarks"),
             mc.action("Manage Bookmarks", action="edit_bookmarks", name="edit_bookmarks"),
         )
         self._menu_bar.add_menu("View", name="view").add(
-            mc.action("Refresh", shortcut="Ctrl+R", action="refresh", name="refresh"),
+            self._act("browser.refresh"),
             mc.separator(),
             mc.action(
                 "Show Hidden Files",
                 checkable=True,
                 checked=False,
-                shortcut="Ctrl+H",
                 action="show_hidden_files",
                 name="show_hidden_files",
             ),
@@ -286,7 +285,7 @@ class MainScreen(Screen[None]):
         yield self._jobs_dialog
         yield self._hint_bar
 
-    def _act(self, name: str) -> Action:
+    def _menu_act(self, name: str) -> Action:
         action = self._menu_bar.find_action(name)
         assert action is not None, f"Action '{name}' not found"
         return action
@@ -490,7 +489,7 @@ class MainScreen(Screen[None]):
         self._right_panel.set_item_colors(right_colors)
 
     def _action_toggle_compare_enable(self) -> None:
-        a = self._act("view.compare_directories.compare_enable")
+        a = self._menu_act("view.compare_directories.compare_enable")
         if a.checked:
             self._compare_config = _CompareConfig(mode=None)
             self._refresh_compare()
@@ -528,7 +527,7 @@ class MainScreen(Screen[None]):
         panel.set_path(VPath(event.cwd, fs))
 
     def _action_toggle_sync_browsing(self) -> None:
-        a = self._act("view.sync_browsing")
+        a = self._menu_act("view.sync_browsing")
         if a.checked:
             self._sync_state = SyncBrowsing(self._left_panel.path, self._right_panel.path)
             self._left_panel.add_class("-sync-active")
@@ -540,7 +539,7 @@ class MainScreen(Screen[None]):
 
     def _disable_sync_browsing(self, reason: str) -> None:
         self._sync_state = None
-        self._act("view.sync_browsing").set_checked(False)
+        self._menu_act("view.sync_browsing").set_checked(False)
         self._left_panel.remove_class("-sync-active")
         self._right_panel.remove_class("-sync-active")
         self.notify(reason, title="Synchronized Browsing Disabled", severity="warning")
@@ -682,22 +681,21 @@ class MainScreen(Screen[None]):
 
                 return False
 
-        actions: list[tuple[AKey, str]] = [
-            (AKey(is_directory=True, is_file=True), "file.open"),
-            (AKey(is_directory=True), "file.open_in_other_panel"),
-            (AKey(is_symlink=True), "file.follow_symlink"),
-            (AKey(is_file=True), "file.edit"),
-            (AKey(is_directory=True, is_file=True), "file.cut"),
-            (AKey(is_directory=True, is_file=True), "file.copy"),
-            (AKey(is_directory=True, is_file=True), "file.copy_names"),
-            (AKey(is_path_in_clipboard=True), "file.paste"),
-            (AKey(is_directory=True, is_file=True), "file.delete"),
-            (AKey(is_directory=True, is_file=True), "file.rename"),
-            (AKey(is_directory=True, is_file=False, is_empty=True), "bookmarks.add_to_bookmarks"),
+        actions: list[tuple[AKey, Action]] = [
+            (AKey(is_directory=True, is_file=True), self._menu_act("file.open")),
+            (AKey(is_directory=True), self._menu_act("file.open_in_other_panel")),
+            (AKey(is_symlink=True), self._act("browser.follow_symlink")),
+            (AKey(is_file=True), self._act("browser.open_editor")),
+            (AKey(is_directory=True, is_file=True), self._menu_act("file.cut")),
+            (AKey(is_directory=True, is_file=True), self._menu_act("file.copy")),
+            (AKey(is_directory=True, is_file=True), self._menu_act("file.copy_names")),
+            (AKey(is_path_in_clipboard=True), self._menu_act("file.paste")),
+            (AKey(is_directory=True, is_file=True), self._act("browser.delete")),
+            (AKey(is_directory=True, is_file=True), self._act("browser.rename")),
+            (AKey(is_directory=True, is_file=False, is_empty=True), self._menu_act("bookmarks.add_to_bookmarks")),
         ]
 
-        for key, action_name in actions:
-            a = self._act(action_name)
+        for key, a in actions:
             a.set_enabled(
                 key.matches(
                     AKey(
@@ -713,35 +711,26 @@ class MainScreen(Screen[None]):
 
     @work
     async def on_directory_browser_context_menu(self, event: DirectoryBrowser.ContextMenu) -> None:
-        items: list[tuple[str, int]]
-
         self._update_actions(event.path)
-        # if event.path is None:
-        #     items = [
-        #         ("file.new", 0),
-        #         ("view.show_hidden_files", 6),
-        #     ]
-        # else:
-        items = [
-            ("file.new", 0),
-            ("file.open", 2),
-            ("file.open_in_other_panel", 2),
-            ("file.follow_symlink", 2),
-            ("file.edit", 2),
-            ("file.cut", 3),
-            ("file.copy", 3),
-            ("file.copy_names", 4),
-            ("file.paste", 4),
-            ("file.delete", 5),
-            ("file.rename", 5),
-            ("bookmarks.add_to_bookmarks", 6),
-            ("view.show_hidden_files", 7),
+        items: list[tuple[Action, int]] = [
+            (self._menu_act("file.new"), 0),
+            (self._menu_act("file.open"), 2),
+            (self._menu_act("file.open_in_other_panel"), 2),
+            (self._act("browser.follow_symlink"), 2),
+            (self._act("browser.open_editor"), 2),
+            (self._menu_act("file.cut"), 3),
+            (self._menu_act("file.copy"), 3),
+            (self._menu_act("file.copy_names"), 4),
+            (self._menu_act("file.paste"), 4),
+            (self._act("browser.delete"), 5),
+            (self._act("browser.rename"), 5),
+            (self._menu_act("bookmarks.add_to_bookmarks"), 6),
+            (self._menu_act("view.show_hidden_files"), 7),
         ]
 
         menu = Menu()
         last_group = None
-        for action_name, group in items:
-            a = self._act(action_name)
+        for a, group in items:
             if not a.enabled:
                 continue
 
@@ -767,12 +756,12 @@ class MainScreen(Screen[None]):
             await self._run_action(event.action)
 
     def _action_toggle_hidden(self) -> None:
-        a = self._act("view.show_hidden_files")
+        a = self._menu_act("view.show_hidden_files")
         a.set_checked(not a.checked)
         self._action_show_hidden_files()
 
     def _action_show_hidden_files(self) -> None:
-        a = self._act("view.show_hidden_files")
+        a = self._menu_act("view.show_hidden_files")
         self._left_panel.show_hidden_files = a.checked
         self._right_panel.show_hidden_files = a.checked
 

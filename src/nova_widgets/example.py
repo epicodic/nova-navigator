@@ -13,22 +13,22 @@ class ExampleApp(App[None]):
         super().__init__()
         self._menu = Menu(
             "Example Menu",
-            mc.action("Option 1", icon="o", shortcut="F1"),
-            mc.action("Option 2", shortcut="F2", enabled=False),
-            mc.action("Option 3", shortcut="F3"),
+            mc.action("Option 1", icon="o"),
+            mc.action("Option 2", enabled=False),
+            mc.action("Option 3"),
             mc.separator(),
             mc.menu(
                 "Submenu",
-                mc.action("Sub-option 1", shortcut="F4"),
-                mc.action("Sub-option 2", shortcut="F5"),
+                mc.action("Sub-option 1"),
+                mc.action("Sub-option 2"),
                 mc.menu(
                     "Sub-submenu",
-                    mc.action("Sub-sub-option 1", shortcut="F6"),
-                    mc.action("Sub-sub-option 2", shortcut="F7"),
+                    mc.action("Sub-sub-option 1"),
+                    mc.action("Sub-sub-option 2"),
                 ),
             ),
             mc.separator(),
-            mc.action("Exit", icon="x", shortcut="Ctrl+Q"),
+            mc.action("Exit", icon="x"),
         )
 
     def compose(self) -> ComposeResult:
@@ -50,8 +50,8 @@ class ExampleApp(App[None]):
         find_menu.add(
             mc.menu(
                 "... in Files",
-                mc.action("Find in Files", shortcut="Ctrl+Shift+F"),
-                mc.action("Replace in Files", shortcut="Ctrl+Shift+H"),
+                mc.action("Find in Files"),
+                mc.action("Replace in Files"),
             )
         )
 

@@ -11,8 +11,8 @@ from textual.widgets import Label
 from nova_navigator.config import conf_
 from nova_navigator.keymap.config import KeybindingsConfig
 from nova_widgets import DataTable
+from nova_widgets.action import Action
 from nova_widgets.keymap.key_sequence import KeyChord, KeyFormatStyle, KeySequence
-from nova_widgets.menu._action import Action
 
 from .dialog import DefaultButton, Dialog
 

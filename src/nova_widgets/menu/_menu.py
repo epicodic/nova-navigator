@@ -12,7 +12,8 @@ from textual.strip import Strip
 from textual.timer import Timer, TimerCallback
 from textual.widget import Widget
 
-from ._action import Action, ActionCollection
+from nova_widgets.action import Action, ActionCollection
+
 from ._symbol_table import SYMBOL_TABLE
 
 BorderStyle = Literal["round", "solid", "heavy"]

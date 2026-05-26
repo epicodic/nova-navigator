@@ -1,6 +1,6 @@
 import pytest
 
-from nova_widgets.menu._action import Action, ActionCollection, ActionGroup
+from nova_widgets.action import Action, ActionCollection, ActionGroup
 
 
 def test_action_default_enabled() -> None:
@@ -85,11 +85,6 @@ def test_action_default_description_empty() -> None:
     assert a.description == ""
 
 
-def test_action_default_key_none() -> None:
-    a = Action("Open")
-    assert a.default_key is None
-
-
 def test_action_default_show_in_bar_false() -> None:
     a = Action("Open")
     assert a.show_in_bar is False
@@ -105,9 +100,9 @@ def test_action_custom_description() -> None:
     assert a.description == "Copy files to the other panel"
 
 
-def test_action_custom_default_key() -> None:
-    a = Action("Copy", key="f5")
-    assert a.default_key == "f5"
+def test_action_shortcut_set_from_constructor() -> None:
+    a = Action("Copy", shortcut="f5")
+    assert str(a.shortcut) == "f5"
 
 
 def test_action_show_in_bar_true() -> None:
@@ -121,15 +116,36 @@ def test_action_custom_bar_priority() -> None:
 
 
 def test_action_set_shortcut() -> None:
-    a = Action("Copy", key="f5")
+    a = Action("Copy", shortcut="f5")
     a.set_shortcut("f6")
-    assert a.shortcut == "f6"
+    assert str(a.shortcut) == "f6"
 
 
 def test_action_set_shortcut_none() -> None:
     a = Action("Copy", shortcut="f5")
     a.set_shortcut(None)
     assert a.shortcut is None
+
+
+def test_action_reset_shortcut() -> None:
+    a = Action("Copy", shortcut="f5")
+    a.set_shortcut("f6")
+    a.reset_shortcut()
+    assert str(a.shortcut) == "f5"
+
+
+def test_action_reset_shortcut_to_none_when_no_initial() -> None:
+    a = Action("Open")
+    a.set_shortcut("f5")
+    a.reset_shortcut()
+    assert a.shortcut is None
+
+
+def test_action_initial_shortcut_preserved_after_set_shortcut() -> None:
+    a = Action("Copy", shortcut="f5")
+    a.set_shortcut("f9")
+    assert str(a.initial_shortcut) == "f5"
+    assert str(a.shortcut) == "f9"
 
 
 def test_action_separator_has_no_text_required() -> None:

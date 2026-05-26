@@ -41,7 +41,7 @@ from nova_navigator.response import Response
 from nova_navigator.scheduler.context import ResponseRequest
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_navigator.vfs.vpath import VPath
-from nova_widgets.menu._action import Action as NavAction
+from nova_widgets.action import Action as NavAction
 
 _fs = LocalFilesystem.singleton()
 
@@ -203,7 +203,7 @@ _ENTRIES: list[DialogEntry] = [
                 "Copy",
                 name="browser.copy",
                 description="Copy files to the other panel",
-                key="f5",
+                shortcut="f5",
                 show=True,
             )
         ),
@@ -219,7 +219,7 @@ _ENTRIES: list[DialogEntry] = [
                     name="browser.copy",
                     action="copy",
                     description="Copy files to the other panel",
-                    key="f5",
+                    shortcut="f5",
                     show=True,
                 ),
                 NavAction(
@@ -227,7 +227,7 @@ _ENTRIES: list[DialogEntry] = [
                     name="browser.move",
                     action="move",
                     description="Move files to the other panel",
-                    key="f6",
+                    shortcut="f6",
                     show=True,
                 ),
                 NavAction(
@@ -235,7 +235,7 @@ _ENTRIES: list[DialogEntry] = [
                     name="browser.delete",
                     action="delete",
                     description="Delete selected files",
-                    key="f8",
+                    shortcut="f8",
                     show=True,
                 ),
                 NavAction(
@@ -243,7 +243,7 @@ _ENTRIES: list[DialogEntry] = [
                     name="app.settings",
                     action="settings",
                     description="Open application settings",
-                    key="ctrl+f1",
+                    shortcut="ctrl+f1",
                     show=False,
                 ),
             ],

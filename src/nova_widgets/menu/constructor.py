@@ -1,4 +1,5 @@
-from ._action import Action, ActionGroup
+from nova_widgets.action import Action, ActionGroup
+
 from ._menu import Menu
 
 
@@ -7,7 +8,6 @@ def action(
     *,
     name: str | None = None,
     action: str | None = None,
-    shortcut: str | None = None,
     icon: str | None = None,
     enabled: bool = True,
     checkable: bool = False,
@@ -18,7 +18,6 @@ def action(
         text,
         name=name,
         action=action,
-        shortcut=shortcut,
         icon=icon,
         enabled=enabled,
         checkable=checkable,
