@@ -8,7 +8,7 @@ import pytest
 
 from nova_navigator.dialogs.keybindings_dialog import KeybindingsDialog
 from nova_navigator.keymap.config import KeybindingsConfig
-from nova_widgets.menu._action import Action
+from nova_widgets.action import Action
 
 
 def _make_actions() -> list[Action]:
@@ -18,7 +18,7 @@ def _make_actions() -> list[Action]:
             name="browser.copy",
             action="copy_or_move_files(False)",
             description="Copy files to the other panel",
-            key="f5",
+            shortcut="f5",
             show=True,
         ),
         Action(
@@ -26,7 +26,7 @@ def _make_actions() -> list[Action]:
             name="browser.move",
             action="copy_or_move_files(True)",
             description="Move files to the other panel",
-            key="f6",
+            shortcut="f6",
             show=True,
         ),
         Action(
@@ -34,7 +34,7 @@ def _make_actions() -> list[Action]:
             name="browser.delete",
             action="delete_files",
             description="Delete selected files",
-            key="f8",
+            shortcut="f8",
             show=True,
         ),
     ]

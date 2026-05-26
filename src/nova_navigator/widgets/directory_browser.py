@@ -25,8 +25,9 @@ from textual.widgets import Button, Input, Static
 from textual.widgets.data_table import ColumnKey
 
 from nova_widgets import unicode
+from nova_widgets.action import Action
+from nova_widgets.actions_support import ActionsSupport
 from nova_widgets.custom_border import CustomBorderMixin
-from nova_widgets.menu._action import Action
 
 from ..config import conf_
 from ..format_utils import format_size
@@ -339,7 +340,7 @@ class GoToPathWidget(PopupWidget, can_focus=True):
         self.browser.focus()
 
 
-class DirectoryBrowser(CustomBorderMixin, ScrollView):
+class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
     DEFAULT_CSS = """
     DirectoryBrowser {
         border: round grey;
@@ -359,9 +360,9 @@ class DirectoryBrowser(CustomBorderMixin, ScrollView):
     ]
 
     ACTIONS: ClassVar[list[Action]] = [
-        Action("Toggle Selection", name="browser.insert_select", action="insert_select", description="Toggle selection on item under cursor and advance cursor", key="insert", show=False),
-        Action("Select All", name="browser.select_all", action="select_all", description="Select all visible items", key="ctrl+a", show=False),
-        Action("Filter", name="browser.filter", action="filter", description="Filter files in the directory", key="ctrl+f", show=True, bar_priority=50),
+        Action("Toggle Selection", name="browser.insert_select", action="insert_select", description="Toggle selection on item under cursor and advance cursor", shortcut="insert", show=False),
+        Action("Select All", name="browser.select_all", action="select_all", description="Select all visible items", shortcut="ctrl+a", show=False),
+        Action("Filter", name="browser.filter", action="filter", description="Filter files in the directory", shortcut="ctrl+f", show=True, bar_priority=50),
     ]
 
     COMPONENT_CLASSES: ClassVar[set[str]] = {

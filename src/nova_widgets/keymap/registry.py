@@ -8,10 +8,10 @@ from weakref import WeakKeyDictionary
 from textual.app import App
 from textual.widget import Widget
 
+from nova_widgets.action import Action
 from nova_widgets.keymap.hint_bar import HintBar
 from nova_widgets.keymap.key_sequence import KeyChord, KeyFormatStyle, KeySequence
 from nova_widgets.keymap.key_sequence_state_machine import KeySequenceStateMachine, SequenceResult
-from nova_widgets.menu._action import Action
 
 
 class KeymapRegistry:
@@ -52,8 +52,8 @@ class KeymapRegistry:
             for action in actions:
                 if action.name and action.name in bindings:
                     action.set_shortcut(bindings[action.name])
-                elif action.name and action.default_key:
-                    action.set_shortcut(action.default_key)
+                elif action.name and action.initial_shortcut:
+                    action.set_shortcut(action.initial_shortcut)
 
         self._chord.build_trie(self._bindings)
         self._refresh_hint_bar()
@@ -214,7 +214,7 @@ class KeymapRegistry:
                 actions.append(self._action_map[action_name])
             else:
                 chord_str = chord.format(KeyFormatStyle.CLASSIC)
-                fallback = Action(chord_str, key=chord_str)
+                fallback = Action(chord_str, shortcut=chord_str)
                 fallback.set_shortcut(chord_str)
                 actions.append(fallback)
         return actions

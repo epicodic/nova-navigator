@@ -9,12 +9,15 @@ from nova_widgets.key_types import KeySequence
 IconProvider = Callable[[str], Icon]
 
 
-ICON_PROVIDER: IconProvider = Icon.of
+_ICON_PROVIDER: list[IconProvider] = [Icon.of]
 
 
 def set_icon_provider(provider: IconProvider) -> None:
-    global ICON_PROVIDER  # noqa: PLW0603
-    ICON_PROVIDER = provider
+    """Set the global icon provider for actions."""
+    if _ICON_PROVIDER:
+        _ICON_PROVIDER[0] = provider
+    else:
+        _ICON_PROVIDER.append(provider)
 
 
 class ActionGroup:
@@ -45,11 +48,11 @@ class Action:
     _icon: Icon | None
     _name: str | None
     _is_separator: bool
+    _initial_shortcut: KeySequence | None
     _shortcut: KeySequence | None
     _text: str
     _group: ActionGroup | None = None
     _description: str
-    _default_key: KeySequence | None
     _show_in_bar: bool
     _bar_priority: int
 
@@ -66,21 +69,21 @@ class Action:
         action: str | None = None,
         is_separator: bool = False,
         description: str = "",
-        key: str | None = None,
         show: bool = False,
         bar_priority: int = 100,
     ) -> None:
-        self._icon = ICON_PROVIDER(icon) if icon is not None else None
+        self._icon = _ICON_PROVIDER[0](icon) if (icon is not None and _ICON_PROVIDER) else None
         self._enabled = enabled
         self._text = text or ""
         self._name = name or action
-        self._shortcut = KeySequence.parse(shortcut) if shortcut else None
+        _initial: KeySequence | None = KeySequence.parse(shortcut) if shortcut else None
+        self._initial_shortcut = _initial
+        self._shortcut = _initial
         self._checkable = checkable
         self._checked = checked
         self._action = action
         self._is_separator = is_separator
         self._description = description
-        self._default_key = KeySequence.parse(key) if key else None
         self._show_in_bar = show
         self._bar_priority = bar_priority
 
@@ -111,12 +114,21 @@ class Action:
     def shortcut(self) -> KeySequence | None:
         return self._shortcut
 
+    @property
+    def initial_shortcut(self) -> KeySequence | None:
+        """The shortcut set at construction time; frozen, never mutated."""
+        return self._initial_shortcut
+
     def set_shortcut(self, shortcut: str | KeySequence | None) -> None:
         """Set the displayed shortcut (e.g. after loading user config)."""
         if isinstance(shortcut, str):
             self._shortcut = KeySequence.parse(shortcut) if shortcut else None
         else:
             self._shortcut = shortcut
+
+    def reset_shortcut(self) -> None:
+        """Reset shortcut to the initial value set at construction."""
+        self._shortcut = self._initial_shortcut
 
     @property
     def checkable(self) -> bool:
@@ -152,10 +164,6 @@ class Action:
         return self._description
 
     @property
-    def default_key(self) -> KeySequence | None:
-        return self._default_key
-
-    @property
     def show_in_bar(self) -> bool:
         return self._show_in_bar
 
@@ -173,10 +181,6 @@ class Action:
     @property
     def is_exclusive(self) -> bool:
         return self._group is not None
-
-    # async def execute(self) -> None:
-    #     app: App[Any] = getters.app(App[Any])
-    #     await app.run_action(self._action)
 
 
 class ActionCollection:

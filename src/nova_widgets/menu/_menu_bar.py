@@ -5,7 +5,8 @@ from textual.events import Enter, MouseDown
 from textual.widget import Widget
 from textual.widgets import Static
 
-from ._action import Action, ActionCollection
+from nova_widgets.action import Action, ActionCollection
+
 from ._menu import Menu
 
 

@@ -8,8 +8,8 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
 
+from nova_widgets.action import Action
 from nova_widgets.keymap.key_sequence import KeyFormatStyle, KeySequence
-from nova_widgets.menu._action import Action
 
 
 class HintsChanged(Message):

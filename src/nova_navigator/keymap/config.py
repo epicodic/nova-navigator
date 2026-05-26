@@ -6,8 +6,8 @@ from pathlib import Path
 
 import tomlkit
 
+from nova_widgets.action import Action
 from nova_widgets.keymap.key_sequence import KeySequence
-from nova_widgets.menu._action import Action
 
 _FILENAME = "keybindings.toml"
 _DEFAULT_CONFIG_DIR = Path.home() / ".config" / "nova-navigator"
@@ -27,7 +27,7 @@ class KeybindingsConfig:
     def resolve(self, actions: list[Action]) -> dict[str, KeySequence]:
         """Compute the effective {action_name: KeySequence} map.
 
-        File overrides take precedence over Action.default_key.
+        File overrides take precedence over Action.initial_shortcut.
         A None override explicitly removes a default binding.
 
         Args:
@@ -45,8 +45,8 @@ class KeybindingsConfig:
                 value = self._overrides[action.name]
                 if value is not None:  # None = explicitly unmapped
                     result[action.name] = value
-            elif action.default_key is not None:
-                result[action.name] = action.default_key
+            elif action.initial_shortcut is not None:
+                result[action.name] = action.initial_shortcut
         return result
 
     def save(self, bindings: dict[str, KeySequence | None]) -> None:

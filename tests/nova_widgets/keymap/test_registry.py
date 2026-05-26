@@ -8,16 +8,16 @@ from textual.app import App, ComposeResult
 from textual.dom import DOMNode
 from textual.widget import Widget
 
+from nova_widgets.action import Action
 from nova_widgets.keymap.hint_bar import HintBar
 from nova_widgets.keymap.key_sequence import KeySequence
 from nova_widgets.keymap.registry import KeymapRegistry
-from nova_widgets.menu._action import Action
 
 
 class _BrowserWidget(Widget):
     ACTIONS: ClassVar[list[Action]] = [
-        Action("Copy", name="browser.copy", action="copy", key="f5"),
-        Action("Filter", name="browser.filter", action="filter", key="ctrl+f"),
+        Action("Copy", name="browser.copy", action="copy", shortcut="f5"),
+        Action("Filter", name="browser.filter", action="filter", shortcut="ctrl+f"),
     ]
 
 
@@ -98,7 +98,7 @@ class _RealFocusableWidget(Widget, can_focus=True):
     """Widget with a widget-level action (simulates DirectoryBrowser.insert_select)."""
 
     ACTIONS: ClassVar[list[Action]] = [
-        Action("Select", name="widget.select", action="select", key="insert"),
+        Action("Select", name="widget.select", action="select", shortcut="insert"),
     ]
 
     def __init__(self) -> None:
@@ -113,7 +113,7 @@ class _RealDispatchScreen(Widget):
     """Screen-equivalent widget with a screen-level action."""
 
     ACTIONS: ClassVar[list[Action]] = [
-        Action("Copy", name="screen.copy", action="copy_files", key="f5"),
+        Action("Copy", name="screen.copy", action="copy_files", shortcut="f5"),
     ]
 
     def __init__(self) -> None:
@@ -145,7 +145,7 @@ async def test_dispatch_widget_action_reaches_focused_widget() -> None:
     registry = KeymapRegistry(HintBar())
     # bind insert → widget.select (action lives on the focused widget)
     actions = [
-        Action("Select", name="widget.select", action="select", key="insert"),
+        Action("Select", name="widget.select", action="select", shortcut="insert"),
     ]
     registry.reload({"widget.select": KeySequence.parse("insert")}, actions)
 
