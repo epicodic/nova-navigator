@@ -8,9 +8,9 @@ from weakref import WeakKeyDictionary
 from textual.app import App
 from textual.widget import Widget
 
-from nova_widgets.keymap.chord import ChordResult, ChordStateMachine
-from nova_widgets.keymap.format import KeyDisplayStyle
 from nova_widgets.keymap.hint_bar import HintBar
+from nova_widgets.keymap.key_sequence import KeyChord, KeyFormatStyle, KeySequence
+from nova_widgets.keymap.key_sequence_state_machine import KeySequenceStateMachine, SequenceResult
 from nova_widgets.menu._action import Action
 
 
@@ -18,29 +18,29 @@ class KeymapRegistry:
     """Central key dispatch coordinator.
 
     Walks the focused widget tree collecting ACTIONS, feeds key events into the
-    ChordStateMachine, and dispatches matched actions via app.run_action().
+    KeySequenceStateMachine, and dispatches matched actions via app.run_action().
     Owns the HintBar update logic, including per-widget priority overrides.
     """
 
     def __init__(self, hint_bar: HintBar) -> None:
         self._hint_bar = hint_bar
-        self._chord = ChordStateMachine()
+        self._chord = KeySequenceStateMachine()
         self._action_map: dict[str, Action] = {}
         self._all_actions: list[Action] = []
-        self._bindings: dict[str, str] = {}
-        self._key_display_style: KeyDisplayStyle = KeyDisplayStyle.CLASSIC
+        self._bindings: dict[str, KeySequence] = {}
+        self._key_display_style: KeyFormatStyle = KeyFormatStyle.CLASSIC
         self._focused_widget: Widget | None = None
         self._widget_priority_overrides: WeakKeyDictionary[Widget, dict[str, int]] = WeakKeyDictionary()
-        self._pending_chord_info: tuple[str, list[tuple[str, str | None]]] | None = None
+        self._pending_chord_info: tuple[KeySequence, list[Action]] | None = None
 
-    def reload(self, bindings: dict[str, str], actions: list[Action] | None = None) -> None:
-        """Rebuild the trie from a flat {action_name: key_sequence} config.
+    def reload(self, bindings: dict[str, KeySequence], actions: list[Action] | None = None) -> None:
+        """Rebuild the trie from a flat {action_name: KeySequence} config.
 
         Also accepts an optional list of Action objects to update the action map
         and write back shortcut display strings.
 
         Args:
-            bindings: Maps action name to key sequence string (Textual notation).
+            bindings: Maps action name to KeySequence.
             actions: Optional list of all known Action objects. Their shortcut
                      fields are updated to match the resolved bindings.
         """
@@ -58,7 +58,7 @@ class KeymapRegistry:
         self._chord.build_trie(self._bindings)
         self._refresh_hint_bar()
 
-    def set_key_display_style(self, style: KeyDisplayStyle) -> None:
+    def set_key_display_style(self, style: KeyFormatStyle) -> None:
         """Update the key display style and refresh the hint bar."""
         self._key_display_style = style
         self._refresh_hint_bar()
@@ -126,9 +126,12 @@ class KeymapRegistry:
             self._action_map = {a.name: a for a in live_actions if a.name is not None}
             self._chord.build_trie(self._bindings)
 
-        result: ChordResult = self._chord.feed(key)
+        result: SequenceResult = self._chord.feed(KeyChord.parse(key))
 
         if not result.consumed:
+            if self._pending_chord_info is not None:
+                self._pending_chord_info = None
+                self._hint_bar.clear_chord()
             return False
 
         if result.action_name is not None:
@@ -147,8 +150,15 @@ class KeymapRegistry:
             return True
 
         # Chord prefix consumed — store pending chord info and update hint bar
-        self._pending_chord_info = (key, result.continuations or [])
-        self._hint_bar.show_chord_pending(key, result.continuations or [])
+        continuation_actions = self._make_continuation_actions(result.continuations or [])
+        new_chord = KeyChord.parse(key)
+        if self._pending_chord_info is not None:
+            existing_prefix, _ = self._pending_chord_info
+            new_prefix = KeySequence((*existing_prefix.chords, new_chord))
+        else:
+            new_prefix = KeySequence((new_chord,))
+        self._pending_chord_info = (new_prefix, continuation_actions)
+        self._hint_bar.show_chord_pending(new_prefix, continuation_actions)
         return True
 
     def update_hint_priorities(self, widget: Widget, overrides: dict[str, int]) -> None:
@@ -196,9 +206,22 @@ class KeymapRegistry:
         """True when a prefix chord sequence is in progress."""
         return self._chord.is_pending
 
+    def _make_continuation_actions(self, continuations: list[tuple[KeyChord, str | None]]) -> list[Action]:
+        """Convert raw chord continuations to Action objects."""
+        actions: list[Action] = []
+        for chord, action_name in continuations:
+            if action_name is not None and action_name in self._action_map:
+                actions.append(self._action_map[action_name])
+            else:
+                chord_str = chord.format(KeyFormatStyle.CLASSIC)
+                fallback = Action(chord_str, key=chord_str)
+                fallback.set_shortcut(chord_str)
+                actions.append(fallback)
+        return actions
+
     @property
-    def pending_chord_info(self) -> tuple[str, list[tuple[str, str | None]]] | None:
-        """The current pending chord prefix and its possible continuations, or None."""
+    def pending_chord_info(self) -> tuple[KeySequence, list[Action]] | None:
+        """The current pending prefix sequence and its possible continuation actions, or None."""
         return self._pending_chord_info
 
 

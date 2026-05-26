@@ -6,6 +6,7 @@ from pathlib import Path
 
 import tomlkit
 
+from nova_widgets.keymap.key_sequence import KeySequence
 from nova_widgets.menu._action import Action
 
 _FILENAME = "keybindings.toml"
@@ -20,44 +21,45 @@ class KeybindingsConfig:
 
     def __init__(self, config_dir: Path | None = None) -> None:
         self._config_dir = config_dir if config_dir is not None else _DEFAULT_CONFIG_DIR
-        self._overrides: dict[str, str] = {}
+        self._overrides: dict[str, KeySequence | None] = {}
         self._load()
 
-    def resolve(self, actions: list[Action]) -> dict[str, str]:
-        """Compute the effective {action_name: key_sequence} map.
+    def resolve(self, actions: list[Action]) -> dict[str, KeySequence]:
+        """Compute the effective {action_name: KeySequence} map.
 
         File overrides take precedence over Action.default_key.
-        An explicit "" in overrides removes a default binding.
+        A None override explicitly removes a default binding.
 
         Args:
             actions: All known Action objects.
 
         Returns:
-            Mapping of action name to effective key sequence.
+            Mapping of action name to effective KeySequence.
             Actions with no binding (unmapped or no default) are excluded.
         """
-        result: dict[str, str] = {}
+        result: dict[str, KeySequence] = {}
         for action in actions:
             if action.name is None:
                 continue
             if action.name in self._overrides:
                 value = self._overrides[action.name]
-                if value:  # empty string = unmap
+                if value is not None:  # None = explicitly unmapped
                     result[action.name] = value
-            elif action.default_key:
+            elif action.default_key is not None:
                 result[action.name] = action.default_key
         return result
 
-    def save(self, bindings: dict[str, str]) -> None:
+    def save(self, bindings: dict[str, KeySequence | None]) -> None:
         """Persist the given bindings to keybindings.toml.
 
         Args:
             bindings: Full effective binding map to save.
+                      None values are written as empty strings to suppress defaults.
         """
         doc = tomlkit.document()
         bindings_table = tomlkit.table()
         for action_name, key_seq in sorted(bindings.items()):
-            bindings_table.add(action_name, key_seq)
+            bindings_table.add(action_name, str(key_seq) if key_seq is not None else "")
         doc.add("bindings", bindings_table)
 
         self._config_dir.mkdir(parents=True, exist_ok=True)
@@ -76,4 +78,4 @@ class KeybindingsConfig:
         text = file_path.read_text()
         doc = tomlkit.loads(text)
         raw = doc.get("bindings", {})
-        self._overrides = {str(k): str(v) for k, v in raw.items()}
+        self._overrides = {str(k): (KeySequence.parse(str(v)) if str(v) else None) for k, v in raw.items()}

@@ -4,6 +4,7 @@ from collections.abc import Callable
 from weakref import ref
 
 from nova_widgets.icon import Icon
+from nova_widgets.key_types import KeySequence
 
 IconProvider = Callable[[str], Icon]
 
@@ -44,11 +45,11 @@ class Action:
     _icon: Icon | None
     _name: str | None
     _is_separator: bool
-    _shortcut: str | None
+    _shortcut: KeySequence | None
     _text: str
     _group: ActionGroup | None = None
     _description: str
-    _default_key: str | None
+    _default_key: KeySequence | None
     _show_in_bar: bool
     _bar_priority: int
 
@@ -73,13 +74,13 @@ class Action:
         self._enabled = enabled
         self._text = text or ""
         self._name = name or action
-        self._shortcut = shortcut
+        self._shortcut = KeySequence.parse(shortcut) if shortcut else None
         self._checkable = checkable
         self._checked = checked
         self._action = action
         self._is_separator = is_separator
         self._description = description
-        self._default_key = key
+        self._default_key = KeySequence.parse(key) if key else None
         self._show_in_bar = show
         self._bar_priority = bar_priority
 
@@ -107,12 +108,15 @@ class Action:
         return self._text
 
     @property
-    def shortcut(self) -> str | None:
+    def shortcut(self) -> KeySequence | None:
         return self._shortcut
 
-    def set_shortcut(self, shortcut: str | None) -> None:
-        """Set the displayed shortcut string (e.g. after loading user config)."""
-        self._shortcut = shortcut
+    def set_shortcut(self, shortcut: str | KeySequence | None) -> None:
+        """Set the displayed shortcut (e.g. after loading user config)."""
+        if isinstance(shortcut, str):
+            self._shortcut = KeySequence.parse(shortcut) if shortcut else None
+        else:
+            self._shortcut = shortcut
 
     @property
     def checkable(self) -> bool:
@@ -148,7 +152,7 @@ class Action:
         return self._description
 
     @property
-    def default_key(self) -> str | None:
+    def default_key(self) -> KeySequence | None:
         return self._default_key
 
     @property
