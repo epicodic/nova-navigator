@@ -123,6 +123,19 @@ class MainScreen(ActionsSupport, Screen[None]):
         Action("Invert Selection", name="selection.invert", action="invert_selection", description="Invert the current selection", shortcut="ctrl+s i", show=True),
         Action("Select All", name="selection.select_all", action="select_all", description="Select all items in the current directory", shortcut="ctrl+s a", show=True),
         Action("Select None", name="selection.select_none", action="select_none", description="Deselect all items in the current directory", shortcut="ctrl+s n", show=True),
+        # View toggles (checkable)
+        Action("Show Hidden Files", name="view.show_hidden_files", action="show_hidden_files", description="Toggle display of hidden files", checkable=True, checked=False, show=False),
+        Action("Synchronized Browsing", name="view.sync_browsing", action="toggle_sync_browsing", description="Mirror navigation between panels", checkable=True, show=False),
+        Action("Enable Compare", name="view.compare_enable", action="toggle_compare_enable", description="Enable directory comparison", checkable=True, show=False),
+        # File operations (clipboard / open — no keyboard shortcut)
+        Action("New File", name="file.new_file", action="new_file", description="Create a new file", show=False, icon="text"),
+        Action("Open", name="file.open", action="open_path", description="Open the item under the cursor", show=False),
+        Action("Open in Other Panel", name="file.open_in_other_panel", action="open_in_other_panel", description="Open item in the other panel", show=False),
+        Action("Cut", name="file.cut", action="cut", description="Cut to clipboard", show=False),
+        Action("Copy", name="file.copy", action="copy", description="Copy to clipboard", show=False),
+        Action("Copy Names", name="file.copy_names", action="copy_names", description="Copy file names to clipboard", show=False),
+        Action("Paste", name="file.paste", action="paste", description="Paste from clipboard", show=False),
+        Action("Add to Bookmarks", name="bookmarks.add_to_bookmarks", action="add_to_bookmarks", description="Add current item to bookmarks", show=False),
     ]
 
     class _TerminalMode(Enum):
@@ -175,19 +188,19 @@ class MainScreen(ActionsSupport, Screen[None]):
             mc.menu(
                 "New",
                 self._act("browser.new_directory"),
-                mc.action("File", icon="text", action="new_file", name="file"),
+                self._act("file.new_file"),
                 name="new",
             ),
             mc.separator(),
-            mc.action("Open", action="open_path", name="open"),
-            mc.action("Open in Other Panel", action="open_in_other_panel", name="open_in_other_panel"),
+            self._act("file.open"),
+            self._act("file.open_in_other_panel"),
             self._act("browser.follow_symlink"),
             self._act("browser.open_editor"),
             mc.separator(),
-            mc.action("Copy", action="copy", name="copy"),
-            mc.action("Cut", action="cut", name="cut"),
-            mc.action("Copy Names", action="copy_names", name="copy_names"),
-            mc.action("Paste", action="paste", name="paste"),
+            self._act("file.copy"),
+            self._act("file.cut"),
+            self._act("file.copy_names"),
+            self._act("file.paste"),
             mc.separator(),
             self._act("browser.delete"),
             self._act("browser.rename"),
@@ -224,24 +237,18 @@ class MainScreen(ActionsSupport, Screen[None]):
         self._menu_bar.add_menu("Bookmarks", name="bookmarks").add(
             self._act("app.show_bookmarks"),
             mc.separator(),
-            mc.action("Add to Bookmarks", action="add_to_bookmarks", name="add_to_bookmarks"),
+            self._act("bookmarks.add_to_bookmarks"),
             mc.action("Manage Bookmarks", action="edit_bookmarks", name="edit_bookmarks"),
         )
         self._menu_bar.add_menu("View", name="view").add(
             self._act("browser.refresh"),
             mc.separator(),
-            mc.action(
-                "Show Hidden Files",
-                checkable=True,
-                checked=False,
-                action="show_hidden_files",
-                name="show_hidden_files",
-            ),
+            self._act("view.show_hidden_files"),
             mc.separator(),
-            mc.action("Synchronized Browsing", checkable=True, action="toggle_sync_browsing", name="sync_browsing"),
+            self._act("view.sync_browsing"),
             mc.menu(
                 "Compare Directories",
-                mc.action("Enable", checkable=True, action="toggle_compare_enable", name="compare_enable"),
+                self._act("view.compare_enable"),
                 mc.separator(),
                 *mc.group(
                     mc.action("By File Size", checkable=True, action="compare_by_size", name="compare_by_size"),
@@ -284,11 +291,6 @@ class MainScreen(ActionsSupport, Screen[None]):
         self._jobs_dialog = JobsDialog(position=(0, 0), registry=self.app.job_registry)
         yield self._jobs_dialog
         yield self._hint_bar
-
-    def _menu_act(self, name: str) -> Action:
-        action = self._menu_bar.find_action(name)
-        assert action is not None, f"Action '{name}' not found"
-        return action
 
     def active_panel(self) -> DirectoryBrowser:
         return self._last_active_panel
@@ -489,7 +491,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         self._right_panel.set_item_colors(right_colors)
 
     def _action_toggle_compare_enable(self) -> None:
-        a = self._menu_act("view.compare_directories.compare_enable")
+        a = self._act("view.compare_enable")
         if a.checked:
             self._compare_config = _CompareConfig(mode=None)
             self._refresh_compare()
@@ -527,7 +529,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         panel.set_path(VPath(event.cwd, fs))
 
     def _action_toggle_sync_browsing(self) -> None:
-        a = self._menu_act("view.sync_browsing")
+        a = self._act("view.sync_browsing")
         if a.checked:
             self._sync_state = SyncBrowsing(self._left_panel.path, self._right_panel.path)
             self._left_panel.add_class("-sync-active")
@@ -539,7 +541,7 @@ class MainScreen(ActionsSupport, Screen[None]):
 
     def _disable_sync_browsing(self, reason: str) -> None:
         self._sync_state = None
-        self._menu_act("view.sync_browsing").set_checked(False)
+        self._act("view.sync_browsing").set_checked(False)
         self._left_panel.remove_class("-sync-active")
         self._right_panel.remove_class("-sync-active")
         self.notify(reason, title="Synchronized Browsing Disabled", severity="warning")
@@ -682,17 +684,17 @@ class MainScreen(ActionsSupport, Screen[None]):
                 return False
 
         actions: list[tuple[AKey, Action]] = [
-            (AKey(is_directory=True, is_file=True), self._menu_act("file.open")),
-            (AKey(is_directory=True), self._menu_act("file.open_in_other_panel")),
+            (AKey(is_directory=True, is_file=True), self._act("file.open")),
+            (AKey(is_directory=True), self._act("file.open_in_other_panel")),
             (AKey(is_symlink=True), self._act("browser.follow_symlink")),
             (AKey(is_file=True), self._act("browser.open_editor")),
-            (AKey(is_directory=True, is_file=True), self._menu_act("file.cut")),
-            (AKey(is_directory=True, is_file=True), self._menu_act("file.copy")),
-            (AKey(is_directory=True, is_file=True), self._menu_act("file.copy_names")),
-            (AKey(is_path_in_clipboard=True), self._menu_act("file.paste")),
+            (AKey(is_directory=True, is_file=True), self._act("file.cut")),
+            (AKey(is_directory=True, is_file=True), self._act("file.copy")),
+            (AKey(is_directory=True, is_file=True), self._act("file.copy_names")),
+            (AKey(is_path_in_clipboard=True), self._act("file.paste")),
             (AKey(is_directory=True, is_file=True), self._act("browser.delete")),
             (AKey(is_directory=True, is_file=True), self._act("browser.rename")),
-            (AKey(is_directory=True, is_file=False, is_empty=True), self._menu_act("bookmarks.add_to_bookmarks")),
+            (AKey(is_directory=True, is_file=False, is_empty=True), self._act("bookmarks.add_to_bookmarks")),
         ]
 
         for key, a in actions:
@@ -713,19 +715,19 @@ class MainScreen(ActionsSupport, Screen[None]):
     async def on_directory_browser_context_menu(self, event: DirectoryBrowser.ContextMenu) -> None:
         self._update_actions(event.path)
         items: list[tuple[Action, int]] = [
-            (self._menu_act("file.new"), 0),
-            (self._menu_act("file.open"), 2),
-            (self._menu_act("file.open_in_other_panel"), 2),
+            (self._act("file.new_file"), 0),
+            (self._act("file.open"), 2),
+            (self._act("file.open_in_other_panel"), 2),
             (self._act("browser.follow_symlink"), 2),
             (self._act("browser.open_editor"), 2),
-            (self._menu_act("file.cut"), 3),
-            (self._menu_act("file.copy"), 3),
-            (self._menu_act("file.copy_names"), 4),
-            (self._menu_act("file.paste"), 4),
+            (self._act("file.cut"), 3),
+            (self._act("file.copy"), 3),
+            (self._act("file.copy_names"), 4),
+            (self._act("file.paste"), 4),
             (self._act("browser.delete"), 5),
             (self._act("browser.rename"), 5),
-            (self._menu_act("bookmarks.add_to_bookmarks"), 6),
-            (self._menu_act("view.show_hidden_files"), 7),
+            (self._act("bookmarks.add_to_bookmarks"), 6),
+            (self._act("view.show_hidden_files"), 7),
         ]
 
         menu = Menu()
@@ -756,12 +758,12 @@ class MainScreen(ActionsSupport, Screen[None]):
             await self._run_action(event.action)
 
     def _action_toggle_hidden(self) -> None:
-        a = self._menu_act("view.show_hidden_files")
+        a = self._act("view.show_hidden_files")
         a.set_checked(not a.checked)
         self._action_show_hidden_files()
 
     def _action_show_hidden_files(self) -> None:
-        a = self._menu_act("view.show_hidden_files")
+        a = self._act("view.show_hidden_files")
         self._left_panel.show_hidden_files = a.checked
         self._right_panel.show_hidden_files = a.checked
 
