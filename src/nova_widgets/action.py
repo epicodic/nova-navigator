@@ -4,12 +4,13 @@ from collections.abc import Callable
 from weakref import ref
 
 from nova_widgets.icon import Icon
-from nova_widgets.key_types import KeySequence
+from nova_widgets.key_types import KeyFormatStyle, KeySequence
 
 IconProvider = Callable[[str], Icon]
 
 
 _ICON_PROVIDER: list[IconProvider] = [Icon.of]
+_KEY_FORMAT_STYLE: list[KeyFormatStyle] = [KeyFormatStyle.CLASSIC]
 
 
 def set_icon_provider(provider: IconProvider) -> None:
@@ -18,6 +19,14 @@ def set_icon_provider(provider: IconProvider) -> None:
         _ICON_PROVIDER[0] = provider
     else:
         _ICON_PROVIDER.append(provider)
+
+
+def set_key_format_style(style: KeyFormatStyle) -> None:
+    """Set the global key format style used by Action.shortcut_label."""
+    if _KEY_FORMAT_STYLE:
+        _KEY_FORMAT_STYLE[0] = style
+    else:
+        _KEY_FORMAT_STYLE.append(style)
 
 
 class ActionGroup:
@@ -46,7 +55,7 @@ class Action:
     _checked: bool
     _enabled: bool
     _icon_name: str | None
-    _name: str | None
+    _id: str | None
     _is_separator: bool
     _initial_shortcut: KeySequence | None
     _shortcut: KeySequence | None
@@ -60,7 +69,7 @@ class Action:
         self,
         text: str | None = None,
         *,
-        name: str | None = None,
+        id: str | None = None,
         icon: str | None = None,
         enabled: bool = True,
         shortcut: str | None = None,
@@ -75,7 +84,7 @@ class Action:
         self._icon_name = icon
         self._enabled = enabled
         self._text = text or ""
-        self._name = name or action
+        self._id = id or action
         _initial: KeySequence | None = KeySequence.parse(shortcut) if shortcut else None
         self._initial_shortcut = _initial
         self._shortcut = _initial
@@ -99,8 +108,8 @@ class Action:
         self._enabled = enabled
 
     @property
-    def name(self) -> str | None:
-        return self._name
+    def id(self) -> str | None:
+        return self._id
 
     @property
     def icon(self) -> Icon | None:
@@ -115,6 +124,13 @@ class Action:
     @property
     def shortcut(self) -> KeySequence | None:
         return self._shortcut
+
+    @property
+    def shortcut_label(self) -> str | None:
+        """Shortcut formatted using the current global key display style."""
+        if self._shortcut is None:
+            return None
+        return self._shortcut.format(_KEY_FORMAT_STYLE[0])
 
     @property
     def initial_shortcut(self) -> KeySequence | None:
@@ -203,7 +219,7 @@ class ActionCollection:
         assert len(parts) > 0
 
         for action in self._actions:
-            if action.name == parts[0]:
+            if action.id == parts[0]:
                 if len(parts) == 1:
                     return action
                 if isinstance(action, ActionCollection):

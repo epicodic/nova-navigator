@@ -30,7 +30,7 @@ def test_action_default_no_group() -> None:
 
 def test_action_default_no_name() -> None:
     a = Action("Open")
-    assert a.name is None
+    assert a.id is None
 
 
 def test_action_default_no_shortcut() -> None:
@@ -156,12 +156,12 @@ def test_action_separator_has_no_text_required() -> None:
 
 def test_action_name_falls_back_to_action_string() -> None:
     a = Action("New", action="app.new_file")
-    assert a.name == "app.new_file"
+    assert a.id == "app.new_file"
 
 
 def test_action_explicit_name_overrides_action_string() -> None:
-    a = Action("New", name="new", action="app.new_file")
-    assert a.name == "new"
+    a = Action("New", id="new", action="app.new_file")
+    assert a.id == "new"
 
 
 def test_action_group_checking_one_unchecks_other() -> None:
@@ -203,21 +203,21 @@ def test_action_group_current_none_before_any_check() -> None:
 
 def test_action_collection_find_action_by_name() -> None:
     coll = ActionCollection()
-    a = Action("Open", name="open")
+    a = Action("Open", id="open")
     coll._add_action(a)
     assert coll.find_action("open") is a
 
 
 def test_action_collection_find_action_returns_none_when_missing() -> None:
     coll = ActionCollection()
-    coll._add_action(Action("Open", name="open"))
+    coll._add_action(Action("Open", id="open"))
     assert coll.find_action("missing") is None
 
 
 def test_action_collection_actions_property_returns_all() -> None:
     coll = ActionCollection()
-    a1 = Action("Open", name="open")
-    a2 = Action("Save", name="save")
+    a1 = Action("Open", id="open")
+    a2 = Action("Save", id="save")
     coll._add_action(a1)
     coll._add_action(a2)
     assert coll.actions == [a1, a2]

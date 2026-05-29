@@ -201,7 +201,7 @@ _ENTRIES: list[DialogEntry] = [
         lambda: KeyCaptureDialog(
             NavAction(
                 "Copy",
-                name="browser.copy",
+                id="browser.copy",
                 description="Copy files to the other panel",
                 shortcut="f5",
                 show=True,
@@ -216,7 +216,7 @@ _ENTRIES: list[DialogEntry] = [
             actions=[
                 NavAction(
                     "Copy",
-                    name="browser.copy",
+                    id="browser.copy",
                     action="copy",
                     description="Copy files to the other panel",
                     shortcut="f5",
@@ -224,7 +224,7 @@ _ENTRIES: list[DialogEntry] = [
                 ),
                 NavAction(
                     "Move",
-                    name="browser.move",
+                    id="browser.move",
                     action="move",
                     description="Move files to the other panel",
                     shortcut="f6",
@@ -232,7 +232,7 @@ _ENTRIES: list[DialogEntry] = [
                 ),
                 NavAction(
                     "Delete",
-                    name="browser.delete",
+                    id="browser.delete",
                     action="delete",
                     description="Delete selected files",
                     shortcut="f8",
@@ -240,7 +240,7 @@ _ENTRIES: list[DialogEntry] = [
                 ),
                 NavAction(
                     "Settings",
-                    name="app.settings",
+                    id="app.settings",
                     action="settings",
                     description="Open application settings",
                     shortcut="ctrl+f1",

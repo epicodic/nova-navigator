@@ -15,7 +15,7 @@ def _make_actions() -> list[Action]:
     return [
         Action(
             "Copy",
-            name="browser.copy",
+            id="browser.copy",
             action="copy_or_move_files(False)",
             description="Copy files to the other panel",
             shortcut="f5",
@@ -23,7 +23,7 @@ def _make_actions() -> list[Action]:
         ),
         Action(
             "Move",
-            name="browser.move",
+            id="browser.move",
             action="copy_or_move_files(True)",
             description="Move files to the other panel",
             shortcut="f6",
@@ -31,7 +31,7 @@ def _make_actions() -> list[Action]:
         ),
         Action(
             "Delete",
-            name="browser.delete",
+            id="browser.delete",
             action="delete_files",
             description="Delete selected files",
             shortcut="f8",

@@ -16,7 +16,7 @@ def action(
     """Create an :class:`~nova_widgets.menu.Action` with the given display and behaviour properties."""
     return Action(
         text,
-        name=name,
+        id=name,
         action=action,
         icon=icon,
         enabled=enabled,
