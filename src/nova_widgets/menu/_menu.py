@@ -146,7 +146,7 @@ class Menu(Widget, Action, ActionCollection, can_focus=True):
     # region ----------------------- Public Methods ---------------------------
     def __init__(self, text: str | None = None, *actions: Action, name: str | None = None) -> None:
         Widget.__init__(self)
-        Action.__init__(self, text=text, name=name)
+        Action.__init__(self, text=text, id=name)
 
         self._parent = None
         self._actions = list(actions)
@@ -174,7 +174,7 @@ class Menu(Widget, Action, ActionCollection, can_focus=True):
     ) -> Action:
         a = Action(
             text=text,
-            name=name,
+            id=name,
             action=action,
             icon=icon,
             shortcut=shortcut,
@@ -370,7 +370,7 @@ class Menu(Widget, Action, ActionCollection, can_focus=True):
 
         fill_size = self._item_width - len(action.text)
         if action.shortcut:
-            fill_size -= len(str(action.shortcut)) + self.LABEL_SHORTCUT_GAP
+            fill_size -= len(action.shortcut_label) + self.LABEL_SHORTCUT_GAP
 
         item_text = action.text + " " * fill_size
 
@@ -392,7 +392,7 @@ class Menu(Widget, Action, ActionCollection, can_focus=True):
                 shortcut_style += Style(bgcolor=item_style.bgcolor)
             else:
                 shortcut_style = item_style
-            segments.append(Segment(" " * self.LABEL_SHORTCUT_GAP + str(action.shortcut), shortcut_style))
+            segments.append(Segment(" " * self.LABEL_SHORTCUT_GAP + action.shortcut_label, shortcut_style))
 
         if isinstance(action, Menu):
             segments.append(Segment(" 🞂", item_style))
@@ -423,7 +423,7 @@ class Menu(Widget, Action, ActionCollection, can_focus=True):
         self._item_width = 0
         for action in self._actions:
             if action.shortcut is not None:
-                self._item_width = max(self._item_width, len(action.text) + len(str(action.shortcut)) + self.LABEL_SHORTCUT_GAP)
+                self._item_width = max(self._item_width, len(action.text) + len(action.shortcut_label) + self.LABEL_SHORTCUT_GAP)
             else:
                 self._item_width = max(self._item_width, len(action.text))
 

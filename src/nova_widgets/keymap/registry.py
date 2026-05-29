@@ -8,7 +8,7 @@ from weakref import WeakKeyDictionary
 from textual.app import App
 from textual.widget import Widget
 
-from nova_widgets.action import Action
+from nova_widgets.action import Action, set_key_format_style
 from nova_widgets.keymap.hint_bar import HintBar
 from nova_widgets.keymap.key_sequence import KeyChord, KeyFormatStyle, KeySequence
 from nova_widgets.keymap.key_sequence_state_machine import KeySequenceStateMachine, SequenceResult
@@ -48,11 +48,11 @@ class KeymapRegistry:
 
         if actions is not None:
             self._all_actions = list(actions)
-            self._action_map = {a.name: a for a in actions if a.name is not None}
+            self._action_map = {a.id: a for a in actions if a.id is not None}
             for action in actions:
-                if action.name and action.name in bindings:
-                    action.set_shortcut(bindings[action.name])
-                elif action.name and action.initial_shortcut:
+                if action.id and action.id in bindings:
+                    action.set_shortcut(bindings[action.id])
+                elif action.id and action.initial_shortcut:
                     action.set_shortcut(action.initial_shortcut)
 
         self._chord.build_trie(self._bindings)
@@ -61,6 +61,7 @@ class KeymapRegistry:
     def set_key_display_style(self, style: KeyFormatStyle) -> None:
         """Update the key display style and refresh the hint bar."""
         self._key_display_style = style
+        set_key_format_style(style)
         self._refresh_hint_bar()
 
     def collect_actions(self, app: App[Any]) -> list[Action]:
@@ -83,8 +84,8 @@ class KeymapRegistry:
 
         # Screen-level ACTIONS (lowest priority)
         for action in _get_widget_actions(screen):
-            if action.name not in seen_names:
-                seen_names.add(action.name or "")
+            if action.id not in seen_names:
+                seen_names.add(action.id or "")
                 result.append(action)
 
         if focused is not None:
@@ -93,8 +94,8 @@ class KeymapRegistry:
             local_actions: list[Action] = []
             while node is not None and node is not screen:
                 for action in _get_widget_actions(node):
-                    if action.name not in seen_names:
-                        seen_names.add(action.name or "")
+                    if action.id not in seen_names:
+                        seen_names.add(action.id or "")
                         local_actions.append(action)
                 parent = node.parent
                 if not isinstance(parent, Widget):
@@ -123,7 +124,7 @@ class KeymapRegistry:
         if not self._action_map:
             live_actions = self.collect_actions(app)
             self._all_actions = live_actions
-            self._action_map = {a.name: a for a in live_actions if a.name is not None}
+            self._action_map = {a.id: a for a in live_actions if a.id is not None}
             self._chord.build_trie(self._bindings)
 
         result: SequenceResult = self._chord.feed(KeyChord.parse(key))
@@ -193,7 +194,7 @@ class KeymapRegistry:
             overrides = self._widget_priority_overrides.get(focused) or {}
 
         def effective_priority(action: Action) -> int:
-            return overrides.get(action.name or "", action.bar_priority)
+            return overrides.get(action.id or "", action.bar_priority)
 
         visible = sorted(
             [a for a in self._all_actions if a.show_in_bar and a.shortcut],
@@ -238,7 +239,7 @@ def _collect_subtree_actions(widget: Widget, seen_names: set[str], result: list[
     for child in widget.children:
         if isinstance(child, Widget):
             for action in _get_widget_actions(child):
-                if action.name not in seen_names:
-                    seen_names.add(action.name or "")
+                if action.id not in seen_names:
+                    seen_names.add(action.id or "")
                     result.append(action)
             _collect_subtree_actions(child, seen_names, result)
