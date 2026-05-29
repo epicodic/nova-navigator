@@ -10,8 +10,8 @@ from nova_widgets.actions_support import ActionsSupport
 
 class SimpleWidget(ActionsSupport):
     ACTIONS: ClassVar[list[Action]] = [
-        Action("Open", name="open"),
-        Action("Close", name="close"),
+        Action("Open", id="open"),
+        Action("Close", id="close"),
     ]
 
 
@@ -21,7 +21,7 @@ class WidgetWithNoActions(ActionsSupport):
 
 class ChildWidget(SimpleWidget):
     ACTIONS: ClassVar[list[Action]] = [
-        Action("Save", name="save"),
+        Action("Save", id="save"),
     ]
 
 
@@ -82,7 +82,7 @@ class PassthroughWidget(SimpleWidget):
 class WidgetWithUnnamedAction(ActionsSupport):
     ACTIONS: ClassVar[list[Action]] = [
         Action("Separator", is_separator=True),  # name is None
-        Action("Open", name="open"),
+        Action("Open", id="open"),
     ]
 
 

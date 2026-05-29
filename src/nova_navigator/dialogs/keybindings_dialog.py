@@ -161,7 +161,7 @@ class KeybindingsDialog(Dialog):
         self._key_map = self._config.resolve(self._actions)
         style = _get_key_display_style()
         for action in self._actions:
-            key = self._key_map.get(action.name or "") if action.name else None
+            key = self._key_map.get(action.id or "") if action.id else None
             self._table.add_row(action.text, _format_key_sequence_badges(key, style))
         if self._actions:
             self._description_label.update(self._actions[0].description or "")
@@ -193,9 +193,9 @@ class KeybindingsDialog(Dialog):
             idx = self._table.cursor_row
             if 0 <= idx < len(self._actions):
                 action = self._actions[idx]
-                if action.name:
-                    self._key_map.pop(action.name, None)
-                    self._deleted_names.add(action.name)
+                if action.id:
+                    self._key_map.pop(action.id, None)
+                    self._deleted_names.add(action.id)
                     self._table.update_cell_at(Coordinate(idx, 1), "(none)")
             event.prevent_default()
             event.stop()
@@ -209,13 +209,13 @@ class KeybindingsDialog(Dialog):
         if not (0 <= idx < len(self._actions)):
             return
         action = self._actions[idx]
-        if not action.name:
+        if not action.id:
             return
         dialog = KeyCaptureDialog(action)
         response = await dialog.run()
         if response == DefaultButton.OK and dialog.value is not None:
-            self._key_map[action.name] = dialog.value
-            self._deleted_names.discard(action.name)
+            self._key_map[action.id] = dialog.value
+            self._deleted_names.discard(action.id)
             style = _get_key_display_style()
             self._table.update_cell_at(Coordinate(idx, 1), _format_key_sequence_badges(dialog.value, style))
 
