@@ -28,7 +28,7 @@ class DirectoryBrowserTestApp(App[None]):
         self._browser = browser
         self.messages = []
         actions = list(DirectoryBrowser.ACTIONS)
-        bindings = {a.name: a.initial_shortcut for a in actions if a.name and a.initial_shortcut is not None}
+        bindings = {a.id: a.initial_shortcut for a in actions if a.id and a.initial_shortcut is not None}
         self._keymap = KeymapRegistry(HintBar())
         self._keymap.reload(bindings, actions)
 

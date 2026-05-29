@@ -39,14 +39,14 @@ class KeybindingsConfig:
         """
         result: dict[str, KeySequence] = {}
         for action in actions:
-            if action.name is None:
+            if action.id is None:
                 continue
-            if action.name in self._overrides:
-                value = self._overrides[action.name]
+            if action.id in self._overrides:
+                value = self._overrides[action.id]
                 if value is not None:  # None = explicitly unmapped
-                    result[action.name] = value
+                    result[action.id] = value
             elif action.initial_shortcut is not None:
-                result[action.name] = action.initial_shortcut
+                result[action.id] = action.initial_shortcut
         return result
 
     def save(self, bindings: dict[str, KeySequence | None]) -> None:

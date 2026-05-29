@@ -32,8 +32,8 @@ async def test_hint_bar_mounts_without_error() -> None:
 @pytest.mark.asyncio
 async def test_hint_bar_shows_normal_hints() -> None:
     actions = [
-        Action("Copy", name="browser.copy", shortcut="f5", show=True, bar_priority=10),
-        Action("Quit", name="app.quit", shortcut="ctrl+q", show=True, bar_priority=20),
+        Action("Copy", id="browser.copy", shortcut="f5", show=True, bar_priority=10),
+        Action("Quit", id="app.quit", shortcut="ctrl+q", show=True, bar_priority=20),
     ]
     actions[0].set_shortcut("f5")
     actions[1].set_shortcut("ctrl+q")
@@ -50,7 +50,7 @@ async def test_hint_bar_shows_normal_hints() -> None:
 
 @pytest.mark.asyncio
 async def test_hint_bar_shows_chord_continuations() -> None:
-    cont = Action("Settings", name="app.settings", shortcut="ctrl+s", show=True)
+    cont = Action("Settings", id="app.settings", shortcut="ctrl+s", show=True)
     cont.set_shortcut("ctrl+s")
     app = _HintBarTestApp()
     async with app.run_test() as pilot:
