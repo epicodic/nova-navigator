@@ -45,7 +45,7 @@ class Action:
     _checkable: bool
     _checked: bool
     _enabled: bool
-    _icon: Icon | None
+    _icon_name: str | None
     _name: str | None
     _is_separator: bool
     _initial_shortcut: KeySequence | None
@@ -72,7 +72,7 @@ class Action:
         show: bool = False,
         bar_priority: int = 100,
     ) -> None:
-        self._icon = _ICON_PROVIDER[0](icon) if (icon is not None and _ICON_PROVIDER) else None
+        self._icon_name = icon
         self._enabled = enabled
         self._text = text or ""
         self._name = name or action
@@ -104,7 +104,9 @@ class Action:
 
     @property
     def icon(self) -> Icon | None:
-        return self._icon
+        if self._icon_name is None or not _ICON_PROVIDER:
+            return None
+        return _ICON_PROVIDER[0](self._icon_name)
 
     @property
     def text(self) -> str:
