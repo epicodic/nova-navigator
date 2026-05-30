@@ -126,10 +126,10 @@ class Action:
         return self._shortcut
 
     @property
-    def shortcut_label(self) -> str | None:
+    def shortcut_label(self) -> str:
         """Shortcut formatted using the current global key display style."""
         if self._shortcut is None:
-            return None
+            return ""
         return self._shortcut.format(_KEY_FORMAT_STYLE[0])
 
     @property
