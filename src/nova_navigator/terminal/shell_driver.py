@@ -112,7 +112,7 @@ class ZshDriver(ShellDriver):
         super().__init__(stop_resume=stop_resume, prompt_ready=True)
 
     def init_code(self) -> str:
-        zle_hook = " _nn_zle_init() { printf '\\033]133;B\\007' >/dev/tty }; zle -N zle-line-init _nn_zle_init"
+        zle_hook = " _nn_zle_init() { printf '\\033]133;B\\007' >/dev/tty }; add-zle-hook-widget -Uz zle-line-init _nn_zle_init"
         return f" setopt HIST_IGNORE_SPACE; _nn_precmd() {{ {self._hook_body()} }}; precmd_functions+=(_nn_precmd);{zle_hook}\n"
 
     def quote(self, arg: str) -> str:
