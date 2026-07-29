@@ -96,10 +96,10 @@ def test_posix_octal_escape_empty_string() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_zsh_driver_init_code_contains_kill_stop() -> None:
+def test_zsh_driver_init_code_does_not_contain_kill_stop() -> None:
     driver = ZshDriver()
     code = driver.init_code()
-    assert "kill -STOP $$" in code
+    assert "kill -STOP $$" not in code
 
 
 def test_zsh_driver_init_code_uses_precmd_functions() -> None:
@@ -133,20 +133,15 @@ def test_zsh_driver_cd_command() -> None:
     assert "$'" in cmd
 
 
-def test_zsh_driver_supports_stop_resume() -> None:
-    driver = ZshDriver()
-    assert driver.supports_stop_resume is True
-
-
 # ---------------------------------------------------------------------------
 # BashDriver
 # ---------------------------------------------------------------------------
 
 
-def test_bash_driver_init_code_contains_kill_stop() -> None:
+def test_bash_driver_init_code_does_not_contain_kill_stop() -> None:
     driver = BashDriver()
     code = driver.init_code()
-    assert "kill -STOP $$" in code
+    assert "kill -STOP $$" not in code
 
 
 def test_bash_driver_init_code_uses_prompt_command() -> None:
@@ -159,11 +154,6 @@ def test_bash_driver_init_code_ends_with_newline() -> None:
     driver = BashDriver()
     code = driver.init_code()
     assert code.endswith("\n")
-
-
-def test_bash_driver_supports_stop_resume() -> None:
-    driver = BashDriver()
-    assert driver.supports_stop_resume is True
 
 
 def test_bash_driver_quote_uses_ansi_c() -> None:
@@ -181,11 +171,6 @@ def test_bash_driver_cd_command() -> None:
 # ---------------------------------------------------------------------------
 # FallbackDriver
 # ---------------------------------------------------------------------------
-
-
-def test_fallback_driver_supports_stop_resume_is_false() -> None:
-    driver = FallbackDriver()
-    assert driver.supports_stop_resume is False
 
 
 def test_fallback_driver_init_code_ends_with_newline() -> None:
@@ -254,25 +239,39 @@ def test_fallback_driver_supports_prompt_ready_is_false() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_hook_body_includes_nn_panel_placeholder() -> None:
-    """_hook_body() printf must include ${_NN_PANEL:-} as the first %s."""
+def test_hook_body_includes_panel_prefix() -> None:
+    """_hook_body() printf must include panel= prefix for from_nn detection."""
     driver = ZshDriver()
     body = driver._hook_body()
-    assert "${_NN_PANEL:-}" in body
+    assert "panel=" in body
 
 
 def test_hook_body_osc7_format_has_panel_prefix() -> None:
-    """_hook_body() must emit panel=<id>;file:// format so the parser can extract the panel ID."""
+    """_hook_body() must emit panel=;file:// format so the parser can detect NN origin."""
     driver = ZshDriver()
     body = driver._hook_body()
     assert "panel=" in body
     assert "file://" in body
 
 
-def test_bash_hook_body_includes_nn_panel_placeholder() -> None:
+def test_hook_body_does_not_include_nn_panel_variable() -> None:
+    """_hook_body() must NOT reference $_NN_PANEL (removed in no-SIGSTOP redesign)."""
+    driver = ZshDriver()
+    body = driver._hook_body()
+    assert "_NN_PANEL" not in body
+
+
+def test_bash_hook_body_does_not_include_nn_panel_variable() -> None:
     driver = BashDriver()
     body = driver._hook_body()
-    assert "${_NN_PANEL:-}" in body
+    assert "_NN_PANEL" not in body
+
+
+def test_hook_body_does_not_contain_kill_stop() -> None:
+    """_hook_body() must not contain kill -STOP (removed in no-SIGSTOP redesign)."""
+    driver = ZshDriver()
+    body = driver._hook_body()
+    assert "kill -STOP" not in body
 
 
 def test_zsh_driver_init_code_contains_osc133b_zle_hook() -> None:
@@ -313,24 +312,13 @@ def test_zsh_driver_init_code_takes_no_arguments() -> None:
 def test_zsh_driver_init_code_contains_osc7_printf() -> None:
     driver = ZshDriver()
     code = driver.init_code()
-    assert r"\033]7;panel=%s;file://%s\007" in code
+    assert r"\033]7;panel=;file://%s\007" in code
 
 
-def test_zsh_driver_init_code_stop_resume_true_contains_kill_stop() -> None:
-    driver = ZshDriver(stop_resume=True)
-    code = driver.init_code()
-    assert "kill -STOP $$" in code
-
-
-def test_zsh_driver_init_code_stop_resume_false_omits_kill_stop() -> None:
-    driver = ZshDriver(stop_resume=False)
+def test_zsh_driver_init_code_does_not_contain_kill_stop() -> None:
+    driver = ZshDriver()
     code = driver.init_code()
     assert "kill -STOP $$" not in code
-
-
-def test_zsh_driver_default_stop_resume_is_true() -> None:
-    driver = ZshDriver()
-    assert driver.supports_stop_resume is True
 
 
 def test_bash_driver_init_code_takes_no_arguments() -> None:
@@ -342,13 +330,7 @@ def test_bash_driver_init_code_takes_no_arguments() -> None:
 def test_bash_driver_init_code_contains_osc7_printf() -> None:
     driver = BashDriver()
     code = driver.init_code()
-    assert r"\033]7;panel=%s;file://%s\007" in code
-
-
-def test_bash_driver_init_code_stop_resume_false_omits_kill_stop() -> None:
-    driver = BashDriver(stop_resume=False)
-    code = driver.init_code()
-    assert "kill -STOP $$" not in code
+    assert r"\033]7;panel=;file://%s\007" in code
 
 
 def test_fallback_driver_init_code_takes_no_arguments() -> None:
@@ -360,7 +342,7 @@ def test_fallback_driver_init_code_takes_no_arguments() -> None:
 def test_fallback_driver_init_code_contains_osc7_printf() -> None:
     driver = FallbackDriver()
     code = driver.init_code()
-    assert r"\033]7;panel=%s;file://%s\007" in code
+    assert r"\033]7;panel=;file://%s\007" in code
 
 
 def test_fallback_driver_init_code_redirects_to_dev_tty() -> None:
@@ -371,26 +353,16 @@ def test_fallback_driver_init_code_redirects_to_dev_tty() -> None:
     assert ">/dev/tty" in code
 
 
-def test_detect_driver_zsh_stop_resume_false() -> None:
-    driver = detect_driver("/usr/bin/zsh", stop_resume=False)
+def test_detect_driver_zsh_returns_zsh_driver() -> None:
+    driver = detect_driver("/usr/bin/zsh")
     assert isinstance(driver, ZshDriver)
-    assert driver.supports_stop_resume is False
 
 
-def test_detect_driver_bash_stop_resume_false() -> None:
-    driver = detect_driver("/bin/bash", stop_resume=False)
+def test_detect_driver_bash_returns_bash_driver() -> None:
+    driver = detect_driver("/bin/bash")
     assert isinstance(driver, BashDriver)
-    assert driver.supports_stop_resume is False
 
 
-def test_detect_driver_fallback_stop_resume_kwarg_ignored() -> None:
-    # FallbackDriver always has stop_resume=False regardless of kwarg
-    driver = detect_driver("/bin/sh", stop_resume=True)
+def test_detect_driver_fallback_returns_fallback_driver() -> None:
+    driver = detect_driver("/bin/sh")
     assert isinstance(driver, FallbackDriver)
-    assert driver.supports_stop_resume is False
-
-
-def test_fallback_driver_constructor_always_sets_stop_resume_false() -> None:
-    # Even if caller passes stop_resume=True, FallbackDriver forces False
-    driver = FallbackDriver(stop_resume=True)
-    assert driver.supports_stop_resume is False

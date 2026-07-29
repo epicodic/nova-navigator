@@ -61,14 +61,8 @@ def _posix_octal_escape(arg: str) -> str:
 class ShellDriver(ABC):
     """Abstract base class for shell-specific terminal integration."""
 
-    def __init__(self, *, stop_resume: bool, prompt_ready: bool) -> None:
-        self._stop_resume = stop_resume
+    def __init__(self, *, prompt_ready: bool) -> None:
         self._prompt_ready = prompt_ready
-
-    @property
-    def supports_stop_resume(self) -> bool:
-        """True if init_code() includes ``kill -STOP $$``."""
-        return self._stop_resume
 
     @property
     def supports_prompt_ready(self) -> bool:
@@ -79,12 +73,11 @@ class ShellDriver(ABC):
         """Return the core of the precmd hook function body.
 
         Emits an OSC 7 sequence reporting the current directory.
-        The payload format is ``panel=<id>;file:///path`` where ``<id>`` is the
-        value of ``$_NN_PANEL`` (empty string when unset).
-        Appends ``kill -STOP $$`` when stop/resume is enabled.
+        The payload format is ``panel=;file:///path``.  The ``panel=`` prefix
+        marks the sequence as originating from Nova Navigator's own hook
+        (as opposed to third-party chpwd hooks that emit plain ``file://``).
         """
-        stop_part = "; kill -STOP $$" if self._stop_resume else ""
-        return 'printf \'\\033]7;panel=%s;file://%s\\007\' "${_NN_PANEL:-}" "$(pwd)"' + stop_part
+        return "printf '\\033]7;panel=;file://%s\\007' \"$(pwd)\""
 
     @abstractmethod
     def init_code(self) -> str:
@@ -108,8 +101,8 @@ class ShellDriver(ABC):
 class ZshDriver(ShellDriver):
     """Shell driver for zsh."""
 
-    def __init__(self, *, stop_resume: bool = True) -> None:
-        super().__init__(stop_resume=stop_resume, prompt_ready=True)
+    def __init__(self) -> None:
+        super().__init__(prompt_ready=True)
 
     def init_code(self) -> str:
         zle_hook = " _nn_zle_init() { printf '\\033]133;B\\007' >/dev/tty }; add-zle-hook-widget -Uz zle-line-init _nn_zle_init"
@@ -122,8 +115,8 @@ class ZshDriver(ShellDriver):
 class BashDriver(ShellDriver):
     """Shell driver for bash."""
 
-    def __init__(self, *, stop_resume: bool = True) -> None:
-        super().__init__(stop_resume=stop_resume, prompt_ready=True)
+    def __init__(self) -> None:
+        super().__init__(prompt_ready=True)
 
     def init_code(self) -> str:
         return (
@@ -145,8 +138,8 @@ class FallbackDriver(ShellDriver):
     the prompt text.
     """
 
-    def __init__(self, *, stop_resume: bool = False) -> None:
-        super().__init__(stop_resume=False, prompt_ready=False)  # FallbackDriver never supports either
+    def __init__(self) -> None:
+        super().__init__(prompt_ready=False)
 
     def init_code(self) -> str:
         return f" _nn_precmd() {{ {self._hook_body()} >/dev/tty; }}; PS1='$(_nn_precmd)'\"$PS1\"\n"
@@ -159,21 +152,18 @@ class FallbackDriver(ShellDriver):
         return f"_nn_newdir_=`printf '%b_' '{escaped}'`; cd \"${{_nn_newdir_%_}}\""
 
 
-def detect_driver(command: str, *, stop_resume: bool = True) -> ShellDriver:
+def detect_driver(command: str) -> ShellDriver:
     """Return the appropriate ShellDriver for *command*.
 
     Args:
         command: Shell command path (e.g. ``"/usr/bin/zsh"``).
-        stop_resume: Whether to enable SIGSTOP/SIGCONT synchronisation.
-            Pass ``False`` for remote shells (SSH) that don't support it.
 
     Returns:
         A ``ZshDriver``, ``BashDriver``, or ``FallbackDriver`` instance.
-        ``FallbackDriver`` always has ``stop_resume=False`` regardless of the kwarg.
     """
     name = PurePath(command.split()[0]).name
     if name == "zsh":
-        return ZshDriver(stop_resume=stop_resume)
+        return ZshDriver()
     if name == "bash":
-        return BashDriver(stop_resume=stop_resume)
+        return BashDriver()
     return FallbackDriver()
