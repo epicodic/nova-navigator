@@ -14,19 +14,18 @@ from tests.integration.conftest import AppCtx, poll_until, set_panels
 
 def _enable_compare(ctx: AppCtx) -> None:
     """Enable compare mode (pre-toggle checked state, then call handler)."""
-    ctx.screen._act("view.compare_directories.compare_enable").set_checked(True)
+    ctx.screen._act("view.compare_enable").set_checked(True)
     ctx.screen._action_toggle_compare_enable()
 
 
 def _disable_compare(ctx: AppCtx) -> None:
     """Disable compare mode."""
-    ctx.screen._act("view.compare_directories.compare_enable").set_checked(False)
+    ctx.screen._act("view.compare_enable").set_checked(False)
     ctx.screen._action_toggle_compare_enable()
 
 
 def _enable_compare_by_size(ctx: AppCtx) -> None:
     """Switch compare mode to BY_SIZE."""
-    ctx.screen._act("view.compare_directories.compare_by_size").set_checked(True)
     ctx.screen._action_compare_by_size()
 
 

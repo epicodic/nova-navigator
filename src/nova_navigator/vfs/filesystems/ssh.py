@@ -222,7 +222,7 @@ class SSHFilesystem(Filesystem):
         if not output:
             exit_code = stdout.channel.recv_exit_status()
             if exit_code != 0:
-                err = stderr.read().decode().lower()
+                err = stderr_output.lower()
                 if "permission denied" in err or "operation not permitted" in err:
                     raise PermissionError(13, "Permission denied", path)
         result = _parse_stat_output(output)

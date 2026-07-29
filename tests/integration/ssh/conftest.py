@@ -119,7 +119,8 @@ async def ssh_app_ctx(
         )
     )
 
-    app = NovaNavigator()
+    app = NovaNavigator(config_dir=tmp_path / "config")
+    (tmp_path / "config").mkdir()
     async with app.run_test(size=(120, 40), headless=not headed) as pilot:
         await pilot.pause()
         screen = app._main_screen
@@ -159,7 +160,8 @@ async def slow_ssh_app_ctx(
         )
     )
 
-    app = NovaNavigator()
+    app = NovaNavigator(config_dir=tmp_path / "config")
+    (tmp_path / "config").mkdir()
     async with app.run_test(size=(120, 40), headless=not headed) as pilot:
         await pilot.pause()
         screen = app._main_screen

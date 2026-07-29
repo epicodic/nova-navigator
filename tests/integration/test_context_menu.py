@@ -64,7 +64,7 @@ async def test_context_menu_selected_action_is_dispatched_to_run_action(app_ctx:
     await set_panels(app_ctx)
 
     file_vpath = VPath(app_ctx.src_dir / "file.txt", app_ctx.fs)
-    delete_action = app_ctx.screen._act("file.delete")
+    delete_action = app_ctx.screen._act("browser.delete")
 
     p_exec = patch.object(Menu, "exec", new=AsyncMock(return_value=delete_action))
     p_action = patch.object(app_ctx.screen, "_run_action", new=AsyncMock())
