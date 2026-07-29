@@ -1162,11 +1162,10 @@ async def test_draining_suppresses_display_rebuild_until_pre_cmd() -> None:
             await pilot.pause(delay=0.1)
             assert terminal._display is initial_display  # no rebuild was scheduled
 
-            # pre_cmd fires: _draining cleared, backend resumed, no screen reset
+            # pre_cmd fires: _draining cleared, no screen reset
             await recv_q.put(["pre_cmd", "/some/path\n"])
             await pilot.pause(delay=0.1)
             assert terminal._draining is False
-            assert backend.resume_count == 1
             rendered = "".join(line.plain for line in terminal._display.lines)
             assert "SILENT_CONTENT" not in rendered
         finally:
@@ -1273,8 +1272,7 @@ def test_prompt_ready_message_sets_cursor_snapshot() -> None:
 
 def test_has_input_returns_true_for_ssh_zsh_driver() -> None:
     """has_input() must work for SSH terminals using ZshDriver (supports_prompt_ready=True)."""
-    # SSH-style: no stop/resume, but supports prompt_ready
-    terminal = Terminal("/bin/zsh", driver=ZshDriver(stop_resume=False))
+    terminal = Terminal("/bin/zsh", driver=ZshDriver())
     terminal._stream.feed("$ ")
     terminal._handle_prompt_ready()
     terminal._stream.feed("ls")
@@ -1557,7 +1555,6 @@ async def test_yank_and_end_of_line_sent_on_pre_cmd_when_pending() -> None:
             yank_writes = [w for w in backend.writes if b"\x19" in w]
             assert len(yank_writes) == 1
             assert b"\x05" in yank_writes[0]  # END_OF_LINE
-            assert backend.resume_count == 1
         finally:
             await _stop_recv_only(terminal)
 
@@ -1581,8 +1578,6 @@ async def test_yank_not_sent_when_pending_yank_is_false() -> None:
             # No yank should have been written
             yank_writes = [w for w in backend.writes if b"\x19" in w]
             assert len(yank_writes) == 0
-            # But resume should still happen
-            assert backend.resume_count == 1
         finally:
             await _stop_recv_only(terminal)
 
@@ -1620,22 +1615,17 @@ async def test_prompt_cursor_snapshotted_on_prompt_ready_not_at_pre_cmd() -> Non
 # ---------------------------------------------------------------------------
 # Race condition tests (adapted for SIGSTOP synchronisation model)
 #
-# With SIGSTOP, the shell freezes after every precmd.  It cannot produce a
-# second pre_cmd until explicitly resumed via backend.resume().  This
-# eliminates the class of races where stale pre_cmds could clear draining
-# prematurely while the shell was still generating output.
+# Without SIGSTOP, draining is gated on pre_cmd arrival.  When pre_cmd
+# arrives, draining clears and the queued cd command can be processed.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_race_a_pre_cmd_during_draining_resumes_and_clears() -> None:
-    """With SIGSTOP, when pre_cmd arrives while _draining is True, the recv()
-    handler resumes the shell and clears draining.
+async def test_race_a_pre_cmd_during_draining_clears() -> None:
+    """When pre_cmd arrives while _draining is True, the recv() handler clears draining.
 
-    This is correct behaviour under SIGSTOP: the pre_cmd corresponds to the
-    shell being frozen after its precmd hook.  The resume lets it process the
-    queued cd command.  Since cd produces no stdout, no echo leaks onto the
-    screen.
+    The pre_cmd signals that the shell is back at the prompt after its precmd
+    hook.  Since cd produces no stdout, no echo leaks onto the screen.
     """
     backend = FakePtyBackend()
     terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
@@ -1659,9 +1649,8 @@ async def test_race_a_pre_cmd_during_draining_resumes_and_clears() -> None:
         # Yield to the event loop: recv() runs, processes the pre_cmd.
         await pilot.pause(delay=0.05)
 
-        # With SIGSTOP the pre_cmd triggers resume and clears draining.
+        # pre_cmd clears draining.
         assert terminal._draining is False
-        assert backend.resume_count == 1
 
         terminal.recv_task_t.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -1669,12 +1658,11 @@ async def test_race_a_pre_cmd_during_draining_resumes_and_clears() -> None:
 
 
 @pytest.mark.asyncio
-async def test_race_c_two_navigations_first_pre_cmd_resumes_shell() -> None:
-    """With SIGSTOP, two rapid set_terminal_directory calls buffer both cd commands.
+async def test_race_c_two_navigations_first_pre_cmd_keeps_draining() -> None:
+    """Two rapid set_terminal_directory calls buffer both cd commands.
 
     When the first pre_cmd arrives, _nav_pending decrements from 2 to 1.
     Draining stays on because a second navigation is still in flight.
-    The shell is resumed so it can process the second cd.
     When the second pre_cmd arrives, _nav_pending reaches 0 and draining clears.
     """
     backend = FakePtyBackend()
@@ -1699,19 +1687,17 @@ async def test_race_c_two_navigations_first_pre_cmd_resumes_shell() -> None:
             assert terminal._draining is True
             assert terminal._nav_pending == 2
 
-            # First pre_cmd: nav_pending 2→1, draining stays True, shell resumed.
+            # First pre_cmd: nav_pending 2→1, draining stays True.
             await recv_q.put(["pre_cmd", "/home/user/A\n"])
             await pilot.pause(delay=0.05)
             assert terminal._draining is True  # still draining — second nav pending
             assert terminal._nav_pending == 1
-            assert backend.resume_count == 1
 
             # Second pre_cmd: nav_pending 1→0, draining clears.
             await recv_q.put(["pre_cmd", "/home/user/B\n"])
             await pilot.pause(delay=0.05)
             assert terminal._draining is False
             assert terminal._nav_pending == 0
-            assert backend.resume_count == 2
 
             # Prompt stdout then prompt_ready snapshots cursor.
             await recv_q.put(["stdout", "\r\n/home/user/projects $ "])
@@ -1867,8 +1853,8 @@ async def test_rapid_request_cd_only_last_fires_path_changed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_request_cd_with_panel_id_prepends_nn_panel_to_cd_command() -> None:
-    """request_cd with panel_id prepends '_NN_PANEL=left; ' before the cd command."""
+async def test_request_cd_does_not_prepend_nn_panel() -> None:
+    """request_cd must not include _NN_PANEL (removed in no-SIGSTOP redesign)."""
     backend = FakePtyBackend()
     terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
     app = TerminalTestApp(terminal)
@@ -1876,76 +1862,17 @@ async def test_request_cd_with_panel_id_prepends_nn_panel_to_cd_command() -> Non
         await pilot.pause()
         terminal._started = True
 
-        terminal.request_cd(PurePath("/new/dir"), "left")
+        terminal.request_cd(PurePath("/new/dir"))
         await asyncio.sleep(0)
 
         cd_writes = [w for w in backend.writes if b"/new/dir" in w]
         assert len(cd_writes) == 1
-        assert b"_NN_PANEL=left" in cd_writes[0]
-        assert b"_NN_PANEL=left" in cd_writes[0].split(b"/new/dir")[0]  # prefix comes first
+        assert b"_NN_PANEL" not in cd_writes[0]
 
 
 @pytest.mark.asyncio
-async def test_request_cd_same_path_with_panel_id_sends_true_not_cd() -> None:
-    """When path == _cwd and panel_id is given, 'true' is sent to update _NN_PANEL
-    without triggering a real cd (avoids chpwd hooks)."""
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = TerminalTestApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        terminal._started = True
-        terminal._cwd = PurePath("/current/dir")
-
-        terminal.request_cd(PurePath("/current/dir"), "right")
-        await asyncio.sleep(0)
-
-        # Must write _NN_PANEL=right; true (not cd)
-        panel_writes = [w for w in backend.writes if b"_NN_PANEL=right" in w]
-        assert len(panel_writes) == 1
-        assert b"true" in panel_writes[0]
-        assert b"cd" not in panel_writes[0] or b"_NN_PANEL" in panel_writes[0].split(b"cd")[0]
-
-        # _nav_pending must be incremented (not short-circuited)
-        assert terminal._nav_pending == 1
-
-
-@pytest.mark.asyncio
-async def test_request_cd_same_path_with_panel_id_does_not_post_path_changed() -> None:
-    """Same-path request_cd with panel_id updates _NN_PANEL only; PathChanged must not fire."""
-    received: list[Terminal.PathChanged] = []
-
-    class CapturingApp(TerminalTestApp):
-        def on_terminal_path_changed(self, event: Terminal.PathChanged) -> None:
-            received.append(event)
-
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = CapturingApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        recv_q = await _start_recv_only(terminal)
-        try:
-            terminal._started = True
-            terminal._cwd = PurePath("/current/dir")
-
-            terminal.request_cd(PurePath("/current/dir"), "right")
-            await asyncio.sleep(0)
-
-            # pre_cmd arrives: _nav_pending 1→0, draining clears, but cwd_changed=False
-            await recv_q.put(["pre_cmd", "/current/dir\n", "right"])
-            await pilot.pause(delay=0.15)
-
-            # PathChanged must NOT be posted (path did not change)
-            assert len(received) == 0
-        finally:
-            await _stop_recv_only(terminal)
-
-
-@pytest.mark.asyncio
-async def test_request_cd_same_path_without_panel_id_short_circuits() -> None:
-    """When path == _cwd and no panel_id is given, the old short-circuit still fires:
-    nothing is written to the backend and _nav_pending stays at 0."""
+async def test_request_cd_same_path_short_circuits() -> None:
+    """When path == _cwd, nothing is written to the backend and _nav_pending stays at 0."""
     backend = FakePtyBackend()
     terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
     app = TerminalTestApp(terminal)
@@ -1956,7 +1883,7 @@ async def test_request_cd_same_path_without_panel_id_short_circuits() -> None:
         terminal._nav_pending = 0
         initial_write_count = len(backend.writes)
 
-        terminal.request_cd(PurePath("/current/dir"))  # no panel_id
+        terminal.request_cd(PurePath("/current/dir"))
         await asyncio.sleep(0)
 
         assert terminal._nav_pending == 0
@@ -1964,8 +1891,8 @@ async def test_request_cd_same_path_without_panel_id_short_circuits() -> None:
 
 
 @pytest.mark.asyncio
-async def test_path_changed_event_carries_panel_id() -> None:
-    """When pre_cmd arrives with panel_id, the PathChanged message must carry it."""
+async def test_path_changed_event_has_no_panel_id() -> None:
+    """PathChanged event must not have a panel_id attribute (removed in no-SIGSTOP redesign)."""
     received: list[Terminal.PathChanged] = []
 
     class CapturingApp(TerminalTestApp):
@@ -1979,39 +1906,12 @@ async def test_path_changed_event_carries_panel_id() -> None:
         await pilot.pause()
         recv_q = await _start_recv_only(terminal)
         try:
-            # Simulate pre_cmd with panel_id from the updated pty_backend
-            await recv_q.put(["pre_cmd", "/home/user\n", "left"])
+            await recv_q.put(["pre_cmd", "/home/user\n", True])
             await pilot.pause(delay=0.15)
 
             assert len(received) == 1
-            assert received[0].panel_id == "left"
             assert received[0].user_initiated is True
-        finally:
-            await _stop_recv_only(terminal)
-
-
-@pytest.mark.asyncio
-async def test_path_changed_event_panel_id_empty_when_not_in_pre_cmd() -> None:
-    """Legacy pre_cmd with no panel_id element posts PathChanged with panel_id=''."""
-    received: list[Terminal.PathChanged] = []
-
-    class CapturingApp(TerminalTestApp):
-        def on_terminal_path_changed(self, event: Terminal.PathChanged) -> None:
-            received.append(event)
-
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = CapturingApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        recv_q = await _start_recv_only(terminal)
-        try:
-            # 2-element pre_cmd (old format / FallbackDriver)
-            await recv_q.put(["pre_cmd", "/home/user\n"])
-            await pilot.pause(delay=0.15)
-
-            assert len(received) == 1
-            assert received[0].panel_id == ""
+            assert not hasattr(received[0], "panel_id")
         finally:
             await _stop_recv_only(terminal)
 
@@ -2139,7 +2039,6 @@ async def test_start_backend_calls_init_code_with_no_args() -> None:
 
     backend = FakePtyBackend()
     driver = MagicMock()
-    driver.supports_stop_resume = False
     driver.init_code.return_value = ""
     driver.supports_precmd = True
 
@@ -2158,7 +2057,7 @@ async def test_start_backend_calls_init_code_with_no_args() -> None:
 async def test_handle_pre_cmd_updates_cwd_from_plain_path() -> None:
     """_handle_pre_cmd uses the raw string as a path directly (no parse_precmd_payload)."""
     backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver(stop_resume=False))
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
     app = TerminalTestApp(terminal)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -2172,16 +2071,15 @@ async def test_handle_pre_cmd_updates_cwd_from_plain_path() -> None:
 
 
 @pytest.mark.asyncio
-async def test_third_party_chpwd_osc7_ignored_when_stop_resume_active() -> None:
+async def test_third_party_chpwd_osc7_ignored_when_nn_hooks_active() -> None:
     """Non-NN OSC 7 (from_nn=False) is ignored by _handle_pre_cmd when NN hooks are active.
 
     Third-party zsh chpwd hooks (oh-my-zsh, powerlevel10k, etc.) emit OSC 7 without
-    the panel= prefix.  When ZshDriver.supports_stop_resume is True, these events must
-    not decrement _nav_pending, update _cwd, or post PathChanged — otherwise rapid
-    panel toggling causes the display to cycle through directories.
+    the panel= prefix.  These events must not decrement _nav_pending, update _cwd,
+    or post PathChanged — otherwise rapid panel toggling causes the display to cycle
+    through directories.
     """
     backend = FakePtyBackend()
-    # ZshDriver() uses stop_resume=True by default — NN hooks are active.
     terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
     app = PathChangedCapturingApp(terminal)
     async with app.run_test() as pilot:
@@ -2194,7 +2092,7 @@ async def test_third_party_chpwd_osc7_ignored_when_stop_resume_active() -> None:
             initial_cwd = terminal._cwd
 
             # Third-party chpwd fires first (from_nn=False) — must be ignored.
-            await recv_q.put(["pre_cmd", "/target", "", False])
+            await recv_q.put(["pre_cmd", "/target", False])
             await pilot.pause(delay=0.1)
 
             assert terminal._nav_pending == 1, "non-NN event must not decrement _nav_pending"
@@ -2202,7 +2100,7 @@ async def test_third_party_chpwd_osc7_ignored_when_stop_resume_active() -> None:
             assert len(app.path_changed_events) == 0, "non-NN event must not post PathChanged"
 
             # NN precmd fires next (from_nn=True) — must be processed normally.
-            await recv_q.put(["pre_cmd", "/target", "left", True])
+            await recv_q.put(["pre_cmd", "/target", True])
             await pilot.pause(delay=0.1)
 
             assert terminal._nav_pending == 0

@@ -278,15 +278,15 @@ async def test_detach_readers_stops_output_flow() -> None:
 
 
 @pytest.mark.asyncio
-async def test_process_chunk_osc7_with_panel_id_posts_panel_id_in_pre_cmd() -> None:
-    """OSC 7 with panel=left;file:///path posts ["pre_cmd", "/path", "left", True]."""
+async def test_process_chunk_osc7_with_panel_prefix_posts_from_nn_true() -> None:
+    """OSC 7 with panel=;file:///path posts ["pre_cmd", "/path", True] (from_nn=True)."""
     backend = LocalPtyBackend.__new__(LocalPtyBackend)
     backend._osc_buf = ""
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[list[object]] = asyncio.Queue()
 
     path = "/home/user/projects"
-    osc7 = f"\033]7;panel=left;file://{path}\007"
+    osc7 = f"\033]7;panel=;file://{path}\007"
     backend._process_chunk(osc7.encode(), loop, queue)
     await asyncio.sleep(0)  # let call_soon_threadsafe callbacks run
 
@@ -297,13 +297,12 @@ async def test_process_chunk_osc7_with_panel_id_posts_panel_id_in_pre_cmd() -> N
     pre_cmds = [m for m in messages if m[0] == "pre_cmd"]
     assert len(pre_cmds) == 1
     assert pre_cmds[0][1] == path
-    assert pre_cmds[0][2] == "left"
-    assert pre_cmds[0][3] is True
+    assert pre_cmds[0][2] is True
 
 
 @pytest.mark.asyncio
-async def test_process_chunk_osc7_with_empty_panel_id_posts_empty_string() -> None:
-    """OSC 7 with panel=;file:///path posts ["pre_cmd", "/path", "", True] (unset _NN_PANEL)."""
+async def test_process_chunk_osc7_with_empty_panel_posts_from_nn_true() -> None:
+    """OSC 7 with panel=;file:///path is recognised as NN origin (from_nn=True)."""
     backend = LocalPtyBackend.__new__(LocalPtyBackend)
     backend._osc_buf = ""
     loop = asyncio.get_running_loop()
@@ -321,15 +320,13 @@ async def test_process_chunk_osc7_with_empty_panel_id_posts_empty_string() -> No
     pre_cmds = [m for m in messages if m[0] == "pre_cmd"]
     assert len(pre_cmds) == 1
     assert pre_cmds[0][1] == path
-    assert pre_cmds[0][2] == ""
-    assert pre_cmds[0][3] is True
+    assert pre_cmds[0][2] is True
 
 
 @pytest.mark.asyncio
-async def test_process_chunk_osc7_without_panel_prefix_posts_empty_panel_id() -> None:
-    """OSC 7 without panel= prefix posts ["pre_cmd", path, "", False] — from_nn=False marks
-    it as a third-party chpwd hook event so _handle_pre_cmd can ignore it when NN hooks are
-    active."""
+async def test_process_chunk_osc7_without_panel_prefix_posts_from_nn_false() -> None:
+    """OSC 7 without panel= prefix posts ["pre_cmd", path, False] — from_nn=False marks
+    it as a third-party chpwd hook event so _handle_pre_cmd can ignore it."""
     backend = LocalPtyBackend.__new__(LocalPtyBackend)
     backend._osc_buf = ""
     loop = asyncio.get_running_loop()
@@ -347,20 +344,19 @@ async def test_process_chunk_osc7_without_panel_prefix_posts_empty_panel_id() ->
     pre_cmds = [m for m in messages if m[0] == "pre_cmd"]
     assert len(pre_cmds) == 1
     assert pre_cmds[0][1] == path
-    assert pre_cmds[0][2] == ""
-    assert pre_cmds[0][3] is False
+    assert pre_cmds[0][2] is False
 
 
 @pytest.mark.asyncio
-async def test_process_chunk_osc7_with_right_panel_id() -> None:
-    """OSC 7 with panel=right posts panel_id "right" and from_nn=True."""
+async def test_process_chunk_osc7_with_legacy_panel_value_still_posts_from_nn_true() -> None:
+    """OSC 7 with panel=left;file:// (legacy format) still posts from_nn=True."""
     backend = LocalPtyBackend.__new__(LocalPtyBackend)
     backend._osc_buf = ""
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[list[object]] = asyncio.Queue()
 
     path = "/srv"
-    osc7 = f"\033]7;panel=right;file://{path}\007"
+    osc7 = f"\033]7;panel=left;file://{path}\007"
     backend._process_chunk(osc7.encode(), loop, queue)
     await asyncio.sleep(0)  # let call_soon_threadsafe callbacks run
 
@@ -371,8 +367,7 @@ async def test_process_chunk_osc7_with_right_panel_id() -> None:
     pre_cmds = [m for m in messages if m[0] == "pre_cmd"]
     assert len(pre_cmds) == 1
     assert pre_cmds[0][1] == path
-    assert pre_cmds[0][2] == "right"
-    assert pre_cmds[0][3] is True
+    assert pre_cmds[0][2] is True
 
 
 @pytest.mark.asyncio
