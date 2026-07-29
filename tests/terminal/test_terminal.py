@@ -1231,6 +1231,7 @@ def test_has_input_returns_true_when_cursor_past_prompt_position() -> None:
     # Requires a driver with supports_prompt_ready=True (ZshDriver) to track prompts.
     terminal = Terminal("/bin/zsh", driver=ZshDriver())
     terminal._prompt_cursor_x = 5
+    terminal._prompt_ready_received = True
     terminal._screen.cursor.x = 8
     assert terminal.has_input() is True
 
@@ -1246,6 +1247,19 @@ def test_has_input_returns_false_for_fallback_driver_regardless_of_cursor() -> N
 def test_has_input_returns_false_on_fresh_terminal(terminal_instance: Terminal) -> None:
     # Both _prompt_cursor_x and screen cursor start at 0
     assert terminal_instance.has_input() is False
+
+
+def test_has_input_false_at_empty_prompt_when_prompt_ready_never_fired() -> None:
+    """has_input() must return False at an empty prompt even if prompt_ready was never received.
+
+    If zle-line-init is overridden by a third-party plugin (e.g. oh-my-zsh), OSC 133;B is
+    never delivered and _prompt_cursor_x stays at its initial value of 0.  After the shell
+    prints a prompt like '$ ' the pyte cursor moves to x=2, which is greater than 0, so
+    the naive cursor comparison returns True even though there is no user input.
+    """
+    terminal = Terminal("/bin/zsh", driver=ZshDriver())
+    terminal._stream.feed("$ ")  # cursor is now at x=2; prompt_ready was never called
+    assert terminal.has_input() is False
 
 
 def test_prompt_ready_message_sets_cursor_snapshot() -> None:
@@ -1294,6 +1308,103 @@ async def test_has_input_true_after_prompt_and_user_input() -> None:
             await recv_q.put(["stdout", "ls"])  # user typed "ls"
             await pilot.pause(delay=0.15)
             assert terminal.has_input() is True
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_has_input_false_after_typing_and_deleting_with_vt100_erase() -> None:
+    """has_input() must return False after user types text then deletes it with VT100 backspace echo.
+
+    The standard VT100 erase sequence for a deleted character is \\b \\b (cursor-left, space,
+    cursor-left).  After deleting all typed characters the cursor must be back at the
+    prompt position, and has_input() must return False.
+    """
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            await recv_q.put(["pre_cmd", "/home/user\n"])
+            await recv_q.put(["stdout", "$ "])  # prompt; cursor now at x=2
+            await pilot.pause(delay=0.05)
+            await recv_q.put(["prompt_ready"])  # snapshot: _prompt_cursor_x=2
+            await pilot.pause(delay=0.05)
+            await recv_q.put(["stdout", "ls"])  # user typed "ls"; cursor now at x=4
+            await pilot.pause(delay=0.05)
+            assert terminal.has_input() is True  # sanity check
+            # VT100 erase for 's': cursor-left, overwrite with space, cursor-left again
+            await recv_q.put(["stdout", "\x08 \x08"])  # delete 's'; cursor at x=3
+            await pilot.pause(delay=0.05)
+            # VT100 erase for 'l'
+            await recv_q.put(["stdout", "\x08 \x08"])  # delete 'l'; cursor at x=2
+            await pilot.pause(delay=0.15)
+            assert terminal.has_input() is False
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_has_input_false_after_typing_and_deleting_with_csi_sequences() -> None:
+    """has_input() must return False after deleting with CSI cursor-left + erase-to-EOL.
+
+    Some shells/prompts use ESC[D (cursor left) + ESC[K (erase to EOL) instead of the
+    classic \\b SP \\b sequence.
+    """
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            await recv_q.put(["pre_cmd", "/home/user\n"])
+            await recv_q.put(["stdout", "$ "])  # prompt; cursor at x=2
+            await pilot.pause(delay=0.05)
+            await recv_q.put(["prompt_ready"])
+            await pilot.pause(delay=0.05)
+            await recv_q.put(["stdout", "ls"])  # cursor at x=4
+            await pilot.pause(delay=0.05)
+            assert terminal.has_input() is True
+            # Delete both chars with ESC[D + ESC[K (cursor-left then erase-to-EOL)
+            await recv_q.put(["stdout", "\x1b[D\x1b[K"])  # delete 's'; cursor at x=3
+            await pilot.pause(delay=0.05)
+            await recv_q.put(["stdout", "\x1b[D\x1b[K"])  # delete 'l'; cursor at x=2
+            await pilot.pause(delay=0.15)
+            assert terminal.has_input() is False
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_has_input_false_after_full_line_reprint() -> None:
+    """has_input() must return False when the shell reprints the full line after deletion.
+
+    Some shells (zsh with certain settings) redraw the entire line by sending \\r, then
+    reprinting the prompt and any remaining input.  After deleting all input the reprint
+    leaves only the prompt, and has_input() must return False.
+    """
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            await recv_q.put(["pre_cmd", "/home/user\n"])
+            await recv_q.put(["stdout", "$ "])
+            await pilot.pause(delay=0.05)
+            await recv_q.put(["prompt_ready"])
+            await pilot.pause(delay=0.05)
+            await recv_q.put(["stdout", "ls"])  # cursor at x=4
+            await pilot.pause(delay=0.05)
+            assert terminal.has_input() is True
+            # Full line reprint: CR + erase-to-EOL + prompt only (input deleted)
+            await recv_q.put(["stdout", "\r\x1b[K$ "])  # cursor at x=2
+            await pilot.pause(delay=0.15)
+            assert terminal.has_input() is False
         finally:
             await _stop_recv_only(terminal)
 
@@ -1402,6 +1513,7 @@ async def test_set_terminal_directory_sets_pending_yank_when_input_present() -> 
         await pilot.pause()
         terminal._started = True
         terminal._prompt_cursor_x = 2
+        terminal._prompt_ready_received = True
         terminal._screen.cursor.x = 6  # user has typed 4 chars
 
         nav_task = asyncio.create_task(terminal.set_terminal_directory(PurePath("/tmp")))  # noqa: S108
