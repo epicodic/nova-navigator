@@ -9,7 +9,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import PurePath, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import ClassVar, NamedTuple, cast
 
 from textual import events, work
@@ -156,14 +156,14 @@ class MainScreen(ActionsSupport, Screen[None]):
     _sync_state: SyncBrowsing | None
     _compare_config: _CompareConfig | None
 
-    def __init__(self) -> None:
+    def __init__(self, config_dir: Path | None = None) -> None:
         super().__init__()
         self._terminal_mode = self._TerminalMode.MINIMIZED
         self._sync_state = None
         self._compare_config = None
         self._terminal_pool = TerminalPool()
         self._provisioning: set[int] = set()
-        self._keymap_config = KeybindingsConfig()
+        self._keymap_config = KeybindingsConfig(config_dir=config_dir)
         self._keymap_registry: KeymapRegistry | None = None
         self._hint_bar = HintBar()
 
@@ -758,8 +758,8 @@ class MainScreen(ActionsSupport, Screen[None]):
             await self._run_action(event.action)
 
     def _action_toggle_hidden(self) -> None:
-        a = self._act("view.show_hidden_files")
-        a.set_checked(not a.checked)
+        new_state = not self._left_panel.show_hidden_files
+        self._act("view.show_hidden_files").set_checked(new_state)
         self._action_show_hidden_files()
 
     def _action_show_hidden_files(self) -> None:
@@ -993,9 +993,10 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
     ENABLE_COMMAND_PALETTE = False
     _main_screen: MainScreen
 
-    def __init__(self) -> None:
+    def __init__(self, config_dir: Path | None = None) -> None:
         apply_runtime_patches()
         super().__init__()
+        self._config_dir = config_dir
         self._path_clipboard = PathClipboard(self)
         self._showing_exception_dialog = False
         register_remote_scheme(conf_.remotes)
@@ -1053,7 +1054,7 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
     async def on_mount(self) -> None:
         debug_analytics.install()
         self.log("Starting Nova Navigator...")
-        self._main_screen = MainScreen()
+        self._main_screen = MainScreen(config_dir=self._config_dir)
         self.install_screen(self._main_screen, "main_screen")
         plugin_registry = PluginRegistry(SCHEME_REGISTRY, self._main_screen._terminal_pool)
         plugin_registry.register(SSH_PLUGIN)

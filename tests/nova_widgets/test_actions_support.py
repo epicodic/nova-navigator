@@ -61,18 +61,18 @@ def test_widget_with_no_actions_raises_key_error() -> None:
         w._act("anything")
 
 
-def test_actions_by_name_is_class_var() -> None:
+def test_actions_by_id_is_class_var() -> None:
     """Two instances share the same dict — it's a ClassVar, not per-instance."""
     w1 = SimpleWidget()
     w2 = SimpleWidget()
-    assert w1._actions_by_name is w2._actions_by_name
+    assert w1._actions_by_id is w2._actions_by_id
 
 
-def test_child_actions_by_name_does_not_equal_parent() -> None:
+def test_child_actions_by_id_does_not_equal_parent() -> None:
     """Child has its own dict that includes parent actions but is separate."""
-    assert SimpleWidget._actions_by_name is not ChildWidget._actions_by_name
-    assert "save" in ChildWidget._actions_by_name
-    assert "open" in ChildWidget._actions_by_name
+    assert SimpleWidget._actions_by_id is not ChildWidget._actions_by_id
+    assert "save" in ChildWidget._actions_by_id
+    assert "open" in ChildWidget._actions_by_id
 
 
 class PassthroughWidget(SimpleWidget):
@@ -96,4 +96,4 @@ def test_unnamed_actions_are_skipped() -> None:
     w = WidgetWithUnnamedAction()
     a = w._act("open")
     assert a.text == "Open"
-    assert len(w._actions_by_name) == 1  # separator not included
+    assert len(w._actions_by_id) == 1  # separator not included

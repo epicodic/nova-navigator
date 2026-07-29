@@ -94,7 +94,12 @@ async def app_ctx(tmp_path: Path, headed: bool) -> object:  # yields AppCtx
     src.mkdir()
     dst.mkdir()
 
-    app = NovaNavigator()
+    # Use an empty temporary config dir so the test is not affected by the
+    # developer's personal keybindings.toml (which may remap keys).
+    empty_config = tmp_path / "config"
+    empty_config.mkdir()
+
+    app = NovaNavigator(config_dir=empty_config)
     async with app.run_test(size=(120, 40), headless=not headed) as pilot:
         await pilot.pause()
         screen = app._main_screen
