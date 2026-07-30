@@ -7,6 +7,7 @@ from typing import Literal
 from nova_navigator.response import Response
 from nova_navigator.scheduler import TaskContext
 
+from ..file_filter import FileFilter
 from ..vfs import VPath
 from ..vfs.filesystem import Filesystem
 from ..vfs.types import Stat
@@ -50,6 +51,7 @@ class FileCopyOptions:
     """Options that control the behaviour of file copy operations."""
 
     overwrite: OverwritePolicy = "ask"
+    filter: FileFilter | None = None
 
 
 @dataclass
@@ -145,6 +147,9 @@ async def _copy_file_step(
     dst: VPath,
     options: FileCopyOptions,
 ) -> None:
+    if options.filter is not None and not options.filter.matches(src):
+        ctx.status.update_progress(inc_completed=1)
+        return
     await copy_file(ctx, src, dst, options)
     ctx.status.update_progress(inc_completed=1)
 
@@ -204,8 +209,7 @@ async def copy_files(
 
     if len(src_paths) == 1 and not dst_is_directory and not src_paths[0].stat.is_directory:
         ctx.status.update_progress(inc_total=1)
-        await copy_file(ctx, src_paths[0], destination, options)
-        ctx.status.update_progress(inc_completed=1)
+        await _copy_file_step(ctx, src_paths[0], destination, options)
         return
 
     if len(src_paths) == 1 and not dst_is_directory and src_paths[0].stat.is_directory:
@@ -264,6 +268,9 @@ async def _move_dir_contents(
         for f in src_files:
             ctx.status.check_cancelled()
             ctx.status.set_current_item(f.uri)
+            if options.filter is not None and not options.filter.matches(f):
+                ctx.status.update_progress(inc_completed=1)
+                continue
             f_dst = dst_root / f.name
             if same_device:
                 f_dst_stat = f_dst.stat_or_none
@@ -320,6 +327,12 @@ async def _move_path(
     actual_dst = dst_path / src_path.name if (dst_stat is not None and dst_stat.is_directory) else dst_path
 
     same_device = src_path.filesystem.is_same_device(src_path, actual_dst)
+
+    # Filter check — skip non-matching files (directories are always traversed).
+    if not is_dir and options.filter is not None and not options.filter.matches(src_path):
+        _logger.debug("move_path filter skip %s", src_path.path)
+        ctx.status.update_progress(inc_completed=1)
+        return
 
     if same_device:
         actual_dst_stat = actual_dst.stat_or_none
