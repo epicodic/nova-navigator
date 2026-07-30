@@ -363,7 +363,7 @@ class MainScreen(ActionsSupport, Screen[None]):
                 return True
 
             case "enter":
-                if self._terminal_pool.active_terminal.has_input():
+                if self._terminal_mode != self._TerminalMode.MINIMIZED and self._terminal_pool.active_terminal.has_input():
                     await self._terminal_pool.active_terminal.on_key(event)
                     return True
 
@@ -406,8 +406,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         else:
             self._left_panel.focus()
             self._last_active_panel = self._left_panel
-        panel_id = PanelRef.LEFT.value if self._last_active_panel is self._left_panel else PanelRef.RIGHT.value
-        self._switch_terminal(self._last_active_panel.path, panel_id)
+        self._switch_terminal(self._last_active_panel.path)
 
     def action_toggle_maximized_terminal(self) -> None:
         if self._terminal_mode == self._TerminalMode.MAXIMIZED:
@@ -438,9 +437,9 @@ class MainScreen(ActionsSupport, Screen[None]):
             case self._TerminalMode.MAXIMIZED:
                 t.styles.height = self.size.height - 2
 
-    def _switch_terminal(self, path: VPath, panel_id: str = "") -> None:
+    def _switch_terminal(self, path: VPath) -> None:
         self._terminal_pool.switch_to(path.filesystem)
-        self._terminal_pool.active_terminal.request_cd(path.path, panel_id)
+        self._terminal_pool.active_terminal.request_cd(path.path)
 
     async def _on_directory_browser_path_selected(self, event: DirectoryBrowser.PathSelected) -> None:
         vpath = event.path
@@ -450,8 +449,7 @@ class MainScreen(ActionsSupport, Screen[None]):
     @work
     async def _on_directory_browser_path_changed(self, event: DirectoryBrowser.PathChanged) -> None:
         await self._ensure_terminal_for(event.path)
-        panel_id = PanelRef.LEFT.value if event.browser is self._left_panel else PanelRef.RIGHT.value
-        self._switch_terminal(event.path, panel_id)
+        self._switch_terminal(event.path)
         if self._sync_state is not None:
             self._mirror_sync(event.browser, event.path)
 
@@ -519,14 +517,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         fs = self._terminal_pool.filesystem_for(event.terminal_widget)
         if fs is None:
             return
-        if event.panel_id == PanelRef.LEFT.value:
-            panel = self._left_panel
-        elif event.panel_id == PanelRef.RIGHT.value:
-            panel = self._right_panel
-        else:
-            # _NN_PANEL was unset (startup) or FallbackDriver — fall back to active panel.
-            panel = self.active_panel()
-        panel.set_path(VPath(event.cwd, fs))
+        self.active_panel().set_path(VPath(event.cwd, fs))
 
     def _action_toggle_sync_browsing(self) -> None:
         a = self._act("view.sync_browsing")

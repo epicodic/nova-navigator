@@ -101,21 +101,19 @@ class PtyBackend(ABC):
     ) -> None:
         """Handle a decoded OSC sequence.
 
-        OSC 7 carries a CWD URI and is posted as ``["pre_cmd", path, panel_id, from_nn]``.
-        The payload may be ``panel=<id>;file:///path`` (NN format, ``from_nn=True``) or the
-        legacy ``file:///path`` (no panel prefix, ``from_nn=False``).  Both are handled.
-        ``from_nn`` signals whether the event originated from Nova Navigator's own precmd
-        hook; callers use this to ignore third-party chpwd hooks.
-        All other codes are silently discarded.
+        OSC 7 carries a CWD URI and is posted as ``["pre_cmd", path, from_nn]``.
+        The payload may be ``panel=;file:///path`` (NN format, ``from_nn=True``) or
+        plain ``file:///path`` (third-party chpwd hook, ``from_nn=False``).
+        ``from_nn`` lets callers ignore third-party hooks that would miscount
+        in-flight navigations.
+        All other OSC codes are silently discarded.
         """
         if code == _OSC_CWD:
-            panel_id = ""
             payload = data
             from_nn = data.startswith("panel=")
             if from_nn:
                 semi = data.find(";", 6)
                 if semi != -1:
-                    panel_id = data[6:semi]
                     payload = data[semi + 1 :]
             if payload.startswith("file://"):
                 remainder = payload[len("file://") :]
@@ -124,7 +122,7 @@ class PtyBackend(ABC):
                 else:
                     slash = remainder.find("/")
                     path = remainder[slash:] if slash != -1 else "/"
-                loop.call_soon_threadsafe(recv_queue.put_nowait, ["pre_cmd", path, panel_id, from_nn])
+                loop.call_soon_threadsafe(recv_queue.put_nowait, ["pre_cmd", path, from_nn])
         elif code == _OSC_PROMPT and data == "B":
             loop.call_soon_threadsafe(recv_queue.put_nowait, ["prompt_ready"])
 
@@ -199,6 +197,12 @@ class LocalPtyBackend(PtyBackend):
             env = os.environ.copy()
             env["TERM"] = "xterm-256color"
             env["LC_ALL"] = "en_US.UTF-8"
+            # Remove virtualenv variables inherited from the parent process
+            # (e.g. when launched via ``uv run``).  The child shell has no
+            # ``deactivate`` function, so plugins like autoswitch_virtualenv
+            # break when they see $VIRTUAL_ENV and try to call it.
+            env.pop("VIRTUAL_ENV", None)
+            env.pop("VIRTUAL_ENV_PROMPT", None)
             os.execvpe(argv[0], argv, env)
             raise RuntimeError("execvpe failed")
 
