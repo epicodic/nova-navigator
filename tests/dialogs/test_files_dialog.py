@@ -2,9 +2,10 @@ from unittest.mock import MagicMock
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Input, Static
+from textual.widgets import Collapsible, Input, Static
 
 from nova_navigator.dialogs.files_dialog import CopyMoveFilesDialog, DeleteFilesDialog
+from nova_navigator.file_filter import FilenamePatternFilter
 from nova_navigator.vfs.filesystem import VPath
 
 
@@ -77,7 +78,7 @@ async def test_copy_dialog_single_file_shows_input() -> None:
     dialog, _App = _make_copy_app(src, dst)
     async with _App().run_test(size=(100, 30)) as pilot:
         await pilot.pause()
-        inp = dialog.query_one(Input)
+        inp = dialog.query_one("#filename_input", Input)
         assert inp.value == "file.txt"
 
 
@@ -88,7 +89,9 @@ async def test_copy_dialog_multiple_files_no_input() -> None:
     dialog, _App = _make_copy_app(src, dst)
     async with _App().run_test(size=(100, 30)) as pilot:
         await pilot.pause()
-        assert len(dialog.query(Input)) == 0
+        # No filename Input; the only Input is the filter_pattern one inside the Collapsible
+        inputs = list(dialog.query(Input))
+        assert all(inp.id == "filter_pattern" for inp in inputs)
 
 
 @pytest.mark.asyncio
@@ -132,7 +135,7 @@ async def test_capture_filename_stores_input_value() -> None:
     dialog, _App = _make_copy_app(src, dst)
     async with _App().run_test(size=(100, 30)) as pilot:
         await pilot.pause()
-        dialog.query_one(Input).value = "renamed.txt"
+        dialog.query_one("#filename_input", Input).value = "renamed.txt"
         dialog._capture_filename()
         assert dialog.filename == "renamed.txt"
 
@@ -144,7 +147,7 @@ async def test_capture_filename_falls_back_to_original_when_empty() -> None:
     dialog, _App = _make_copy_app(src, dst)
     async with _App().run_test(size=(100, 30)) as pilot:
         await pilot.pause()
-        dialog.query_one(Input).value = "   "
+        dialog.query_one("#filename_input", Input).value = "   "
         dialog._capture_filename()
         assert dialog.filename == "original.txt"
 
@@ -167,7 +170,7 @@ async def test_action_accept_captures_filename() -> None:
     dialog, _App = _make_copy_app(src, dst)
     async with _App().run_test(size=(100, 30)) as pilot:
         await pilot.pause()
-        dialog.query_one(Input).value = "newname.txt"
+        dialog.query_one("#filename_input", Input).value = "newname.txt"
         await pilot.press("enter")
         await pilot.pause()
         assert dialog.filename == "newname.txt"
@@ -180,7 +183,7 @@ async def test_ok_button_captures_filename() -> None:
     dialog, _App = _make_copy_app(src, dst)
     async with _App().run_test(size=(100, 30)) as pilot:
         await pilot.pause()
-        dialog.query_one(Input).value = "via_button.txt"
+        dialog.query_one("#filename_input", Input).value = "via_button.txt"
         ok_btn = dialog.query_one("#OK")
         await pilot.click(ok_btn)
         await pilot.pause()
@@ -199,6 +202,49 @@ async def test_delete_dialog_single_file_message() -> None:
         # verify dialog mounts with YES/NO buttons
         assert dialog.query_one("#YES") is not None
         assert dialog.query_one("#NO") is not None
+
+
+@pytest.mark.asyncio
+async def test_filter_section_collapsed_by_default() -> None:
+    src = [_make_vpath("file.txt")]
+    dst = _make_vpath("dest", "/dest")
+    dialog, _App = _make_copy_app(src, dst)
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        collapsible = dialog.query_one(Collapsible)
+        assert collapsible.collapsed is True
+
+
+@pytest.mark.asyncio
+async def test_filter_file_filter_returns_none_for_wildcard() -> None:
+    src = [_make_vpath("file.txt")]
+    dst = _make_vpath("dest", "/dest")
+    dialog, _App = _make_copy_app(src, dst)
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        collapsible = dialog.query_one(Collapsible)
+        collapsible.collapsed = False  # expand so the collapsed guard doesn't fire
+        await pilot.pause()
+        # default value is "*" — should still return None
+        assert dialog.file_filter is None
+
+
+@pytest.mark.asyncio
+async def test_filter_file_filter_returns_filter_for_pattern() -> None:
+    src = [_make_vpath("file.txt")]
+    dst = _make_vpath("dest", "/dest")
+    dialog, _App = _make_copy_app(src, dst)
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        # Expand the collapsible and set a non-wildcard pattern
+        collapsible = dialog.query_one(Collapsible)
+        collapsible.collapsed = False
+        await pilot.pause()
+        filter_input = dialog.query_one("#filter_pattern", Input)
+        filter_input.value = "*.txt"
+        result = dialog.file_filter
+        assert isinstance(result, FilenamePatternFilter)
+        assert result.patterns == ["*.txt"]
 
 
 @pytest.mark.asyncio

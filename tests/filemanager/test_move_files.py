@@ -1,7 +1,9 @@
 import threading
+from pathlib import PurePosixPath
 
 import pytest
 
+from nova_navigator.file_filter import FilenamePatternFilter
 from nova_navigator.filemanager.tasks import FileCopyOptions, move_files
 from nova_navigator.response import Response
 from nova_navigator.scheduler import TaskCancelled, TaskStatus
@@ -623,3 +625,64 @@ async def test_move_dir_subdir_total_grows_monotonically() -> None:
         prev_completed, prev_total = completed, total
     assert events[-1][1] == 7, f"Expected final total=7, got {events[-1][1]}"
     assert events[-1][0] == 7, f"Expected final completed=7, got {events[-1][0]}"
+
+
+# ---------------------------------------------------------------------------
+# Filter tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_move_files_filter_skips_non_matching() -> None:
+    """Files not matching the filter are not moved."""
+    src_fs = MockFilesystem({"/src/a.txt": b"text", "/src/b.py": b"python"})
+    dst_fs = MockFilesystem()
+    dst_fs._mkdir_p(PurePosixPath("/dst"))
+
+    options = FileCopyOptions(filter=FilenamePatternFilter(patterns=["*.txt"]))
+    await run_task(
+        lambda ctx: move_files(ctx, [src_fs.path("/src/a.txt"), src_fs.path("/src/b.py")], dst_fs.path("/dst"), options),
+    )
+
+    assert read_all(dst_fs, "/dst/a.txt") == b"text"
+    assert dst_fs.path("/dst/b.py").stat_or_none is None
+    # b.py source is untouched
+    assert src_fs.path("/src/b.py").stat_or_none is not None
+
+
+@pytest.mark.asyncio
+async def test_move_dir_filter_skips_non_matching_files() -> None:
+    """When moving a directory tree, only matching files are moved; dirs are still created."""
+    src_fs = MockFilesystem(
+        {
+            "/src/mydir/a.txt": b"text",
+            "/src/mydir/b.py": b"python",
+        }
+    )
+    dst_fs = MockFilesystem()
+    dst_fs._mkdir_p(PurePosixPath("/dst"))
+
+    options = FileCopyOptions(filter=FilenamePatternFilter(patterns=["*.txt"]))
+    await run_task(
+        lambda ctx: move_files(ctx, [src_fs.path("/src/mydir")], dst_fs.path("/dst"), options),
+    )
+
+    assert read_all(dst_fs, "/dst/mydir/a.txt") == b"text"
+    assert dst_fs.path("/dst/mydir/b.py").stat_or_none is None
+    # destination directory was created
+    assert dst_fs.path("/dst/mydir").stat.is_directory
+
+
+@pytest.mark.asyncio
+async def test_move_filter_none_moves_all() -> None:
+    """filter=None (default) moves all files — unchanged behaviour."""
+    src_fs = MockFilesystem({"/src/a.txt": b"a", "/src/b.py": b"b"})
+    dst_fs = MockFilesystem()
+    dst_fs._mkdir_p(PurePosixPath("/dst"))
+
+    await run_task(
+        lambda ctx: move_files(ctx, [src_fs.path("/src/a.txt"), src_fs.path("/src/b.py")], dst_fs.path("/dst")),
+    )
+
+    assert read_all(dst_fs, "/dst/a.txt") == b"a"
+    assert read_all(dst_fs, "/dst/b.py") == b"b"

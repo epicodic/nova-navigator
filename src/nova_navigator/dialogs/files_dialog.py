@@ -1,6 +1,8 @@
 from textual import events
-from textual.widgets import Static
+from textual.css.query import NoMatches
+from textual.widgets import Collapsible, Static
 
+from nova_navigator.file_filter import FileFilter, FilenamePatternFilter
 from nova_navigator.vfs.filesystem import VPath
 from nova_widgets import Input
 
@@ -9,7 +11,7 @@ from .dialog import ComposeResult, DefaultButton, Dialog
 
 
 class CopyMoveFilesDialog(Dialog):
-    AUTO_FOCUS = "Input"
+    AUTO_FOCUS = "#filename_input"
     MAX_DISPLAYED_FILES = 10
 
     filename: str | None = None  # set to the entered filename when OK is confirmed
@@ -26,7 +28,18 @@ class CopyMoveFilesDialog(Dialog):
         #destination {
             border: inner $surface;
             background: $surface;
-           }
+        }
+
+        Collapsible {
+            border: none;
+            padding: 0;
+            margin-top: 1;
+        }
+
+        #filter_pattern {
+            border: inner $surface;
+            background: $surface;
+        }
     }
     """
 
@@ -45,9 +58,8 @@ class CopyMoveFilesDialog(Dialog):
     def compose_content(self) -> ComposeResult:
         move_or_copy = "Move" if self.move else "Copy"
 
-        # file = self.source_paths[0] if len(self.source_paths) == 1 else f"{len(self.source_paths)} files"
         self._source_files = NoSelectListView()
-        yield Static(f"{move_or_copy} {len(self.source_paths)} files:")  # Spacer
+        yield Static(f"{move_or_copy} {len(self.source_paths)} files:")
         yield self._source_files
 
         yield Static("")  # Spacer
@@ -57,12 +69,37 @@ class CopyMoveFilesDialog(Dialog):
         if len(self.source_paths) == 1:
             yield Static("")  # Spacer
             yield Static("Filename:")
-            yield Input(value=self.source_paths[0].name, placeholder="Enter filename")
+            yield Input(value=self.source_paths[0].name, placeholder="Enter filename", id="filename_input")
+
+        yield Collapsible(
+            Static("Pattern:"),
+            Input(value="*", id="filter_pattern"),
+            title="Filtering",
+            collapsed=True,
+        )
+
+    @property
+    def file_filter(self) -> FileFilter | None:
+        """Return a FileFilter based on the pattern input, or None if the pattern matches everything."""
+        try:
+            collapsible = self.query_one(Collapsible)
+        except NoMatches:
+            return None
+        if collapsible.collapsed:
+            return None
+        value = self.query_one("#filter_pattern", Input).value.strip()
+        if not value or value == "*":
+            return None
+        return FilenamePatternFilter.from_pattern_string(value)
 
     def _capture_filename(self) -> None:
-        """Read the Input value and store it in self.filename before dismissing."""
+        """Read the filename Input value and store it in self.filename before dismissing."""
         if len(self.source_paths) == 1:
-            value = self.query_one(Input).value.strip()
+            try:
+                inp = self.query_one("#filename_input", Input)
+            except NoMatches:
+                return
+            value = inp.value.strip()
             self.filename = value if value else self.source_paths[0].name
 
     def action_accept_dialog(self) -> None:

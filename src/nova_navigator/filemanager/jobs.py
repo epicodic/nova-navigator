@@ -6,7 +6,7 @@ from nova_navigator.vfs import VPath
 
 from ..dialogs.files_dialog import CopyMoveFilesDialog
 from ..scheduler import Job
-from .tasks import copy_files, erase_files, move_files
+from .tasks import FileCopyOptions, copy_files, erase_files, move_files
 
 _logger = logging.getLogger(__name__)
 
@@ -39,9 +39,10 @@ async def copy_or_move_files_job(src_paths: list[VPath], dst_path: VPath, move: 
     verb = "Move" if move else "Copy"
     names = ", ".join(p.name for p in src_paths)
     _logger.info("%s %d item(s) [%s] -> %s", verb, len(src_paths), names, dst_path.path)
+    options = FileCopyOptions(filter=dialog.file_filter)
     if move:
-        return Job("Move Files", move_files, src_paths, dst_path)
-    return Job("Copy Files", copy_files, src_paths, dst_path)
+        return Job("Move Files", move_files, src_paths, dst_path, options)
+    return Job("Copy Files", copy_files, src_paths, dst_path, options)
 
 
 async def delete_files_job(paths: list[VPath]) -> Job | None:
