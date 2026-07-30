@@ -59,8 +59,7 @@ _KILL_LINE = "\x15"  # Ctrl+U — kill whole line to kill ring
 _YANK = "\x19"  # Ctrl+Y — yank from kill ring
 _END_OF_LINE = "\x05"  # Ctrl+E — move cursor to end of line
 
-_PRE_CMD_MIN_LEN = 2  # minimum elements in a pre_cmd message (cmd + path); 3 means panel_id present
-_PRE_CMD_FROM_NN_IDX = 3  # index of the from_nn flag in a pre_cmd message
+_PRE_CMD_FROM_NN_IDX = 2  # index of the from_nn flag in a pre_cmd message
 
 
 _MOUSE_TRACKING_MODES: frozenset[str] = frozenset({"1000", "1002", "1003", "1006"})
@@ -185,12 +184,11 @@ class Terminal(Widget, can_focus=True):
     Delegates process management to a ``PtyBackend`` and shell-specific
     logic to a ``ShellDriver``.
 
-    The SIGSTOP synchronisation model:
-    When using a shell that supports it (zsh, bash), the precmd hook sends
-    ``kill -STOP $$`` after writing the CWD to the precmd pipe.  This freezes
-    the shell until ``Terminal`` calls ``backend.resume()``.  This makes
-    directory navigation deterministic — no race between output suppression
-    and shell prompt rendering.
+    Directory navigation uses precmd-gated draining: when a programmatic
+    ``cd`` is issued, stdout output is suppressed until the shell's precmd
+    hook fires (emitting an OSC 7 CWD sequence).  This hides the ``cd``
+    echo without requiring SIGSTOP/SIGCONT synchronisation, making it
+    work identically for local shells and SSH connections.
     """
 
     DEFAULT_CSS = """
@@ -218,10 +216,6 @@ class Terminal(Widget, can_focus=True):
         the terminal (not triggered by ``request_cd``).  Handlers should
         only update external state (e.g. directory browser panels) for
         user-initiated changes.
-
-        ``panel_id`` is the value of ``$_NN_PANEL`` from the shell at the
-        time the precmd hook ran.  It identifies which panel should receive
-        the path update.  Empty string means unset (startup or FallbackDriver).
         """
 
         def __init__(
@@ -230,12 +224,10 @@ class Terminal(Widget, can_focus=True):
             cwd: PurePath,
             *,
             user_initiated: bool,
-            panel_id: str = "",
         ) -> None:
             self.terminal_widget = terminal_widget
             self.cwd = cwd
             self.user_initiated = user_initiated
-            self.panel_id = panel_id
             super().__init__()
 
     class Closed(Message):
@@ -276,7 +268,10 @@ class Terminal(Widget, can_focus=True):
         self._stream = pyte.Stream(self._screen)
         self._prompt_cursor_x: int = 0
         self._prompt_cursor_y: int = 0
+        self._prompt_ready_received: bool = False
+        self._snapshot_prompt_after_precmd: bool = False
         self._pending_yank: bool = False
+        self._keys_forwarded_since_precmd: bool = False
         # Counts navigations whose pre_cmd acknowledgement has not yet
         # arrived.  Draining ends only when this reaches zero, preventing
         # a rapid second cd from leaking its echo after the first pre_cmd
@@ -309,18 +304,15 @@ class Terminal(Widget, can_focus=True):
     def _start_backend(self) -> None:
         """Open the backend, start the send loop, and inject shell init code.
 
-        When the driver supports stop/resume, draining is enabled immediately.
-        The shell will freeze after its first precmd (startup); recv() will
-        send SIGCONT to resume it and end the startup drain.
+        Draining is enabled immediately so that the init code echo and
+        startup prompt are suppressed.  Draining ends when the first
+        precmd fires (the shell's hook emits an OSC 7 CWD sequence).
         """
         self._backend.open(self.command, self.nrow, self.ncol)
         self.send_queue = asyncio.Queue()
         self._run_task = asyncio.create_task(self._run())
-        # The shell will STOP after its first precmd.  Set draining so the
-        # startup output (init code echo) is suppressed.
-        # Both conditions are required: the driver must support SIGSTOP and
-        # the backend must have a precmd signal to indicate when draining can end.
-        if self._driver.supports_stop_resume and self._backend.supports_precmd:
+        # Suppress init code echo until the first precmd arrives.
+        if self._backend.supports_precmd:
             self._draining = True
         init = self._driver.init_code()
         if init:
@@ -366,69 +358,57 @@ class Terminal(Widget, can_focus=True):
         event.stop()
         char = _CTRL_KEYS.get(event.key) or event.character
         if char:
+            self._keys_forwarded_since_precmd = True
             assert self.send_queue is not None
             self.send_queue.put_nowait(["stdin", char])
 
     def has_input(self) -> bool:
         """Return True if the user has typed something on the current prompt line.
 
-        Only meaningful when the driver supports prompt tracking
-        (supports_prompt_ready).  Returns False for drivers like FallbackDriver
-        that cannot reliably detect the prompt position.
-        """
-        if not self._driver.supports_prompt_ready:
-            return False
-        if self._screen.cursor.y != self._prompt_cursor_y:
-            return self._screen.cursor.y > self._prompt_cursor_y
-        return self._screen.cursor.x > self._prompt_cursor_x
+        Uses a two-tier detection strategy:
 
-    def request_cd(self, path: PurePath, panel_id: str = "") -> None:
+        1. **Primary — cursor comparison** (when OSC 133;B is available):
+           The prompt-end cursor position is snapshotted each time
+           ``_handle_prompt_ready`` fires.  If the current cursor is past
+           that position, the user has typed something.
+
+        2. **Fallback — keystroke tracking** (when prompt position is unknown):
+           A flag (``_keys_forwarded_since_precmd``) is set whenever a key
+           event is forwarded to the shell and cleared on each precmd.
+           This works for any shell but cannot detect the "typed then
+           deleted everything" case.
+        """
+        if self._prompt_ready_received:
+            if self._screen.cursor.y != self._prompt_cursor_y:
+                return self._screen.cursor.y > self._prompt_cursor_y
+            return self._screen.cursor.x > self._prompt_cursor_x
+        return self._keys_forwarded_since_precmd
+
+    def request_cd(self, path: PurePath) -> None:
         """Issue a cd command to the shell without waiting for completion.
 
-        When ``panel_id`` is given, ``_NN_PANEL=<panel_id>`` is prepended to the
-        command so the precmd hook embeds the panel ID in the OSC 7 payload.
-        This makes routing in ``_on_terminal_path_changed`` deterministic.
+        If the shell is already at *path* and no navigations are in flight,
+        the request is skipped.
 
-        When ``panel_id`` is given and the terminal is already at ``path``, the
-        command ``_NN_PANEL=<panel_id>; true`` is sent instead of ``cd``, so the
-        shell env is updated without triggering ``chpwd`` hooks.
-
-        When ``panel_id`` is *not* given and the shell is already at ``path``,
-        the request is skipped entirely (original short-circuit behaviour).
-
-        Note: ``PathChanged`` is not posted when ``path == _cwd``; the command
-        only updates ``$_NN_PANEL`` for future shell navigations.
-
-        Has no effect on ``_NN_PANEL`` when the driver does not support
-        stop/resume (e.g. ``FallbackDriver``); the ``panel_id`` argument is
-        ignored in that case.
+        Output between the ``cd`` command and the next precmd is suppressed
+        via draining.  If the user has typed something on the prompt, the
+        input is killed (Ctrl+U) before the ``cd`` and yanked back (Ctrl+Y)
+        after the precmd fires, preserving the user's partially typed command.
+        Draining starts before the kill so the Ctrl+U echo is also suppressed.
         """
         if not self._started:
             return
-        if self._driver.supports_stop_resume and self._backend.supports_precmd:
-            # Skip entirely only when no panel_id is requested AND already at target.
-            if not panel_id and self._nav_pending == 0 and self._cwd is not None and path == self._cwd:
-                return
-            self._pending_yank = self.has_input()
-            if self._pending_yank:
-                self._backend.write(_KILL_LINE.encode())
-            self._nav_pending += 1
-            self._draining = True
-            if self._nav_future is None or self._nav_future.done():
-                self._nav_future = asyncio.get_running_loop().create_future()
-            panel_prefix = f"_NN_PANEL={panel_id}; " if panel_id else ""
-            # If this is the only pending nav and the path hasn't changed,
-            # just update _NN_PANEL without running cd (avoids chpwd hooks).
-            if self._nav_pending == 1 and self._cwd is not None and path == self._cwd:
-                cmd = f" {panel_prefix}true\n"
-            else:
-                cmd = f" {panel_prefix}{self._driver.cd_command(str(path))}\n"
-            self._backend.write(cmd.encode())
-        else:
-            if self._nav_pending == 0 and self._cwd is not None and path == self._cwd:
-                return
-            cmd = " " + self._driver.cd_command(str(path)) + "\n"
-            self._backend.write(cmd.encode())
+        if self._nav_pending == 0 and self._cwd is not None and path == self._cwd:
+            return
+        self._pending_yank = self.has_input()
+        self._nav_pending += 1
+        self._draining = True
+        if self._nav_future is None or self._nav_future.done():
+            self._nav_future = asyncio.get_running_loop().create_future()
+        if self._pending_yank:
+            self._backend.write(_KILL_LINE.encode())
+        cmd = " " + self._driver.cd_command(str(path)) + "\n"
+        self._backend.write(cmd.encode())
 
     async def set_terminal_directory(self, path: PurePath) -> PurePath:
         """Change the shell's working directory to *path*, preserving any typed input.
@@ -440,19 +420,20 @@ class Terminal(Widget, can_focus=True):
         if not self._started:
             return path
         self.request_cd(path)
-        if self._driver.supports_stop_resume and self._nav_future is not None and not self._nav_future.done():
+        if self._nav_future is not None and not self._nav_future.done():
             return await self._nav_future
         return self._cwd or path
 
     async def send(self, data: str, mode: Literal["normal", "silent"] = "normal") -> None:
         """Send *data* to the shell.
 
-        When *mode* is ``"silent"`` and the driver supports stop/resume,
+        When *mode* is ``"silent"`` and the backend supports precmd,
         the echo of *data* is suppressed until the next precmd fires.
         """
         if not self._started:
             return
-        if mode == "silent" and self._driver.supports_stop_resume and self._backend.supports_precmd:
+        self._keys_forwarded_since_precmd = True
+        if mode == "silent" and self._backend.supports_precmd:
             self._draining = True
         self._backend.write(data.encode())
 
@@ -491,17 +472,16 @@ class Terminal(Widget, can_focus=True):
     # recv loop
     # ------------------------------------------------------------------
 
-    def _handle_pre_cmd(self, raw: str, panel_id: str = "", from_nn: bool = True) -> None:
-        """Process a pre_cmd message: update nav state, resume shell, post event.
+    def _handle_pre_cmd(self, raw: str, from_nn: bool = True) -> None:
+        """Process a pre_cmd message: update nav state, post event.
 
         When ``from_nn`` is False the event originated from a third-party chpwd
         hook (e.g. oh-my-zsh) rather than from Nova Navigator's own precmd hook.
-        For drivers that support stop/resume (Zsh/Bash + NN hooks active) these
-        events are ignored so that ``_nav_pending`` is only decremented by NN's
-        own hook and third-party hooks cannot trigger spurious user-initiated
-        PathChanged events.
+        These events are ignored so that ``_nav_pending`` is only decremented by
+        NN's own hook and third-party hooks cannot trigger spurious
+        user-initiated PathChanged events.
         """
-        if self._driver.supports_stop_resume and self._backend.supports_precmd and not from_nn:
+        if not from_nn:
             return
         cwd = PurePath(raw.strip())
         cwd_changed = cwd != self._cwd
@@ -511,8 +491,7 @@ class Terminal(Widget, can_focus=True):
             self._nav_pending -= 1
         if self._draining and self._nav_pending == 0:
             # All in-flight navigations acknowledged.  Write yank bytes
-            # before resuming so they arrive at the shell before it
-            # prints the new prompt.
+            # so they arrive at the shell before it prints the new prompt.
             if self._pending_yank:
                 self._pending_yank = False
                 self._backend.write((_YANK + _END_OF_LINE).encode())
@@ -520,18 +499,19 @@ class Terminal(Widget, can_focus=True):
             # Resolve the navigation future so callers unblock.
             if self._nav_future is not None and not self._nav_future.done():
                 self._nav_future.set_result(cwd)
-        # Always resume — the shell STOPs after every precmd,
-        # not just after navigations.
-        if self._driver.supports_stop_resume:
-            self._backend.resume()
+        # Reset input tracking for the new prompt cycle.
+        self._keys_forwarded_since_precmd = False
+        self._prompt_ready_received = False
+        self._snapshot_prompt_after_precmd = True
         if self._nav_pending == 0 and cwd_changed:
-            self.post_message(Terminal.PathChanged(self, cwd, user_initiated=not was_programmatic, panel_id=panel_id))
+            self.post_message(Terminal.PathChanged(self, cwd, user_initiated=not was_programmatic))
         self.post_message(Terminal.PreCmd(self, cwd))
 
     def _handle_prompt_ready(self) -> None:
         """Snapshot cursor position as the prompt-end position."""
         self._prompt_cursor_x = self._screen.cursor.x
         self._prompt_cursor_y = self._screen.cursor.y
+        self._prompt_ready_received = True
 
     async def recv(self) -> None:
         """Process messages from recv_queue: stdout, pre_cmd, setup, disconnect."""
@@ -547,13 +527,15 @@ class Terminal(Widget, can_focus=True):
                         assert self.send_queue is not None
                         self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
                     elif cmd == "pre_cmd":
-                        panel_id = str(message[2]) if len(message) > _PRE_CMD_MIN_LEN else ""
                         from_nn = bool(message[_PRE_CMD_FROM_NN_IDX]) if len(message) > _PRE_CMD_FROM_NN_IDX else True
-                        self._handle_pre_cmd(str(message[1]), panel_id, from_nn)
+                        self._handle_pre_cmd(str(message[1]), from_nn)
                     elif cmd == "stdout":
                         if not self._draining:
                             self._feed_stdout(str(message[1]))
                             stdout_fed = True
+                            if self._snapshot_prompt_after_precmd:
+                                self._snapshot_prompt_after_precmd = False
+                                self._handle_prompt_ready()
                     elif cmd == "prompt_ready":
                         self._handle_prompt_ready()
                     elif cmd == "disconnect":

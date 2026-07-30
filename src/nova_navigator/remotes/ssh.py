@@ -143,7 +143,7 @@ async def _make_ssh_terminal(fs: Filesystem) -> Terminal | None:
             return "/bin/sh"
 
     shell_path = await asyncio.to_thread(_detect_shell)
-    driver = detect_driver(shell_path, stop_resume=False)
+    driver = detect_driver(shell_path)
     return Terminal(
         "ssh",
         backend=SshPtyBackend(ssh_fs._ssh_client),
