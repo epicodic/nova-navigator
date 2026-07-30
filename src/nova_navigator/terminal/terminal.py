@@ -269,6 +269,7 @@ class Terminal(Widget, can_focus=True):
         self._prompt_cursor_x: int = 0
         self._prompt_cursor_y: int = 0
         self._prompt_ready_received: bool = False
+        self._snapshot_prompt_after_precmd: bool = False
         self._pending_yank: bool = False
         self._keys_forwarded_since_precmd: bool = False
         # Counts navigations whose pre_cmd acknowledgement has not yet
@@ -501,6 +502,7 @@ class Terminal(Widget, can_focus=True):
         # Reset input tracking for the new prompt cycle.
         self._keys_forwarded_since_precmd = False
         self._prompt_ready_received = False
+        self._snapshot_prompt_after_precmd = True
         if self._nav_pending == 0 and cwd_changed:
             self.post_message(Terminal.PathChanged(self, cwd, user_initiated=not was_programmatic))
         self.post_message(Terminal.PreCmd(self, cwd))
@@ -531,6 +533,9 @@ class Terminal(Widget, can_focus=True):
                         if not self._draining:
                             self._feed_stdout(str(message[1]))
                             stdout_fed = True
+                            if self._snapshot_prompt_after_precmd:
+                                self._snapshot_prompt_after_precmd = False
+                                self._handle_prompt_ready()
                     elif cmd == "prompt_ready":
                         self._handle_prompt_ready()
                     elif cmd == "disconnect":

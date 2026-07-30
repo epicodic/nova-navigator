@@ -197,6 +197,12 @@ class LocalPtyBackend(PtyBackend):
             env = os.environ.copy()
             env["TERM"] = "xterm-256color"
             env["LC_ALL"] = "en_US.UTF-8"
+            # Remove virtualenv variables inherited from the parent process
+            # (e.g. when launched via ``uv run``).  The child shell has no
+            # ``deactivate`` function, so plugins like autoswitch_virtualenv
+            # break when they see $VIRTUAL_ENV and try to call it.
+            env.pop("VIRTUAL_ENV", None)
+            env.pop("VIRTUAL_ENV_PROMPT", None)
             os.execvpe(argv[0], argv, env)
             raise RuntimeError("execvpe failed")
 
