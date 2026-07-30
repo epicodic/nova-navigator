@@ -180,6 +180,7 @@ _ENTRIES: list[DialogEntry] = [
             destination_path=VPath("/home/user/Downloads", _fs),
             move=False,
         ),
+        result_fn=lambda d, r: f"Result: {r}  filename={d.filename!r}  file_filter={d.file_filter!r}",
     ),
     DialogEntry(
         "CopyMoveFilesDialog (move)",
@@ -189,6 +190,7 @@ _ENTRIES: list[DialogEntry] = [
             destination_path=VPath("/home/user/Downloads", _fs),
             move=True,
         ),
+        result_fn=lambda d, r: f"Result: {r}  filename={d.filename!r}  file_filter={d.file_filter!r}",
     ),
     DialogEntry(
         "DeleteFilesDialog",
