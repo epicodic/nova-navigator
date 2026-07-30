@@ -3,6 +3,7 @@ from pathlib import PurePosixPath
 
 import pytest
 
+from nova_navigator.file_filter import FilenamePatternFilter
 from nova_navigator.filemanager.tasks import CHUNK_SIZE, FileCopyOptions, copy_file, copy_files
 from nova_navigator.response import Response
 from nova_navigator.scheduler import TaskCancelled, TaskStatus
@@ -416,6 +417,76 @@ async def test_copy_paths_no_conflict_no_prompt() -> None:
     assert requests == []
     assert read_all(dst_fs, "/home/user/x.txt") == b"x"
     assert read_all(dst_fs, "/home/user/y.txt") == b"y"
+
+
+@pytest.mark.asyncio
+async def test_copy_files_filter_skips_non_matching() -> None:
+    """Files not matching the filter are skipped; matching files are copied."""
+    src_fs = MockFilesystem({"/src/a.txt": b"text", "/src/b.py": b"python"})
+    dst_fs = MockFilesystem()
+    dst_fs._mkdir_p(PurePosixPath("/dst"))
+
+    options = FileCopyOptions(filter=FilenamePatternFilter(patterns=["*.txt"]))
+    await run_task(
+        lambda ctx: copy_files(ctx, [src_fs.path("/src/a.txt"), src_fs.path("/src/b.py")], dst_fs.path("/dst"), options),
+    )
+
+    assert read_all(dst_fs, "/dst/a.txt") == b"text"
+    assert dst_fs.path("/dst/b.py").stat_or_none is None
+
+
+@pytest.mark.asyncio
+async def test_copy_dir_filter_skips_non_matching_files() -> None:
+    """When copying a directory tree, only matching files are copied; dirs are still created."""
+    src_fs = MockFilesystem(
+        {
+            "/src/mydir/a.txt": b"text",
+            "/src/mydir/b.py": b"python",
+            "/src/mydir/sub/c.txt": b"subtext",
+        }
+    )
+    dst_fs = MockFilesystem()
+    dst_fs._mkdir_p(PurePosixPath("/dst"))
+
+    options = FileCopyOptions(filter=FilenamePatternFilter(patterns=["*.txt"]))
+    await run_task(
+        lambda ctx: copy_files(ctx, [src_fs.path("/src/mydir")], dst_fs.path("/dst/mydir"), options),
+    )
+
+    assert read_all(dst_fs, "/dst/mydir/a.txt") == b"text"
+    assert dst_fs.path("/dst/mydir/b.py").stat_or_none is None
+    assert read_all(dst_fs, "/dst/mydir/sub/c.txt") == b"subtext"
+    # sub/ directory must exist even though b.py was skipped
+    assert dst_fs.path("/dst/mydir/sub").stat.is_directory
+
+
+@pytest.mark.asyncio
+async def test_copy_filter_none_copies_all() -> None:
+    """filter=None (default) copies all files — unchanged behaviour."""
+    src_fs = MockFilesystem({"/src/a.txt": b"a", "/src/b.py": b"b"})
+    dst_fs = MockFilesystem()
+    dst_fs._mkdir_p(PurePosixPath("/dst"))
+
+    await run_task(
+        lambda ctx: copy_files(ctx, [src_fs.path("/src/a.txt"), src_fs.path("/src/b.py")], dst_fs.path("/dst")),
+    )
+
+    assert read_all(dst_fs, "/dst/a.txt") == b"a"
+    assert read_all(dst_fs, "/dst/b.py") == b"b"
+
+
+@pytest.mark.asyncio
+async def test_copy_single_file_to_new_name_filter_skips_non_matching() -> None:
+    """Filter is applied even in the single-file-to-new-filename fast path."""
+    src_fs = MockFilesystem({"/src/script.py": b"code"})
+    dst_fs = MockFilesystem()
+
+    options = FileCopyOptions(filter=FilenamePatternFilter(patterns=["*.txt"]))
+    await run_task(
+        lambda ctx: copy_files(ctx, [src_fs.path("/src/script.py")], dst_fs.path("/dst/renamed.py"), options),
+    )
+
+    assert dst_fs.path("/dst/renamed.py").stat_or_none is None
 
 
 @pytest.mark.asyncio
