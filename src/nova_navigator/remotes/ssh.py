@@ -120,11 +120,27 @@ class SshConnector:
         return VPath(path or "/", fs)
 
 
+def _parse_shell_detection_output(output: str) -> str:
+    """Return the first non-blank line of *output*, or ``/bin/sh`` if none.
+
+    Used to pick between ``$SHELL`` and the ``getent passwd`` fallback: the
+    first command to produce a non-empty line wins.
+    """
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return "/bin/sh"
+
+
 async def _make_ssh_terminal(fs: Filesystem) -> Terminal | None:
     """Create a Terminal for *fs* using the detected remote shell.
 
-    Opens a short-lived exec channel to run ``echo $SHELL`` and determine
-    whether the remote shell is zsh, bash, or a POSIX fallback.
+    Opens a short-lived exec channel to determine whether the remote shell is
+    zsh, bash, or a POSIX fallback. ``$SHELL`` is tried first; some sshd
+    configurations don't export it to non-interactive exec sessions, so the
+    account's configured login shell (via ``getent passwd``) is used as a
+    fallback.
     SIGSTOP/SIGCONT is always disabled for remote shells.
     """
     ssh_fs = cast("SSHFilesystem", fs)
@@ -135,10 +151,10 @@ async def _make_ssh_terminal(fs: Filesystem) -> Terminal | None:
             if transport is None:
                 return "/bin/sh"
             channel = transport.open_session()
-            channel.exec_command("echo $SHELL")
-            shell_path = channel.recv(256).decode("utf-8", errors="replace").strip()
+            channel.exec_command('echo "$SHELL"; getent passwd "$(whoami)" 2>/dev/null | cut -d: -f7')
+            output = channel.recv(256).decode("utf-8", errors="replace")
             channel.close()
-            return shell_path or "/bin/sh"
+            return _parse_shell_detection_output(output)
         except (OSError, paramiko.SSHException, EOFError):
             return "/bin/sh"
 
