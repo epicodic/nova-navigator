@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
+
 from nova_navigator.terminal.vfs_shell.aliases import AliasStore
 from nova_navigator.terminal.vfs_shell.command import Command, ShellArgumentParser, ShellContext
+from nova_navigator.terminal.vfs_shell.interpreter import VfsShellInterpreter
 from nova_navigator.terminal.vfs_shell.registry import CommandRegistry
 from tests._utils.mock_filesystem import MockFilesystem
 
@@ -157,11 +160,6 @@ def test_resolve_dotdot_past_root() -> None:
     ctx = _make_ctx()
     result = ctx.resolve("/../../etc")
     assert str(result.path) == "/etc"
-
-
-import pytest
-
-from nova_navigator.terminal.vfs_shell.interpreter import VfsShellInterpreter
 
 
 @pytest.fixture

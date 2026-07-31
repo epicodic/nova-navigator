@@ -57,14 +57,9 @@ class TabCompleter:
 
     def _complete_command(self, prefix: str) -> list[str]:
         """Complete command names and alias names matching prefix."""
-        candidates: list[str] = []
-        for cmd in self._registry.all_commands():
-            if cmd.name.startswith(prefix):
-                candidates.append(cmd.name)
+        candidates = [cmd.name for cmd in self._registry.all_commands() if cmd.name.startswith(prefix)]
         if self._alias_store is not None:
-            for name in self._alias_store.names():
-                if name.startswith(prefix):
-                    candidates.append(name)
+            candidates.extend(name for name in self._alias_store.names() if name.startswith(prefix))
         return sorted(set(candidates))
 
     async def _complete_path(self, prefix: str) -> list[str]:
