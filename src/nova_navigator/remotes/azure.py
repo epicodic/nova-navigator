@@ -8,6 +8,9 @@ import logging
 from nova_navigator.config.remotes import RemoteConnection
 from nova_navigator.dialogs import MessageBox
 from nova_navigator.plugins import FilesystemPlugin
+from nova_navigator.terminal.terminal import Terminal
+from nova_navigator.terminal.vfs_shell import VfsShellDriver, VirtualPtyBackend
+from nova_navigator.vfs.filesystem import Filesystem
 from nova_navigator.vfs.filesystems import AzureFilesystem
 from nova_navigator.vfs.vpath import VPath
 
@@ -58,6 +61,14 @@ async def connect_azure(conn: RemoteConnection) -> AzureFilesystem | None:
     return fs
 
 
+async def _make_azure_terminal(fs: Filesystem) -> Terminal | None:
+    """Create a virtual terminal for an Azure Blob Storage filesystem."""
+    azure_fs = fs.unwrap()
+    cwd = azure_fs.home()
+    backend = VirtualPtyBackend(azure_fs, cwd)
+    return Terminal("vfs", backend=backend, driver=VfsShellDriver(), keep_alive=True)
+
+
 class AzureConnector:
     async def resolve(self, path: str, netloc: str | None) -> VPath | None:
         account_url = f"https://{netloc}"
@@ -74,5 +85,5 @@ AZURE_PLUGIN = FilesystemPlugin(
     scheme="azure",
     fs_type=AzureFilesystem,
     connector=AzureConnector(),
-    terminal_factory=None,  # virtual fallback terminal not yet implemented
+    terminal_factory=_make_azure_terminal,
 )
