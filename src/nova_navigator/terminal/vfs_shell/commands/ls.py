@@ -11,6 +11,7 @@ from nova_navigator.vfs.types import Stat
 _KB = 1024
 _MB = 1024 * 1024
 _GB = 1024 * 1024 * 1024
+_MTIME_WIDTH = len("0000-00-00 00:00")
 
 
 class LsCommand(Command):
@@ -75,9 +76,9 @@ class LsCommand(Command):
 
     def _format_long(self, name: str, stat: Stat, human: bool) -> str:
         """Format a single entry in long listing format."""
-        kind = "d" if stat.is_directory else "-"
-        size = self._human_size(stat.size) if human else str(stat.size)
-        mtime = time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.modified)) if stat.modified >= 0 else "            "
+        kind = "d" if stat.is_directory else "."
+        size = "-" if stat.is_directory else (self._human_size(stat.size) if human else str(stat.size))
+        mtime = time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.modified)) if stat.modified >= 0 else " " * _MTIME_WIDTH
         return f"{kind} {size:>8s}  {mtime}  {name}"
 
     def _human_size(self, size: int) -> str:

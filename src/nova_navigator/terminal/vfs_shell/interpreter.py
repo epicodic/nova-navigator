@@ -73,6 +73,7 @@ class VfsShellInterpreter:
         line: str,
         write_fn: Callable[[str], None],
         write_error_fn: Callable[[str], None],
+        history: list[str] | None = None,
     ) -> int:
         """Tokenize, expand globs, look up command, parse args, execute.
 
@@ -113,6 +114,7 @@ class VfsShellInterpreter:
             write_fn=write_fn,
             write_error_fn=write_error_fn,
             cancel_fn=lambda: self._cancelled,
+            history=history,
         )
 
         # Execute

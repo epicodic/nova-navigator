@@ -8,6 +8,7 @@ from typing import Any
 
 from nova_navigator.terminal.pty_backend import PtyBackend
 from nova_navigator.terminal.shell_driver import ShellDriver
+from nova_navigator.terminal.vfs_shell.completer import TabCompleter
 from nova_navigator.terminal.vfs_shell.interpreter import VfsShellInterpreter
 from nova_navigator.terminal.vfs_shell.line_editor import LineEditor, LineEditorEvent
 from nova_navigator.vfs.filesystem import Filesystem
@@ -52,6 +53,12 @@ class VirtualPtyBackend(PtyBackend):
         self._rows: int = 24
         self._interpreter: VfsShellInterpreter | None = None
         self._line_editor: LineEditor | None = None
+        self._completer: TabCompleter | None = None
+        self._tab_candidates: list[str] = []
+        self._tab_index: int = 0
+        self._tab_word_start: int = 0
+        self._tab_word_end: int = 0
+        self._tab_cursor_pos: int = 0
         self._running: bool = False
         self._command_task: asyncio.Task[Any] | None = None
 
@@ -87,13 +94,19 @@ class VirtualPtyBackend(PtyBackend):
         """
         self._rows = rows
         self._cols = cols
-        self._interpreter = VfsShellInterpreter(
+        interpreter = VfsShellInterpreter(
             self._filesystem,
             self._initial_cwd,
             cols=self._cols,
             rows=self._rows,
         )
+        self._interpreter = interpreter
         self._line_editor = LineEditor()
+        self._completer = TabCompleter(
+            interpreter.registry,
+            self._filesystem,
+            lambda: interpreter.cwd,
+        )
         self._running = True
         # If attach_readers() was already called, post the initial prompt now.
         if self._loop is not None and self._recv_queue is not None:
@@ -111,6 +124,14 @@ class VirtualPtyBackend(PtyBackend):
             echo = self._line_editor.echo
             if echo:
                 self._post_stdout(echo)
+
+            if event == LineEditorEvent.TAB:
+                self._schedule_tab()
+                return
+
+            # Any non-tab input clears the tab cycling state
+            if self._tab_candidates:
+                self._tab_candidates = []
 
             if event == LineEditorEvent.COMPLETE_LINE:
                 line = self._line_editor.line
@@ -166,8 +187,49 @@ class VirtualPtyBackend(PtyBackend):
         assert self._loop is not None
         self._loop.call_soon_threadsafe(self._loop.create_task, self._run_command(line))
 
+    def _schedule_tab(self) -> None:
+        assert self._loop is not None
+        self._loop.call_soon_threadsafe(self._loop.create_task, self._handle_tab())
+
+    async def _handle_tab(self) -> None:
+        """Handle tab completion: first tab fetches candidates, subsequent tabs cycle."""
+        assert self._line_editor is not None
+        assert self._completer is not None
+
+        if self._tab_candidates:
+            # Cycle to next candidate. Keep the cursor where the user stopped
+            # typing rather than at the end of the completed candidate.
+            self._tab_index = (self._tab_index + 1) % len(self._tab_candidates)
+            candidate = self._tab_candidates[self._tab_index]
+            echo = self._line_editor.replace_word(self._tab_word_start, self._tab_word_end, candidate, cursor_pos=self._tab_cursor_pos)
+            self._tab_word_end = self._tab_word_start + len(candidate)
+            if echo:
+                self._post_stdout(echo)
+            return
+
+        # First tab: fetch candidates
+        line = self._line_editor.line
+        cursor = self._line_editor.cursor
+        candidates = await self._completer.complete(line, cursor)
+        if not candidates:
+            return
+
+        start, end = self._completer.word_boundaries(line, cursor)
+        self._tab_candidates = candidates
+        self._tab_index = 0
+        self._tab_word_start = start
+        self._tab_word_end = end
+        self._tab_cursor_pos = cursor
+
+        candidate = candidates[0]
+        echo = self._line_editor.replace_word(start, end, candidate, cursor_pos=cursor)
+        self._tab_word_end = start + len(candidate)
+        if echo:
+            self._post_stdout(echo)
+
     async def _run_command(self, line: str) -> None:
         assert self._interpreter is not None
+        assert self._line_editor is not None
 
         def write_fn(text: str) -> None:
             self._post_stdout(text)
@@ -175,7 +237,7 @@ class VirtualPtyBackend(PtyBackend):
         def write_error_fn(text: str) -> None:
             self._post_stdout(text)
 
-        await self._interpreter.execute(line, write_fn, write_error_fn)
+        await self._interpreter.execute(line, write_fn, write_error_fn, history=self._line_editor.history)
 
         cwd = self._interpreter.cwd
         self._post_message(["pre_cmd", str(cwd.path), True])
