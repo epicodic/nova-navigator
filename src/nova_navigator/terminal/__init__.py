@@ -21,6 +21,7 @@ from nova_navigator.terminal.shell_driver import (
 from nova_navigator.terminal.ssh_pty_backend import SshPtyBackend
 from nova_navigator.terminal.terminal import Terminal, TerminalDisplay, TerminalPyteScreen
 from nova_navigator.terminal.terminal_pool import TerminalPool
+from nova_navigator.terminal.vfs_shell import VirtualPtyBackend
 
 __all__ = [
     "BashDriver",
@@ -33,6 +34,7 @@ __all__ = [
     "TerminalDisplay",
     "TerminalPool",
     "TerminalPyteScreen",
+    "VirtualPtyBackend",
     "ZshDriver",
     "detect_driver",
 ]

@@ -400,14 +400,15 @@ class Terminal(Widget, can_focus=True):
             return
         if self._nav_pending == 0 and self._cwd is not None and path == self._cwd:
             return
-        self._pending_yank = self.has_input()
-        self._nav_pending += 1
-        self._draining = True
-        if self._nav_future is None or self._nav_future.done():
-            self._nav_future = asyncio.get_running_loop().create_future()
-        if self._pending_yank:
-            self._backend.write(_KILL_LINE.encode())
         cmd = " " + self._driver.cd_command(str(path)) + "\n"
+        if self._backend.supports_precmd and self._driver.supports_prompt_ready:
+            self._pending_yank = self.has_input()
+            self._nav_pending += 1
+            self._draining = True
+            if self._nav_future is None or self._nav_future.done():
+                self._nav_future = asyncio.get_running_loop().create_future()
+            if self._pending_yank:
+                self._backend.write(_KILL_LINE.encode())
         self._backend.write(cmd.encode())
 
     async def set_terminal_directory(self, path: PurePath) -> PurePath:
@@ -496,6 +497,15 @@ class Terminal(Widget, can_focus=True):
                 self._pending_yank = False
                 self._backend.write((_YANK + _END_OF_LINE).encode())
             self._draining = False
+            # The echoed command and its trailing newline were discarded
+            # while draining, so the cursor never advanced past the old
+            # prompt text. Return to column 0 and clear the rest of the
+            # line so the new prompt overwrites the old one *in place* —
+            # matching zsh's own PROMPT_CR/PROMPT_SP redraw behaviour —
+            # instead of leaking onto the same row (no reset) or pushing
+            # everything down onto a new one (a hard newline).
+            if self._screen.cursor.x != 0:
+                self._feed_stdout("\r\x1b[K")
             # Resolve the navigation future so callers unblock.
             if self._nav_future is not None and not self._nav_future.done():
                 self._nav_future.set_result(cwd)
