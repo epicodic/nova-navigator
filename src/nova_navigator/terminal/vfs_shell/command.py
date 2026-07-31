@@ -100,11 +100,6 @@ class Command(ABC):
     def name(self) -> str:
         """The primary command name (e.g. 'ls')."""
 
-    @property
-    def aliases(self) -> list[str]:
-        """Alternative names for this command (e.g. ['dir'] for ls)."""
-        return []
-
     @abstractmethod
     def create_parser(self) -> ShellArgumentParser:
         """Return a configured argument parser for this command."""

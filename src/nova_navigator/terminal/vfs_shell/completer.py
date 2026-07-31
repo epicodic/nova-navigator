@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from nova_navigator.terminal.vfs_shell.aliases import AliasStore
 from nova_navigator.terminal.vfs_shell.registry import CommandRegistry
 from nova_navigator.vfs.filesystem import Filesystem
 from nova_navigator.vfs.vpath import VPath
@@ -21,10 +22,12 @@ class TabCompleter:
         registry: CommandRegistry,
         filesystem: Filesystem,
         cwd_fn: Callable[[], VPath],
+        alias_store: AliasStore | None = None,
     ) -> None:
         self._registry = registry
         self._filesystem = filesystem
         self._cwd_fn = cwd_fn
+        self._alias_store = alias_store
 
     async def complete(self, line: str, cursor: int) -> list[str]:
         """Return sorted completion candidates for the word at cursor.
@@ -53,12 +56,15 @@ class TabCompleter:
         return word_start, word_end
 
     def _complete_command(self, prefix: str) -> list[str]:
-        """Complete command names matching prefix."""
+        """Complete command names and alias names matching prefix."""
         candidates: list[str] = []
         for cmd in self._registry.all_commands():
             if cmd.name.startswith(prefix):
                 candidates.append(cmd.name)
-            candidates.extend(a for a in cmd.aliases if a.startswith(prefix))
+        if self._alias_store is not None:
+            for name in self._alias_store.names():
+                if name.startswith(prefix):
+                    candidates.append(name)
         return sorted(set(candidates))
 
     async def _complete_path(self, prefix: str) -> list[str]:

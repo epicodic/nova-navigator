@@ -106,6 +106,7 @@ class VirtualPtyBackend(PtyBackend):
             interpreter.registry,
             self._filesystem,
             lambda: interpreter.cwd,
+            alias_store=interpreter.aliases,
         )
         self._running = True
         # If attach_readers() was already called, post the initial prompt now.

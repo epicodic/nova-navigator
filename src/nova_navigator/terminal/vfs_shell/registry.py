@@ -13,12 +13,10 @@ class CommandRegistry:
         self._all: list[Command] = []
 
     def register(self, cmd: Command) -> None:
-        """Register a command by its name and all aliases."""
+        """Register a command by its name."""
         if cmd in self._all:
             return
         self._commands[cmd.name] = cmd
-        for alias in cmd.aliases:
-            self._commands[alias] = cmd
         self._all.append(cmd)
 
     def get(self, name: str) -> Command | None:
