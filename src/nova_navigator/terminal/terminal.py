@@ -400,14 +400,15 @@ class Terminal(Widget, can_focus=True):
             return
         if self._nav_pending == 0 and self._cwd is not None and path == self._cwd:
             return
-        self._pending_yank = self.has_input()
-        self._nav_pending += 1
-        self._draining = True
-        if self._nav_future is None or self._nav_future.done():
-            self._nav_future = asyncio.get_running_loop().create_future()
-        if self._pending_yank:
-            self._backend.write(_KILL_LINE.encode())
         cmd = " " + self._driver.cd_command(str(path)) + "\n"
+        if self._backend.supports_precmd and self._driver.supports_prompt_ready:
+            self._pending_yank = self.has_input()
+            self._nav_pending += 1
+            self._draining = True
+            if self._nav_future is None or self._nav_future.done():
+                self._nav_future = asyncio.get_running_loop().create_future()
+            if self._pending_yank:
+                self._backend.write(_KILL_LINE.encode())
         self._backend.write(cmd.encode())
 
     async def set_terminal_directory(self, path: PurePath) -> PurePath:
