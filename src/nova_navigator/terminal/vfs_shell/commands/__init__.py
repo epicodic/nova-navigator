@@ -10,6 +10,7 @@ from nova_navigator.terminal.vfs_shell.commands.cp import CpCommand
 from nova_navigator.terminal.vfs_shell.commands.echo import EchoCommand
 from nova_navigator.terminal.vfs_shell.commands.head import HeadCommand
 from nova_navigator.terminal.vfs_shell.commands.help import HelpCommand
+from nova_navigator.terminal.vfs_shell.commands.history import HistoryCommand
 from nova_navigator.terminal.vfs_shell.commands.ls import LsCommand
 from nova_navigator.terminal.vfs_shell.commands.mkdir import MkdirCommand
 from nova_navigator.terminal.vfs_shell.commands.mv import MvCommand
@@ -29,6 +30,7 @@ def all_commands() -> list[Command]:
         EchoCommand(),
         HeadCommand(),
         HelpCommand(),
+        HistoryCommand(),
         LsCommand(),
         MkdirCommand(),
         MvCommand(),

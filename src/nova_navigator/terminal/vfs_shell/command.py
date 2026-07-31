@@ -40,11 +40,13 @@ class ShellContext:
         write_fn: Callable[[str], None],
         write_error_fn: Callable[[str], None],
         cancel_fn: Callable[[], bool],
+        history: list[str] | None = None,
     ) -> None:
         self.filesystem = filesystem
         self.cwd = cwd
         self.cols = cols
         self.rows = rows
+        self.history: list[str] = history if history is not None else []
         self._write_fn = write_fn
         self._write_error_fn = write_error_fn
         self._cancel_fn = cancel_fn
