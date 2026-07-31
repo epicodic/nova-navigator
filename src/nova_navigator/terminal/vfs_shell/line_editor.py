@@ -15,6 +15,7 @@ class LineEditorEvent(Enum):
     TAB = auto()
 
 
+_ESCAPE_PREFIX_MIN_LEN = 2
 _ESCAPE_SEQ_MIN_LEN = 3
 
 
@@ -164,7 +165,7 @@ class LineEditor:
         """Process accumulated escape sequence buffer."""
         buf = self._escape_buf
 
-        if len(buf) < 2:
+        if len(buf) < _ESCAPE_PREFIX_MIN_LEN:
             return LineEditorEvent.CHAR
 
         if buf[1] == "O":

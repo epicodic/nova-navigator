@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 
 from nova_navigator.terminal.vfs_shell.command import Command, ShellArgumentParser, ShellContext
 
+_MIN_QUOTED_LEN = 2
+
 if TYPE_CHECKING:
     from nova_navigator.terminal.vfs_shell.aliases import AliasStore
 
@@ -63,7 +65,7 @@ class AliasCommand(Command):
             alias_name = defn[:eq]
             value = defn[eq + 1 :]
             # Strip surrounding quotes if present
-            if len(value) >= 2 and value[0] in ("'", '"') and value[-1] == value[0]:
+            if len(value) >= _MIN_QUOTED_LEN and value[0] in ("'", '"') and value[-1] == value[0]:
                 value = value[1:-1]
             self._store.set(alias_name, value)
 
