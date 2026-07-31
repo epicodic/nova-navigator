@@ -6,12 +6,14 @@ from rich.segment import Segment
 from rich.style import Style
 from textual.app import ComposeResult
 from textual.color import Color
+from textual.containers import Vertical
 from textual.events import Leave, MouseDown, MouseMove
 from textual.geometry import Size
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
 
 from nova_navigator.scheduler import Job
+from nova_widgets import Button
 
 from ..widgets.popup_widget import PopupWidget
 from .job_registry import JobRegistry
@@ -50,6 +52,7 @@ class JobListView(ScrollView, can_focus=False):
 
     ROW_HEIGHT: ClassVar[int] = 4
     ITEM_HEIGHT: ClassVar[int] = 5  # ROW_HEIGHT + 1 separator line
+    RIGHT_PADDING: ClassVar[int] = 1  # keeps content clear of the scrollbar overlay
 
     COMPONENT_CLASSES: ClassVar[set[str]] = {
         "job-list--running",
@@ -194,7 +197,8 @@ class JobListView(ScrollView, can_focus=False):
         return self._render_job_line(job, job_index, y_in_item)
 
     def _render_job_line(self, job: Job, job_index: int, y_in_item: int) -> Strip:
-        width = self.size.width or 80
+        full_width = self.size.width or 80
+        width = max(1, full_width - self.RIGHT_PADDING)
         is_hovered = job_index == self._hovered_job_index
         styles_map = self._hover_styles_by_state if is_hovered else self._styles_by_state
         bg_style = styles_map.get(job.state, Style())
@@ -203,16 +207,18 @@ class JobListView(ScrollView, can_focus=False):
         if y_in_item == self.ROW_HEIGHT:  # separator line — always neutral panel bg
             sep_base = self.rich_style + self._styles_by_state.get(Job.State.RUNNING, Style())
             sep_style = self.get_component_rich_style("job-list--separator", partial=True)
-            return Strip([Segment("─" * width, style=sep_base + sep_style)])
+            strip = Strip([Segment("─" * width, style=sep_base + sep_style)])
+            return strip.extend_cell_length(full_width, style=sep_base)
 
         if y_in_item == 0:
-            return self._render_header_line(job, job_index, base, width)
-        if y_in_item == 1:
-            return self._render_item_line(job, base, width)
-        if y_in_item == self.ROW_HEIGHT - 2:
-            return self._render_step_bar_line(job, base, width)
-        # y_in_item == ROW_HEIGHT - 1
-        return self._render_overall_bar_line(job, base, width)
+            strip = self._render_header_line(job, job_index, base, width)
+        elif y_in_item == 1:
+            strip = self._render_item_line(job, base, width)
+        elif y_in_item == self.ROW_HEIGHT - 2:
+            strip = self._render_step_bar_line(job, base, width)
+        else:  # y_in_item == ROW_HEIGHT - 1
+            strip = self._render_overall_bar_line(job, base, width)
+        return strip.extend_cell_length(full_width, style=base)
 
     def _render_header_line(self, job: Job, job_index: int, base: Style, width: int) -> Strip:
         eta = self._eta_str(job)
@@ -356,7 +362,8 @@ class JobListView(ScrollView, can_focus=False):
         y_in_item = logical_y % self.ITEM_HEIGHT
         btn_width = 3
         new_hover = job_index if 0 <= job_index < len(self._jobs) else None
-        new_btn = new_hover is not None and y_in_item == 0 and event.x >= (self.size.width or 80) - btn_width
+        content_right = (self.size.width or 80) - self.RIGHT_PADDING
+        new_btn = new_hover is not None and y_in_item == 0 and event.x >= content_right - btn_width
         if new_hover != self._hovered_job_index or new_btn != self._hovered_btn:
             self._hovered_job_index = new_hover
             self._hovered_btn = new_btn
@@ -393,11 +400,18 @@ class JobsDialog(PopupWidget, can_focus=True):
     JobsDialog {
         width: 62;
         height: auto;
-        max-height: 30;
+        max-height: 31;
     }
     JobsDialog JobListView {
         height: auto;
         max-height: 28;
+    }
+    JobsDialog #btn_clear_all {
+        width: 100%;
+        height: 1;
+        border: none;
+        background: $panel-lighten-1;
+        color: $text-muted;
     }
     """
 
@@ -410,7 +424,10 @@ class JobsDialog(PopupWidget, can_focus=True):
         self._job_list = JobListView(on_action=self._handle_action)
 
     def compose(self) -> ComposeResult:
-        yield self._job_list
+        yield Vertical(
+            self._job_list,
+            Button("Clear all", id="btn_clear_all"),
+        )
 
     def _update_position(self) -> None:
         x = self.screen.size.width - self._DIALOG_WIDTH - self._DIALOG_MARGIN_RIGHT
@@ -440,3 +457,11 @@ class JobsDialog(PopupWidget, can_focus=True):
             # re-render immediately without waiting for next tick
             desired = self._registry.running_jobs + self._registry.finished_jobs
             self._job_list.set_jobs(desired)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id != "btn_clear_all":
+            return
+        self._registry.clear_finished()
+        # re-render immediately without waiting for next tick
+        desired = self._registry.running_jobs + self._registry.finished_jobs
+        self._job_list.set_jobs(desired)
