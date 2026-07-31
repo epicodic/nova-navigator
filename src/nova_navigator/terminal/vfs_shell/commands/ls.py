@@ -19,10 +19,6 @@ class LsCommand(Command):
     def name(self) -> str:
         return "ls"
 
-    @property
-    def aliases(self) -> list[str]:
-        return ["dir"]
-
     def create_parser(self) -> ShellArgumentParser:
         p = ShellArgumentParser(prog="ls", add_help=False)
         p.add_argument("-l", "--long", action="store_true", dest="long")

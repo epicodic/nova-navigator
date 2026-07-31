@@ -1,9 +1,10 @@
-"""Tests for command registry and ShellContext.resolve()."""
+"""Tests for command registry, alias expansion, and ShellContext.resolve()."""
 
 from __future__ import annotations
 
 import argparse
 
+from nova_navigator.terminal.vfs_shell.aliases import AliasStore
 from nova_navigator.terminal.vfs_shell.command import Command, ShellArgumentParser, ShellContext
 from nova_navigator.terminal.vfs_shell.registry import CommandRegistry
 from tests._utils.mock_filesystem import MockFilesystem
@@ -13,10 +14,6 @@ class _DummyCommand(Command):
     @property
     def name(self) -> str:
         return "dummy"
-
-    @property
-    def aliases(self) -> list[str]:
-        return ["d"]
 
     def create_parser(self) -> ShellArgumentParser:
         p = ShellArgumentParser(prog="dummy", add_help=False)
@@ -63,13 +60,6 @@ def test_registry_lookup_by_name() -> None:
     assert reg.get("dummy") is cmd
 
 
-def test_registry_lookup_by_alias() -> None:
-    reg = CommandRegistry()
-    cmd = _DummyCommand()
-    reg.register(cmd)
-    assert reg.get("d") is cmd
-
-
 def test_registry_unknown_returns_none() -> None:
     reg = CommandRegistry()
     assert reg.get("nonexistent") is None
@@ -90,6 +80,35 @@ def test_registry_all_commands_sorted() -> None:
     reg.register(cmd_a)
     names = [c.name for c in reg.all_commands()]
     assert names == ["alpha", "zebra"]
+
+
+# ---------------------------------------------------------------------------
+# AliasStore
+# ---------------------------------------------------------------------------
+
+
+def test_alias_store_get_and_set() -> None:
+    store = AliasStore()
+    assert store.get("ll") is None
+    store.set("ll", "ls -l")
+    assert store.get("ll") == "ls -l"
+
+
+def test_alias_store_remove() -> None:
+    store = AliasStore({"ll": "ls -l"})
+    assert store.remove("ll") is True
+    assert store.get("ll") is None
+    assert store.remove("ll") is False
+
+
+def test_alias_store_items_sorted() -> None:
+    store = AliasStore({"ll": "ls -l", "dir": "ls", "la": "ls -la"})
+    assert store.items() == [("dir", "ls"), ("la", "ls -la"), ("ll", "ls -l")]
+
+
+def test_alias_store_names_sorted() -> None:
+    store = AliasStore({"ll": "ls -l", "dir": "ls"})
+    assert store.names() == ["dir", "ll"]
 
 
 def test_resolve_absolute() -> None:

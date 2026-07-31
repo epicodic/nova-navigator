@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from nova_navigator.terminal.vfs_shell.aliases import DEFAULT_ALIASES, AliasStore
 from nova_navigator.terminal.vfs_shell.commands import register_all
 from nova_navigator.terminal.vfs_shell.completer import TabCompleter
 from nova_navigator.terminal.vfs_shell.registry import CommandRegistry
@@ -26,8 +27,9 @@ def fs() -> MockFilesystem:
 @pytest.fixture
 def completer(fs: MockFilesystem) -> TabCompleter:
     registry = CommandRegistry()
-    register_all(registry)
-    return TabCompleter(registry, fs, fs.cwd)
+    alias_store = AliasStore(DEFAULT_ALIASES)
+    register_all(registry, alias_store)
+    return TabCompleter(registry, fs, fs.cwd, alias_store=alias_store)
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from nova_navigator.terminal.vfs_shell.aliases import DEFAULT_ALIASES, AliasStore
 from nova_navigator.terminal.vfs_shell.command import CommandParseError, ShellContext
 from nova_navigator.terminal.vfs_shell.commands import register_all
 from nova_navigator.terminal.vfs_shell.glob import expand_globs
@@ -22,12 +23,13 @@ class VfsShellInterpreter:
         self._cols = cols
         self._rows = rows
         self._registry = CommandRegistry()
+        self._aliases = AliasStore(DEFAULT_ALIASES)
         self._cancelled = False
         self._register_builtins()
 
     def _register_builtins(self) -> None:
         """Import and register all built-in commands."""
-        register_all(self._registry)
+        register_all(self._registry, self._aliases)
 
     @property
     def cwd(self) -> VPath:
@@ -64,6 +66,11 @@ class VfsShellInterpreter:
         """The command registry (for tab completion)."""
         return self._registry
 
+    @property
+    def aliases(self) -> AliasStore:
+        """The alias store (for tab completion)."""
+        return self._aliases
+
     def cancel(self) -> None:
         """Signal cancellation to a running command."""
         self._cancelled = True
@@ -85,9 +92,19 @@ class VfsShellInterpreter:
         if not tokens:
             return 0
 
-        # Expand globs on all tokens except the command name
+        # Expand alias: if the first token is an alias, replace it with the
+        # expansion tokens and append the remaining user arguments.
         command_name = tokens[0].value
-        arg_tokens = tokens[1:]
+        expansion = self._aliases.get(command_name)
+        if expansion is not None:
+            expanded_tokens = tokenize(expansion)
+            if expanded_tokens:
+                command_name = expanded_tokens[0].value
+                arg_tokens = expanded_tokens[1:] + tokens[1:]
+            else:
+                arg_tokens = tokens[1:]
+        else:
+            arg_tokens = tokens[1:]
 
         expanded_args = await expand_globs(arg_tokens, self._filesystem, self._cwd)
 
