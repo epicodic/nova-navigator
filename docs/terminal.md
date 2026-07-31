@@ -9,8 +9,8 @@ Architecture documentation for `nova_navigator/terminal/`.
 The terminal sub-package embeds an interactive shell inside the Textual application.
 It is split into three layers, each with a single responsibility:
 
-- **PtyBackend** — OS-level process and PTY management (start, stop, read, write, resize, signal).
-- **ShellDriver** — shell-language knowledge (init hooks, argument quoting, precmd parsing).
+- **PtyBackend** — OS-level process and PTY management (start, stop, read, write, resize).
+- **ShellDriver** — shell-language knowledge (init hooks, argument quoting).
 - **Terminal** — Textual widget that owns rendering, draining, and event handling.
 
 Each layer is unaware of the layers above it.
@@ -26,8 +26,10 @@ Each layer is unaware of the layers above it.
 nova_navigator/terminal/
 ├── __init__.py          # Public API re-exports
 ├── pty_backend.py       # PtyBackend ABC + LocalPtyBackend
+├── ssh_pty_backend.py   # SshPtyBackend (paramiko-based)
 ├── shell_driver.py      # ShellDriver ABC + ZshDriver, BashDriver, FallbackDriver, detect_driver()
-└── terminal.py          # Terminal widget, TerminalDisplay, TerminalPyteScreen
+├── terminal.py          # Terminal widget, TerminalDisplay, TerminalPyteScreen
+└── terminal_pool.py     # TerminalPool — manages one terminal per filesystem
 ```
 
 ---
@@ -41,31 +43,49 @@ It manages the lifecycle of a shell process and provides byte-level I/O.
 
 | Method | Purpose |
 |--------|---------|
-| `open(command, rows, cols)` | Start the shell process; return precmd pipe fd or None |
+| `open(command, rows, cols)` | Start the shell process |
 | `write(data)` | Write raw bytes to the shell's stdin |
 | `resize(rows, cols)` | Resize the terminal via `TIOCSWINSZ` |
-| `resume()` | Send `SIGCONT` to the shell process |
-| `attach_readers(loop, recv_queue)` | Register asyncio reader callbacks for stdout and precmd pipe |
+| `resume()` | Send `SIGCONT` to the shell process (no-op for SSH) |
+| `attach_readers(loop, recv_queue)` | Register callbacks that push messages into recv_queue |
 | `detach_readers()` | Remove reader callbacks |
 | `teardown()` | Terminate the process and close all file descriptors |
-| `supports_precmd_pipe` | Property — True if the backend has an out-of-band precmd pipe |
+| `supports_precmd` | Property — True if this backend delivers precmd CWD notifications (always True) |
+
+### In-Band CWD Tracking via OSC 7
+
+CWD tracking uses in-band OSC 7 escape sequences rather than an out-of-band pipe.
+The shell's precmd hook (installed by `ShellDriver.init_code()`) emits:
+
+```
+\033]7;panel=;file:///current/path\007
+```
+
+The `panel=` prefix distinguishes Nova Navigator's own hook from third-party hooks (e.g. oh-my-zsh) that emit plain `file://` OSC 7 sequences.
+The inherited `PtyBackend._process_chunk()` method scans stdout for OSC sequences, strips them, and posts `["pre_cmd", path, from_nn]` messages.
 
 ### LocalPtyBackend
 
 `LocalPtyBackend` is the concrete implementation for local shell processes.
 It uses `pty.fork()` to create a pseudo-terminal.
-It creates an `os.pipe()` for the out-of-band precmd communication channel.
 
-In `open()`, the child process closes the parent end of the precmd pipe, marks the child fd inheritable, and calls `os.execvpe()`.
-The parent process closes the child end, stores the master fd and precmd reader, and applies the initial terminal size.
+In `open()`, the child process prepares a clean environment (sets `TERM`, removes inherited `VIRTUAL_ENV` variables) and calls `os.execvpe()`.
+The parent process stores the master fd and applies the initial terminal size.
 
-Reader callbacks registered via `attach_readers()` push `["stdout", ...]` and `["pre_cmd", ...]` messages into the `recv_queue`.
+A reader callback registered via `attach_readers()` uses `loop.add_reader()` on the master fd.
+It pushes `["stdout", ...]` messages (with OSC sequences extracted) into `recv_queue`.
 On read errors, a `["disconnect", 1]` message is pushed.
+
+### SshPtyBackend
+
+`SshPtyBackend` runs a shell over a paramiko SSH channel.
+A daemon thread reads from `channel.recv()` and forwards data through `_process_chunk()`.
+The `resume()` method is a no-op since SIGSTOP is not used over SSH.
 
 ### Lifecycle
 
 The full lifecycle is: `open()` → `attach_readers()` → normal operation → `detach_readers()` → `teardown()`.
-`teardown()` sends `SIGTERM`, reaps the child with `waitpid(WNOHANG)`, and closes file objects.
+`teardown()` sends `SIGTERM` (local) or closes the channel (SSH), then closes file objects.
 
 ---
 
@@ -77,22 +97,23 @@ The full lifecycle is: `open()` → `attach_readers()` → normal operation → 
 
 | Method | Purpose |
 |--------|---------|
-| `init_code(precmd_fd)` | Return shell code to inject at startup (installs precmd hook) |
+| `init_code()` | Return shell code to inject at startup (installs precmd hook) |
 | `quote(arg)` | Return a shell-safe quoted form of an argument |
 | `cd_command(path)` | Return a complete `cd` command string |
-| `supports_stop_resume` | Property — True if init code includes `kill -STOP $$` |
-| `parse_precmd_payload(raw)` | Parse precmd pipe output into `(pid, cwd)` |
+| `supports_prompt_ready` | Property — True if init code installs an OSC 133;B prompt-end hook |
 
 ### Concrete Drivers
 
 **ZshDriver** — installs a precmd hook via `precmd_functions+=(_nn_precmd)`.
-The hook writes `PID:CWD` to the precmd pipe and sends `kill -STOP $$`.
+The hook emits an OSC 7 CWD sequence.
+Also installs a `zle-line-init` widget that emits OSC 133;B for prompt detection.
 
 **BashDriver** — installs a precmd hook via `PROMPT_COMMAND`.
-Uses the same hook body and quoting as ZshDriver.
+Also embeds OSC 133;B in PS1 for prompt detection.
 
-**FallbackDriver** — generic POSIX sh driver with no SIGSTOP synchronisation.
-Installs a simple `PS1`-based hook that writes only the CWD (no PID).
+**FallbackDriver** — generic POSIX sh driver.
+Installs a `PS1`-based hook that emits OSC 7.
+Does not support prompt detection (no OSC 133;B).
 Uses `printf '%b_'` with octal escapes for cd commands (Midnight Commander technique).
 
 ### Quoting
@@ -138,12 +159,15 @@ The stored lines in `_display` are never mutated.
 | `_display` | `TerminalDisplay` | The last rendered frame, returned by `render()` |
 | `send_queue` | `asyncio.Queue \| None` | Commands from the widget to the PTY writer task |
 | `recv_queue` | `asyncio.Queue \| None` | Events from the backend readers, consumed by `recv()` |
-| `_draining` | `bool` | When True, stdout is fed to pyte but display rebuilds are suppressed |
+| `_draining` | `bool` | When True, stdout is discarded (not fed to pyte) |
 | `_nav_pending` | `int` | Number of in-flight navigations awaiting pre_cmd acknowledgement |
 | `_nav_future` | `Future[PurePath] \| None` | Resolved when `_nav_pending` reaches zero |
 | `_prompt_cursor_x` | `int` | Cursor X position captured after the most recent prompt |
+| `_prompt_cursor_y` | `int` | Cursor Y position captured after the most recent prompt |
+| `_prompt_ready_received` | `bool` | True after the prompt position has been snapshotted |
+| `_keys_forwarded_since_precmd` | `bool` | True if any key was sent to the shell since the last precmd |
+| `_snapshot_prompt_after_precmd` | `bool` | Set True to capture prompt position on the next stdout chunk |
 | `_pending_yank` | `bool` | Whether to restore killed text after draining ends |
-| `_snapshot_prompt_cursor` | `bool` | Set True to capture `_prompt_cursor_x` on the next rebuild |
 | `_rebuild_handle` | `TimerHandle \| None` | Pending `call_later` for the next deferred display rebuild |
 
 ### Module-Level Constants
@@ -197,15 +221,13 @@ When the style of character `x` differs from character `x-1`, `Text.stylize` is 
 
 4. **`TerminalDisplay` creation:** The list of `Text` lines and cursor position are wrapped in a new `TerminalDisplay` and stored as `self._display`.
 
-5. **Prompt cursor snapshot:** If `_snapshot_prompt_cursor` is True, `_prompt_cursor_x` is captured from the current cursor X position and the flag is cleared.
-
-6. **`refresh()`:** The widget is marked dirty.
+5. **`refresh()`:** The widget is marked dirty.
 Textual calls `render()` which returns `self._display`.
 `TerminalDisplay.__rich_console__` yields the lines with cursor highlighting applied.
 
 ---
 
-## Silent Send and Draining
+## Precmd-Gated Draining
 
 Some data must be sent to the shell without its echo appearing in the terminal display.
 The primary use cases are shell init code at startup and programmatic directory navigation.
@@ -231,23 +253,128 @@ Normal mode (_draining=False)
 Draining mode (_draining=True)
   stdout → discarded (pyte not fed, no rebuild)
   ...more stdout...
-  pre_cmd fires → _draining=False → display rebuilt from current screen state
+  pre_cmd fires → _draining=False → next stdout feeds pyte and triggers rebuild
 ```
 
-The `pre_cmd` pipe is the reliable "shell is back at prompt" signal — exactly as MC uses its `subshell_pipe`.
+The precmd hook's OSC 7 sequence is the reliable "shell is back at prompt" signal — exactly as MC uses its `subshell_pipe`.
+No SIGSTOP/SIGCONT synchronisation is required.
+The shell runs continuously; draining simply discards output until precmd fires.
+
+### How It Works Without SIGSTOP
+
+The timing is inherently correct because precmd fires *before* the shell prints its prompt:
+
+1. `cd` command sent → shell echoes the command (suppressed by draining)
+2. Shell executes the `cd`
+3. Precmd hook runs → emits OSC 7 → `_handle_pre_cmd` clears draining
+4. Shell prints PS1 prompt → first stdout after precmd → displayed normally
+
+The OSC 7 sequence is parsed from the stdout byte stream by `PtyBackend._process_chunk()`.
+It is posted as a `["pre_cmd", ...]` message *before* any remaining text in the same chunk.
+This ensures draining ends at exactly the right moment.
 
 ### `send(data, mode="silent")`
 
 Public method on `Terminal`.
-When `mode` is `"silent"` and the driver supports stop/resume, sets `_draining = True` before writing `data` to the backend.
+When `mode` is `"silent"` and the backend supports precmd, sets `_draining = True` before writing `data` to the backend.
 The data reaches the shell as regular input; the echo is swallowed by the draining logic.
 Once the shell's precmd hook fires, draining ends and the display is live again.
 
 ### Startup Bootstrap
 
-`_start_backend()` sets `_draining = True` before writing the init code when the driver supports stop/resume.
-The shell will STOP after its first precmd (startup).
-`recv()` will send SIGCONT to resume it and end the startup drain.
+`_start_backend()` sets `_draining = True` before writing the init code.
+The shell processes the init code (echo suppressed) and fires its first precmd hook.
+When the first OSC 7 arrives, draining ends and the prompt is displayed.
+
+---
+
+## Input Detection (`has_input()`)
+
+The `has_input()` method determines whether the user has typed something on the current prompt line.
+It is used by the host application to decide whether pressing Enter should execute a command in the terminal or trigger a panel action (e.g. open a file).
+
+### Two-Tier Strategy
+
+1. **Primary — cursor comparison** (when prompt position is known):
+   The cursor position at the end of the prompt is snapshotted.
+   If the current cursor is past that position, the user has typed something.
+   This correctly handles "typed then deleted" (cursor returns to prompt position → `False`).
+
+2. **Fallback — keystroke tracking** (when prompt position is unknown):
+   A flag (`_keys_forwarded_since_precmd`) is set whenever a key event is forwarded to the shell and cleared on each precmd.
+   This works for any shell but cannot detect the "typed then deleted everything" case (conservatively returns `True`).
+
+### Prompt Position Snapshotting
+
+The prompt position is captured from two sources, whichever fires first:
+
+- **OSC 133;B** — emitted by `zle-line-init` (zsh) or embedded in PS1 (bash).
+  This is the most precise signal: it fires at the exact moment the shell enters line-editing mode, with the cursor at the end of the prompt.
+
+- **First stdout after precmd** — when OSC 133;B is not available (e.g. overridden by oh-my-zsh plugins), `_snapshot_prompt_after_precmd` is set True by `_handle_pre_cmd`.
+  The next stdout chunk (which is the prompt text) triggers a cursor snapshot.
+  This is slightly less precise (may capture mid-prompt if the prompt arrives in multiple chunks) but handles the "typed then deleted" case.
+
+### Shell Compatibility
+
+| Shell | Primary detection | Fallback |
+|-------|-------------------|----------|
+| zsh (with NN hooks intact) | Cursor comparison (OSC 133;B) | Keystroke flag |
+| zsh (hooks overridden by plugins) | Cursor comparison (post-precmd snapshot) | Keystroke flag |
+| bash | Cursor comparison (PS1 OSC 133;B) | Keystroke flag |
+| POSIX sh (FallbackDriver) | Not available | Keystroke flag only |
+| SSH (any shell) | Same as corresponding shell above | Keystroke flag |
+
+---
+
+## Directory Navigation Flow
+
+A walkthrough of `request_cd(path)`:
+
+1. **Short-circuit.** If `_nav_pending == 0` and `_cwd == path`, return immediately.
+2. **Check for typed input.** `has_input()` determines whether the user has typed something.
+3. **Increment counter.** `_nav_pending += 1`.
+4. **Enable draining.** Set `_draining = True` so `recv()` suppresses subsequent stdout.
+5. **Save typed text.** If the user has typed something, send `Ctrl+U` (kill line) to save it to the shell's kill ring.
+   Draining is already active so the kill echo is suppressed.
+6. **Send cd command.** Write ` cd <quoted_path>\n` to the backend (leading space for history exclusion).
+7. **Shell executes cd.** The shell changes directory and runs the precmd hook.
+8. **Precmd hook fires.** The hook emits OSC 7 with the new CWD.
+9. **recv() processes pre_cmd.** Decrements `_nav_pending`.
+   If it reaches zero: writes `Ctrl+Y` + `Ctrl+E` (yank + end-of-line) if text was killed, clears `_draining`, resolves the navigation future, and enables prompt snapshotting.
+10. **Shell prints prompt.** First stdout after precmd is displayed normally.
+    Prompt position is snapshotted.
+
+### Rapid Panel Switching
+
+When the user switches panels faster than the shell can process cd commands, multiple navigations may be in flight.
+The `_nav_pending` counter tracks how many navigations have not yet been acknowledged by a `pre_cmd`.
+Draining stays on until the counter reaches zero, preventing intermediate cd echoes from leaking.
+
+Only the final `PathChanged` is posted (when `_nav_pending` reaches 0 and the cwd has changed).
+Intermediate cds are silently consumed.
+
+### Active-Panel Routing
+
+User-initiated directory changes (the user types `cd /somewhere` in the terminal) post `PathChanged` with `user_initiated=True`.
+The host application routes these to the **currently active panel** (Midnight Commander model).
+No shell-side panel identification variables are used, eliminating race conditions between rapid panel switches.
+
+### Awaitable Return Value
+
+`set_terminal_directory` returns the actual CWD reported by the shell (a `PurePath`).
+If no navigation is needed, it returns the cached `_cwd` immediately.
+
+### History Exclusion
+
+Navigation cd commands must not pollute the shell's command history.
+The cd command is prefixed with a leading space.
+The init code also configures the shell to honour this convention:
+
+- **zsh:** `setopt HIST_IGNORE_SPACE` — commands starting with a space are excluded from history.
+- **bash:** `HISTCONTROL="${HISTCONTROL:+${HISTCONTROL}:}ignorespace"` — appended without overwriting user settings.
+
+Both settings are idempotent and have no effect on user-typed commands that do not start with a space.
 
 ---
 
@@ -259,8 +386,9 @@ The shell will STOP after its first precmd (startup).
 2. Special keys (arrows, F-keys, etc.) are translated via `_CTRL_KEYS` to their VT escape sequences.
 3. Printable characters use `event.character` directly.
 4. `ctrl+f1` releases focus back to the application without sending to the shell.
-5. The result is placed on `send_queue` as `["stdin", text]`.
-6. `_run()` writes the encoded bytes to the PTY via `backend.write()`.
+5. The `_keys_forwarded_since_precmd` flag is set.
+6. The result is placed on `send_queue` as `["stdin", text]`.
+7. `_run()` writes the encoded bytes to the PTY via `backend.write()`.
 
 ### Mouse (when `mouse_tracking` is enabled)
 
@@ -285,92 +413,6 @@ pyte represents character colors as either:
 
 ---
 
-## SIGSTOP Synchronisation
-
-The core design challenge is directory navigation: the Terminal widget needs to send `cd /path` to the shell and suppress the echo, without a race between the shell printing its prompt and the widget ending suppression.
-
-### The Problem
-
-Without synchronisation, a `pre_cmd` message from a previous command can arrive after a new `cd` is enqueued.
-This stale `pre_cmd` clears the draining flag too early, causing the `cd` echo to leak onto screen.
-See `docs/terminal-set-directory-race.md` for the original race condition analysis.
-
-### The Solution
-
-The precmd hook in ZshDriver and BashDriver ends with `kill -STOP $$`.
-This freezes the shell process after it writes `PID:CWD` to the precmd pipe but before it prints the next prompt.
-
-The Terminal widget's `recv()` loop processes the `pre_cmd` message, clears draining, restores any yanked input, and then calls `backend.resume()` to send `SIGCONT`.
-Because the shell is frozen, there is zero window for a race — the shell cannot produce output between the precmd write and the resume.
-
-This eliminates all three race conditions documented in `terminal-set-directory-race.md`.
-
----
-
-## Directory Navigation Flow
-
-A walkthrough of `set_terminal_directory(path)`:
-
-1. **Check for typed input.** `has_input()` compares the cursor position to `_prompt_cursor_x`.
-2. **Save typed text.** If the user has typed something, send `Ctrl+U` (kill line) to save it to the shell's kill ring.
-3. **Enable draining.** Set `_draining = True` so `recv()` suppresses subsequent stdout.  Increment `_nav_pending`.
-4. **Send cd command.** Write ` cd <quoted_path>\n` to the backend (leading space for history exclusion).
-5. **Await completion.** The method creates an `asyncio.Future` and awaits it.  The future resolves when `_nav_pending` reaches zero.
-6. **Shell executes cd.** The shell changes directory and runs the precmd hook.
-7. **Precmd hook fires.** The hook writes `PID:CWD` to the precmd pipe and sends `kill -STOP $$`.
-8. **Shell freezes.** The shell is stopped; no prompt is rendered.
-9. **recv() processes pre_cmd.** Decrements `_nav_pending`.  If it reaches zero: clears `_draining`, resolves the future with the actual CWD, and sets `_snapshot_prompt_cursor = True`.
-10. **Restore typed text.** If `_pending_yank` was set, the widget writes `Ctrl+Y` (yank) and `Ctrl+E` (end of line) before resuming.
-11. **Resume shell.** `backend.resume()` sends `SIGCONT`; the shell prints its prompt.
-12. **Snapshot cursor.** On the next display rebuild, `_prompt_cursor_x` is captured from the new prompt position.
-
-### Rapid Panel Switching
-
-When the user switches panels faster than the shell can process cd commands, multiple navigations may be in flight.
-The `_nav_pending` counter tracks how many navigations have not yet been acknowledged by a `pre_cmd`.
-Draining stays on until the counter reaches zero, preventing intermediate cd echoes from leaking.
-
-The caller (`MainScreen._set_terminal_directory`) wraps the call in `asyncio.create_task` and cancels the previous task before starting a new one.
-It captures the requesting panel at call time so the result updates the correct panel, even if the active panel changes before the cd completes.
-The `_on_terminal_pre_cmd` handler ignores `PreCmd` events while a programmatic navigation is in flight, so only user-typed cd commands update the active panel.
-
-### Awaitable Return Value
-
-`set_terminal_directory` returns the actual CWD reported by the shell (a `PurePath`).
-For `FallbackDriver` (no stop/resume), it returns the requested path immediately without blocking.
-
-### History Exclusion
-
-Navigation cd commands must not pollute the shell's command history.
-The cd command is prefixed with a leading space (step 4 above).
-The init code also configures the shell to honour this convention:
-
-- **zsh:** `setopt HIST_IGNORE_SPACE` — commands starting with a space are excluded from history.
-- **bash:** `HISTCONTROL="${HISTCONTROL:+${HISTCONTROL}:}ignorespace"` — appended without overwriting user settings.
-
-Both settings are idempotent and have no effect on user-typed commands that do not start with a space.
-
-For `FallbackDriver`, steps 2, 6–10, and 12 are skipped.
-The cd echo is visible and typed input is lost.
-
----
-
-## Degraded Mode (FallbackDriver)
-
-When the shell is not zsh or bash, `detect_driver()` returns `FallbackDriver`.
-
-In degraded mode:
-- `supports_stop_resume` is False.
-- No `kill -STOP $$` is injected.
-- Directory navigation echoes the `cd` command visibly.
-- Typed input is lost on navigation.
-- CWD tracking still works via a `PS1`-based precmd hook.
-- The precmd payload contains only the path (no PID).
-
-This is an accepted trade-off for shells that lack `precmd_functions` or `PROMPT_COMMAND`.
-
----
-
 ## Message Protocol (Internal Queues)
 
 Both queues carry `list[object]` messages with a string command as the first element.
@@ -389,26 +431,39 @@ Both queues carry `list[object]` messages with a string command as the first ele
 | Message | Format | Source | Purpose |
 |---------|--------|--------|---------|
 | `setup` | `["setup", {}]` | `_run()` | Initial setup signal after readers are attached |
-| `stdout` | `["stdout", str]` | `on_output` reader | Shell output bytes (decoded) |
-| `pre_cmd` | `["pre_cmd", str]` | `on_pre_cmd` reader | Precmd pipe payload (`PID:CWD` or just CWD) |
-| `disconnect` | `["disconnect", int]` | `on_output` reader | Shell process exited or read error |
+| `stdout` | `["stdout", str]` | `_process_chunk` | Shell output (OSC sequences already stripped) |
+| `pre_cmd` | `["pre_cmd", path, from_nn]` | `_process_chunk` | CWD from OSC 7; `from_nn` is True for NN hooks |
+| `prompt_ready` | `["prompt_ready"]` | `_process_chunk` | OSC 133;B detected (prompt end) |
+| `disconnect` | `["disconnect", int]` | reader callback | Shell process exited or read error |
 
 The `recv()` loop drains up to `_RECV_DRAIN_LIMIT` (100) messages per wakeup to batch processing.
 When `_draining` is True, `stdout` messages are silently discarded.
 
 ---
 
+## TerminalPool
+
+`TerminalPool` manages one `Terminal` widget per filesystem connection.
+All terminals are mounted in the Textual DOM simultaneously.
+Only the active terminal is visible (`display=True`); others are hidden but continue running.
+
+The pool supports:
+- A local terminal (always present).
+- Remote terminals created on demand via registered factories (e.g. SSH).
+- `switch_to(fs)` — show the terminal for a given filesystem, hiding the current one.
+
+---
+
 ## Extending for New Backends
 
-To add a new backend (e.g. SSH-based PTY):
+To add a new backend (e.g. a container-based PTY):
 
 1. Subclass `PtyBackend`.
 2. Implement all abstract methods: `open()`, `write()`, `resize()`, `resume()`, `attach_readers()`, `detach_readers()`, `teardown()`.
-3. Set `supports_precmd_pipe` to True if the backend can relay an out-of-band pipe, or False if not.
-4. Pass the backend instance to `Terminal(command, backend=my_backend)`.
+3. Pass the backend instance to `Terminal(command, backend=my_backend)`.
 
-If `supports_precmd_pipe` is False, `ShellDriver.init_code()` receives None for the fd and should return an empty string.
-CWD tracking and SIGSTOP synchronisation are unavailable without the precmd pipe.
+CWD tracking works automatically via in-band OSC 7 sequences parsed by `_process_chunk()`.
+The `resume()` method can be a no-op for backends that don't support SIGCONT.
 
 ---
 
@@ -417,11 +472,10 @@ CWD tracking and SIGSTOP synchronisation are unavailable without the precmd pipe
 To add a new shell driver:
 
 1. Subclass `ShellDriver`.
-2. Implement `init_code(precmd_fd)` — install a precmd hook that writes CWD (and optionally PID) to the fd.
+2. Implement `init_code()` — install a precmd hook that emits OSC 7 with the `panel=;file:///path` format.
 3. Implement `quote(arg)` — return a safely quoted string for that shell's syntax.
-4. Implement `parse_precmd_payload(raw)` — parse the hook's output.
-5. Set `supports_stop_resume` to True if the hook includes `kill -STOP $$`.
-6. Update `detect_driver()` in `shell_driver.py` to recognise the shell name.
+4. Set `prompt_ready=True` if the hook also installs an OSC 133;B prompt-end marker.
+5. Update `detect_driver()` in `shell_driver.py` to recognise the shell name.
 
-If the shell supports a precmd mechanism but not `kill -STOP $$`, set `supports_stop_resume` to False.
-The driver will work like `FallbackDriver` — CWD tracking without synchronised navigation.
+All drivers share the same draining mechanism.
+No special synchronisation is needed.

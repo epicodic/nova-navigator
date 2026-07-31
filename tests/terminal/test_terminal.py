@@ -1215,6 +1215,39 @@ async def test_normal_send_after_pre_cmd_resets_drain_appears_on_screen() -> Non
             await _stop_recv_only(terminal)
 
 
+@pytest.mark.asyncio
+async def test_pre_cmd_overwrites_prompt_in_place_when_draining_ends() -> None:
+    """Regression: the echoed cd command and its trailing newline are discarded while
+    draining, so the cursor never naturally advances to a fresh line. When draining
+    ends, the terminal must return to column 0 and clear the rest of the old prompt
+    so the new prompt overwrites it *in place* on the same row -- neither leaking
+    onto the same row unmodified (prompts appear concatenated when navigating
+    directories one after another) nor pushing everything onto a new line (which
+    would leave the old prompt visible above the new one)."""
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            # Simulate an already-rendered prompt so the cursor isn't at column 0.
+            await recv_q.put(["stdout", "oldprompt$ "])
+            await pilot.pause(delay=0.1)
+
+            terminal._draining = True
+            await recv_q.put(["stdout", "SILENT_CONTENT"])
+            await recv_q.put(["pre_cmd", "/some/path\n"])
+            await recv_q.put(["stdout", "newprompt$ "])
+            await pilot.pause(delay=0.2)
+
+            rendered_lines = [line.plain for line in terminal._display.lines]
+            assert not any("oldprompt" in line for line in rendered_lines)
+            assert any(line.strip() == "newprompt$" for line in rendered_lines)
+        finally:
+            await _stop_recv_only(terminal)
+
+
 # ---------------------------------------------------------------------------
 # has_input
 # ---------------------------------------------------------------------------
@@ -1583,9 +1616,9 @@ async def test_yank_not_sent_when_pending_yank_is_false() -> None:
 
 
 @pytest.mark.asyncio
-async def test_prompt_cursor_snapshotted_on_prompt_ready_not_at_pre_cmd() -> None:
-    """_prompt_cursor_x/_prompt_cursor_y must be set when ["prompt_ready"] arrives,
-    not when pre_cmd fires and not during _rebuild_display."""
+async def test_prompt_cursor_snapshotted_after_pre_cmd_on_first_stdout() -> None:
+    """_prompt_cursor_x/_prompt_cursor_y must be set on the first stdout after pre_cmd,
+    not when pre_cmd fires itself."""
     backend = FakePtyBackend()
     terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
     app = TerminalTestApp(terminal)
@@ -1594,18 +1627,13 @@ async def test_prompt_cursor_snapshotted_on_prompt_ready_not_at_pre_cmd() -> Non
         recv_q = await _start_recv_only(terminal)
         try:
             await recv_q.put(["pre_cmd", "/home/user\n"])
-            # pre_cmd fired but no prompt_ready yet — snapshot must not have moved.
+            # pre_cmd fired but no stdout yet — snapshot must not have moved.
             await asyncio.sleep(0.005)
             assert terminal._prompt_cursor_x == 0
 
-            # Send prompt text and wait for rebuild — still no prompt_ready.
+            # First stdout after precmd: snapshot is taken automatically.
             await recv_q.put(["stdout", "$ "])
             await pilot.pause(delay=0.15)
-            assert terminal._prompt_cursor_x == 0  # rebuild does not snapshot
-
-            # prompt_ready arrives: snapshot taken at current cursor position.
-            await recv_q.put(["prompt_ready"])
-            await asyncio.sleep(0.005)
             assert terminal._prompt_cursor_x == terminal._screen.cursor.x
             assert terminal._prompt_cursor_y == terminal._screen.cursor.y
         finally:

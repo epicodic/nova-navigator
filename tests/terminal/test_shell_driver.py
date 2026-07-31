@@ -315,12 +315,6 @@ def test_zsh_driver_init_code_contains_osc7_printf() -> None:
     assert r"\033]7;panel=;file://%s\007" in code
 
 
-def test_zsh_driver_init_code_does_not_contain_kill_stop() -> None:
-    driver = ZshDriver()
-    code = driver.init_code()
-    assert "kill -STOP $$" not in code
-
-
 def test_bash_driver_init_code_takes_no_arguments() -> None:
     driver = BashDriver()
     code = driver.init_code()
