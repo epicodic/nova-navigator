@@ -42,6 +42,10 @@ class JobRegistry:
         with contextlib.suppress(ValueError):
             self._finished.remove(job)
 
+    def clear_finished(self) -> None:
+        """Remove all finished jobs from the history (user dismissed all of them)."""
+        self._finished.clear()
+
     @property
     def running_jobs(self) -> list[Job]:
         """Snapshot of currently running jobs."""
