@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from enum import Enum
+from enum import Enum, IntEnum
 from typing import Any, ClassVar, Self
 
 from rich.color import Color
@@ -22,7 +22,6 @@ from textual.reactive import Reactive, var
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
 from textual.widgets import Button, Input, Static
-from textual.widgets.data_table import ColumnKey
 
 from nova_widgets import unicode
 from nova_widgets.action import Action
@@ -178,7 +177,60 @@ def column_sorter_modified(path: VPath) -> tuple[int, float]:
     if isinstance(path, UpPath):
         return 0, 0.0
     stat = path.stat
-    return 1, stat.modified
+    if stat.is_directory:
+        return 1, stat.modified
+    return 2, stat.modified
+
+
+def _extension_of(name: str) -> str:
+    """Return the lowercase file extension of name, or "" if it has none.
+
+    A leading dot (dotfiles such as ".bashrc") is not treated as an extension.
+    """
+    head, sep, tail = name.rpartition(".")
+    if not sep or not head:
+        return ""
+    return tail.lower()
+
+
+def column_sorter_extension(path: VPath) -> tuple[int, tuple[str, str]]:
+    if isinstance(path, UpPath):
+        return 0, ("", path.name)
+
+    stat = path.stat
+    key = (_extension_of(path.name), path.name)
+    if stat.is_directory and stat.is_hidden:
+        return 1, key
+
+    if stat.is_directory and not stat.is_hidden:
+        return 2, key
+
+    if stat.is_hidden:
+        return 3, key
+
+    return 4, key
+
+
+class SortKey(IntEnum):
+    """Identifies which sorter orders the directory entries.
+
+    NAME, SIZE, and MODIFIED share the value of the matching physical column
+    index so a column-header click maps directly to a key. EXTENSION has no
+    physical column.
+    """
+
+    NAME = 1
+    SIZE = 2
+    MODIFIED = 3
+    EXTENSION = 100
+
+
+_SORTERS: dict[SortKey, Callable[[VPath], Any]] = {
+    SortKey.NAME: column_sorter_name,
+    SortKey.SIZE: column_sorter_size,
+    SortKey.MODIFIED: column_sorter_modified,
+    SortKey.EXTENSION: column_sorter_extension,
+}
 
 
 @dataclass
@@ -186,7 +238,6 @@ class Column:
     title: str
     width: int
     formatter: Callable[[VPath], str]
-    sorter: Callable[[VPath], Any]
 
 
 class FilterWidget(PopupWidget, can_focus=True):
@@ -484,7 +535,7 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
 
     show_hidden_files: Reactive[bool] = Reactive(default=False, repaint=False, always_update=False)
     cursor_row: Reactive[int] = Reactive(default=0, repaint=False, always_update=True)
-    sort_column = var(default=0)
+    sort_column = var(default=SortKey.NAME)
     sort_ascending = var(default=True)
 
     def __init__(
@@ -503,25 +554,21 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
                 title="",  # Icon
                 width=3,
                 formatter=column_formatter_icon,
-                sorter=column_sorter_name,
             ),
             Column(
                 title="Name",
                 width=0,
                 formatter=column_formatter_name,
-                sorter=column_sorter_name,
             ),
             Column(
                 title="Size",
                 width=10,
                 formatter=column_formatter_size,
-                sorter=column_sorter_size,
             ),
             Column(
                 title="Modified",
                 width=12,
                 formatter=column_formatter_modified,
-                sorter=column_sorter_modified,
             ),
         ]
         self._path = UpPath()
@@ -685,7 +732,7 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
             old_item_under_cursor = self._shown_items[self.cursor_row] if self.cursor_row < len(self._shown_items) else None
         old_selected_items = self._selected_items
 
-        column_sorter = self._columns[self.sort_column].sorter
+        column_sorter = self._resolve_sorter()
 
         def sorter(item: VPath) -> Any:
             order, value = column_sorter(item)
@@ -1058,11 +1105,39 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
             item = self._shown_items[new_row] if 0 <= new_row < len(self._shown_items) else None
             self.post_message(DirectoryBrowser.ItemChanged(self, item))
 
-    def watch_sort_column(self, _old: ColumnKey, _new: ColumnKey) -> None:
+    def watch_sort_column(self, _old: SortKey, _new: SortKey) -> None:
         self.update(self.WhatChanged.SORTING)
 
     def watch_sort_ascending(self, _old: bool, _new: bool) -> None:
         self.update(self.WhatChanged.SORTING)
+
+    def _resolve_sorter(self) -> Callable[[VPath], Any]:
+        return _SORTERS[SortKey(self.sort_column)]
+
+    def _set_sort(self, sort_key: SortKey) -> None:
+        """Sort by sort_key, reversing direction when it is already active.
+
+        Mirrors the column-header click behaviour: selecting the active sort
+        toggles ascending/descending, while switching to a new sort resets to
+        ascending.
+        """
+        if self.sort_column == sort_key:
+            self.sort_ascending = not self.sort_ascending
+        else:
+            self.sort_ascending = True
+            self.sort_column = sort_key
+
+    def action_sort_by_name(self) -> None:
+        self._set_sort(SortKey.NAME)
+
+    def action_sort_by_extension(self) -> None:
+        self._set_sort(SortKey.EXTENSION)
+
+    def action_sort_by_modified(self) -> None:
+        self._set_sort(SortKey.MODIFIED)
+
+    def action_sort_by_size(self) -> None:
+        self._set_sort(SortKey.SIZE)
 
     def action_cursor_up(self) -> None:
         self.cursor_row = self.cursor_row - 1
@@ -1158,11 +1233,7 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
 
         if row_index < 0:
             # header clicked
-            if self.sort_column == column_index:
-                self.sort_ascending = not self.sort_ascending
-            else:
-                self.sort_ascending = True
-                self.sort_column = column_index
+            self._set_sort(SortKey(column_index))
             return
 
         self.cursor_row = row_index

@@ -7,18 +7,20 @@ It extends Textual's `ScrollView` and renders a directory's contents as a scroll
 
 Each row displays four columns defined in `_columns: list[Column]`.
 
-| Index | Title | Fixed width | Sorter |
-|-------|-------|-------------|--------|
-| 0 | *(empty — icon)* | 3 | `column_sorter_name` |
-| 1 | Name | dynamic | `column_sorter_name` |
-| 2 | Size | 10 | `column_sorter_size` |
-| 3 | Modified | 12 | `column_sorter_modified` |
+| Index | Title | Fixed width | Sort key |
+|-------|-------|-------------|----------|
+| 0 | *(empty — icon)* | 3 | `SortKey.NAME` |
+| 1 | Name | dynamic | `SortKey.NAME` |
+| 2 | Size | 10 | `SortKey.SIZE` |
+| 3 | Modified | 12 | `SortKey.MODIFIED` |
+
+The `Column` dataclass holds only display data (`title`, `width`, `formatter`); the sorter is chosen from `sort_column` (a `SortKey`) via the `_SORTERS` map, not stored on the column.
 
 The Name column (index 1) has `width=0` in the `Column` dataclass.
 Its actual render width is computed per frame as `widget_width − 30`, where 30 accounts for the icon column, size, modified, padding, and scrollbar.
 
 Column 0 (icon) and column 1 (name) both embed `{"column": 1}` in their Segment metadata (see [Hit-testing](#hit-testing)).
-Clicking either area sorts by `column_sorter_name`.
+Clicking either area sorts by `SortKey.NAME`.
 Clicking the same column header again reverses the sort direction.
 
 ### Column formatters
@@ -41,7 +43,24 @@ Each sorter returns a tuple `(group, value)` so that primary grouping is always 
 
 `column_sorter_name` groups: `..` (0) → hidden dirs (1) → visible dirs (2) → hidden files (3) → visible files (4).
 
+`column_sorter_extension` uses the same grouping and orders each group by lowercase file extension, then by name.
+A leading dot (dotfiles such as `.bashrc`) is not treated as an extension.
+
+### Selecting the sort column
+
+`sort_column` holds a `SortKey` value (`NAME`, `SIZE`, `MODIFIED`, or `EXTENSION`).
+`SortKey` is an `IntEnum` whose `NAME`/`SIZE`/`MODIFIED` values equal the matching physical column index, so a column-header click maps directly via `SortKey(column_index)`.
+`EXTENSION` has no physical column.
+`_resolve_sorter` looks the active key up in the module-level `_SORTERS` map to obtain the sorter function.
+
+`_set_sort(sort_key)` is the shared entry point for both header clicks and the sort shortcuts.
+Selecting the already-active sort toggles `sort_ascending`; switching to a new sort resets it to ascending.
+
+The sort action handlers (`action_sort_by_name`, `action_sort_by_size`, `action_sort_by_modified`, `action_sort_by_extension`) live on the browser, but their keyboard bindings are defined on `MainScreen` (see [Keyboard Bindings](#keyboard-bindings)) and delegate to the active panel.
+
 ## Keyboard Bindings
+
+The following bindings are defined on the `DirectoryBrowser` widget itself:
 
 | Key | Action |
 |-----|--------|
@@ -53,6 +72,15 @@ Each sorter returns a tuple `(group, value)` so that primary grouping is always 
 | `Ctrl+A` | Select all visible items |
 | `Ctrl+F` | Open the filter bar |
 | `Left` / `Right` | *Bound but unimplemented* — `action_cursor_left` / `action_cursor_right` do not exist |
+
+The sort bindings are defined on `MainScreen` (the top-level widget) and delegate to the active panel's sort action handlers:
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+T` `N` | Sort by name (repeat to reverse) |
+| `Ctrl+T` `S` | Sort by size (repeat to reverse) |
+| `Ctrl+T` `T` | Sort by modification time (repeat to reverse) |
+| `Ctrl+T` `E` | Sort by extension (repeat to reverse) |
 
 ## Mouse Interaction
 
@@ -129,7 +157,7 @@ Changing it triggers `watch_show_hidden_files` → `update(WhatChanged.FILTERING
 |----------|------|---------|-------|
 | `show_hidden_files` | `Reactive[bool]` | `False` | `repaint=False`, `always_update=False` |
 | `cursor_row` | `Reactive[int]` | `0` | `repaint=False`, `always_update=True` |
-| `sort_column` | `var` | `0` | triggers `update(SORTING)` |
+| `sort_column` | `var[SortKey]` | `SortKey.NAME` | triggers `update(SORTING)` |
 | `sort_ascending` | `var` | `True` | triggers `update(SORTING)` |
 
 `cursor_row` uses `always_update=True` so `watch_cursor_row` fires even when the value does not change.

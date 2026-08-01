@@ -123,6 +123,11 @@ class MainScreen(ActionsSupport, Screen[None]):
         Action("Invert Selection", id="selection.invert", action="invert_selection", description="Invert the current selection", shortcut="ctrl+s i", show=True),
         Action("Select All", id="selection.select_all", action="select_all", description="Select all items in the current directory", shortcut="ctrl+s a", show=True),
         Action("Select None", id="selection.select_none", action="select_none", description="Deselect all items in the current directory", shortcut="ctrl+s n", show=True),
+        # Sort order (operate on the active panel)
+        Action("Sort by Name", id="browser.sort_name", action="sort_by_name", description="Sort entries by name", shortcut="ctrl+t n", show=False),
+        Action("Sort by Size", id="browser.sort_size", action="sort_by_size", description="Sort entries by size", shortcut="ctrl+t s", show=False),
+        Action("Sort by Time", id="browser.sort_modified", action="sort_by_modified", description="Sort entries by modification time", shortcut="ctrl+t t", show=False),
+        Action("Sort by Extension", id="browser.sort_extension", action="sort_by_extension", description="Sort entries by extension", shortcut="ctrl+t e", show=False),
         # View toggles (checkable)
         Action("Show Hidden Files", id="view.show_hidden_files", action="show_hidden_files", description="Toggle display of hidden files", checkable=True, checked=False, show=False),
         Action("Synchronized Browsing", id="view.sync_browsing", action="toggle_sync_browsing", description="Mirror navigation between panels", checkable=True, show=False),
@@ -961,6 +966,18 @@ class MainScreen(ActionsSupport, Screen[None]):
 
     async def _action_invert_selection(self) -> None:
         self.active_panel().action_invert_selection()
+
+    def _action_sort_by_name(self) -> None:
+        self.active_panel().action_sort_by_name()
+
+    def _action_sort_by_size(self) -> None:
+        self.active_panel().action_sort_by_size()
+
+    def _action_sort_by_modified(self) -> None:
+        self.active_panel().action_sort_by_modified()
+
+    def _action_sort_by_extension(self) -> None:
+        self.active_panel().action_sort_by_extension()
 
     def action_show_processes(self) -> None:
         self._jobs_dialog.show()
