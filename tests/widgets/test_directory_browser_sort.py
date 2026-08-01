@@ -2,7 +2,7 @@
 
 import pytest
 
-from nova_navigator.widgets.directory_browser import DirectoryBrowser, UpPath
+from nova_navigator.widgets.directory_browser import DirectoryBrowser, SortKey, UpPath
 from tests.widgets._directory_browser_fixtures import run_browser, sized_files_fs
 
 
@@ -39,7 +39,7 @@ async def test_sort_ascending_false_reverses_order() -> None:
 @pytest.mark.asyncio
 async def test_sort_by_size_column() -> None:
     async with run_browser(sized_files_fs()) as (pilot, browser, _msgs):
-        browser.sort_column = 2  # Size column
+        browser.sort_column = SortKey.SIZE
         browser.sort_ascending = True
         await pilot.pause()
         names = _non_up_names(browser)
@@ -55,7 +55,7 @@ async def test_sort_by_size_column() -> None:
 @pytest.mark.asyncio
 async def test_sort_by_modified_column() -> None:
     async with run_browser(sized_files_fs()) as (pilot, browser, _msgs):
-        browser.sort_column = 3  # Modified column
+        browser.sort_column = SortKey.MODIFIED
         browser.sort_ascending = True
         await pilot.pause()
         names = _non_up_names(browser)
@@ -71,12 +71,12 @@ async def test_sort_by_modified_column() -> None:
 @pytest.mark.asyncio
 async def test_changing_sort_column_resorts_items() -> None:
     async with run_browser(sized_files_fs()) as (pilot, browser, _msgs):
-        assert browser.sort_column == 0
+        assert browser.sort_column == SortKey.NAME
         # Directly set sort_column to simulate column-header click outcome
         # and verify the watcher fires (re-sort occurs).
-        browser.sort_column = 2
+        browser.sort_column = SortKey.SIZE
         await pilot.pause()
-        assert browser.sort_column == 2
+        assert browser.sort_column == SortKey.SIZE
         # After setting to size-column, file order should be smallest→largest
         file_names = [n for n in _non_up_names(browser) if "." in n]
         assert file_names == [
@@ -122,3 +122,18 @@ async def test_toggling_sort_ascending_reverses_order() -> None:
             "medium.txt",
             "small.py",
         ]
+
+
+@pytest.mark.asyncio
+async def test_repeated_sort_toggles_direction() -> None:
+    async with run_browser(sized_files_fs()) as (pilot, browser, _msgs):
+        browser.action_sort_by_size()
+        await pilot.pause()
+        assert browser.sort_column == SortKey.SIZE
+        assert browser.sort_ascending is True
+        browser.action_sort_by_size()
+        await pilot.pause()
+        assert browser.sort_column == SortKey.SIZE
+        assert browser.sort_ascending is False
+        file_names = [n for n in _non_up_names(browser) if "." in n]
+        assert file_names == ["large.bin", "medium.txt", "small.py"]
