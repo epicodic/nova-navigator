@@ -1019,6 +1019,35 @@ async def test_on_click_puts_click_message_in_send_queue_when_mouse_tracking_ena
         assert item[2] == 3
 
 
+@pytest.mark.asyncio
+async def test_middle_click_pastes_clipboard_via_real_dispatch() -> None:
+    """Regression test: Textual dispatches Click to ``_on_click``, not ``on_click``, in the same class.
+
+    Calling ``terminal.on_click(...)`` directly (as the tests above do) does not exercise this, since
+    ``_on_click`` shadows ``on_click`` for the same class in Textual's dispatch. Routing the event
+    through the real ``Screen``/``Pilot`` pipeline is required to catch a regression here.
+    """
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
+        pilot.app.copy_to_clipboard("hello")
+
+        await pilot._post_mouse_events(
+            [events.MouseDown, events.MouseUp, events.Click],
+            terminal,
+            offset=(0, 0),
+            button=2,
+        )
+        await pilot.pause()
+
+        assert terminal.send_queue.qsize() == 1
+        assert terminal.send_queue.get_nowait() == ["stdin", "hello"]
+
+
 # ---------------------------------------------------------------------------
 # Mouse scroll handling
 # ---------------------------------------------------------------------------
