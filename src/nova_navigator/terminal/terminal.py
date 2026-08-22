@@ -63,6 +63,7 @@ _PRE_CMD_FROM_NN_IDX = 2  # index of the from_nn flag in a pre_cmd message
 
 
 _MOUSE_TRACKING_MODES: frozenset[str] = frozenset({"1000", "1002", "1003", "1006"})
+_BRACKETED_PASTE_MODE = "2004"
 _RECV_DRAIN_LIMIT: int = 100
 _DISPLAY_FPS: float = 60.0
 
@@ -106,6 +107,8 @@ _CTRL_KEYS: dict[str, str] = {
     "down": "\x1bOB",
     "right": "\x1bOC",
     "left": "\x1bOD",
+    "ctrl+right": "\x1b[1;5C",
+    "ctrl+left": "\x1b[1;5D",
     "home": "\x1bOH",
     "end": "\x1b[F",
     "delete": "\x1b[3~",
@@ -256,6 +259,7 @@ class Terminal(Widget, can_focus=True):
         self.ncol = 80
         self.nrow = 24
         self.mouse_tracking = False
+        self.bracketed_paste = False
 
         self.send_queue: asyncio.Queue[list[object]] | None = None
         self.recv_queue: asyncio.Queue[list[object]] | None = None
@@ -361,6 +365,22 @@ class Terminal(Widget, can_focus=True):
             self._keys_forwarded_since_precmd = True
             assert self.send_queue is not None
             self.send_queue.put_nowait(["stdin", char])
+
+    async def on_paste(self, event: events.Paste) -> None:
+        if not self._started:
+            return
+
+        event.stop()
+        text = event.text
+        if not text:
+            return
+        # Wrap in bracketed-paste markers only if the shell requested that mode, so it
+        # treats the whole paste as literal text instead of executing embedded newlines.
+        if self.bracketed_paste:
+            text = f"\x1b[200~{text}\x1b[201~"
+        self._keys_forwarded_since_precmd = True
+        assert self.send_queue is not None
+        self.send_queue.put_nowait(["stdin", text])
 
     def has_input(self) -> bool:
         """Return True if the user has typed something on the current prompt line.
@@ -591,6 +611,8 @@ class Terminal(Widget, can_focus=True):
                 modes = set(body[:-1].split(";"))
                 if _MOUSE_TRACKING_MODES & modes:
                     self.mouse_tracking = action == "h"
+                if _BRACKETED_PASTE_MODE in modes:
+                    self.bracketed_paste = action == "h"
 
         try:
             self._stream.feed(chars)
