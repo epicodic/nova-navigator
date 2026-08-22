@@ -528,6 +528,133 @@ async def test_on_key_unknown_key_without_character_puts_nothing() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Text selection and copy
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mouse_drag_selects_text_and_populates_screen_selections() -> None:
+    """A click-drag across the terminal must populate Screen.selections.
+
+    This exercises the real Textual mouse-drag pipeline (Screen._forward_event /
+    get_widget_and_offset_at), which requires Terminal.render_line to tag each
+    segment with "offset" style metadata via Strip.apply_offsets — regression
+    test for the bug where dragging produced no selection at all.
+    """
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._feed_stdout("hello world")
+        terminal._rebuild_display()
+        terminal.refresh()
+        await pilot.pause()
+
+        await pilot.mouse_down(terminal, offset=(0, 0))
+        await pilot.hover(terminal, offset=(5, 0))
+        await pilot.mouse_up(terminal, offset=(5, 0))
+        await pilot.pause()
+
+        assert terminal in pilot.app.screen.selections
+        selection = pilot.app.screen.selections[terminal]
+        result = terminal.get_selection(selection)
+        assert result is not None
+        text, _ = result
+        assert text == "hello"
+
+
+@pytest.mark.asyncio
+async def test_render_line_tags_segments_with_offset_meta() -> None:
+    """Strip segments produced by render_line must carry selection offset metadata."""
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._feed_stdout("hi")
+        terminal._rebuild_display()
+
+        strip = terminal.render_line(0)
+
+        metas = [segment.style.meta for segment in strip._segments if segment.style is not None]
+        assert any("offset" in meta for meta in metas)
+
+
+@pytest.mark.asyncio
+async def test_ctrl_shift_c_copies_selection_to_clipboard(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
+        terminal._feed_stdout("hello world")
+        terminal._rebuild_display()
+
+        await pilot.mouse_down(terminal, offset=(0, 0))
+        await pilot.hover(terminal, offset=(5, 0))
+        await pilot.mouse_up(terminal, offset=(5, 0))
+        await pilot.pause()
+
+        copied: list[str] = []
+        monkeypatch.setattr(pilot.app, "copy_to_clipboard", lambda text: copied.append(text))
+
+        await terminal.on_key(events.Key("ctrl+shift+c", character=None))
+
+        assert copied == ["hello"]
+
+
+def test_allow_select_true_when_mouse_tracking_disabled(terminal_instance: Terminal) -> None:
+    terminal_instance.mouse_tracking = False
+    assert terminal_instance.allow_select is True
+
+
+def test_allow_select_false_when_mouse_tracking_enabled(terminal_instance: Terminal) -> None:
+    terminal_instance.mouse_tracking = True
+    assert terminal_instance.allow_select is False
+
+
+@pytest.mark.asyncio
+async def test_double_click_selects_word_under_pointer() -> None:
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._feed_stdout("hello world")
+        terminal._rebuild_display()
+        terminal.refresh()
+        await pilot.pause()
+
+        await pilot.double_click(terminal, offset=(8, 0))  # inside "world"
+        await pilot.pause()
+
+        assert terminal in pilot.app.screen.selections
+        selection = pilot.app.screen.selections[terminal]
+        result = terminal.get_selection(selection)
+        assert result is not None
+        text, _ = result
+        assert text == "world"
+
+
+@pytest.mark.asyncio
+async def test_double_click_ignored_when_mouse_tracking_enabled() -> None:
+    terminal = Terminal("/bin/sh")
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._feed_stdout("hello world")
+        terminal._rebuild_display()
+        terminal.mouse_tracking = True
+        terminal.refresh()
+        await pilot.pause()
+
+        await pilot.double_click(terminal, offset=(8, 0))
+        await pilot.pause()
+
+        assert terminal not in pilot.app.screen.selections
+
+
+# ---------------------------------------------------------------------------
 # Resize handling
 # ---------------------------------------------------------------------------
 
