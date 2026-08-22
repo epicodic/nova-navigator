@@ -5,6 +5,7 @@ import copy
 import importlib.metadata
 import logging
 import os
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -374,12 +375,12 @@ class MainScreen(ActionsSupport, Screen[None]):
 
             case "ctrl+down":
                 path = self.active_panel().path_item_under_cursor
-                await self._terminal_pool.active_terminal.send(f"{path.name}")
+                await self._terminal_pool.active_terminal.send(shlex.quote(path.name))
                 return True
 
             case "ctrl+shift+down":
                 path = self.active_panel().path_item_under_cursor
-                await self._terminal_pool.active_terminal.send(f"{path}")
+                await self._terminal_pool.active_terminal.send(shlex.quote(str(path)))
                 return True
 
         KEYS_TO_MAP_TO_TERMINAL = {
