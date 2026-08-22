@@ -349,6 +349,14 @@ class MainScreen(ActionsSupport, Screen[None]):
         if await self._handle_key(event):
             event.stop()
 
+    async def on_paste(self, event: events.Paste) -> None:
+        if self._terminal_mode == self._TerminalMode.MAXIMIZED:
+            return  # terminal already has focus and handles Paste itself
+        if not self._left_panel.has_focus and not self._right_panel.has_focus:
+            return
+        await self._terminal_pool.active_terminal.on_paste(event)
+        event.stop()
+
     def _on_directory_browser_focus(self, event: DirectoryBrowser.Focus) -> None:
         self._last_active_panel = event.browser
 
@@ -390,6 +398,9 @@ class MainScreen(ActionsSupport, Screen[None]):
             "right": "right",
             "shift+up": "up",
             "shift+down": "down",
+            "ctrl+right": "ctrl+right",
+            "ctrl+left": "ctrl+left",
+            "ctrl+c": "ctrl+c",
         }
 
         if event.key in KEYS_TO_MAP_TO_TERMINAL:
