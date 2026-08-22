@@ -34,6 +34,7 @@ from typing import Any, Literal, cast
 
 import pyte
 from pyte.screens import Char
+from rich.cells import cell_len
 from rich.color import ColorParseError
 from rich.console import Console, ConsoleOptions, ConsoleRenderable
 from rich.console import RenderResult as RichRenderResult
@@ -41,7 +42,11 @@ from rich.style import Style
 from rich.text import Text
 from textual import events
 from textual.app import RenderResult, log
+from textual.geometry import Offset
 from textual.message import Message
+from textual.screen import Screen
+from textual.selection import Selection
+from textual.strip import Strip
 from textual.widget import Widget
 
 from nova_navigator.terminal.pty_backend import LocalPtyBackend, PtyBackend
@@ -89,18 +94,31 @@ class TerminalDisplay(ConsoleRenderable):
         self.lines = lines
         self.cursor_x = cursor_x
         self.cursor_y = cursor_y
+        self.selection: Selection | None = None
+        self.selection_style: Style | None = None
+
+    def render_row(self, y: int) -> Text:
+        """Return the styled line for row ``y``, with cursor and selection highlighting applied."""
+        line = self.lines[y]
+        span = self.selection.get_span(y) if self.selection is not None else None
+        if y != self.cursor_y and span is None:
+            return line
+        rendered_line = line.copy()
+        if y == self.cursor_y:
+            rendered_line.stylize("reverse", self.cursor_x, self.cursor_x + 1)
+        if span is not None and self.selection_style is not None:
+            start, end = span
+            rendered_line.stylize(self.selection_style, start, end if end != -1 else len(rendered_line))
+        return rendered_line
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RichRenderResult:
-        result: list[Text] = []
-        for y, line in enumerate(self.lines):
-            if y == self.cursor_y:
-                rendered_line = line.copy()
-                rendered_line.stylize("reverse", self.cursor_x, self.cursor_x + 1)
-            else:
-                rendered_line = line
-            result.append(rendered_line)
-        return result
+        return [self.render_row(y) for y in range(len(self.lines))]
 
+
+_WORD_RE = re.compile(r"\w+")
+
+_DOUBLE_CLICK_CHAIN = 2
+_TRIPLE_CLICK_CHAIN = 3
 
 _CTRL_KEYS: dict[str, str] = {
     "up": "\x1bOA",
@@ -347,6 +365,64 @@ class Terminal(Widget, can_focus=True):
     def render(self) -> RenderResult:
         return self._display
 
+    def render_line(self, y: int) -> Strip:
+        """Render a line of content, tagging it with offset metadata needed for text selection.
+
+        ``Terminal`` renders through a custom ``ConsoleRenderable`` (``TerminalDisplay``) rather
+        than Textual's ``Content``/``Text`` visual pipeline, so the generic rendering path never
+        embeds the per-character "offset" style metadata that Textual's compositor relies on to
+        translate a screen coordinate into a text offset (see ``Screen.get_widget_and_offset_at``).
+        Without it, mouse drags never start or extend a selection. Rendering each row explicitly
+        here and calling ``Strip.apply_offsets`` restores that metadata, mirroring the approach
+        used by Textual's own ``Log`` widget.
+        """
+        rich_style = self.rich_style
+        if y >= len(self._display.lines):
+            return Strip.blank(self.size.width, rich_style)
+
+        self._display.selection = self.text_selection
+        self._display.selection_style = self.screen.get_component_rich_style("screen--selection") if self._display.selection is not None else None
+        line_text = self._display.render_row(y)
+        strip = Strip(line_text.render(self.app.console), cell_len(line_text.plain))
+        strip = strip.crop_extend(0, self.size.width, rich_style)
+        return strip.apply_offsets(0, y)
+
+    @property
+    def allow_select(self) -> bool:
+        """Disable Textual's automatic text selection while mouse_tracking is active.
+
+        Otherwise click-drag would start a text selection instead of being
+        forwarded to a mouse-aware full-screen program running in the shell.
+        """
+        return self.ALLOW_SELECT and not self.mouse_tracking
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        """Return the selected text, trimming trailing padding spaces from each row."""
+        text = "\n".join(str(line).rstrip() for line in self._display.lines)
+        return selection.extract(text), "\n"
+
+    def selection_updated(self, selection: Selection | None) -> None:
+        self.refresh()
+
+    def _select_word_at(self, x: int, y: int) -> None:
+        """Select the word under position ``(x, y)``, used for double-click selection."""
+        if y >= len(self._display.lines):
+            return
+        line = self._display.lines[y].plain
+        for match in _WORD_RE.finditer(line):
+            if match.start() <= x < match.end():
+                self.screen.selections.clear()
+                self.screen.selections[self] = Selection.from_offsets(Offset(match.start(), y), Offset(match.end(), y))
+                self.screen.mutate_reactive(Screen.selections)
+                return
+
+    def _copy_selection(self) -> None:
+        """Copy the current selection (if any belongs to this widget) to the clipboard."""
+        if self in self.screen.selections:
+            text = self.screen.get_selected_text()
+            if text:
+                self.app.copy_to_clipboard(text)
+
     # ------------------------------------------------------------------
     # Event handlers
     # ------------------------------------------------------------------
@@ -357,6 +433,11 @@ class Terminal(Widget, can_focus=True):
 
         if event.key == "ctrl+f1":
             self.app.set_focus(None)
+            return
+
+        if event.key == "ctrl+shift+c":
+            self._copy_selection()
+            event.stop()
             return
 
         event.stop()
@@ -477,6 +558,28 @@ class Terminal(Widget, can_focus=True):
         assert self.send_queue is not None
         self.send_queue.put_nowait(["click", event.x, event.y, event.button])
 
+    async def _on_click(self, event: events.Click) -> None:
+        """Select the word under the pointer on double-click instead of Textual's default select-all.
+
+        Textual's message dispatch invokes ``_on_click`` for every class in the MRO that defines it, so
+        without ``prevent_default()`` the base ``Widget._on_click`` would run right after this one and
+        overwrite our word selection with its own select-all behaviour for the same double-click.
+
+        The preceding ``MouseUp`` already ran (and copied whatever was selected *before* this click)
+        because Textual dispatches double/triple-click ``Click`` events only after that ``MouseUp``,
+        so the new selection made here must be copied explicitly rather than relying on ``_on_mouse_up``.
+        """
+        if event.widget is self and self.allow_select and self.screen.allow_select and self.app.ALLOW_SELECT:
+            if event.chain == _DOUBLE_CLICK_CHAIN:
+                self._select_word_at(event.x, event.y)
+                self._copy_selection()
+                event.prevent_default()
+            elif event.chain == _TRIPLE_CLICK_CHAIN and self.parent is not None:
+                self.select_container.text_select_all()
+                self._copy_selection()
+                event.prevent_default()
+        await self.broker_event("click", event)
+
     async def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
         if not self._mouse_ready():
             return
@@ -488,6 +591,10 @@ class Terminal(Widget, can_focus=True):
             return
         assert self.send_queue is not None
         self.send_queue.put_nowait(["scroll", "up", event.x, event.y])
+
+    async def _on_mouse_up(self, event: events.MouseUp) -> None:
+        await super()._on_mouse_up(event)
+        self._copy_selection()
 
     # ------------------------------------------------------------------
     # recv loop

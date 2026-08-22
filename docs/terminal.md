@@ -386,9 +386,10 @@ Both settings are idempotent and have no effect on user-typed commands that do n
 2. Special keys (arrows, F-keys, etc.) are translated via `_CTRL_KEYS` to their VT escape sequences.
 3. Printable characters use `event.character` directly.
 4. `ctrl+f1` releases focus back to the application without sending to the shell.
-5. The `_keys_forwarded_since_precmd` flag is set.
-6. The result is placed on `send_queue` as `["stdin", text]`.
-7. `_run()` writes the encoded bytes to the PTY via `backend.write()`.
+5. `ctrl+shift+c` copies the current text selection to the clipboard instead of being sent to the shell.
+6. The `_keys_forwarded_since_precmd` flag is set.
+7. The result is placed on `send_queue` as `["stdin", text]`.
+8. `_run()` writes the encoded bytes to the PTY via `backend.write()`.
 
 ### Mouse (when `mouse_tracking` is enabled)
 
@@ -397,6 +398,37 @@ Both settings are idempotent and have no effect on user-typed commands that do n
 
 Mouse tracking is active when the running application sends any of the DECSET enable sequences `?1000h`, `?1002h`, `?1003h`, or `?1006h`.
 It is disabled by the corresponding `l` variants.
+
+---
+
+## Text Selection and Copy
+
+`Terminal` renders through a custom `TerminalDisplay` (a `ConsoleRenderable`), not `Text`/`Content`, so Textual's automatic selection support needed manual wiring at two separate levels:
+
+1. **Starting/extending a selection on mouse drag.**
+   Textual's `Screen._forward_event` decides whether a `MouseDown`/`MouseMove` extends a selection by calling `get_widget_and_offset_at()`, which requires the widget's rendered `Strip` segments to carry an `"offset"` style-meta entry (normally added automatically for `Content`/`Text`-based widgets by `rich_style_with_offset`).
+   A widget whose `render()` returns a raw `ConsoleRenderable` never gets this metadata through the generic rendering path, so a click-drag would start `_selecting` but never actually populate `Screen.selections` — nothing appeared selected.
+   `Terminal` fixes this by overriding `render_line(y)` directly (bypassing `render()`/the generic `Visual` pipeline for on-screen painting, mirroring Textual's own `Log` widget): it renders row `y` from `TerminalDisplay.render_row()`, converts it to a `Strip`, and calls `Strip.apply_offsets(0, y)` to tag every segment with the offset metadata the compositor needs.
+2. **Extracting and highlighting the selected text.**
+   `Terminal.get_selection()` builds the copyable text from the current screen buffer, right-stripping each row's trailing pyte padding spaces.
+   `TerminalDisplay.render_row()` paints the `screen--selection` component style over the selected span of a row (alongside the existing cursor reverse-video highlight); `render_line()` reads the current selection from `self.text_selection` on every call, so highlighting stays in sync as the drag progresses.
+   `Terminal.render()` (used only for direct calls, e.g. in tests) still returns the same `TerminalDisplay` but is no longer part of the on-screen paint path once `render_line` is overridden.
+
+Selection is only available while `mouse_tracking` is off (see `allow_select`).
+When a mouse-aware full-screen program is running in the shell (vim, htop, a nested `mc`, etc.), click-drag must reach that program instead of starting a text selection.
+
+Double-clicking selects the word under the pointer instead of Textual's default double-click behaviour (select the whole widget).
+`Terminal._on_click()` overrides the `event.chain == 2` case to call `_select_word_at()`, which finds the `\w+` match under the click's `x` position on the clicked row and sets that span as the selection.
+Textual's message dispatch calls `_on_click` for every class in the MRO that defines it, not just the most-derived one, so without `event.prevent_default()` the base `Widget._on_click` would run right afterwards for the same event and overwrite the word selection with its own select-all behaviour.
+`_on_click` calls `event.prevent_default()` whenever it handles a double- or triple-click itself, to suppress that base handler.
+
+Copying happens two ways:
+
+- **Automatically** — releasing the mouse button after a drag (`_on_mouse_up`) copies the selection to the clipboard via `_copy_selection()`.
+- **Explicitly** — pressing `ctrl+shift+c` re-copies the current selection.
+  `ctrl+c` is not used for this because it is always forwarded to the shell as SIGINT.
+
+There is no scrollback buffer (pyte only tracks the visible grid), so selection and copy only ever cover what is currently on screen.
 
 ---
 
