@@ -399,6 +399,9 @@ Both settings are idempotent and have no effect on user-typed commands that do n
 Mouse tracking is active when the running application sends any of the DECSET enable sequences `?1000h`, `?1002h`, `?1003h`, or `?1006h`.
 It is disabled by the corresponding `l` variants.
 
+A middle-click always pastes the clipboard, regardless of `mouse_tracking`, the same as `ctrl+shift+v` in a regular terminal.
+`on_click` checks for the middle button before the `mouse_tracking` gate and forwards `self.app.clipboard` through `_paste_text()`, the same helper `on_paste` uses.
+
 ---
 
 ## Text Selection and Copy

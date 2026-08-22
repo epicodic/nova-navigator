@@ -119,6 +119,7 @@ _WORD_RE = re.compile(r"\w+")
 
 _DOUBLE_CLICK_CHAIN = 2
 _TRIPLE_CLICK_CHAIN = 3
+_MIDDLE_MOUSE_BUTTON = 2
 
 _CTRL_KEYS: dict[str, str] = {
     "up": "\x1bOA",
@@ -452,8 +453,11 @@ class Terminal(Widget, can_focus=True):
             return
 
         event.stop()
-        text = event.text
-        if not text:
+        await self._paste_text(event.text)
+
+    async def _paste_text(self, text: str) -> None:
+        """Send *text* to the shell as a paste, wrapping it in bracketed-paste markers if requested."""
+        if not self._started or not text:
             return
         # Wrap in bracketed-paste markers only if the shell requested that mode, so it
         # treats the whole paste as literal text instead of executing embedded newlines.
@@ -553,6 +557,10 @@ class Terminal(Widget, can_focus=True):
         return self._started and self.mouse_tracking
 
     async def on_click(self, event: events.Click) -> None:
+        if event.button == _MIDDLE_MOUSE_BUTTON:
+            # Middle-click pastes the clipboard, same as ctrl+shift+v.
+            await self._paste_text(self.app.clipboard)
+            return
         if not self._mouse_ready():
             return
         assert self.send_queue is not None
@@ -564,11 +572,15 @@ class Terminal(Widget, can_focus=True):
         Textual's message dispatch invokes ``_on_click`` for every class in the MRO that defines it, so
         without ``prevent_default()`` the base ``Widget._on_click`` would run right after this one and
         overwrite our word selection with its own select-all behaviour for the same double-click.
+        This is also why ``on_click`` (middle-click paste, mouse-tracking forwarding) is called explicitly
+        here rather than relying on Textual's normal dispatch: a class's own ``_on_click`` shadows its
+        ``on_click`` in the same dispatch pass, so ``on_click`` would otherwise never run.
 
         The preceding ``MouseUp`` already ran (and copied whatever was selected *before* this click)
         because Textual dispatches double/triple-click ``Click`` events only after that ``MouseUp``,
         so the new selection made here must be copied explicitly rather than relying on ``_on_mouse_up``.
         """
+        await self.on_click(event)
         if event.widget is self and self.allow_select and self.screen.allow_select and self.app.ALLOW_SELECT:
             if event.chain == _DOUBLE_CLICK_CHAIN:
                 self._select_word_at(event.x, event.y)
