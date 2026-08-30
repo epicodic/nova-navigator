@@ -8,6 +8,7 @@ from io import StringIO
 from pathlib import PurePath
 from typing import Any
 
+import pyte
 import pytest
 from pyte.screens import Char
 from rich.console import Console
@@ -2293,3 +2294,166 @@ async def test_third_party_chpwd_osc7_ignored_when_nn_hooks_active() -> None:
             assert app.path_changed_events[0].user_initiated is False
         finally:
             await _stop_recv_only(terminal)
+
+
+# ---------------------------------------------------------------------------
+# Scrollback
+# ---------------------------------------------------------------------------
+
+
+def test_scrollback_disabled_by_default_has_hidden_overflow(terminal_instance: Terminal) -> None:
+    assert terminal_instance._history.maxlen == 0
+    assert terminal_instance.styles.overflow_y == "hidden"
+
+
+def test_scrollback_enabled_reserves_scrollbar_gutter() -> None:
+    terminal = Terminal("/bin/sh", scrollback_lines=500)
+    assert terminal._history.maxlen == 500
+    assert terminal.styles.overflow_y == "scroll"
+
+
+def test_scrollback_negative_lines_treated_as_disabled() -> None:
+    terminal = Terminal("/bin/sh", scrollback_lines=-1)
+    assert terminal._history.maxlen == 0
+
+
+def test_history_line_capture_appends_row_scrolled_off_top() -> None:
+    terminal = Terminal("/bin/sh", scrollback_lines=100)
+    terminal.nrow = 3
+    terminal.ncol = 10
+    terminal._screen = TerminalPyteScreen(terminal.ncol, terminal.nrow, on_scroll_off=terminal._on_history_line)
+    terminal._stream = pyte.Stream(terminal._screen)
+
+    for i in range(5):
+        terminal._feed_stdout(f"line{i}\r\n")
+
+    assert len(terminal._history) > 0
+    assert "line0" in str(terminal._history[0])
+
+
+def test_history_capped_at_scrollback_lines() -> None:
+    terminal = Terminal("/bin/sh", scrollback_lines=2)
+    terminal.nrow = 3
+    terminal.ncol = 10
+    terminal._screen = TerminalPyteScreen(terminal.ncol, terminal.nrow, on_scroll_off=terminal._on_history_line)
+    terminal._stream = pyte.Stream(terminal._screen)
+
+    for i in range(10):
+        terminal._feed_stdout(f"line{i}\r\n")
+
+    assert len(terminal._history) == 2
+
+
+def test_clear_scrollback_via_ed3_empties_history() -> None:
+    terminal = Terminal("/bin/sh", scrollback_lines=100)
+    terminal.nrow = 3
+    terminal.ncol = 10
+    terminal._screen = TerminalPyteScreen(
+        terminal.ncol,
+        terminal.nrow,
+        on_scroll_off=terminal._on_history_line,
+        on_clear_scrollback=terminal._clear_scrollback,
+    )
+    terminal._stream = pyte.Stream(terminal._screen)
+
+    for i in range(10):
+        terminal._feed_stdout(f"line{i}\r\n")
+    assert len(terminal._history) > 0
+
+    terminal._feed_stdout("\x1b[3J")
+    assert len(terminal._history) == 0
+
+
+def test_update_virtual_size_reflects_history_and_live_rows() -> None:
+    terminal = Terminal("/bin/sh", scrollback_lines=100)
+    terminal.ncol = 40
+    terminal.nrow = 24
+    terminal._history.extend([Text("a"), Text("b")])
+    terminal._update_virtual_size()
+    assert terminal.virtual_size == Size(40, 26)
+
+
+@pytest.mark.asyncio
+async def test_render_line_returns_history_row_when_scrolled_above_live_screen() -> None:
+    terminal = Terminal("/bin/sh", scrollback_lines=100)
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._history.append(Text("scrollback line"))
+        terminal.scroll_to(y=0, animate=False)
+        await pilot.pause()
+
+        strip = terminal.render_line(0)
+        assert "scrollback line" in strip.text
+
+
+@pytest.mark.asyncio
+async def test_shift_pageup_scrolls_view_up() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver(), scrollback_lines=1000)
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
+        terminal._history.extend(Text(f"line{i}") for i in range(200))
+        terminal._update_virtual_size()
+        terminal.scroll_end(animate=False, force=True, immediate=True)
+        await pilot.pause()
+        before = terminal.scroll_offset.y
+
+        await terminal.on_key(events.Key("shift+pageup", character=None))
+        await pilot.pause()
+
+        assert terminal.scroll_offset.y < before
+        assert terminal.send_queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_shift_pagedown_scrolls_view_down() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver(), scrollback_lines=1000)
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
+        terminal._history.extend(Text(f"line{i}") for i in range(200))
+        terminal._update_virtual_size()
+        terminal.scroll_to(y=0, animate=False)
+        await pilot.pause()
+
+        await terminal.on_key(events.Key("shift+pagedown", character=None))
+        await pilot.pause()
+
+        assert terminal.scroll_offset.y > 0
+        assert terminal.send_queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_allow_vertical_scroll_false_when_mouse_tracking_active() -> None:
+    terminal = Terminal("/bin/sh", scrollback_lines=100)
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.mouse_tracking = True
+        assert terminal.allow_vertical_scroll is False
+
+        terminal.mouse_tracking = False
+        assert terminal.allow_vertical_scroll is True
+
+
+@pytest.mark.asyncio
+async def test_on_resize_excludes_scrollbar_gutter_from_ncol_when_scrollback_enabled() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver(), scrollback_lines=1000)
+    app = TerminalTestApp(terminal)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
+
+        await terminal.on_resize(events.Resize(Size(100, 30), Size(0, 0)))
+
+        assert terminal.ncol == terminal.size.width - terminal.scrollbar_size_vertical
+        assert terminal.scrollbar_size_vertical > 0

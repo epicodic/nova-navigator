@@ -13,6 +13,7 @@ def test_settings_default_construction() -> None:
     assert s.general.confirm_delete is True
     assert s.network.ssh_timeout == 30
     assert s.network.proxy == ""
+    assert s.terminal.scrollback_lines == 1000
 
 
 def test_settings_writes_file_on_first_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -37,6 +38,7 @@ def test_settings_file_contains_section_comments(tmp_path: Path, monkeypatch: py
     content = (tmp_path / "settings.toml").read_text()
     assert "General application settings" in content
     assert "Network settings" in content
+    assert "Embedded terminal panel settings" in content
 
 
 def test_settings_save_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -49,11 +51,13 @@ def test_settings_save_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     instance = Settings.load()
     instance.general.show_hidden_files = True
     instance.network.ssh_timeout = 60
+    instance.terminal.scrollback_lines = 5000
     instance.save()
 
     reloaded = Settings.load()
     assert reloaded.general.show_hidden_files is True
     assert reloaded.network.ssh_timeout == 60
+    assert reloaded.terminal.scrollback_lines == 5000
 
 
 def test_settings_save_preserves_user_comment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
