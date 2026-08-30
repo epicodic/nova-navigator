@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from nova_navigator.config import conf_
 from nova_navigator.config.remotes import RemoteConnection
 from nova_navigator.dialogs import MessageBox
 from nova_navigator.plugins import FilesystemPlugin
@@ -66,7 +67,13 @@ async def _make_azure_terminal(fs: Filesystem) -> Terminal | None:
     azure_fs = fs.unwrap()
     cwd = azure_fs.home()
     backend = VirtualPtyBackend(azure_fs, cwd)
-    return Terminal("vfs", backend=backend, driver=VfsShellDriver(), keep_alive=True)
+    return Terminal(
+        "vfs",
+        backend=backend,
+        driver=VfsShellDriver(),
+        keep_alive=True,
+        scrollback_lines=conf_.settings.terminal.scrollback_lines,
+    )
 
 
 class AzureConnector:

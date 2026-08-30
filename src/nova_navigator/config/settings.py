@@ -45,9 +45,17 @@ class NetworkSettings(BaseModel):
 
 
 @dataclass
+class TerminalSettings(BaseModel):
+    """Embedded terminal panel settings."""
+
+    scrollback_lines: int = field_comment(1000, "Number of scrollback lines kept per terminal panel. 0 disables scrollback.")
+
+
+@dataclass
 class Settings(BaseModel, ModelConfig):
     """Application settings."""
 
     CONFIG_NAME: ClassVar[str] = "settings"
     general: GeneralSettings = field(default_factory=GeneralSettings)
     network: NetworkSettings = field(default_factory=NetworkSettings)
+    terminal: TerminalSettings = field(default_factory=TerminalSettings)

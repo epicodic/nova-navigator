@@ -8,6 +8,7 @@ from typing import cast
 
 import paramiko
 
+from nova_navigator.config import conf_
 from nova_navigator.config.remotes import RemoteConnection, SshSettings
 from nova_navigator.dialogs import CredentialsDialog, MessageBox
 from nova_navigator.plugins import FilesystemPlugin
@@ -165,6 +166,7 @@ async def _make_ssh_terminal(fs: Filesystem) -> Terminal | None:
         backend=SshPtyBackend(ssh_fs._ssh_client),
         driver=driver,
         keep_alive=False,
+        scrollback_lines=conf_.settings.terminal.scrollback_lines,
     )
 
 

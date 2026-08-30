@@ -288,7 +288,12 @@ class MainScreen(ActionsSupport, Screen[None]):
             self._right_panel,
         )
 
-        local_terminal = Terminal("/usr/bin/zsh", id="terminal", keep_alive=True)
+        local_terminal = Terminal(
+            "/usr/bin/zsh",
+            id="terminal",
+            keep_alive=True,
+            scrollback_lines=conf_.settings.terminal.scrollback_lines,
+        )
         local_terminal.styles.height = 1
         local_terminal.start()
         self._terminal_pool.set_local(local_terminal)

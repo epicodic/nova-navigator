@@ -29,25 +29,27 @@ import asyncio
 import logging
 import re
 from asyncio import Future, Task, TimerHandle
+from collections import deque
+from collections.abc import Callable, Mapping
 from pathlib import PurePath
 from typing import Any, Literal, cast
 
 import pyte
-from pyte.screens import Char
+from pyte.screens import Char, Margins
 from rich.cells import cell_len
 from rich.color import ColorParseError
-from rich.console import Console, ConsoleOptions, ConsoleRenderable
+from rich.console import Console, ConsoleOptions, ConsoleRenderable, RenderableType
 from rich.console import RenderResult as RichRenderResult
 from rich.style import Style
 from rich.text import Text
 from textual import events
-from textual.app import RenderResult, log
-from textual.geometry import Offset
+from textual.app import log
+from textual.geometry import Offset, Size
 from textual.message import Message
 from textual.screen import Screen
+from textual.scroll_view import ScrollView
 from textual.selection import Selection
 from textual.strip import Strip
-from textual.widget import Widget
 
 from nova_navigator.terminal.pty_backend import LocalPtyBackend, PtyBackend
 from nova_navigator.terminal.shell_driver import ShellDriver, detect_driver
@@ -71,6 +73,7 @@ _MOUSE_TRACKING_MODES: frozenset[str] = frozenset({"1000", "1002", "1003", "1006
 _BRACKETED_PASTE_MODE = "2004"
 _RECV_DRAIN_LIMIT: int = 100
 _DISPLAY_FPS: float = 60.0
+_ED_ERASE_SCROLLBACK = 3  # ED (erase in display) parameter for "erase saved lines"
 
 _re_ansi_sequence = re.compile(r"(\x1b\[\??[\d;]*[a-zA-Z])")
 _DECSET_PREFIX = "\x1b[?"
@@ -80,11 +83,38 @@ class TerminalPyteScreen(pyte.Screen):
     """pyte.Screen subclass that drops the unsupported ``private`` keyword from ``set_margins``.
 
     Workaround for a pyte compatibility issue triggered by certain escape sequences.
+
+    Also reports lines scrolled off the top of the full screen (for scrollback capture)
+    and full-screen scrollback clears (``ED 3``, e.g. ``clear -x`` / "erase saved lines")
+    via optional callbacks.
     """
+
+    def __init__(
+        self,
+        columns: int,
+        lines: int,
+        on_scroll_off: Callable[[Mapping[int, Char]], None] | None = None,
+        on_clear_scrollback: Callable[[], None] | None = None,
+    ) -> None:
+        super().__init__(columns, lines)
+        self._on_scroll_off = on_scroll_off
+        self._on_clear_scrollback = on_clear_scrollback
 
     def set_margins(self, *args: Any, **kwargs: Any) -> None:
         kwargs.pop("private", None)
         return super().set_margins(*args, **kwargs)
+
+    def index(self) -> None:
+        """Report the row about to scroll off the top of the full screen, then scroll as normal."""
+        top, bottom = self.margins or Margins(0, self.lines - 1)
+        if self._on_scroll_off is not None and self.cursor.y == bottom and top == 0:
+            self._on_scroll_off(self.buffer[top])
+        super().index()
+
+    def erase_in_display(self, how: int = 0, *args: Any, **kwargs: Any) -> None:
+        super().erase_in_display(how, *args, **kwargs)
+        if how == _ED_ERASE_SCROLLBACK and self._on_clear_scrollback is not None:
+            self._on_clear_scrollback()
 
 
 class TerminalDisplay(ConsoleRenderable):
@@ -199,7 +229,7 @@ def _encode_mouse(msg: list[Any]) -> bytes:
     return b""
 
 
-class Terminal(Widget, can_focus=True):
+class Terminal(ScrollView, can_focus=True):
     """PTY-backed terminal emulator widget for Textual.
 
     Embeds a shell process and renders its output via pyte and Rich.
@@ -268,6 +298,7 @@ class Terminal(Widget, can_focus=True):
         id: str | None = None,
         classes: str | None = None,
         keep_alive: bool = False,
+        scrollback_lines: int = 0,
     ) -> None:
         self.command = command
         self.keep_alive = keep_alive
@@ -279,6 +310,9 @@ class Terminal(Widget, can_focus=True):
         self.nrow = 24
         self.mouse_tracking = False
         self.bracketed_paste = False
+        self._scrollback_lines = scrollback_lines
+        # Lines scrolled off the top of the live screen, oldest first; bounded by scrollback_lines.
+        self._history: deque[Text] = deque(maxlen=max(0, scrollback_lines))
 
         self.send_queue: asyncio.Queue[list[object]] | None = None
         self.recv_queue: asyncio.Queue[list[object]] | None = None
@@ -287,7 +321,12 @@ class Terminal(Widget, can_focus=True):
         self._rebuild_handle: TimerHandle | None = None
 
         self._display = self.initial_display()
-        self._screen = TerminalPyteScreen(self.ncol, self.nrow)
+        self._screen = TerminalPyteScreen(
+            self.ncol,
+            self.nrow,
+            on_scroll_off=self._on_history_line if scrollback_lines > 0 else None,
+            on_clear_scrollback=self._clear_scrollback,
+        )
         self._stream = pyte.Stream(self._screen)
         self._prompt_cursor_x: int = 0
         self._prompt_cursor_y: int = 0
@@ -307,6 +346,10 @@ class Terminal(Widget, can_focus=True):
         self._cwd: PurePath | None = None
 
         super().__init__(name=name, id=id, classes=classes)
+        # Permanently reserve a gutter column for the scrollback scrollbar so it never
+        # overlays terminal content; disabled entirely (no gutter) when scrollback is off.
+        self.styles.overflow_y = "scroll" if scrollback_lines > 0 else "hidden"
+        self.styles.overflow_x = "hidden"
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -318,6 +361,7 @@ class Terminal(Widget, can_focus=True):
 
         self.ncol = 80
         self.nrow = 24
+        self._update_virtual_size()
 
         self.recv_queue = asyncio.Queue()
         self._start_backend()
@@ -346,6 +390,7 @@ class Terminal(Widget, can_focus=True):
             return
 
         self._display = self.initial_display()
+        self._clear_scrollback()
         self._started = False
 
         if self._rebuild_handle is not None:
@@ -363,7 +408,7 @@ class Terminal(Widget, can_focus=True):
     def on_unmount(self) -> None:
         self.stop()
 
-    def render(self) -> RenderResult:
+    def render(self) -> RenderableType:
         return self._display
 
     def render_line(self, y: int) -> Strip:
@@ -376,14 +421,26 @@ class Terminal(Widget, can_focus=True):
         Without it, mouse drags never start or extend a selection. Rendering each row explicitly
         here and calling ``Strip.apply_offsets`` restores that metadata, mirroring the approach
         used by Textual's own ``Log`` widget.
+
+        Rows before the live screen (``self.scroll_offset.y + y < len(self._history)``) come
+        from the scrollback buffer instead; those are plain, un-selectable, cursor-less text.
         """
         rich_style = self.rich_style
-        if y >= len(self._display.lines):
+        row = int(self.scroll_offset.y) + y
+        history_len = len(self._history)
+
+        if row < history_len:
+            line_text = self._history[row]
+            strip = Strip(line_text.render(self.app.console), cell_len(line_text.plain))
+            return strip.crop_extend(0, self.size.width, rich_style).apply_offsets(0, y)
+
+        live_y = row - history_len
+        if live_y >= len(self._display.lines):
             return Strip.blank(self.size.width, rich_style)
 
         self._display.selection = self.text_selection
         self._display.selection_style = self.screen.get_component_rich_style("screen--selection") if self._display.selection is not None else None
-        line_text = self._display.render_row(y)
+        line_text = self._display.render_row(live_y)
         strip = Strip(line_text.render(self.app.console), cell_len(line_text.plain))
         strip = strip.crop_extend(0, self.size.width, rich_style)
         return strip.apply_offsets(0, y)
@@ -397,6 +454,15 @@ class Terminal(Widget, can_focus=True):
         """
         return self.ALLOW_SELECT and not self.mouse_tracking
 
+    @property
+    def allow_vertical_scroll(self) -> bool:
+        """Disable Textual's native scrolling while a full-screen child app owns the mouse.
+
+        Otherwise a wheel event would both scroll the scrollback view and be forwarded to
+        the app as mouse-report bytes.
+        """
+        return super().allow_vertical_scroll and not self.mouse_tracking
+
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         """Return the selected text, trimming trailing padding spaces from each row."""
         text = "\n".join(str(line).rstrip() for line in self._display.lines)
@@ -406,14 +472,18 @@ class Terminal(Widget, can_focus=True):
         self.refresh()
 
     def _select_word_at(self, x: int, y: int) -> None:
-        """Select the word under position ``(x, y)``, used for double-click selection."""
-        if y >= len(self._display.lines):
+        """Select the word under screen position ``(x, y)``, used for double-click selection.
+
+        Word selection is only supported in the live (bottom) buffer, not in scrollback.
+        """
+        live_y = int(self.scroll_offset.y) + y - len(self._history)
+        if live_y < 0 or live_y >= len(self._display.lines):
             return
-        line = self._display.lines[y].plain
+        line = self._display.lines[live_y].plain
         for match in _WORD_RE.finditer(line):
             if match.start() <= x < match.end():
                 self.screen.selections.clear()
-                self.screen.selections[self] = Selection.from_offsets(Offset(match.start(), y), Offset(match.end(), y))
+                self.screen.selections[self] = Selection.from_offsets(Offset(match.start(), live_y), Offset(match.end(), live_y))
                 self.screen.mutate_reactive(Screen.selections)
                 return
 
@@ -441,10 +511,21 @@ class Terminal(Widget, can_focus=True):
             event.stop()
             return
 
+        if event.key == "shift+pageup":
+            event.stop()
+            self.scroll_page_up(animate=False)
+            return
+
+        if event.key == "shift+pagedown":
+            event.stop()
+            self.scroll_page_down(animate=False)
+            return
+
         event.stop()
         char = _CTRL_KEYS.get(event.key) or event.character
         if char:
             self._keys_forwarded_since_precmd = True
+            self.scroll_end(animate=False, force=True, immediate=True)
             assert self.send_queue is not None
             self.send_queue.put_nowait(["stdin", char])
 
@@ -464,6 +545,7 @@ class Terminal(Widget, can_focus=True):
         if self.bracketed_paste:
             text = f"\x1b[200~{text}\x1b[201~"
         self._keys_forwarded_since_precmd = True
+        self.scroll_end(animate=False, force=True, immediate=True)
         assert self.send_queue is not None
         self.send_queue.put_nowait(["stdin", text])
 
@@ -546,11 +628,14 @@ class Terminal(Widget, can_focus=True):
     async def on_resize(self, _event: events.Resize) -> None:
         if not self._started:
             return
-        self.ncol = self.size.width
+        # Exclude the reserved scrollbar gutter column so the shell isn't sized wider
+        # than what's actually visible.
+        self.ncol = self.size.width - self.scrollbar_size_vertical
         self.nrow = self.size.height
         assert self.send_queue is not None
         self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
         self._screen.resize(self.nrow, self.ncol)
+        self._update_virtual_size()
 
     def _mouse_ready(self) -> bool:
         """Return True if the terminal is started and mouse tracking is active."""
@@ -740,31 +825,50 @@ class Terminal(Widget, can_focus=True):
 
     def _rebuild_display(self) -> None:
         """Rebuild Rich Text lines from the current pyte screen state and schedule a repaint."""
-        lines: list[Text] = []
-        for y in range(self._screen.lines):
-            line_text = Text()
-            line = self._screen.buffer[y]
-            style_change_pos = 0
-            for x in range(self._screen.columns):
-                char: Char = line[x]
-                line_text.append(char.data)
-
-                is_last_col = x == self._screen.columns - 1
-
-                if x > 0:
-                    last_char: Char = line[x - 1]
-                    if not self.char_style_cmp(char, last_char):
-                        last_style = self.char_rich_style(last_char)
-                        line_text.stylize(last_style, style_change_pos, x)
-                        style_change_pos = x
-                if is_last_col:
-                    cur_style = self.char_rich_style(char)
-                    line_text.stylize(cur_style, style_change_pos, x + 1)
-
-            lines.append(line_text)
-
+        was_at_end = self.is_vertical_scroll_end
+        lines = [self._row_to_text(self._screen.buffer[y], self._screen.columns) for y in range(self._screen.lines)]
         self._display = TerminalDisplay(lines, self._screen.cursor.x, self._screen.cursor.y)
+        self._update_virtual_size()
+        if was_at_end and self.is_mounted:
+            # Stay pinned to the bottom on new output, but don't yank the view back
+            # if the user has deliberately scrolled up to read scrollback.
+            self.scroll_end(animate=False, force=True, immediate=True)
         self.refresh()
+
+    def _row_to_text(self, line: Mapping[int, Char], columns: int) -> Text:
+        """Convert one pyte screen row into a styled ``Text``, run-length-encoding style spans."""
+        line_text = Text()
+        style_change_pos = 0
+        for x in range(columns):
+            char: Char = line[x]
+            line_text.append(char.data)
+
+            is_last_col = x == columns - 1
+
+            if x > 0:
+                last_char: Char = line[x - 1]
+                if not self.char_style_cmp(char, last_char):
+                    last_style = self.char_rich_style(last_char)
+                    line_text.stylize(last_style, style_change_pos, x)
+                    style_change_pos = x
+            if is_last_col:
+                cur_style = self.char_rich_style(char)
+                line_text.stylize(cur_style, style_change_pos, x + 1)
+
+        return line_text
+
+    def _on_history_line(self, row: Mapping[int, Char]) -> None:
+        """Append a row scrolled off the top of the live screen to the scrollback buffer."""
+        self._history.append(self._row_to_text(row, self._screen.columns))
+
+    def _clear_scrollback(self) -> None:
+        """Discard all scrollback content and reset the virtual size accordingly."""
+        self._history.clear()
+        self._update_virtual_size()
+
+    def _update_virtual_size(self) -> None:
+        """Sync ``virtual_size`` with the combined scrollback + live screen line count."""
+        self.virtual_size = Size(self.ncol, len(self._history) + self.nrow)
 
     def _process_stdout(self, chars: str) -> None:
         """Parse ANSI output, update the pyte screen, and refresh the display."""
@@ -832,7 +936,13 @@ class Terminal(Widget, can_focus=True):
         self._backend.detach_readers()
         self._backend.teardown()
 
-        self._screen = TerminalPyteScreen(self.ncol, self.nrow)
+        self._clear_scrollback()
+        self._screen = TerminalPyteScreen(
+            self.ncol,
+            self.nrow,
+            on_scroll_off=self._on_history_line if self._scrollback_lines > 0 else None,
+            on_clear_scrollback=self._clear_scrollback,
+        )
         self._stream = pyte.Stream(self._screen)
 
         self._start_backend()
