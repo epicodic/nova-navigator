@@ -127,10 +127,16 @@ class TerminalDisplay(ConsoleRenderable):
         self.selection: Selection | None = None
         self.selection_style: Style | None = None
 
-    def render_row(self, y: int) -> Text:
-        """Return the styled line for row ``y``, with cursor and selection highlighting applied."""
+    def render_row(self, y: int, doc_row: int | None = None) -> Text:
+        """Return the styled line for live row ``y``, with cursor and selection highlighting applied.
+
+        ``doc_row`` is the row's position within the full scrollback document and is used to look
+        up the selection span; it defaults to ``y`` for the non-scrolling render path.
+        """
+        if doc_row is None:
+            doc_row = y
         line = self.lines[y]
-        span = self.selection.get_span(y) if self.selection is not None else None
+        span = self.selection.get_span(doc_row) if self.selection is not None else None
         if y != self.cursor_y and span is None:
             return line
         rendered_line = line.copy()
@@ -422,28 +428,44 @@ class Terminal(ScrollView, can_focus=True):
         here and calling ``Strip.apply_offsets`` restores that metadata, mirroring the approach
         used by Textual's own ``Log`` widget.
 
-        Rows before the live screen (``self.scroll_offset.y + y < len(self._history)``) come
-        from the scrollback buffer instead; those are plain, un-selectable, cursor-less text.
+        The offset metadata, the selection span lookup, and text extraction all use the same
+        document-row coordinate (``self.scroll_offset.y + y``) so that selection works correctly
+        across the scrollback. Rows before the live screen (``row < len(self._history)``) come from
+        the scrollback buffer and are also selectable (but cursor-less).
         """
         rich_style = self.rich_style
         row = int(self.scroll_offset.y) + y
         history_len = len(self._history)
 
+        selection = self.text_selection
+        selection_style = self.screen.get_component_rich_style("screen--selection") if selection is not None else None
+
         if row < history_len:
-            line_text = self._history[row]
+            line_text = self._render_history_row(row, selection, selection_style)
             strip = Strip(line_text.render(self.app.console), cell_len(line_text.plain))
-            return strip.crop_extend(0, self.size.width, rich_style).apply_offsets(0, y)
+            return strip.crop_extend(0, self.size.width, rich_style).apply_offsets(0, row)
 
         live_y = row - history_len
         if live_y >= len(self._display.lines):
             return Strip.blank(self.size.width, rich_style)
 
-        self._display.selection = self.text_selection
-        self._display.selection_style = self.screen.get_component_rich_style("screen--selection") if self._display.selection is not None else None
-        line_text = self._display.render_row(live_y)
+        self._display.selection = selection
+        self._display.selection_style = selection_style
+        line_text = self._display.render_row(live_y, row)
         strip = Strip(line_text.render(self.app.console), cell_len(line_text.plain))
         strip = strip.crop_extend(0, self.size.width, rich_style)
-        return strip.apply_offsets(0, y)
+        return strip.apply_offsets(0, row)
+
+    def _render_history_row(self, row: int, selection: Selection | None, selection_style: Style | None) -> Text:
+        """Return the scrollback line at document ``row`` with selection highlighting applied."""
+        line = self._history[row]
+        span = selection.get_span(row) if selection is not None else None
+        if span is None or selection_style is None:
+            return line
+        rendered_line = line.copy()
+        start, end = span
+        rendered_line.stylize(selection_style, start, end if end != -1 else len(rendered_line))
+        return rendered_line
 
     @property
     def allow_select(self) -> bool:
@@ -464,8 +486,13 @@ class Terminal(ScrollView, can_focus=True):
         return super().allow_vertical_scroll and not self.mouse_tracking
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
-        """Return the selected text, trimming trailing padding spaces from each row."""
-        text = "\n".join(str(line).rstrip() for line in self._display.lines)
+        """Return the selected text, trimming trailing padding spaces from each row.
+
+        The document spans the scrollback history followed by the live screen, matching the
+        document-row coordinates used by ``render_line`` and ``_select_word_at``.
+        """
+        lines = list(self._history) + self._display.lines
+        text = "\n".join(str(line).rstrip() for line in lines)
         return selection.extract(text), "\n"
 
     def selection_updated(self, selection: Selection | None) -> None:
@@ -474,16 +501,22 @@ class Terminal(ScrollView, can_focus=True):
     def _select_word_at(self, x: int, y: int) -> None:
         """Select the word under screen position ``(x, y)``, used for double-click selection.
 
-        Word selection is only supported in the live (bottom) buffer, not in scrollback.
+        Works in both the scrollback history and the live buffer; ``row`` is the document-row
+        coordinate shared with ``render_line`` and ``get_selection``.
         """
-        live_y = int(self.scroll_offset.y) + y - len(self._history)
-        if live_y < 0 or live_y >= len(self._display.lines):
-            return
-        line = self._display.lines[live_y].plain
+        row = int(self.scroll_offset.y) + y
+        history_len = len(self._history)
+        if row < history_len:
+            line = self._history[row].plain
+        else:
+            live_y = row - history_len
+            if live_y >= len(self._display.lines):
+                return
+            line = self._display.lines[live_y].plain
         for match in _WORD_RE.finditer(line):
             if match.start() <= x < match.end():
                 self.screen.selections.clear()
-                self.screen.selections[self] = Selection.from_offsets(Offset(match.start(), live_y), Offset(match.end(), live_y))
+                self.screen.selections[self] = Selection.from_offsets(Offset(match.start(), row), Offset(match.end(), row))
                 self.screen.mutate_reactive(Screen.selections)
                 return
 

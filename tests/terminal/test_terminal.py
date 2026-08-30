@@ -2388,6 +2388,62 @@ async def test_render_line_returns_history_row_when_scrolled_above_live_screen()
 
 
 @pytest.mark.asyncio
+async def test_render_line_offset_meta_uses_document_row_when_scrolled() -> None:
+    """Selection offset metadata must encode the document row, not the visible row.
+
+    Regression test for scrollback selection: when scrolled up, render_line must tag each
+    segment with the document-row coordinate so a mouse position maps to the correct row.
+    """
+    terminal = Terminal("/bin/sh", scrollback_lines=100)
+    app = TerminalTestApp(terminal)
+    async with app.run_test(size=(40, 6)) as pilot:
+        await pilot.pause()
+        terminal._history.extend(Text(f"history{i:02d}") for i in range(20))
+        terminal._update_virtual_size()
+        terminal.scroll_to(y=5, animate=False)
+        await pilot.pause()
+
+        strip = terminal.render_line(0)
+        offsets = [seg.style.meta["offset"] for seg in strip._segments if seg.style is not None and "offset" in seg.style.meta]
+        assert offsets
+        assert all(offset_y == 5 for _, offset_y in offsets)
+
+
+@pytest.mark.asyncio
+async def test_mouse_drag_selects_scrollback_history_row() -> None:
+    """Dragging over a scrollback row must select that row's text, not the visible live rows.
+
+    Regression test for the bug where selection in the scrollback area always landed in the
+    bottom (live) portion of the terminal because offsets, span lookup, and extraction used
+    inconsistent coordinate systems.
+    """
+    terminal = Terminal("/bin/sh", scrollback_lines=100)
+    app = TerminalTestApp(terminal)
+    async with app.run_test(size=(40, 6)) as pilot:
+        await pilot.pause()
+        terminal._feed_stdout("livecontent")
+        terminal._rebuild_display()
+        terminal._history.extend(Text(f"history{i:02d}") for i in range(20))
+        terminal._update_virtual_size()
+        terminal.scroll_to(y=0, animate=False)
+        await pilot.pause()
+
+        assert "history00" in terminal.render_line(0).text
+
+        await pilot.mouse_down(terminal, offset=(0, 0))
+        await pilot.hover(terminal, offset=(7, 0))
+        await pilot.mouse_up(terminal, offset=(7, 0))
+        await pilot.pause()
+
+        assert terminal in pilot.app.screen.selections
+        selection = pilot.app.screen.selections[terminal]
+        result = terminal.get_selection(selection)
+        assert result is not None
+        text, _ = result
+        assert text == "history"
+
+
+@pytest.mark.asyncio
 async def test_shift_pageup_scrolls_view_up() -> None:
     backend = FakePtyBackend()
     terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver(), scrollback_lines=1000)
