@@ -43,7 +43,7 @@ async def test_panel_navigation_triggers_terminal_request_cd(app_ctx: AppCtx) ->
         app_ctx.screen._left_panel.set_path(VPath(subdir, app_ctx.fs))
         await app_ctx.pilot.pause()
 
-    mock_cd.assert_called_once_with(PurePosixPath(subdir))
+    mock_cd.assert_called_once_with(PurePosixPath(subdir), owner=app_ctx.screen._left_panel)
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +91,128 @@ async def test_programmatic_cd_does_not_update_panel(app_ctx: AppCtx) -> None:
     await app_ctx.pilot.pause(delay=0.2)
 
     assert app_ctx.screen.active_panel().path.path == original_path
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_delayed_user_cwd_change_targets_submitting_pane_not_active_pane(app_ctx: AppCtx) -> None:
+    """A CWD change owned by the left pane targets it even if focus moved away first.
+
+    Flow: left pane submits a command (owner recorded) → focus switches to the
+          right pane → the shell's precmd notification arrives afterwards →
+          MainScreen._on_terminal_path_changed routes it to the left pane.
+    """
+    target = app_ctx.src_dir / "subdir"
+    target.mkdir()
+    await set_panels(app_ctx)
+    left_panel = app_ctx.screen._left_panel
+    right_panel = app_ctx.screen._right_panel
+    terminal = app_ctx.screen._terminal_pool.active_terminal
+    right_panel_path_before = right_panel.path.path
+
+    right_panel.focus()
+    await app_ctx.pilot.pause()
+    assert app_ctx.screen.active_panel() is right_panel
+
+    terminal.post_message(Terminal.PathChanged(terminal, PurePosixPath(target), user_initiated=True, owner=left_panel))
+    await poll_until(app_ctx.pilot, lambda: left_panel.path.path == PurePosixPath(target))
+
+    assert left_panel.path.path == PurePosixPath(target)
+    assert right_panel.path.path == right_panel_path_before
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_user_cwd_change_with_no_owner_falls_back_to_active_panel(app_ctx: AppCtx) -> None:
+    """A user-initiated CWD change with no recorded owner targets the active panel.
+
+    Covers commands entered directly (e.g. while the terminal is maximized) where
+    no pane ever called ``submit_enter``, so no owner was recorded.
+    """
+    await set_panels(app_ctx)
+    terminal = app_ctx.screen._terminal_pool.active_terminal
+
+    target = app_ctx.dst_dir
+    terminal.post_message(Terminal.PathChanged(terminal, PurePosixPath(target), user_initiated=True, owner=None))
+    await poll_until(app_ctx.pilot, lambda: app_ctx.screen.active_panel().path.path == PurePosixPath(target))
+
+    assert app_ctx.screen.active_panel().path.path == PurePosixPath(target)
+
+
+# ---------------------------------------------------------------------------
+# Pane Enter delegation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_pane_enter_consumed_by_terminal_does_not_navigate_panel(app_ctx: AppCtx) -> None:
+    """When submit_enter() reports the key was consumed, the pane's own Enter handling does not run."""
+    subdir = app_ctx.src_dir / "subdir"
+    subdir.mkdir()
+    await set_panels(app_ctx)
+
+    # The freshly-spawned real shell's own startup precmd reports its actual process
+    # cwd (not src_dir) and, being unowned, would clobber the active panel if it landed
+    # later in this test. Wait for it to land first, then re-affirm the panel path.
+    terminal = app_ctx.screen._terminal_pool.active_terminal
+    await poll_until(app_ctx.pilot, lambda: terminal._at_prompt)
+    app_ctx.screen._left_panel.set_path(VPath(app_ctx.src_dir, app_ctx.fs))
+    await poll_until(app_ctx.pilot, lambda: app_ctx.screen._left_panel.path.path == app_ctx.src_dir)
+
+    await app_ctx.pilot.press("ctrl+l")  # ENLARGED: terminal visible, not minimized
+    await app_ctx.pilot.pause()
+
+    with patch.object(terminal, "submit_enter", AsyncMock(return_value=True)) as mock_submit:
+        await app_ctx.pilot.press("enter")
+        await app_ctx.pilot.pause(delay=0.2)
+
+    mock_submit.assert_called_once_with(app_ctx.screen._left_panel)
+    assert app_ctx.screen._left_panel.path.path == PurePosixPath(app_ctx.src_dir)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_pane_enter_not_consumed_by_terminal_navigates_panel(app_ctx: AppCtx) -> None:
+    """When submit_enter() reports the key was not consumed, normal pane Enter handling proceeds."""
+    subdir = app_ctx.src_dir / "subdir"
+    subdir.mkdir()
+    await set_panels(app_ctx)
+
+    # See test_pane_enter_consumed_by_terminal_does_not_navigate_panel: wait past the
+    # real shell's startup precmd race before proceeding.
+    terminal = app_ctx.screen._terminal_pool.active_terminal
+    await poll_until(app_ctx.pilot, lambda: terminal._at_prompt)
+    app_ctx.screen._left_panel.set_path(VPath(app_ctx.src_dir, app_ctx.fs))
+    await poll_until(app_ctx.pilot, lambda: app_ctx.screen._left_panel.path.path == app_ctx.src_dir)
+
+    await app_ctx.pilot.press("ctrl+l")
+    await app_ctx.pilot.pause()
+
+    with patch.object(terminal, "submit_enter", AsyncMock(return_value=False)) as mock_submit:
+        await app_ctx.pilot.press("enter")
+        await poll_until(app_ctx.pilot, lambda: app_ctx.screen._left_panel.path.path == subdir)
+
+    mock_submit.assert_called_once_with(app_ctx.screen._left_panel)
+    assert app_ctx.screen._left_panel.path.path == subdir
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_pane_enter_while_minimized_does_not_probe_terminal(app_ctx: AppCtx) -> None:
+    """While the terminal is minimized, Enter navigates the pane directly without calling submit_enter."""
+    subdir = app_ctx.src_dir / "subdir"
+    subdir.mkdir()
+    await set_panels(app_ctx)
+    assert app_ctx.screen._terminal_mode == app_ctx.screen._TerminalMode.MINIMIZED
+
+    terminal = app_ctx.screen._terminal_pool.active_terminal
+    with patch.object(terminal, "submit_enter", AsyncMock(return_value=True)) as mock_submit:
+        await app_ctx.pilot.press("enter")
+        await poll_until(app_ctx.pilot, lambda: app_ctx.screen._left_panel.path.path == subdir)
+
+    mock_submit.assert_not_called()
+    assert app_ctx.screen._left_panel.path.path == subdir
 
 
 # ---------------------------------------------------------------------------

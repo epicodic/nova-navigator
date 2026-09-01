@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import re
+
+import pytest
+
 from nova_navigator.terminal.shell_driver import (
     BashDriver,
     FallbackDriver,
@@ -10,6 +14,7 @@ from nova_navigator.terminal.shell_driver import (
     _posix_octal_escape,
     detect_driver,
 )
+from nova_navigator.terminal.shell_editor_protocol import PROBE_SEQUENCE, RESTORE_SEQUENCE, STASH_SEQUENCE, EditorOperation
 
 # ---------------------------------------------------------------------------
 # _ansi_c_quote
@@ -360,3 +365,102 @@ def test_detect_driver_bash_returns_bash_driver() -> None:
 def test_detect_driver_fallback_returns_fallback_driver() -> None:
     driver = detect_driver("/bin/sh")
     assert isinstance(driver, FallbackDriver)
+
+
+# ---------------------------------------------------------------------------
+# Shell editor integration API (Task 2)
+# ---------------------------------------------------------------------------
+
+
+def test_zsh_driver_supports_editor_protocol_is_true() -> None:
+    assert ZshDriver().supports_editor_protocol is True
+
+
+def test_bash_driver_supports_editor_protocol_is_true() -> None:
+    assert BashDriver().supports_editor_protocol is True
+
+
+def test_fallback_driver_supports_editor_protocol_is_false() -> None:
+    assert FallbackDriver().supports_editor_protocol is False
+
+
+@pytest.mark.parametrize("driver", [ZshDriver(), BashDriver()])
+def test_editor_integration_code_uses_nonce_qualified_identifiers(driver: ZshDriver | BashDriver) -> None:
+    code = driver.editor_integration_code("abc123")
+    assert "abc123" in code
+
+
+def test_zsh_editor_integration_does_not_replace_shared_widgets_or_enter() -> None:
+    code = ZshDriver().editor_integration_code("abc123")
+    assert "accept-line" not in code
+    assert "zle -N zle-line-init" not in code
+    assert "bindkey -M emacs" in code
+    assert "bindkey -M viins" in code
+    assert "bindkey -M vicmd" in code
+
+
+def test_zsh_editor_integration_emits_ready_with_sequence_zero() -> None:
+    code = ZshDriver().editor_integration_code("abc123")
+    assert "nn;abc123;ready;0;0;0" in code
+
+
+def test_bash_editor_integration_uses_readline_buffer_variables() -> None:
+    code = BashDriver().editor_integration_code("abc123")
+    assert "bind -m emacs-standard -x" in code
+    assert "READLINE_LINE" in code
+    assert "READLINE_POINT" in code
+
+
+def test_bash_editor_integration_uses_explicit_keymaps_only() -> None:
+    code = BashDriver().editor_integration_code("abc123")
+    assert "bind -m emacs-standard -x" in code
+    assert "bind -m emacs-meta -x" in code
+    assert "bind -m emacs-ctlx -x" in code
+    assert "bind -m vi-insert -x" in code
+    assert "bind -m vi-command -x" in code
+    assert 'bind -x \'"\\e[99~"' not in code
+    assert 'bind -x \'"\\e[98~"' not in code
+    assert 'bind -x \'"\\e[97~"' not in code
+
+
+def test_bash_editor_integration_emits_ready_with_sequence_zero() -> None:
+    code = BashDriver().editor_integration_code("abc123")
+    assert "nn;abc123;ready;0;0;0" in code
+
+
+@pytest.mark.parametrize("driver", [ZshDriver(), BashDriver()])
+def test_editor_integration_rejects_invalid_nonce(driver: ZshDriver | BashDriver) -> None:
+    with pytest.raises(ValueError, match="lowercase hex"):
+        driver.editor_integration_code("BAD-NONCE")
+
+
+def test_editor_request_maps_probe() -> None:
+    assert ZshDriver().editor_request(EditorOperation.PROBE) == PROBE_SEQUENCE
+
+
+def test_editor_request_maps_stash() -> None:
+    assert BashDriver().editor_request(EditorOperation.STASH) == STASH_SEQUENCE
+
+
+def test_editor_request_maps_restore() -> None:
+    assert ZshDriver().editor_request(EditorOperation.RESTORE) == RESTORE_SEQUENCE
+
+
+@pytest.mark.parametrize("driver", [ZshDriver(), BashDriver(), FallbackDriver()])
+def test_editor_request_rejects_ready(driver: ZshDriver | BashDriver | FallbackDriver) -> None:
+    with pytest.raises(ValueError, match="cannot be requested"):
+        driver.editor_request(EditorOperation.READY)
+
+
+def test_fallback_driver_editor_integration_code_is_empty() -> None:
+    assert FallbackDriver().editor_integration_code("abc123") == ""
+
+
+def test_zsh_editor_integration_uses_private_symbols_only() -> None:
+    code = ZshDriver().editor_integration_code("abc123")
+    assert re.search(r"_nn_.*abc123", code) is not None
+
+
+def test_bash_editor_integration_uses_private_symbols_only() -> None:
+    code = BashDriver().editor_integration_code("abc123")
+    assert re.search(r"_nn_.*abc123", code) is not None

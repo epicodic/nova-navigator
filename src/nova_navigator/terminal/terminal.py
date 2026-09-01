@@ -29,6 +29,7 @@ import asyncio
 import logging
 import re
 from asyncio import Future, Task, TimerHandle
+from dataclasses import dataclass
 from pathlib import PurePath
 from typing import Any, Literal, cast
 
@@ -46,6 +47,11 @@ from textual.widget import Widget
 
 from nova_navigator.terminal.pty_backend import LocalPtyBackend, PtyBackend
 from nova_navigator.terminal.shell_driver import ShellDriver, detect_driver
+from nova_navigator.terminal.shell_editor_protocol import (
+    EditorOperation,
+    EditorResponse,
+    create_editor_nonce,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -55,16 +61,17 @@ __all__ = [
     "TerminalPyteScreen",
 ]
 
-_KILL_LINE = "\x15"  # Ctrl+U — kill whole line to kill ring
-_YANK = "\x19"  # Ctrl+Y — yank from kill ring
-_END_OF_LINE = "\x05"  # Ctrl+E — move cursor to end of line
-
 _PRE_CMD_FROM_NN_IDX = 2  # index of the from_nn flag in a pre_cmd message
 
 
 _MOUSE_TRACKING_MODES: frozenset[str] = frozenset({"1000", "1002", "1003", "1006"})
 _RECV_DRAIN_LIMIT: int = 100
 _DISPLAY_FPS: float = 60.0
+_EDITOR_RESPONSE_TIMEOUT: float = 1.0
+_NAVIGATION_STAGE_TIMEOUT: float = 1.0
+_STARTUP_DRAIN_TIMEOUT: float = (
+    10.0  # force-end startup draining if no prompt-ready arrives
+)
 
 _re_ansi_sequence = re.compile(r"(\x1b\[\??[\d;]*[a-zA-Z])")
 _DECSET_PREFIX = "\x1b[?"
@@ -89,7 +96,9 @@ class TerminalDisplay(ConsoleRenderable):
         self.cursor_x = cursor_x
         self.cursor_y = cursor_y
 
-    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RichRenderResult:
+    def __rich_console__(
+        self, console: Console, options: ConsoleOptions
+    ) -> RichRenderResult:
         result: list[Text] = []
         for y, line in enumerate(self.lines):
             if y == self.cursor_y:
@@ -177,6 +186,15 @@ def _encode_mouse(msg: list[Any]) -> bytes:
     return b""
 
 
+@dataclass
+class _NavigationRequest:
+    """Internal navigation request state for one serialized transaction."""
+
+    path: PurePath
+    owner: object | None
+    futures: list[Future[PurePath]]
+
+
 class Terminal(Widget, can_focus=True):
     """PTY-backed terminal emulator widget for Textual.
 
@@ -216,6 +234,9 @@ class Terminal(Widget, can_focus=True):
         the terminal (not triggered by ``request_cd``).  Handlers should
         only update external state (e.g. directory browser panels) for
         user-initiated changes.
+
+        ``owner`` is the pane that owned the terminal when the user's Enter
+        was forwarded, or ``None`` if no owner was recorded for this command.
         """
 
         def __init__(
@@ -224,10 +245,12 @@ class Terminal(Widget, can_focus=True):
             cwd: PurePath,
             *,
             user_initiated: bool,
+            owner: object | None = None,
         ) -> None:
             self.terminal_widget = terminal_widget
             self.cwd = cwd
             self.user_initiated = user_initiated
+            self.owner = owner
             super().__init__()
 
     class Closed(Message):
@@ -235,6 +258,22 @@ class Terminal(Widget, can_focus=True):
 
         def __init__(self, terminal_widget: Terminal) -> None:
             self.terminal_widget = terminal_widget
+            super().__init__()
+
+    class NavigationFailed(Message):
+        """Posted when a programmatic navigation cannot be completed safely."""
+
+        def __init__(
+            self,
+            terminal_widget: Terminal,
+            path: PurePath,
+            reason: str,
+            owner: object | None = None,
+        ) -> None:
+            self.terminal_widget = terminal_widget
+            self.path = path
+            self.reason = reason
+            self.owner = owner
             super().__init__()
 
     def __init__(
@@ -262,26 +301,37 @@ class Terminal(Widget, can_focus=True):
         self.recv_task_t: Task[None] | None = None
         self._run_task: Task[None] | None = None
         self._rebuild_handle: TimerHandle | None = None
+        self._startup_drain_handle: TimerHandle | None = None
 
         self._display = self.initial_display()
         self._screen = TerminalPyteScreen(self.ncol, self.nrow)
         self._stream = pyte.Stream(self._screen)
-        self._prompt_cursor_x: int = 0
-        self._prompt_cursor_y: int = 0
-        self._prompt_ready_received: bool = False
-        self._snapshot_prompt_after_precmd: bool = False
-        self._pending_yank: bool = False
-        self._keys_forwarded_since_precmd: bool = False
-        # Counts navigations whose pre_cmd acknowledgement has not yet
-        # arrived.  Draining ends only when this reaches zero, preventing
-        # a rapid second cd from leaking its echo after the first pre_cmd
-        # clears draining.
-        self._nav_pending: int = 0
-        # Resolved when _nav_pending reaches 0.  Allows callers to await
-        # completion of a programmatic directory change.
-        self._nav_future: Future[PurePath] | None = None
+
+        self._editor_nonce: str = create_editor_nonce()
+        self._editor_available: bool = False
+        self._editor_ready_received: bool = False
+        self._editor_sequence: int = 0
+        self._editor_response_future: Future[EditorResponse] | None = None
+        self._editor_expected_operation: EditorOperation | None = None
+        self._editor_session_failed: bool = False
+        self._editor_request_lock: asyncio.Lock = asyncio.Lock()
+        self._startup_probe_task: Task[None] | None = None
+        self._startup_probe_sent: bool = False
+        self._first_prompt_ready_received: bool = False
+
+        self._at_prompt: bool = False
+        self._enter_lock: asyncio.Lock = asyncio.Lock()
+        self._command_owner: object | None = None
         # Last known cwd reported by the shell via precmd.
         self._cwd: PurePath | None = None
+        self._nav_active: _NavigationRequest | None = None
+        self._nav_queued: _NavigationRequest | None = None
+        self._nav_task: Task[None] | None = None
+        self._nav_wait_pre_cmd_future: Future[PurePath] | None = None
+        self._nav_wait_prompt_ready_future: Future[None] | None = None
+        self._nav_waiting_for_cwd: bool = False
+        self._nav_capture_prompt_output: bool = False
+        self._nav_retained_prompt_chunks: list[str] = []
 
         super().__init__(name=name, id=id, classes=classes)
 
@@ -308,15 +358,24 @@ class Terminal(Widget, can_focus=True):
         startup prompt are suppressed.  Draining ends when the first
         precmd fires (the shell's hook emits an OSC 7 CWD sequence).
         """
+        self._reset_editor_session_state()
+        self._backend.configure_editor_protocol(self._editor_nonce)
         self._backend.open(self.command, self.nrow, self.ncol)
         self.send_queue = asyncio.Queue()
         self._run_task = asyncio.create_task(self._run())
-        # Suppress init code echo until the first precmd arrives.
+        # Suppress the init-code echo and interactive-shell startup redraw until
+        # the shell reaches its first editable prompt.  A watchdog force-ends
+        # draining if that signal never arrives so the terminal cannot stay blank.
         if self._backend.supports_precmd:
             self._draining = True
-        init = self._driver.init_code()
-        if init:
-            self._backend.write(init.encode())
+            self._startup_drain_handle = asyncio.get_running_loop().call_later(
+                _STARTUP_DRAIN_TIMEOUT, self._force_end_startup_draining
+            )
+        init_code = self._driver.init_code()
+        editor_code = self._driver.editor_integration_code(self._editor_nonce)
+        startup_code = init_code + editor_code
+        if startup_code:
+            self._backend.write(startup_code.encode())
 
     def stop(self) -> None:
         if not self._started:
@@ -329,10 +388,19 @@ class Terminal(Widget, can_focus=True):
             self._rebuild_handle.cancel()
             self._rebuild_handle = None
 
+        if self._startup_drain_handle is not None:
+            self._startup_drain_handle.cancel()
+            self._startup_drain_handle = None
+
         if self.recv_task_t is not None:
             self.recv_task_t.cancel()
         if self._run_task is not None:
             self._run_task.cancel()
+
+        self._cancel_startup_probe_task()
+        self._cancel_pending_editor_request()
+        self._cancel_navigation("terminal stopped")
+        self._command_owner = None
 
         self._backend.detach_readers()
         self._backend.teardown()
@@ -358,74 +426,53 @@ class Terminal(Widget, can_focus=True):
         event.stop()
         char = _CTRL_KEYS.get(event.key) or event.character
         if char:
-            self._keys_forwarded_since_precmd = True
+            if event.key == "enter":
+                self._at_prompt = False
             assert self.send_queue is not None
             self.send_queue.put_nowait(["stdin", char])
 
-    def has_input(self) -> bool:
-        """Return True if the user has typed something on the current prompt line.
+    async def submit_enter(self, owner: object | None = None) -> bool:
+        """Handle an Enter key from pane focus.
 
-        Uses a two-tier detection strategy:
-
-        1. **Primary — cursor comparison** (when OSC 133;B is available):
-           The prompt-end cursor position is snapshotted each time
-           ``_handle_prompt_ready`` fires.  If the current cursor is past
-           that position, the user has typed something.
-
-        2. **Fallback — keystroke tracking** (when prompt position is unknown):
-           A flag (``_keys_forwarded_since_precmd``) is set whenever a key
-           event is forwarded to the shell and cleared on each precmd.
-           This works for any shell but cannot detect the "typed then
-           deleted everything" case.
+        Returns True when Enter is consumed by the terminal and False only
+        when an authoritative editor probe confirms the shell buffer is empty.
         """
-        if self._prompt_ready_received:
-            if self._screen.cursor.y != self._prompt_cursor_y:
-                return self._screen.cursor.y > self._prompt_cursor_y
-            return self._screen.cursor.x > self._prompt_cursor_x
-        return self._keys_forwarded_since_precmd
+        async with self._enter_lock:
+            if not self._at_prompt or not self._editor_available:
+                self._send_enter()
+                return True
 
-    def request_cd(self, path: PurePath) -> None:
-        """Issue a cd command to the shell without waiting for completion.
+            response = await self._request_editor(EditorOperation.PROBE)
+            if response is None:
+                self._send_enter()
+                return True
 
-        If the shell is already at *path* and no navigations are in flight,
-        the request is skipped.
+            if response.buffer_length == 0:
+                return False
 
-        Output between the ``cd`` command and the next precmd is suppressed
-        via draining.  If the user has typed something on the prompt, the
-        input is killed (Ctrl+U) before the ``cd`` and yanked back (Ctrl+Y)
-        after the precmd fires, preserving the user's partially typed command.
-        Draining starts before the kill so the Ctrl+U echo is also suppressed.
-        """
+            self._command_owner = owner
+            self._send_enter()
+            return True
+
+    def request_cd(self, path: PurePath, owner: object | None = None) -> None:
+        """Queue a fire-and-forget programmatic directory change."""
         if not self._started:
             return
-        if self._nav_pending == 0 and self._cwd is not None and path == self._cwd:
-            return
-        cmd = " " + self._driver.cd_command(str(path)) + "\n"
-        if self._backend.supports_precmd and self._driver.supports_prompt_ready:
-            self._pending_yank = self.has_input()
-            self._nav_pending += 1
-            self._draining = True
-            if self._nav_future is None or self._nav_future.done():
-                self._nav_future = asyncio.get_running_loop().create_future()
-            if self._pending_yank:
-                self._backend.write(_KILL_LINE.encode())
-        self._backend.write(cmd.encode())
+        self._enqueue_navigation_request(path=path, owner=owner, future=None)
 
-    async def set_terminal_directory(self, path: PurePath) -> PurePath:
-        """Change the shell's working directory to *path*, preserving any typed input.
-
-        Returns the actual CWD reported by the shell once the last in-flight
-        navigation completes.  See ``request_cd`` for the fire-and-forget
-        variant used by the directory browser sync.
-        """
+    async def set_terminal_directory(
+        self, path: PurePath, owner: object | None = None
+    ) -> PurePath:
+        """Queue a directory change and await the actual shell cwd result."""
         if not self._started:
             return path
-        self.request_cd(path)
-        if self._nav_future is not None and not self._nav_future.done():
-            return await self._nav_future
-        return self._cwd or path
+        future: Future[PurePath] = asyncio.get_running_loop().create_future()
+        self._enqueue_navigation_request(path=path, owner=owner, future=future)
+        return await future
 
-    async def send(self, data: str, mode: Literal["normal", "silent"] = "normal") -> None:
+    async def send(
+        self, data: str, mode: Literal["normal", "silent"] = "normal"
+    ) -> None:
         """Send *data* to the shell.
 
         When *mode* is ``"silent"`` and the backend supports precmd,
@@ -433,7 +480,6 @@ class Terminal(Widget, can_focus=True):
         """
         if not self._started:
             return
-        self._keys_forwarded_since_precmd = True
         if mode == "silent" and self._backend.supports_precmd:
             self._draining = True
         self._backend.write(data.encode())
@@ -478,50 +524,442 @@ class Terminal(Widget, can_focus=True):
 
         When ``from_nn`` is False the event originated from a third-party chpwd
         hook (e.g. oh-my-zsh) rather than from Nova Navigator's own precmd hook.
-        These events are ignored so that ``_nav_pending`` is only decremented by
-        NN's own hook and third-party hooks cannot trigger spurious
-        user-initiated PathChanged events.
+        These events are ignored so only NN-originated CWD notifications can
+        advance a programmatic navigation transaction.
         """
         if not from_nn:
             return
+        self._at_prompt = False
         cwd = PurePath(raw.strip())
         cwd_changed = cwd != self._cwd
         self._cwd = cwd
-        was_programmatic = self._nav_pending > 0
-        if self._nav_pending > 0:
-            self._nav_pending -= 1
-        if self._draining and self._nav_pending == 0:
-            # All in-flight navigations acknowledged.  Write yank bytes
-            # so they arrive at the shell before it prints the new prompt.
-            if self._pending_yank:
-                self._pending_yank = False
-                self._backend.write((_YANK + _END_OF_LINE).encode())
-            self._draining = False
-            # The echoed command and its trailing newline were discarded
-            # while draining, so the cursor never advanced past the old
-            # prompt text. Return to column 0 and clear the rest of the
-            # line so the new prompt overwrites the old one *in place* —
-            # matching zsh's own PROMPT_CR/PROMPT_SP redraw behaviour —
-            # instead of leaking onto the same row (no reset) or pushing
-            # everything down onto a new one (a hard newline).
-            if self._screen.cursor.x != 0:
-                self._feed_stdout("\r\x1b[K")
-            # Resolve the navigation future so callers unblock.
-            if self._nav_future is not None and not self._nav_future.done():
-                self._nav_future.set_result(cwd)
-        # Reset input tracking for the new prompt cycle.
-        self._keys_forwarded_since_precmd = False
-        self._prompt_ready_received = False
-        self._snapshot_prompt_after_precmd = True
-        if self._nav_pending == 0 and cwd_changed:
-            self.post_message(Terminal.PathChanged(self, cwd, user_initiated=not was_programmatic))
+        is_programmatic = False
+
+        if (
+            self._nav_active is not None
+            and self._nav_waiting_for_cwd
+            and self._nav_wait_pre_cmd_future is not None
+            and not self._nav_wait_pre_cmd_future.done()
+        ):
+            self._nav_waiting_for_cwd = False
+            self._nav_capture_prompt_output = True
+            self._nav_wait_pre_cmd_future.set_result(cwd)
+            is_programmatic = True
+
+        owner: object | None = None
+        if not is_programmatic:
+            # This command cycle is complete: the recorded owner is consumed here
+            # whether or not the cwd actually changed.
+            owner = self._command_owner
+            self._command_owner = None
+
+        if cwd_changed:
+            self.post_message(
+                Terminal.PathChanged(
+                    self, cwd, user_initiated=not is_programmatic, owner=owner
+                )
+            )
         self.post_message(Terminal.PreCmd(self, cwd))
 
+        # Drivers without a prompt-ready signal (fallback sh) end startup and
+        # silent-send draining here at precmd.  Prompt-ready-capable drivers end
+        # draining in _handle_prompt_ready instead, after the interactive-shell
+        # typeahead redraw has settled (precmd fires mid-redraw, too early).
+        if (
+            not self._driver.supports_prompt_ready
+            and not self._nav_waiting_for_cwd
+            and not self._nav_capture_prompt_output
+        ):
+            self._end_startup_draining()
+
+    def _end_startup_draining(self) -> None:
+        """End startup/silent-send draining and redraw the prompt in place."""
+        if self._startup_drain_handle is not None:
+            self._startup_drain_handle.cancel()
+            self._startup_drain_handle = None
+        if not self._draining:
+            return
+        self._draining = False
+        if self._screen.cursor.x != 0:
+            self._feed_stdout("\r\x1b[K")
+
+    def _force_end_startup_draining(self) -> None:
+        """Watchdog: end draining if no prompt-ready signal ever arrives."""
+        self._startup_drain_handle = None
+        if (
+            self._draining
+            and not self._nav_waiting_for_cwd
+            and not self._nav_capture_prompt_output
+        ):
+            self._draining = False
+
     def _handle_prompt_ready(self) -> None:
-        """Snapshot cursor position as the prompt-end position."""
-        self._prompt_cursor_x = self._screen.cursor.x
-        self._prompt_cursor_y = self._screen.cursor.y
-        self._prompt_ready_received = True
+        """Track line-editor readiness for enter and navigation coordination."""
+        self._first_prompt_ready_received = True
+        self._at_prompt = True
+        if self._nav_capture_prompt_output:
+            if (
+                self._nav_wait_prompt_ready_future is not None
+                and not self._nav_wait_prompt_ready_future.done()
+            ):
+                self._nav_wait_prompt_ready_future.set_result(None)
+        else:
+            self._end_startup_draining()
+        self._maybe_schedule_startup_probe()
+
+    def _send_enter(self) -> None:
+        """Send a carriage return to the backend and mark prompt state busy."""
+        self._at_prompt = False
+        self._backend.write(b"\r")
+
+    def _settle_navigation_request(
+        self, request: _NavigationRequest, result: PurePath
+    ) -> None:
+        """Resolve all futures attached to a navigation request."""
+        for future in request.futures:
+            if not future.done():
+                future.set_result(result)
+
+    def _cleanup_navigation_wait_state(self) -> None:
+        """Reset in-flight navigation capture and wait futures."""
+        if (
+            self._nav_wait_pre_cmd_future is not None
+            and not self._nav_wait_pre_cmd_future.done()
+        ):
+            self._nav_wait_pre_cmd_future.cancel()
+        if (
+            self._nav_wait_prompt_ready_future is not None
+            and not self._nav_wait_prompt_ready_future.done()
+        ):
+            self._nav_wait_prompt_ready_future.cancel()
+        self._nav_wait_pre_cmd_future = None
+        self._nav_wait_prompt_ready_future = None
+        self._nav_waiting_for_cwd = False
+        self._nav_capture_prompt_output = False
+        self._nav_retained_prompt_chunks = []
+
+    def _enqueue_navigation_request(
+        self,
+        *,
+        path: PurePath,
+        owner: object | None,
+        future: Future[PurePath] | None,
+    ) -> None:
+        """Queue or coalesce navigation requests while preserving awaiters."""
+        if (
+            self._nav_active is None
+            and self._nav_queued is None
+            and self._cwd is not None
+            and path == self._cwd
+        ):
+            if future is not None and not future.done():
+                future.set_result(self._cwd)
+            return
+
+        if self._nav_active is not None and self._nav_active.path == path:
+            if future is not None:
+                self._nav_active.futures.append(future)
+            return
+
+        if self._nav_queued is not None and self._nav_queued.path == path:
+            if future is not None:
+                self._nav_queued.futures.append(future)
+            self._nav_queued.owner = owner
+            return
+
+        request = _NavigationRequest(path=path, owner=owner, futures=[])
+        if future is not None:
+            request.futures.append(future)
+
+        if self._nav_active is None:
+            self._nav_active = request
+            if self._nav_task is None or self._nav_task.done():
+                self._nav_task = asyncio.create_task(self._run_navigation_coordinator())
+            return
+
+        if self._nav_queued is not None:
+            request.futures.extend(self._nav_queued.futures)
+        self._nav_queued = request
+
+    async def _attempt_best_effort_restore(self) -> None:
+        """Attempt one bounded restore after a post-stash navigation failure."""
+        try:
+            await asyncio.wait_for(
+                self._request_editor(EditorOperation.RESTORE),
+                timeout=_NAVIGATION_STAGE_TIMEOUT,
+            )
+        except TimeoutError:
+            return
+
+    async def _run_navigation_transaction(self, request: _NavigationRequest) -> None:
+        """Run one serialized stash/cd/restore transaction."""
+        if not self._at_prompt or not self._editor_available:
+            self._draining = False
+            self.post_message(
+                Terminal.NavigationFailed(
+                    self,
+                    request.path,
+                    "terminal not ready for safe navigation",
+                    owner=request.owner,
+                )
+            )
+            self._settle_navigation_request(request, self._cwd or request.path)
+            return
+
+        self._at_prompt = False
+        self._draining = True
+        self._nav_wait_pre_cmd_future = asyncio.get_running_loop().create_future()
+        self._nav_wait_prompt_ready_future = asyncio.get_running_loop().create_future()
+        self._nav_waiting_for_cwd = False
+        self._nav_capture_prompt_output = False
+        self._nav_retained_prompt_chunks = []
+        stash_succeeded = False
+
+        try:
+            if await self._request_editor(EditorOperation.STASH) is None:
+                self.post_message(
+                    Terminal.NavigationFailed(
+                        self,
+                        request.path,
+                        "stash acknowledgement timeout",
+                        owner=request.owner,
+                    )
+                )
+                self._draining = False
+                self._settle_navigation_request(request, self._cwd or request.path)
+                return
+
+            stash_succeeded = True
+            self._nav_waiting_for_cwd = True
+            self._backend.write(
+                (" " + self._driver.cd_command(str(request.path)) + "\n").encode()
+            )
+
+            assert self._nav_wait_pre_cmd_future is not None
+            actual_cwd = await asyncio.wait_for(
+                self._nav_wait_pre_cmd_future, timeout=_NAVIGATION_STAGE_TIMEOUT
+            )
+
+            assert self._nav_wait_prompt_ready_future is not None
+            await asyncio.wait_for(
+                self._nav_wait_prompt_ready_future, timeout=_NAVIGATION_STAGE_TIMEOUT
+            )
+
+            if await self._request_editor(EditorOperation.RESTORE) is None:
+                raise RuntimeError("restore acknowledgement timeout")
+
+            retained_prompt = "".join(self._nav_retained_prompt_chunks)
+            self._feed_stdout("\r\x1b[K" + retained_prompt)
+            self._draining = False
+            self._nav_capture_prompt_output = False
+            self._schedule_rebuild()
+            self._settle_navigation_request(request, actual_cwd)
+        except (TimeoutError, RuntimeError, ValueError, OSError):
+            if stash_succeeded:
+                await self._attempt_best_effort_restore()
+            self._draining = False
+            self._nav_capture_prompt_output = False
+            self.post_message(
+                Terminal.NavigationFailed(
+                    self,
+                    request.path,
+                    "navigation transaction failed",
+                    owner=request.owner,
+                )
+            )
+            self._settle_navigation_request(request, self._cwd or request.path)
+        finally:
+            self._cleanup_navigation_wait_state()
+
+    async def _run_navigation_coordinator(self) -> None:
+        """Run at most one navigation transaction at a time."""
+        try:
+            while self._nav_active is not None:
+                request = self._nav_active
+                await self._run_navigation_transaction(request)
+                self._nav_active = self._nav_queued
+                self._nav_queued = None
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._nav_task = None
+
+    def _cancel_navigation(self, reason: str) -> None:
+        """Cancel coordinator and settle all pending navigation waiters."""
+        if self._nav_task is not None:
+            self._nav_task.cancel()
+            self._nav_task = None
+
+        if self._nav_active is not None:
+            self.post_message(
+                Terminal.NavigationFailed(
+                    self, self._nav_active.path, reason, owner=self._nav_active.owner
+                )
+            )
+            self._settle_navigation_request(
+                self._nav_active, self._cwd or self._nav_active.path
+            )
+        if self._nav_queued is not None:
+            self.post_message(
+                Terminal.NavigationFailed(
+                    self, self._nav_queued.path, reason, owner=self._nav_queued.owner
+                )
+            )
+            self._settle_navigation_request(
+                self._nav_queued, self._cwd or self._nav_queued.path
+            )
+
+        self._nav_active = None
+        self._nav_queued = None
+        self._draining = False
+        self._cleanup_navigation_wait_state()
+
+    def _reset_editor_session_state(self) -> None:
+        """Reset editor protocol state for a newly started shell session."""
+        self._cancel_startup_probe_task()
+        self._cancel_pending_editor_request()
+        self._editor_nonce = create_editor_nonce()
+        self._editor_available = False
+        self._editor_ready_received = False
+        self._editor_sequence = 0
+        self._editor_expected_operation = None
+        self._editor_session_failed = False
+        self._startup_probe_sent = False
+        self._first_prompt_ready_received = False
+        self._at_prompt = False
+        self._command_owner = None
+
+    def _disable_editor_protocol(self) -> None:
+        """Disable editor protocol for the remainder of this shell session."""
+        self._editor_available = False
+        self._editor_session_failed = True
+        self._command_owner = None
+
+    def _cancel_pending_editor_request(self) -> None:
+        """Cancel and clear any pending correlated editor request."""
+        future = self._editor_response_future
+        if future is not None and not future.done():
+            future.cancel()
+        self._editor_response_future = None
+        self._editor_expected_operation = None
+
+    def _cancel_startup_probe_task(self) -> None:
+        """Cancel the in-flight startup probe task if present."""
+        if self._startup_probe_task is not None:
+            self._startup_probe_task.cancel()
+            self._startup_probe_task = None
+
+    def _maybe_schedule_startup_probe(self) -> None:
+        """Schedule exactly one startup probe after READY and first prompt-ready."""
+        if not self._driver.supports_editor_protocol:
+            return
+        if (
+            self._editor_session_failed
+            or self._editor_available
+            or self._startup_probe_sent
+        ):
+            return
+        if not self._editor_ready_received or not self._first_prompt_ready_received:
+            return
+        self._startup_probe_sent = True
+        self._startup_probe_task = asyncio.create_task(self._run_startup_probe())
+
+    async def _run_startup_probe(self) -> None:
+        """Run one startup probe to verify the editor binding is callable."""
+        try:
+            response = await self._request_editor(EditorOperation.PROBE)
+            if response is not None:
+                self._editor_available = True
+        except asyncio.CancelledError:
+            raise
+        finally:
+            self._startup_probe_task = None
+
+    async def _request_editor(
+        self, operation: EditorOperation
+    ) -> EditorResponse | None:
+        """Send one correlated editor request and await a matching response."""
+        if not self._driver.supports_editor_protocol or self._editor_session_failed:
+            return None
+
+        async with self._editor_request_lock:
+            self._editor_sequence += 1
+            expected_sequence = self._editor_sequence
+            self._editor_expected_operation = operation
+            future: Future[EditorResponse] = asyncio.get_running_loop().create_future()
+            self._editor_response_future = future
+
+            try:
+                self._backend.write(self._driver.editor_request(operation))
+                response = await asyncio.wait_for(
+                    future, timeout=_EDITOR_RESPONSE_TIMEOUT
+                )
+            except TimeoutError:
+                self._cancel_pending_editor_request()
+                self._disable_editor_protocol()
+                return None
+            except (RuntimeError, ValueError, OSError):
+                self._cancel_pending_editor_request()
+                self._disable_editor_protocol()
+                return None
+            except asyncio.CancelledError:
+                self._cancel_pending_editor_request()
+                return None
+            finally:
+                if self._editor_response_future is future:
+                    self._editor_response_future = None
+                    self._editor_expected_operation = None
+
+            if (
+                response.operation is not operation
+                or response.sequence != expected_sequence
+            ):
+                self._disable_editor_protocol()
+                return None
+            return response
+
+    def _handle_editor_response(self, payload: object) -> None:
+        """Handle one editor_response message from the backend."""
+        if not isinstance(payload, EditorResponse):
+            if (
+                self._editor_response_future is not None
+                and not self._editor_response_future.done()
+            ):
+                self._editor_response_future.set_exception(
+                    ValueError("malformed editor response")
+                )
+            self._disable_editor_protocol()
+            return
+
+        if payload.nonce != self._editor_nonce:
+            return
+
+        if payload.operation is EditorOperation.READY:
+            if payload.sequence == 0:
+                self._editor_ready_received = True
+                self._maybe_schedule_startup_probe()
+            return
+
+        if self._editor_response_future is None or self._editor_response_future.done():
+            return
+
+        expected_operation = self._editor_expected_operation
+        if expected_operation is None:
+            self._editor_response_future.set_exception(
+                RuntimeError("missing expected editor operation")
+            )
+            return
+
+        if (
+            payload.operation is not expected_operation
+            or payload.sequence != self._editor_sequence
+        ):
+            self._editor_response_future.set_exception(
+                ValueError("stale or mismatched editor response")
+            )
+            return
+
+        self._editor_response_future.set_result(payload)
 
     async def recv(self) -> None:
         """Process messages from recv_queue: stdout, pre_cmd, setup, disconnect."""
@@ -537,18 +975,32 @@ class Terminal(Widget, can_focus=True):
                         assert self.send_queue is not None
                         self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
                     elif cmd == "pre_cmd":
-                        from_nn = bool(message[_PRE_CMD_FROM_NN_IDX]) if len(message) > _PRE_CMD_FROM_NN_IDX else True
+                        from_nn = (
+                            bool(message[_PRE_CMD_FROM_NN_IDX])
+                            if len(message) > _PRE_CMD_FROM_NN_IDX
+                            else True
+                        )
                         self._handle_pre_cmd(str(message[1]), from_nn)
                     elif cmd == "stdout":
-                        if not self._draining:
-                            self._feed_stdout(str(message[1]))
+                        stdout = str(message[1])
+                        if self._draining:
+                            if self._nav_capture_prompt_output:
+                                self._nav_retained_prompt_chunks.append(stdout)
+                        else:
+                            self._feed_stdout(stdout)
                             stdout_fed = True
-                            if self._snapshot_prompt_after_precmd:
-                                self._snapshot_prompt_after_precmd = False
-                                self._handle_prompt_ready()
                     elif cmd == "prompt_ready":
                         self._handle_prompt_ready()
+                    elif cmd == "editor_response":
+                        self._handle_editor_response(
+                            message[1] if len(message) > 1 else None
+                        )
                     elif cmd == "disconnect":
+                        self._cancel_startup_probe_task()
+                        self._cancel_pending_editor_request()
+                        self._cancel_navigation("terminal disconnected")
+                        self._at_prompt = False
+                        self._command_owner = None
                         disconnected = True
                         break
                     try:
@@ -574,7 +1026,9 @@ class Terminal(Widget, can_focus=True):
     def _schedule_rebuild(self) -> None:
         """Schedule a display rebuild if one is not already pending."""
         if self._rebuild_handle is None:
-            self._rebuild_handle = asyncio.get_running_loop().call_later(1.0 / _DISPLAY_FPS, self._on_rebuild_timer)
+            self._rebuild_handle = asyncio.get_running_loop().call_later(
+                1.0 / _DISPLAY_FPS, self._on_rebuild_timer
+            )
 
     def _on_rebuild_timer(self) -> None:
         """Timer callback: clear the handle and rebuild the display."""
@@ -622,7 +1076,9 @@ class Terminal(Widget, can_focus=True):
 
             lines.append(line_text)
 
-        self._display = TerminalDisplay(lines, self._screen.cursor.x, self._screen.cursor.y)
+        self._display = TerminalDisplay(
+            lines, self._screen.cursor.x, self._screen.cursor.y
+        )
         self.refresh()
 
     def _process_stdout(self, chars: str) -> None:
@@ -653,7 +1109,9 @@ class Terminal(Widget, can_focus=True):
             log.warning("color parse error:", error)
             return Style()
 
-    def _char_style_key(self, char: Char) -> tuple[str, str, bool, bool, bool, bool, bool, bool]:
+    def _char_style_key(
+        self, char: Char
+    ) -> tuple[str, str, bool, bool, bool, bool, bool, bool]:
         """Return a tuple of visual style attributes for a pyte Char."""
         return (
             char.fg,

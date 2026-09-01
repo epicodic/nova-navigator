@@ -4,15 +4,84 @@ from __future__ import annotations
 
 import asyncio
 import shlex
+from dataclasses import dataclass
 from typing import Any
 
 from nova_navigator.terminal.pty_backend import PtyBackend
 from nova_navigator.terminal.shell_driver import ShellDriver
+from nova_navigator.terminal.shell_editor_protocol import (
+    PROBE_SEQUENCE,
+    RESTORE_SEQUENCE,
+    STASH_SEQUENCE,
+    EditorOperation,
+    EditorResponse,
+)
 from nova_navigator.terminal.vfs_shell.completer import TabCompleter
 from nova_navigator.terminal.vfs_shell.interpreter import VfsShellInterpreter
-from nova_navigator.terminal.vfs_shell.line_editor import LineEditor, LineEditorEvent
+from nova_navigator.terminal.vfs_shell.line_editor import (
+    LineEditor,
+    LineEditorEvent,
+    LineEditorSnapshot,
+)
 from nova_navigator.vfs.filesystem import Filesystem
 from nova_navigator.vfs.vpath import VPath
+
+_EDITOR_REQUESTS: dict[bytes, EditorOperation] = {
+    PROBE_SEQUENCE: EditorOperation.PROBE,
+    STASH_SEQUENCE: EditorOperation.STASH,
+    RESTORE_SEQUENCE: EditorOperation.RESTORE,
+}
+_EDITOR_REQUEST_MAX_LEN = max(len(sequence) for sequence in _EDITOR_REQUESTS)
+
+
+@dataclass(frozen=True)
+class _EditorRequest:
+    operation: EditorOperation
+
+
+class _EditorRequestBuffer:
+    """Incremental parser that extracts private editor requests from bytes."""
+
+    def __init__(self) -> None:
+        self._pending: bytes = b""
+
+    def feed(self, data: bytes) -> list[bytes | _EditorRequest]:
+        chunk = self._pending + data
+        self._pending = b""
+
+        tokens: list[bytes | _EditorRequest] = []
+        ordinary = bytearray()
+        i = 0
+
+        while i < len(chunk):
+            matched = self._match_operation(chunk, i)
+            if matched is not None:
+                if ordinary:
+                    tokens.append(bytes(ordinary))
+                    ordinary.clear()
+                operation, sequence_len = matched
+                tokens.append(_EditorRequest(operation))
+                i += sequence_len
+                continue
+
+            tail = chunk[i:]
+            if len(tail) < _EDITOR_REQUEST_MAX_LEN and any(sequence.startswith(tail) for sequence in _EDITOR_REQUESTS):
+                self._pending = tail
+                break
+
+            ordinary.append(chunk[i])
+            i += 1
+
+        if ordinary:
+            tokens.append(bytes(ordinary))
+
+        return tokens
+
+    def _match_operation(self, chunk: bytes, index: int) -> tuple[EditorOperation, int] | None:
+        for sequence, operation in _EDITOR_REQUESTS.items():
+            if chunk.startswith(sequence, index):
+                return operation, len(sequence)
+        return None
 
 
 class VfsShellDriver(ShellDriver):
@@ -23,9 +92,17 @@ class VfsShellDriver(ShellDriver):
     """
 
     def __init__(self) -> None:
-        super().__init__(prompt_ready=False)
+        super().__init__(prompt_ready=True)
+
+    @property
+    def supports_editor_protocol(self) -> bool:
+        return True
 
     def init_code(self) -> str:
+        return ""
+
+    def editor_integration_code(self, nonce: str) -> str:
+        _ = nonce
         return ""
 
     def quote(self, arg: str) -> str:
@@ -61,6 +138,11 @@ class VirtualPtyBackend(PtyBackend):
         self._tab_cursor_pos: int = 0
         self._running: bool = False
         self._command_task: asyncio.Task[Any] | None = None
+        self._editor_nonce: str | None = None
+        self._editor_sequence: int = 0
+        self._editor_ready_announced: bool = False
+        self._request_buffer = _EditorRequestBuffer()
+        self._stashed_snapshot: LineEditorSnapshot | None = None
 
     # ------------------------------------------------------------------
     # PtyBackend ABC
@@ -76,6 +158,7 @@ class VirtualPtyBackend(PtyBackend):
         # If open() was already called, post the initial prompt now.
         if self._running and self._interpreter is not None:
             self._post_initial_prompt()
+        self._maybe_emit_editor_ready()
 
     def detach_readers(self) -> None:
         self._loop = None
@@ -109,51 +192,29 @@ class VirtualPtyBackend(PtyBackend):
             alias_store=interpreter.aliases,
         )
         self._running = True
+        self._stashed_snapshot = None
+        self._request_buffer = _EditorRequestBuffer()
+        self._editor_sequence = 0
         # If attach_readers() was already called, post the initial prompt now.
         if self._loop is not None and self._recv_queue is not None:
             self._post_initial_prompt()
+        self._maybe_emit_editor_ready()
         return None
+
+    def configure_editor_protocol(self, nonce: str) -> None:
+        self._editor_nonce = nonce
+        self._maybe_emit_editor_ready()
 
     def write(self, data: bytes) -> None:
         """Feed raw bytes from the terminal into the virtual shell."""
         if not self._running or self._line_editor is None or self._interpreter is None:
             return
 
-        text = data.decode("utf-8", errors="replace")
-        for char in text:
-            event = self._line_editor.feed(char)
-            echo = self._line_editor.echo
-            if echo:
-                self._post_stdout(echo)
-
-            if event == LineEditorEvent.TAB:
-                self._schedule_tab()
-                return
-
-            # Any non-tab input clears the tab cycling state
-            if self._tab_candidates:
-                self._tab_candidates = []
-
-            if event == LineEditorEvent.COMPLETE_LINE:
-                line = self._line_editor.line
-                self._line_editor.add_to_history(line)
-                self._line_editor.reset()
-                self._schedule_command(line)
-                return
-
-            if event == LineEditorEvent.INTERRUPT:
-                if self._command_task is not None and not self._command_task.done():
-                    self._interpreter.cancel()
-                else:
-                    # "^C" already echoed; just add a newline and re-prompt.
-                    self._post_stdout("\r\n")
-                    self._line_editor.reset()
-                    self._post_stdout(self._interpreter.prompt)
-                    self._post_message(["prompt_ready"])
-                return
-
-            if event == LineEditorEvent.EOF:
-                self._post_message(["disconnect", 0])
+        for token in self._request_buffer.feed(data):
+            if isinstance(token, _EditorRequest):
+                self._handle_editor_request(token.operation)
+                continue
+            if self._feed_editor_bytes(token):
                 return
 
     def resize(self, rows: int, cols: int) -> None:
@@ -171,6 +232,106 @@ class VirtualPtyBackend(PtyBackend):
         self._running = False
         if self._interpreter is not None:
             self._interpreter.cancel()
+
+    def _maybe_emit_editor_ready(self) -> None:
+        if self._editor_ready_announced:
+            return
+        if self._editor_nonce is None or self._loop is None or self._recv_queue is None or not self._running or self._line_editor is None:
+            return
+        self._post_message(
+            [
+                "editor_response",
+                EditorResponse(
+                    nonce=self._editor_nonce,
+                    operation=EditorOperation.READY,
+                    sequence=0,
+                    buffer_length=0,
+                    cursor=0,
+                ),
+            ]
+        )
+        self._editor_ready_announced = True
+
+    def _feed_editor_bytes(self, data: bytes) -> bool:
+        assert self._line_editor is not None
+        assert self._interpreter is not None
+
+        text = data.decode("utf-8", errors="replace")
+        for char in text:
+            event = self._line_editor.feed(char)
+            echo = self._line_editor.echo
+            if echo:
+                self._post_stdout(echo)
+
+            if event == LineEditorEvent.TAB:
+                self._schedule_tab()
+                return True
+
+            # Any non-tab input clears the tab cycling state
+            if self._tab_candidates:
+                self._tab_candidates = []
+
+            if event == LineEditorEvent.COMPLETE_LINE:
+                line = self._line_editor.line
+                self._line_editor.add_to_history(line)
+                self._line_editor.reset()
+                self._schedule_command(line)
+                return True
+
+            if event == LineEditorEvent.INTERRUPT:
+                if self._command_task is not None and not self._command_task.done():
+                    self._interpreter.cancel()
+                else:
+                    # "^C" already echoed; just add a newline and re-prompt.
+                    self._post_stdout("\r\n")
+                    self._line_editor.reset()
+                    self._post_stdout(self._interpreter.prompt)
+                    self._post_message(["prompt_ready"])
+                return True
+
+            if event == LineEditorEvent.EOF:
+                self._post_message(["disconnect", 0])
+                return True
+
+        return False
+
+    def _handle_editor_request(self, operation: EditorOperation) -> None:
+        if self._editor_nonce is None or self._line_editor is None:
+            return
+
+        self._editor_sequence += 1
+
+        if operation is EditorOperation.PROBE:
+            self._emit_editor_response(operation, len(self._line_editor.line), self._line_editor.cursor)
+            return
+
+        if operation is EditorOperation.STASH:
+            self._stashed_snapshot = self._line_editor.stash()
+            self._emit_editor_response(operation, 0, 0)
+            return
+
+        if operation is EditorOperation.RESTORE:
+            snapshot = self._stashed_snapshot or LineEditorSnapshot(line="", cursor=0)
+            self._stashed_snapshot = None
+            restore_echo = self._line_editor.restore(snapshot)
+            self._emit_editor_response(operation, len(self._line_editor.line), self._line_editor.cursor)
+            if restore_echo:
+                self._post_stdout(restore_echo)
+
+    def _emit_editor_response(self, operation: EditorOperation, buffer_length: int, cursor: int) -> None:
+        assert self._editor_nonce is not None
+        self._post_message(
+            [
+                "editor_response",
+                EditorResponse(
+                    nonce=self._editor_nonce,
+                    operation=operation,
+                    sequence=self._editor_sequence,
+                    buffer_length=buffer_length,
+                    cursor=cursor,
+                ),
+            ]
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers

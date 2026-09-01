@@ -32,6 +32,8 @@ import struct
 import termios
 from abc import ABC, abstractmethod
 
+from nova_navigator.terminal.shell_editor_protocol import EDITOR_OSC_CODE, parse_editor_response
+
 _OSC_COMPLETE = re.compile(r"\033\](\d+);(.*?)(?:\007|\033\\)", re.DOTALL)
 _OSC_PARTIAL = re.compile(r"\033\].*$", re.DOTALL)
 _OSC_CWD = 7
@@ -62,6 +64,16 @@ class PtyBackend(ABC):
         by ``ShellDriver.init_code()``.
         """
         return True
+
+    def configure_editor_protocol(self, nonce: str) -> None:
+        """Configure shell editor protocol session state for this backend.
+
+        Backends that do not support editor protocol requests may ignore this.
+
+        Args:
+            nonce: Per-terminal session nonce used to correlate responses.
+        """
+        _ = nonce
 
     def _process_chunk(
         self,
@@ -101,12 +113,11 @@ class PtyBackend(ABC):
     ) -> None:
         """Handle a decoded OSC sequence.
 
-        OSC 7 carries a CWD URI and is posted as ``["pre_cmd", path, from_nn]``.
-        The payload may be ``panel=;file:///path`` (NN format, ``from_nn=True``) or
-        plain ``file:///path`` (third-party chpwd hook, ``from_nn=False``).
-        ``from_nn`` lets callers ignore third-party hooks that would miscount
-        in-flight navigations.
-        All other OSC codes are silently discarded.
+        OSC 7 carries a CWD URI and posts ``["pre_cmd", path, from_nn]`` when valid.
+        OSC 133 with payload ``B`` posts ``["prompt_ready"]``.
+        OSC ``EDITOR_OSC_CODE`` (777) parses the private shell editor response and posts
+        ``["editor_response", response]`` when parsing succeeds.
+        Unrecognized or malformed OSC sequences are silently discarded.
         """
         if code == _OSC_CWD:
             payload = data
@@ -123,6 +134,10 @@ class PtyBackend(ABC):
                     slash = remainder.find("/")
                     path = remainder[slash:] if slash != -1 else "/"
                 loop.call_soon_threadsafe(recv_queue.put_nowait, ["pre_cmd", path, from_nn])
+        elif code == EDITOR_OSC_CODE:
+            response = parse_editor_response(data)
+            if response is not None:
+                loop.call_soon_threadsafe(recv_queue.put_nowait, ["editor_response", response])
         elif code == _OSC_PROMPT and data == "B":
             loop.call_soon_threadsafe(recv_queue.put_nowait, ["prompt_ready"])
 

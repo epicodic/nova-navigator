@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.integration.conftest import AppCtx, set_panels
+from tests.integration.conftest import AppCtx, poll_until, set_panels
 
 # ---------------------------------------------------------------------------
 # Panel toggle (Tab)
@@ -53,7 +53,7 @@ async def test_enter_on_directory_navigates_panel_into_it(app_ctx: AppCtx) -> No
     await set_panels(app_ctx)  # cursor lands on "subdir" (only entry)
 
     await app_ctx.pilot.press("enter")
-    await app_ctx.pilot.pause(delay=0.2)
+    await poll_until(app_ctx.pilot, lambda: app_ctx.screen._left_panel.path.path == subdir)
 
     assert app_ctx.screen._left_panel.path.path == subdir
 

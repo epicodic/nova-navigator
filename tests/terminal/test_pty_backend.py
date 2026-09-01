@@ -9,6 +9,7 @@ import time
 import pytest
 
 from nova_navigator.terminal.pty_backend import LocalPtyBackend, PtyBackend
+from nova_navigator.terminal.shell_editor_protocol import EditorOperation, EditorResponse
 
 
 def test_local_pty_backend_is_a_pty_backend() -> None:
@@ -298,6 +299,146 @@ async def test_process_chunk_osc7_with_panel_prefix_posts_from_nn_true() -> None
     assert len(pre_cmds) == 1
     assert pre_cmds[0][1] == path
     assert pre_cmds[0][2] is True
+
+
+@pytest.mark.asyncio
+async def test_process_chunk_osc777_posts_editor_response_with_typed_value() -> None:
+    backend = LocalPtyBackend()
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[list[object]] = asyncio.Queue()
+
+    payload = "nn;nonce123;probe;9;12;4"
+    osc = f"\033]777;{payload}\007"
+    backend._process_chunk(osc.encode(), loop, queue)
+    await asyncio.sleep(0)
+
+    messages: list[list[object]] = []
+    while not queue.empty():
+        messages.append(queue.get_nowait())
+
+    assert messages == [
+        [
+            "editor_response",
+            EditorResponse(
+                nonce="nonce123",
+                operation=EditorOperation.PROBE,
+                sequence=9,
+                buffer_length=12,
+                cursor=4,
+            ),
+        ]
+    ]
+
+
+@pytest.mark.asyncio
+async def test_process_chunk_osc777_preserves_document_order_around_stdout() -> None:
+    backend = LocalPtyBackend()
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[list[object]] = asyncio.Queue()
+
+    payload = "nn;nonce123;ready;2;0;0"
+    chunk = f"before\033]777;{payload}\007after"
+    backend._process_chunk(chunk.encode(), loop, queue)
+    await asyncio.sleep(0)
+
+    messages: list[list[object]] = []
+    while not queue.empty():
+        messages.append(queue.get_nowait())
+
+    assert messages == [
+        ["stdout", "before"],
+        [
+            "editor_response",
+            EditorResponse(
+                nonce="nonce123",
+                operation=EditorOperation.READY,
+                sequence=2,
+                buffer_length=0,
+                cursor=0,
+            ),
+        ],
+        ["stdout", "after"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_process_chunk_osc777_handles_split_sequence_across_chunks() -> None:
+    backend = LocalPtyBackend()
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[list[object]] = asyncio.Queue()
+
+    payload = "nn;nonce123;stash;11;8;5"
+    full = f"\033]777;{payload}\007"
+    split_at = len(full) // 2
+    backend._process_chunk(full[:split_at].encode(), loop, queue)
+    backend._process_chunk(full[split_at:].encode(), loop, queue)
+    await asyncio.sleep(0)
+
+    messages: list[list[object]] = []
+    while not queue.empty():
+        messages.append(queue.get_nowait())
+
+    assert messages == [
+        [
+            "editor_response",
+            EditorResponse(
+                nonce="nonce123",
+                operation=EditorOperation.STASH,
+                sequence=11,
+                buffer_length=8,
+                cursor=5,
+            ),
+        ]
+    ]
+
+
+@pytest.mark.asyncio
+async def test_process_chunk_osc777_malformed_or_unrelated_private_osc_are_ignored() -> None:
+    backend = LocalPtyBackend()
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[list[object]] = asyncio.Queue()
+
+    malformed = "\033]777;nn;nonce;probe;x;1;0\007"
+    unrelated = "\033]778;nn;nonce;probe;1;1;0\007"
+    backend._process_chunk(f"{malformed}{unrelated}".encode(), loop, queue)
+    await asyncio.sleep(0)
+
+    messages: list[list[object]] = []
+    while not queue.empty():
+        messages.append(queue.get_nowait())
+
+    assert messages == []
+
+
+@pytest.mark.asyncio
+async def test_process_chunk_osc777_has_no_regression_for_osc7_and_osc133() -> None:
+    backend = LocalPtyBackend()
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[list[object]] = asyncio.Queue()
+
+    payload = "nn;nonce123;restore;15;8;2"
+    chunk = f"\033]7;file:///var/nn-test\007\033]777;{payload}\007\033]133;B\007"
+    backend._process_chunk(chunk.encode(), loop, queue)
+    await asyncio.sleep(0)
+
+    messages: list[list[object]] = []
+    while not queue.empty():
+        messages.append(queue.get_nowait())
+
+    assert messages == [
+        ["pre_cmd", "/var/nn-test", False],
+        [
+            "editor_response",
+            EditorResponse(
+                nonce="nonce123",
+                operation=EditorOperation.RESTORE,
+                sequence=15,
+                buffer_length=8,
+                cursor=2,
+            ),
+        ],
+        ["prompt_ready"],
+    ]
 
 
 @pytest.mark.asyncio

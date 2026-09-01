@@ -16,12 +16,23 @@ Related modules:
 from __future__ import annotations
 
 import logging
+import re
 from abc import ABC, abstractmethod
 from pathlib import PurePath
 
+from nova_navigator.terminal.shell_editor_protocol import (
+    PROBE_SEQUENCE,
+    RESTORE_SEQUENCE,
+    STASH_SEQUENCE,
+    EditorOperation,
+)
+
 _logger = logging.getLogger(__name__)
 
-_SAFE_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-")
+_SAFE_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-"
+)
+_NONCE_RE = re.compile(r"^[0-9a-f]+$")
 
 _LINE_CONTINUATION_LIMIT = 250
 
@@ -58,6 +69,13 @@ def _posix_octal_escape(arg: str) -> str:
     return "".join(f"\\0{ord(char):03o}" for char in arg)
 
 
+def _validate_editor_nonce(nonce: str) -> str:
+    """Validate the nonce used in generated shell editor integration code."""
+    if _NONCE_RE.fullmatch(nonce) is None:
+        raise ValueError("editor nonce must contain only lowercase hex characters")
+    return nonce
+
+
 class ShellDriver(ABC):
     """Abstract base class for shell-specific terminal integration."""
 
@@ -68,6 +86,11 @@ class ShellDriver(ABC):
     def supports_prompt_ready(self) -> bool:
         """True if init_code() installs an OSC 133;B prompt-end hook."""
         return self._prompt_ready
+
+    @property
+    def supports_editor_protocol(self) -> bool:
+        """True if editor integration can be installed for this shell."""
+        return False
 
     def _hook_body(self) -> str:
         """Return the core of the precmd hook function body.
@@ -97,6 +120,23 @@ class ShellDriver(ABC):
         """Return a complete shell command that changes directory to *path*."""
         return f"cd {self.quote(path)}"
 
+    def editor_integration_code(self, nonce: str) -> str:
+        """Return shell code that installs private editor protocol bindings."""
+        _ = nonce
+        return ""
+
+    def editor_request(self, operation: EditorOperation) -> bytes:
+        """Return the private input sequence for an editor protocol request."""
+        if operation is EditorOperation.PROBE:
+            return PROBE_SEQUENCE
+        if operation is EditorOperation.STASH:
+            return STASH_SEQUENCE
+        if operation is EditorOperation.RESTORE:
+            return RESTORE_SEQUENCE
+        raise ValueError(
+            "READY is emitted by shell integration and cannot be requested"
+        )
+
 
 class ZshDriver(ShellDriver):
     """Shell driver for zsh."""
@@ -105,11 +145,48 @@ class ZshDriver(ShellDriver):
         super().__init__(prompt_ready=True)
 
     def init_code(self) -> str:
-        zle_hook = " _nn_zle_init() { printf '\\033]133;B\\007' >/dev/tty }; add-zle-hook-widget -Uz zle-line-init _nn_zle_init"
+        zle_hook = " autoload -Uz add-zle-hook-widget; _nn_zle_init() { printf '\\033]133;B\\007' >/dev/tty }; add-zle-hook-widget -Uz zle-line-init _nn_zle_init"
         return f" setopt HIST_IGNORE_SPACE; _nn_precmd() {{ {self._hook_body()} }}; precmd_functions+=(_nn_precmd);{zle_hook}\n"
 
     def quote(self, arg: str) -> str:
         return _ansi_c_quote(arg)
+
+    @property
+    def supports_editor_protocol(self) -> bool:
+        return True
+
+    def editor_integration_code(self, nonce: str) -> str:
+        nonce = _validate_editor_nonce(nonce)
+        seq_var = f"_nn_seq_{nonce}"
+        emit_fn = f"_nn_emit_{nonce}"
+        probe_widget = f"_nn_probe_{nonce}"
+        stash_widget = f"_nn_stash_{nonce}"
+        restore_widget = f"_nn_restore_{nonce}"
+        stash_buffer_var = f"_nn_stash_buffer_{nonce}"
+        stash_cursor_var = f"_nn_stash_cursor_{nonce}"
+
+        return (
+            f"typeset -g {seq_var}=0;"
+            f'{emit_fn}() {{ printf \'\\033]777;nn;{nonce};%s;%s;%s;%s\\007\' "$1" "${seq_var}" "$2" "$3" >/dev/tty; }};'
+            f"{probe_widget}() {{ (( {seq_var} += 1 )); local len=${{#BUFFER}}; local cur=$CURSOR;"
+            f' {emit_fn} probe "$len" "$cur"; }};'
+            f'{stash_widget}() {{ (( {seq_var} += 1 )); typeset -g {stash_buffer_var}="$BUFFER";'
+            f" typeset -g {stash_cursor_var}=$CURSOR; BUFFER=''; CURSOR=0; {emit_fn} stash 0 0; }};"
+            f'{restore_widget}() {{ (( {seq_var} += 1 )); BUFFER="${{{stash_buffer_var}-}}";'
+            f" CURSOR=${{{stash_cursor_var}-0}}; local len=${{#BUFFER}}; local cur=$CURSOR;"
+            f' unset {stash_buffer_var} {stash_cursor_var}; {emit_fn} restore "$len" "$cur"; }};'
+            f"zle -N {probe_widget}; zle -N {stash_widget}; zle -N {restore_widget};"
+            f" bindkey -M emacs '^[[99~' {probe_widget};"
+            f" bindkey -M viins '^[[99~' {probe_widget};"
+            f" bindkey -M vicmd '^[[99~' {probe_widget};"
+            f" bindkey -M emacs '^[[98~' {stash_widget};"
+            f" bindkey -M viins '^[[98~' {stash_widget};"
+            f" bindkey -M vicmd '^[[98~' {stash_widget};"
+            f" bindkey -M emacs '^[[97~' {restore_widget};"
+            f" bindkey -M viins '^[[97~' {restore_widget};"
+            f" bindkey -M vicmd '^[[97~' {restore_widget};"
+            f" printf '\\033]777;nn;{nonce};ready;0;0;0\\007' >/dev/tty\n"
+        )
 
 
 class BashDriver(ShellDriver):
@@ -128,6 +205,48 @@ class BashDriver(ShellDriver):
 
     def quote(self, arg: str) -> str:
         return _ansi_c_quote(arg)
+
+    @property
+    def supports_editor_protocol(self) -> bool:
+        return True
+
+    def editor_integration_code(self, nonce: str) -> str:
+        nonce = _validate_editor_nonce(nonce)
+        seq_var = f"_nn_seq_{nonce}"
+        emit_fn = f"_nn_emit_{nonce}"
+        probe_fn = f"_nn_probe_{nonce}"
+        stash_fn = f"_nn_stash_{nonce}"
+        restore_fn = f"_nn_restore_{nonce}"
+        stash_line_var = f"_nn_stash_line_{nonce}"
+        stash_point_var = f"_nn_stash_point_{nonce}"
+
+        return (
+            f"{seq_var}=0;"
+            f'{emit_fn}() {{ printf \'\\033]777;nn;{nonce};%s;%s;%s;%s\\007\' "$1" "${seq_var}" "$2" "$3" >/dev/tty; }};'
+            f"{probe_fn}() {{ (( {seq_var} += 1 )); local len=${{#READLINE_LINE}}; local cur=${{READLINE_POINT:-0}};"
+            f' {emit_fn} probe "$len" "$cur"; }};'
+            f'{stash_fn}() {{ (( {seq_var} += 1 )); {stash_line_var}="$READLINE_LINE"; {stash_point_var}=${{READLINE_POINT:-0}};'
+            f" READLINE_LINE=''; READLINE_POINT=0; {emit_fn} stash 0 0; }};"
+            f'{restore_fn}() {{ (( {seq_var} += 1 )); READLINE_LINE="${{{stash_line_var}-}}";'
+            f' READLINE_POINT="${{{stash_point_var}-0}}"; local len=${{#READLINE_LINE}}; local cur=${{READLINE_POINT:-0}};'
+            f' unset {stash_line_var} {stash_point_var}; {emit_fn} restore "$len" "$cur"; }};'
+            f"bind -m emacs-standard -x '\"\\e[99~\":{probe_fn}';"
+            f"bind -m emacs-meta -x '\"\\e[99~\":{probe_fn}';"
+            f"bind -m emacs-ctlx -x '\"\\e[99~\":{probe_fn}';"
+            f"bind -m vi-insert -x '\"\\e[99~\":{probe_fn}';"
+            f"bind -m vi-command -x '\"\\e[99~\":{probe_fn}';"
+            f"bind -m emacs-standard -x '\"\\e[98~\":{stash_fn}';"
+            f"bind -m emacs-meta -x '\"\\e[98~\":{stash_fn}';"
+            f"bind -m emacs-ctlx -x '\"\\e[98~\":{stash_fn}';"
+            f"bind -m vi-insert -x '\"\\e[98~\":{stash_fn}';"
+            f"bind -m vi-command -x '\"\\e[98~\":{stash_fn}';"
+            f"bind -m emacs-standard -x '\"\\e[97~\":{restore_fn}';"
+            f"bind -m emacs-meta -x '\"\\e[97~\":{restore_fn}';"
+            f"bind -m emacs-ctlx -x '\"\\e[97~\":{restore_fn}';"
+            f"bind -m vi-insert -x '\"\\e[97~\":{restore_fn}';"
+            f"bind -m vi-command -x '\"\\e[97~\":{restore_fn}';"
+            f"printf '\\033]777;nn;{nonce};ready;0;0;0\\007' >/dev/tty\n"
+        )
 
 
 class FallbackDriver(ShellDriver):
