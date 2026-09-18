@@ -235,6 +235,26 @@ def test_fallback_driver_supports_line_editing_is_false() -> None:
 
 
 # ---------------------------------------------------------------------------
+# supports_editor_protocol
+# ---------------------------------------------------------------------------
+
+
+def test_zsh_driver_supports_editor_protocol_is_false() -> None:
+    driver = ZshDriver()
+    assert driver.supports_editor_protocol is False
+
+
+def test_bash_driver_supports_editor_protocol_is_false() -> None:
+    driver = BashDriver()
+    assert driver.supports_editor_protocol is False
+
+
+def test_fallback_driver_supports_editor_protocol_is_false() -> None:
+    driver = FallbackDriver()
+    assert driver.supports_editor_protocol is False
+
+
+# ---------------------------------------------------------------------------
 # _hook_body panel embedding (OSC 7 format)
 # ---------------------------------------------------------------------------
 

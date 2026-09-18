@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum, auto
 
 
@@ -17,6 +18,14 @@ class LineEditorEvent(Enum):
 
 _ESCAPE_PREFIX_MIN_LEN = 2
 _ESCAPE_SEQ_MIN_LEN = 3
+
+
+@dataclass(frozen=True)
+class LineEditorSnapshot:
+    """Immutable capture of line editor state, produced by ``LineEditor.stash()``."""
+
+    line: str
+    cursor: int
 
 
 class LineEditor:
@@ -67,6 +76,47 @@ class LineEditor:
         if line.strip() and not line.startswith(" "):
             self._history.append(line)
         self._history_index = len(self._history)
+
+    def stash(self) -> LineEditorSnapshot:
+        """Capture and clear the current line editor state.
+
+        Returns:
+            A snapshot containing the complete line and cursor position.
+        """
+        snapshot = LineEditorSnapshot(self.line, self._cursor)
+        self._buf.clear()
+        self._cursor = 0
+        self._saved_line = ""
+        self._search_prefix = None
+        self._escape_buf = ""
+        return snapshot
+
+    def restore(self, snapshot: LineEditorSnapshot) -> str:
+        """Restore a previously stashed editor state.
+
+        Args:
+            snapshot: Immutable snapshot to restore.
+
+        Returns:
+            ANSI echo that redraws the restored line from an empty editor and
+            places the cursor at the saved offset.
+
+        Raises:
+            ValueError: If cursor is outside the restored line bounds.
+        """
+        if snapshot.cursor < 0 or snapshot.cursor > len(snapshot.line):
+            raise ValueError("snapshot cursor must satisfy 0 <= cursor <= len(line)")
+
+        self._buf = list(snapshot.line)
+        self._cursor = snapshot.cursor
+        self._saved_line = ""
+        self._search_prefix = None
+        self._escape_buf = ""
+
+        trailing = len(self._buf) - self._cursor
+        if trailing > 0:
+            return snapshot.line + ("\b" * trailing)
+        return snapshot.line
 
     def feed(self, data: str) -> LineEditorEvent:
         r"""Process input character(s). Returns the resulting event.

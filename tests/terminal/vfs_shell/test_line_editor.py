@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from nova_navigator.terminal.vfs_shell.line_editor import LineEditor, LineEditorEvent
+import pytest
+
+from nova_navigator.terminal.vfs_shell.line_editor import LineEditor, LineEditorEvent, LineEditorSnapshot
 
 
 def test_basic_typing() -> None:
@@ -322,3 +324,69 @@ def test_add_to_history_skips_lines_starting_with_space() -> None:
     editor.add_to_history("ls -la")
     editor.add_to_history(" secret-command")
     assert editor.history == ["ls -la"]
+
+
+# ---------------------------------------------------------------------------
+# stash / restore
+# ---------------------------------------------------------------------------
+
+
+def test_stash_returns_snapshot_of_line_and_cursor() -> None:
+    editor = LineEditor()
+    for ch in "abc":
+        editor.feed(ch)
+    editor.feed("\x1b[D")  # Left arrow — cursor between "b" and "c"
+    snapshot = editor.stash()
+    assert snapshot == LineEditorSnapshot(line="abc", cursor=2)
+
+
+def test_stash_clears_the_buffer() -> None:
+    editor = LineEditor()
+    for ch in "abc":
+        editor.feed(ch)
+    editor.stash()
+    assert editor.line == ""
+    assert editor.cursor == 0
+
+
+def test_restore_puts_back_the_stashed_line_and_cursor() -> None:
+    editor = LineEditor()
+    for ch in "abc":
+        editor.feed(ch)
+    editor.feed("\x1b[D")  # cursor at 2
+    snapshot = editor.stash()
+    editor.restore(snapshot)
+    assert editor.line == "abc"
+    assert editor.cursor == 2
+
+
+def test_restore_echo_redraws_line_and_repositions_trailing_cursor() -> None:
+    editor = LineEditor()
+    for ch in "abc":
+        editor.feed(ch)
+    editor.feed("\x1b[D")  # cursor at 2, one char ("c") trails
+    snapshot = editor.stash()
+    echo = editor.restore(snapshot)
+    assert echo == "abc" + "\b"
+
+
+def test_restore_echo_at_end_of_line_has_no_trailing_backspaces() -> None:
+    editor = LineEditor()
+    for ch in "abc":
+        editor.feed(ch)
+    snapshot = editor.stash()
+    echo = editor.restore(snapshot)
+    assert echo == "abc"
+
+
+def test_restore_defaults_to_empty_line_without_a_prior_stash() -> None:
+    editor = LineEditor()
+    echo = editor.restore(LineEditorSnapshot(line="", cursor=0))
+    assert echo == ""
+    assert editor.line == ""
+
+
+def test_restore_rejects_cursor_outside_line_bounds() -> None:
+    editor = LineEditor()
+    with pytest.raises(ValueError, match="cursor"):
+        editor.restore(LineEditorSnapshot(line="ab", cursor=5))

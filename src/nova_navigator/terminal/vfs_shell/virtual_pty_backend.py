@@ -7,23 +7,32 @@ import shlex
 from typing import Any
 
 from nova_navigator.terminal.pty_backend import PtyBackend
-from nova_navigator.terminal.shell_driver import ShellDriver
+from nova_navigator.terminal.shell_driver import RESTORE_SEQUENCE, STASH_SEQUENCE, ShellDriver
 from nova_navigator.terminal.vfs_shell.completer import TabCompleter
 from nova_navigator.terminal.vfs_shell.interpreter import VfsShellInterpreter
-from nova_navigator.terminal.vfs_shell.line_editor import LineEditor, LineEditorEvent
+from nova_navigator.terminal.vfs_shell.line_editor import LineEditor, LineEditorEvent, LineEditorSnapshot
 from nova_navigator.vfs.filesystem import Filesystem
 from nova_navigator.vfs.vpath import VPath
+
+_EDITOR_REQUEST_SEQUENCES: tuple[bytes, ...] = (STASH_SEQUENCE, RESTORE_SEQUENCE)
+_EDITOR_REQUEST_MAX_LEN = max(len(sequence) for sequence in _EDITOR_REQUEST_SEQUENCES)
 
 
 class VfsShellDriver(ShellDriver):
     """Shell driver for the VFS virtual backend.
 
     No init code is injected — the virtual shell handles commands directly
-    and does not need shell hooks.  Uses :mod:`shlex` for safe quoting.
+    and does not need shell hooks.  Hidden directory navigation stashes and
+    restores the line editor state directly (``supports_editor_protocol``)
+    instead of injecting Ctrl+U/Ctrl+Y bytes.  Uses :mod:`shlex` for safe quoting.
     """
 
     def __init__(self) -> None:
-        super().__init__(line_editing=False)
+        super().__init__(line_editing=True)
+
+    @property
+    def supports_editor_protocol(self) -> bool:
+        return True
 
     def init_code(self) -> str:
         return ""
@@ -61,6 +70,8 @@ class VirtualPtyBackend(PtyBackend):
         self._tab_cursor_pos: int = 0
         self._running: bool = False
         self._command_task: asyncio.Task[Any] | None = None
+        self._stashed_snapshot: LineEditorSnapshot | None = None
+        self._pending_request_bytes: bytes = b""
 
     # ------------------------------------------------------------------
     # PtyBackend ABC
@@ -109,15 +120,65 @@ class VirtualPtyBackend(PtyBackend):
             alias_store=interpreter.aliases,
         )
         self._running = True
+        self._stashed_snapshot = None
+        self._pending_request_bytes = b""
         # If attach_readers() was already called, post the initial prompt now.
         if self._loop is not None and self._recv_queue is not None:
             self._post_initial_prompt()
         return None
 
     def write(self, data: bytes) -> None:
-        """Feed raw bytes from the terminal into the virtual shell."""
+        """Feed raw bytes from the terminal into the virtual shell.
+
+        Private stash/restore request sequences (see ``supports_editor_protocol``)
+        are intercepted here rather than fed to the line editor character by character.
+        """
         if not self._running or self._line_editor is None or self._interpreter is None:
             return
+
+        chunk = self._pending_request_bytes + data
+        self._pending_request_bytes = b""
+        ordinary = bytearray()
+        i = 0
+        while i < len(chunk):
+            if chunk.startswith(STASH_SEQUENCE, i):
+                if ordinary:
+                    if self._feed_ordinary(bytes(ordinary)):
+                        return
+                    ordinary.clear()
+                self._stashed_snapshot = self._line_editor.stash()
+                i += len(STASH_SEQUENCE)
+                continue
+            if chunk.startswith(RESTORE_SEQUENCE, i):
+                if ordinary:
+                    if self._feed_ordinary(bytes(ordinary)):
+                        return
+                    ordinary.clear()
+                snapshot = self._stashed_snapshot or LineEditorSnapshot(line="", cursor=0)
+                self._stashed_snapshot = None
+                echo = self._line_editor.restore(snapshot)
+                if echo:
+                    self._post_stdout(echo)
+                i += len(RESTORE_SEQUENCE)
+                continue
+            tail = chunk[i:]
+            if len(tail) < _EDITOR_REQUEST_MAX_LEN and any(sequence.startswith(tail) for sequence in _EDITOR_REQUEST_SEQUENCES):
+                self._pending_request_bytes = tail
+                break
+            ordinary.append(chunk[i])
+            i += 1
+        if ordinary:
+            self._feed_ordinary(bytes(ordinary))
+
+    def _feed_ordinary(self, data: bytes) -> bool:
+        """Feed non-request bytes through the line editor.
+
+        Returns:
+            True if a line-editor event stopped processing early, mirroring
+            the point at which the caller must stop draining the chunk.
+        """
+        assert self._line_editor is not None
+        assert self._interpreter is not None
 
         text = data.decode("utf-8", errors="replace")
         for char in text:
@@ -128,7 +189,7 @@ class VirtualPtyBackend(PtyBackend):
 
             if event == LineEditorEvent.TAB:
                 self._schedule_tab()
-                return
+                return True
 
             # Any non-tab input clears the tab cycling state
             if self._tab_candidates:
@@ -139,7 +200,7 @@ class VirtualPtyBackend(PtyBackend):
                 self._line_editor.add_to_history(line)
                 self._line_editor.reset()
                 self._schedule_command(line)
-                return
+                return True
 
             if event == LineEditorEvent.INTERRUPT:
                 if self._command_task is not None and not self._command_task.done():
@@ -149,11 +210,13 @@ class VirtualPtyBackend(PtyBackend):
                     self._post_stdout("\r\n")
                     self._line_editor.reset()
                     self._post_stdout(self._interpreter.prompt)
-                return
+                return True
 
             if event == LineEditorEvent.EOF:
                 self._post_message(["disconnect", 0])
-                return
+                return True
+
+        return False
 
     def resize(self, rows: int, cols: int) -> None:
         self._rows = rows

@@ -25,6 +25,11 @@ _SAFE_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012
 
 _LINE_CONTINUATION_LIMIT = 250
 
+# Private, unassigned CSI function-key sequences used to request an atomic
+# line-editor stash/restore from drivers with supports_editor_protocol.
+STASH_SEQUENCE = b"\x1b[98~"
+RESTORE_SEQUENCE = b"\x1b[97~"
+
 
 def _ansi_c_quote(arg: str) -> str:
     r"""Quote *arg* using ANSI-C ``$'...'`` syntax with octal escapes.
@@ -72,6 +77,16 @@ class ShellDriver(ABC):
         typed text is killed before the internal ``cd`` and yanked back after it.
         """
         return self._line_editing
+
+    @property
+    def supports_editor_protocol(self) -> bool:
+        """True if hidden navigation can stash/restore the line editor atomically.
+
+        Only the virtual VFS shell driver supports this: it owns the line
+        editor directly, so it can swap its state in one step instead of
+        injecting Ctrl+E/Ctrl+U/Ctrl+Y bytes as real shells require.
+        """
+        return False
 
     def _hook_body(self) -> str:
         """Return the core of the precmd hook function body.
