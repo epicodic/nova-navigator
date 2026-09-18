@@ -166,55 +166,20 @@ async def test_process_chunk_ignores_unknown_osc_codes() -> None:
     assert any("normal text" in str(m[1]) for m in stdouts)
 
 
-@pytest.fixture
-def backend() -> LocalPtyBackend:
-    return LocalPtyBackend()
-
-
-def test_process_chunk_posts_stdout_before_trailing_osc(backend: LocalPtyBackend) -> None:
-    """Stdout that precedes OSC 133;B in the same chunk must arrive before prompt_ready."""
-    loop = asyncio.new_event_loop()
+@pytest.mark.asyncio
+async def test_osc_133_is_stripped_and_posts_no_message() -> None:
+    """OSC 133 sequences are removed from stdout and do not produce a queue message."""
+    backend = LocalPtyBackend()
+    loop = asyncio.get_running_loop()
     queue: asyncio.Queue[list[object]] = asyncio.Queue()
-    backend._process_chunk(b"prompt$ \033]133;B\007", loop, queue)
-    loop.run_until_complete(asyncio.sleep(0))
 
-    messages = []
+    backend._process_chunk(b"before\x1b]133;B\x07after", loop, queue)
+    await asyncio.sleep(0)
+
+    messages: list[list[object]] = []
     while not queue.empty():
         messages.append(queue.get_nowait())
-
-    # stdout must come before prompt_ready
-    stdout_idx = next(i for i, m in enumerate(messages) if m[0] == "stdout")
-    prompt_idx = next(i for i, m in enumerate(messages) if m[0] == "prompt_ready")
-    assert stdout_idx < prompt_idx
-
-
-def test_process_chunk_dispatches_osc133b_as_prompt_ready(backend: LocalPtyBackend) -> None:
-    """OSC 133;B must post ["prompt_ready"] to the queue."""
-    loop = asyncio.new_event_loop()
-    queue: asyncio.Queue[list[object]] = asyncio.Queue()
-    backend._process_chunk(b"\033]133;B\007", loop, queue)
-    loop.run_until_complete(asyncio.sleep(0))
-
-    messages = []
-    while not queue.empty():
-        messages.append(queue.get_nowait())
-
-    assert ["prompt_ready"] in messages
-
-
-def test_process_chunk_discards_unknown_osc133_subtypes(backend: LocalPtyBackend) -> None:
-    """OSC 133;A and OSC 133;D should be silently ignored (not crash)."""
-    loop = asyncio.new_event_loop()
-    queue: asyncio.Queue[list[object]] = asyncio.Queue()
-    backend._process_chunk(b"\033]133;A\007\033]133;D\007", loop, queue)
-    loop.run_until_complete(asyncio.sleep(0))
-
-    messages = []
-    while not queue.empty():
-        messages.append(queue.get_nowait())
-
-    # No prompt_ready for unknown subtypes
-    assert ["prompt_ready"] not in messages
+    assert messages == [["stdout", "before"], ["stdout", "after"]]
 
 
 def test_resume_on_dead_process_does_not_raise() -> None:

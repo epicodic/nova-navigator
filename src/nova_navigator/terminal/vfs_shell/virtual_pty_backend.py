@@ -23,7 +23,7 @@ class VfsShellDriver(ShellDriver):
     """
 
     def __init__(self) -> None:
-        super().__init__(prompt_ready=False)
+        super().__init__(line_editing=False)
 
     def init_code(self) -> str:
         return ""

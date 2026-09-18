@@ -2,7 +2,7 @@
 
 This module isolates all shell-language knowledge from the Terminal widget.
 Each concrete ShellDriver knows how to:
-- Install a precmd hook that emits an OSC 7 CWD sequence and optionally stops the shell.
+- Install a precmd hook that emits an OSC 7 CWD sequence.
 - Quote arbitrary strings for safe shell interpolation.
 
 The Terminal widget delegates to a ShellDriver for all shell-specific operations,
@@ -61,13 +61,17 @@ def _posix_octal_escape(arg: str) -> str:
 class ShellDriver(ABC):
     """Abstract base class for shell-specific terminal integration."""
 
-    def __init__(self, *, prompt_ready: bool) -> None:
-        self._prompt_ready = prompt_ready
+    def __init__(self, *, line_editing: bool) -> None:
+        self._line_editing = line_editing
 
     @property
-    def supports_prompt_ready(self) -> bool:
-        """True if init_code() installs an OSC 133;B prompt-end hook."""
-        return self._prompt_ready
+    def supports_line_editing(self) -> bool:
+        """True if the shell has an interactive line editor with emacs-style kill and yank.
+
+        Drivers with line editing take part in hidden directory navigation:
+        typed text is killed before the internal ``cd`` and yanked back after it.
+        """
+        return self._line_editing
 
     def _hook_body(self) -> str:
         """Return the core of the precmd hook function body.
@@ -102,11 +106,10 @@ class ZshDriver(ShellDriver):
     """Shell driver for zsh."""
 
     def __init__(self) -> None:
-        super().__init__(prompt_ready=True)
+        super().__init__(line_editing=True)
 
     def init_code(self) -> str:
-        zle_hook = " _nn_zle_init() { printf '\\033]133;B\\007' >/dev/tty }; add-zle-hook-widget -Uz zle-line-init _nn_zle_init"
-        return f" setopt HIST_IGNORE_SPACE; _nn_precmd() {{ {self._hook_body()} }}; precmd_functions+=(_nn_precmd);{zle_hook}\n"
+        return f" setopt HIST_IGNORE_SPACE; _nn_precmd() {{ {self._hook_body()} }}; precmd_functions+=(_nn_precmd)\n"
 
     def quote(self, arg: str) -> str:
         return _ansi_c_quote(arg)
@@ -116,15 +119,10 @@ class BashDriver(ShellDriver):
     """Shell driver for bash."""
 
     def __init__(self) -> None:
-        super().__init__(prompt_ready=True)
+        super().__init__(line_editing=True)
 
     def init_code(self) -> str:
-        return (
-            ' HISTCONTROL="${HISTCONTROL:+${HISTCONTROL}:}ignorespace";'
-            f" _nn_precmd() {{ {self._hook_body()}; }};"
-            " PROMPT_COMMAND=${PROMPT_COMMAND:+${PROMPT_COMMAND}$'\\n'}_nn_precmd;"
-            " PS1=\"${PS1}\"$'\\[\\033]133;B\\007\\]'\n"
-        )
+        return f" HISTCONTROL=\"${{HISTCONTROL:+${{HISTCONTROL}}:}}ignorespace\"; _nn_precmd() {{ {self._hook_body()}; }}; PROMPT_COMMAND=${{PROMPT_COMMAND:+${{PROMPT_COMMAND}}$'\\n'}}_nn_precmd\n"
 
     def quote(self, arg: str) -> str:
         return _ansi_c_quote(arg)
@@ -139,7 +137,7 @@ class FallbackDriver(ShellDriver):
     """
 
     def __init__(self) -> None:
-        super().__init__(prompt_ready=False)
+        super().__init__(line_editing=False)
 
     def init_code(self) -> str:
         return f" _nn_precmd() {{ {self._hook_body()} >/dev/tty; }}; PS1='$(_nn_precmd)'\"$PS1\"\n"

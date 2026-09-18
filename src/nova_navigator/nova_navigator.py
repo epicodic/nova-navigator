@@ -362,8 +362,9 @@ class MainScreen(ActionsSupport, Screen[None]):
         await self._terminal_pool.active_terminal.on_paste(event)
         event.stop()
 
-    def _on_directory_browser_focus(self, event: DirectoryBrowser.Focus) -> None:
+    async def _on_directory_browser_focus(self, event: DirectoryBrowser.Focus) -> None:
         self._last_active_panel = event.browser
+        await self._sync_terminal_to_active_panel()
 
     async def _handle_key(self, event: events.Key) -> bool:
         if self._terminal_mode == self._TerminalMode.MAXIMIZED:
@@ -382,7 +383,7 @@ class MainScreen(ActionsSupport, Screen[None]):
                 return True
 
             case "enter":
-                if self._terminal_mode != self._TerminalMode.MINIMIZED and self._terminal_pool.active_terminal.has_input():
+                if self._terminal_pool.active_terminal.has_input():
                     await self._terminal_pool.active_terminal.on_key(event)
                     return True
 
@@ -428,7 +429,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         else:
             self._left_panel.focus()
             self._last_active_panel = self._left_panel
-        self._switch_terminal(self._last_active_panel.path)
+        await self._sync_terminal_to_active_panel()
 
     def action_toggle_maximized_terminal(self) -> None:
         if self._terminal_mode == self._TerminalMode.MAXIMIZED:
@@ -459,9 +460,20 @@ class MainScreen(ActionsSupport, Screen[None]):
             case self._TerminalMode.MAXIMIZED:
                 t.styles.height = self.size.height - 2
 
-    def _switch_terminal(self, path: VPath) -> None:
+    async def _sync_terminal_to_active_panel(self) -> None:
+        """Point the active terminal at the active panel's directory.
+
+        The target is read from the active panel at call time, never passed in,
+        so a delayed caller (a ``@work`` task, a late event) can never issue a
+        stale target for a panel that is no longer active.
+        """
+        panel = self.active_panel()
+        path = panel.path
+        await self._ensure_terminal_for(path)
         self._terminal_pool.switch_to(path.filesystem)
-        self._terminal_pool.active_terminal.request_cd(path.path)
+        terminal = self._terminal_pool.active_terminal
+        terminal.owner = panel
+        terminal.request_cd(path.path)
 
     async def _on_directory_browser_path_selected(self, event: DirectoryBrowser.PathSelected) -> None:
         vpath = event.path
@@ -470,8 +482,7 @@ class MainScreen(ActionsSupport, Screen[None]):
 
     @work
     async def _on_directory_browser_path_changed(self, event: DirectoryBrowser.PathChanged) -> None:
-        await self._ensure_terminal_for(event.path)
-        self._switch_terminal(event.path)
+        await self._sync_terminal_to_active_panel()
         if self._sync_state is not None:
             self._mirror_sync(event.browser, event.path)
 
@@ -534,12 +545,11 @@ class MainScreen(ActionsSupport, Screen[None]):
         self._update_actions(event.path)
 
     def _on_terminal_path_changed(self, event: Terminal.PathChanged) -> None:
-        if not event.user_initiated:
-            return
         fs = self._terminal_pool.filesystem_for(event.terminal_widget)
         if fs is None:
             return
-        self.active_panel().set_path(VPath(event.cwd, fs))
+        panel = event.owner if isinstance(event.owner, DirectoryBrowser) else self.active_panel()
+        panel.set_path(VPath(event.cwd, fs))
 
     def _action_toggle_sync_browsing(self) -> None:
         a = self._act("view.sync_browsing")
@@ -580,8 +590,6 @@ class MainScreen(ActionsSupport, Screen[None]):
         stat = target.stat_or_none
         if stat is None or not stat.is_directory:
             source.set_path(prev_path, record_history=False)
-            if isinstance(prev_path.filesystem, LocalFilesystem):
-                self._terminal_pool.active_terminal.request_cd(prev_path.path)
             msg = f"Mirror path does not exist: {target_path}"
             self.app.call_after_refresh(self.app.notify, msg, title="Synchronized Browsing", severity="warning")
             return

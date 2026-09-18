@@ -246,7 +246,7 @@ async def test_sync_browsing_terminal_nav_rolls_back_on_missing_mirror(app_ctx: 
             Terminal.PathChanged(
                 terminal,
                 PurePosixPath(app_ctx.src_dir / "sub"),
-                user_initiated=True,
+                owner=None,
             )
         )
         await poll_until(
