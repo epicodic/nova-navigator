@@ -18,6 +18,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.geometry import Size
 
+import nova_navigator.terminal.terminal as terminal_module
 from nova_navigator.terminal.pty_backend import PtyBackend
 from nova_navigator.terminal.shell_driver import FallbackDriver, ZshDriver
 from nova_navigator.terminal.terminal import (
@@ -1406,193 +1407,188 @@ async def test_pre_cmd_overwrites_prompt_in_place_when_draining_ends() -> None:
 
 
 # ---------------------------------------------------------------------------
-# has_input
+# has_input: no user byte since precmd → False; else compare with the snapshot
 # ---------------------------------------------------------------------------
 
 
-def test_has_input_returns_false_when_cursor_at_prompt_position(terminal_instance: Terminal) -> None:
-    terminal_instance._prompt_cursor_x = 5
-    terminal_instance._screen.cursor.x = 5
+def _feed_and_snapshot(terminal: Terminal, text: str) -> None:
+    """Feed *text* to pyte and refresh the prompt snapshot as recv() would."""
+    terminal._stream.feed(text)
+    terminal._refresh_prompt_snapshot()
+
+
+def test_has_input_false_on_fresh_terminal(terminal_instance: Terminal) -> None:
     assert terminal_instance.has_input() is False
 
 
-def test_has_input_returns_true_when_cursor_past_prompt_position() -> None:
-    # Requires a driver with supports_prompt_ready=True (ZshDriver) to track prompts.
+def test_has_input_false_before_any_user_byte_even_after_multi_chunk_prompt() -> None:
     terminal = Terminal("/bin/zsh", driver=ZshDriver())
-    terminal._prompt_cursor_x = 5
-    terminal._prompt_ready_received = True
-    terminal._screen.cursor.x = 8
+    _feed_and_snapshot(terminal, "user@host")
+    _feed_and_snapshot(terminal, " ~/project")
+    _feed_and_snapshot(terminal, " $ ")
+    assert terminal.has_input() is False
+
+
+def test_has_input_true_when_user_byte_sent_and_no_snapshot() -> None:
+    terminal = Terminal("/bin/zsh", driver=ZshDriver())
+    terminal._note_user_input("l")
     assert terminal.has_input() is True
 
 
-def test_has_input_returns_false_for_fallback_driver_regardless_of_cursor() -> None:
-    # FallbackDriver cannot track prompt position, so has_input() always returns False.
+def test_has_input_true_after_typed_text_echoed() -> None:
+    terminal = Terminal("/bin/zsh", driver=ZshDriver())
+    _feed_and_snapshot(terminal, "$ ")
+    terminal._note_user_input("l")
+    _feed_and_snapshot(terminal, "ls")
+    assert terminal.has_input() is True
+
+
+def test_snapshot_is_frozen_after_first_user_byte() -> None:
+    terminal = Terminal("/bin/zsh", driver=ZshDriver())
+    _feed_and_snapshot(terminal, "$ ")
+    frozen = terminal._prompt_snapshot
+    terminal._note_user_input("l")
+    _feed_and_snapshot(terminal, "ls")
+    assert terminal._prompt_snapshot == frozen
+
+
+def test_has_input_false_after_typing_then_deleting_with_vt100_erase() -> None:
+    terminal = Terminal("/bin/zsh", driver=ZshDriver())
+    _feed_and_snapshot(terminal, "$ ")
+    terminal._note_user_input("l")
+    _feed_and_snapshot(terminal, "ls")
+    assert terminal.has_input() is True
+    _feed_and_snapshot(terminal, "\x08 \x08")
+    _feed_and_snapshot(terminal, "\x08 \x08")
+    assert terminal.has_input() is False
+
+
+def test_has_input_false_after_typing_then_full_line_reprint() -> None:
+    terminal = Terminal("/bin/zsh", driver=ZshDriver())
+    _feed_and_snapshot(terminal, "$ ")
+    terminal._note_user_input("l")
+    _feed_and_snapshot(terminal, "ls")
+    _feed_and_snapshot(terminal, "\r\x1b[K$ ")
+    assert terminal.has_input() is False
+
+
+def test_has_input_true_when_cursor_moved_home_but_text_remains() -> None:
+    terminal = Terminal("/bin/zsh", driver=ZshDriver())
+    _feed_and_snapshot(terminal, "$ ")
+    terminal._note_user_input("l")
+    _feed_and_snapshot(terminal, "ls\x1b[2D")  # cursor back at the prompt end
+    assert terminal._screen.cursor.x == 2
+    assert terminal.has_input() is True
+
+
+def test_has_input_true_when_input_wrapped_to_next_row() -> None:
+    terminal = Terminal("/bin/zsh", driver=ZshDriver())
+    _feed_and_snapshot(terminal, "$ ")
+    terminal._note_user_input("x")
+    _feed_and_snapshot(terminal, "x" * 100)  # wider than 80 columns
+    assert terminal.has_input() is True
+
+
+def test_has_input_ignores_typed_then_deleted_case_for_fallback_driver_too() -> None:
     terminal = Terminal("/bin/sh", driver=FallbackDriver())
-    terminal._prompt_cursor_x = 0
-    terminal._screen.cursor.x = 8  # cursor past start, but driver can't track
-    assert terminal.has_input() is False
-
-
-def test_has_input_returns_false_on_fresh_terminal(terminal_instance: Terminal) -> None:
-    # Both _prompt_cursor_x and screen cursor start at 0
-    assert terminal_instance.has_input() is False
-
-
-def test_has_input_false_at_empty_prompt_when_prompt_ready_never_fired() -> None:
-    """has_input() must return False at an empty prompt even if prompt_ready was never received.
-
-    If zle-line-init is overridden by a third-party plugin (e.g. oh-my-zsh), OSC 133;B is
-    never delivered and _prompt_cursor_x stays at its initial value of 0.  After the shell
-    prints a prompt like '$ ' the pyte cursor moves to x=2, which is greater than 0, so
-    the naive cursor comparison returns True even though there is no user input.
-    """
-    terminal = Terminal("/bin/zsh", driver=ZshDriver())
-    terminal._stream.feed("$ ")  # cursor is now at x=2; prompt_ready was never called
-    assert terminal.has_input() is False
-
-
-def test_prompt_ready_message_sets_cursor_snapshot() -> None:
-    """_handle_prompt_ready() must snapshot the cursor position into _prompt_cursor_x/_prompt_cursor_y."""
-    terminal = Terminal("/bin/zsh", driver=ZshDriver())
-    terminal._stream.feed("$ ")  # moves cursor to x=2
-    terminal._handle_prompt_ready()
-    assert terminal._prompt_cursor_x == terminal._screen.cursor.x
-    assert terminal._prompt_cursor_y == terminal._screen.cursor.y
-
-
-def test_has_input_returns_true_for_ssh_zsh_driver() -> None:
-    """has_input() must work for SSH terminals using ZshDriver (supports_prompt_ready=True)."""
-    terminal = Terminal("/bin/zsh", driver=ZshDriver())
-    terminal._stream.feed("$ ")
-    terminal._handle_prompt_ready()
-    terminal._stream.feed("ls")
-    assert terminal.has_input() is True
-
-
-def test_has_input_false_after_pre_cmd_and_prompt_ready() -> None:
-    """has_input() must return False right after ["prompt_ready"] with no user input."""
-    terminal = Terminal("/bin/zsh", driver=ZshDriver())
-    terminal._stream.feed("$ ")
-    terminal._handle_prompt_ready()
-    # cursor is exactly at prompt position — no user input yet
+    _feed_and_snapshot(terminal, "$ ")
+    terminal._note_user_input("l")
+    _feed_and_snapshot(terminal, "ls")
+    _feed_and_snapshot(terminal, "\x08 \x08\x08 \x08")
     assert terminal.has_input() is False
 
 
 @pytest.mark.asyncio
-async def test_has_input_true_after_prompt_and_user_input() -> None:
-    """After prompt + user input, cursor moves right and has_input() returns True."""
+async def test_on_key_marks_user_input() -> None:
     backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    terminal = Terminal("/bin/zsh", backend=backend, driver=ZshDriver())
     app = TerminalTestApp(terminal)
     async with app.run_test() as pilot:
         await pilot.pause()
-        recv_q = await _start_recv_only(terminal)
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
         try:
-            await recv_q.put(["pre_cmd", "/home/user\n"])
-            await recv_q.put(["stdout", "$ "])  # prompt
-            await pilot.pause(delay=0.15)
-            await recv_q.put(["prompt_ready"])  # snapshot prompt cursor position
-            await pilot.pause(delay=0.05)
-            await recv_q.put(["stdout", "ls"])  # user typed "ls"
-            await pilot.pause(delay=0.15)
-            assert terminal.has_input() is True
+            await terminal.on_key(events.Key("l", character="l"))
+            assert terminal._input_since_precmd is True
         finally:
-            await _stop_recv_only(terminal)
+            terminal._started = False
 
 
 @pytest.mark.asyncio
-async def test_has_input_false_after_typing_and_deleting_with_vt100_erase() -> None:
-    """has_input() must return False after user types text then deletes it with VT100 backspace echo.
-
-    The standard VT100 erase sequence for a deleted character is \\b \\b (cursor-left, space,
-    cursor-left).  After deleting all typed characters the cursor must be back at the
-    prompt position, and has_input() must return False.
-    """
+async def test_paste_marks_user_input() -> None:
     backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    terminal = Terminal("/bin/zsh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
+        try:
+            await terminal._paste_text("ls")
+            assert terminal._input_since_precmd is True
+        finally:
+            terminal._started = False
+
+
+@pytest.mark.asyncio
+async def test_send_marks_user_input() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/zsh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._started = True
+        try:
+            await terminal.send("file.txt")
+            assert terminal._input_since_precmd is True
+        finally:
+            terminal._started = False
+
+
+@pytest.mark.asyncio
+async def test_pre_cmd_resets_input_flag_and_snapshot() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/zsh", backend=backend, driver=ZshDriver())
     app = TerminalTestApp(terminal)
     async with app.run_test() as pilot:
         await pilot.pause()
         recv_q = await _start_recv_only(terminal)
         try:
+            terminal._note_user_input("l")
+            terminal._prompt_snapshot = (0, 2, "$ ")
             await recv_q.put(["pre_cmd", "/home/user\n"])
-            await recv_q.put(["stdout", "$ "])  # prompt; cursor now at x=2
-            await pilot.pause(delay=0.05)
-            await recv_q.put(["prompt_ready"])  # snapshot: _prompt_cursor_x=2
-            await pilot.pause(delay=0.05)
-            await recv_q.put(["stdout", "ls"])  # user typed "ls"; cursor now at x=4
-            await pilot.pause(delay=0.05)
-            assert terminal.has_input() is True  # sanity check
-            # VT100 erase for 's': cursor-left, overwrite with space, cursor-left again
-            await recv_q.put(["stdout", "\x08 \x08"])  # delete 's'; cursor at x=3
-            await pilot.pause(delay=0.05)
-            # VT100 erase for 'l'
-            await recv_q.put(["stdout", "\x08 \x08"])  # delete 'l'; cursor at x=2
-            await pilot.pause(delay=0.15)
+            await pilot.pause(delay=0.1)
+            assert terminal._input_since_precmd is False
+            assert terminal._prompt_snapshot is None
             assert terminal.has_input() is False
         finally:
             await _stop_recv_only(terminal)
 
 
 @pytest.mark.asyncio
-async def test_has_input_false_after_typing_and_deleting_with_csi_sequences() -> None:
-    """has_input() must return False after deleting with CSI cursor-left + erase-to-EOL.
-
-    Some shells/prompts use ESC[D (cursor left) + ESC[K (erase to EOL) instead of the
-    classic \\b SP \\b sequence.
-    """
+async def test_recv_refreshes_snapshot_on_each_stdout_until_user_byte() -> None:
     backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    terminal = Terminal("/bin/zsh", backend=backend, driver=ZshDriver())
     app = TerminalTestApp(terminal)
     async with app.run_test() as pilot:
         await pilot.pause()
         recv_q = await _start_recv_only(terminal)
         try:
             await recv_q.put(["pre_cmd", "/home/user\n"])
-            await recv_q.put(["stdout", "$ "])  # prompt; cursor at x=2
-            await pilot.pause(delay=0.05)
-            await recv_q.put(["prompt_ready"])
-            await pilot.pause(delay=0.05)
-            await recv_q.put(["stdout", "ls"])  # cursor at x=4
-            await pilot.pause(delay=0.05)
-            assert terminal.has_input() is True
-            # Delete both chars with ESC[D + ESC[K (cursor-left then erase-to-EOL)
-            await recv_q.put(["stdout", "\x1b[D\x1b[K"])  # delete 's'; cursor at x=3
-            await pilot.pause(delay=0.05)
-            await recv_q.put(["stdout", "\x1b[D\x1b[K"])  # delete 'l'; cursor at x=2
-            await pilot.pause(delay=0.15)
-            assert terminal.has_input() is False
-        finally:
-            await _stop_recv_only(terminal)
-
-
-@pytest.mark.asyncio
-async def test_has_input_false_after_full_line_reprint() -> None:
-    """has_input() must return False when the shell reprints the full line after deletion.
-
-    Some shells (zsh with certain settings) redraw the entire line by sending \\r, then
-    reprinting the prompt and any remaining input.  After deleting all input the reprint
-    leaves only the prompt, and has_input() must return False.
-    """
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = TerminalTestApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        recv_q = await _start_recv_only(terminal)
-        try:
-            await recv_q.put(["pre_cmd", "/home/user\n"])
-            await recv_q.put(["stdout", "$ "])
-            await pilot.pause(delay=0.05)
-            await recv_q.put(["prompt_ready"])
-            await pilot.pause(delay=0.05)
-            await recv_q.put(["stdout", "ls"])  # cursor at x=4
-            await pilot.pause(delay=0.05)
-            assert terminal.has_input() is True
-            # Full line reprint: CR + erase-to-EOL + prompt only (input deleted)
-            await recv_q.put(["stdout", "\r\x1b[K$ "])  # cursor at x=2
-            await pilot.pause(delay=0.15)
-            assert terminal.has_input() is False
+            await recv_q.put(["stdout", "user"])
+            await pilot.pause(delay=0.1)
+            first = terminal._prompt_snapshot
+            await recv_q.put(["stdout", " $ "])
+            await pilot.pause(delay=0.1)
+            second = terminal._prompt_snapshot
+            assert first is not None
+            assert second is not None
+            assert second[1] == 7  # cursor after "user $ "
+            assert second != first
+            terminal._note_user_input("l")
+            await recv_q.put(["stdout", "ls"])
+            await pilot.pause(delay=0.1)
+            assert terminal._prompt_snapshot == second
         finally:
             await _stop_recv_only(terminal)
 
@@ -1643,160 +1639,6 @@ async def test_set_terminal_directory_returns_path_when_cwd_none_and_fallback() 
 
 
 @pytest.mark.asyncio
-async def test_set_terminal_directory_writes_cd_to_backend_and_sets_draining() -> None:
-    """set_terminal_directory writes cd command to backend and sets _draining."""
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = TerminalTestApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        terminal._started = True
-
-        nav_task = asyncio.create_task(terminal.set_terminal_directory(PurePath("/tmp/test")))  # noqa: S108
-        await asyncio.sleep(0)  # let the task start and write the cd
-
-        assert terminal._draining is True
-        # Only cd command written (no KILL_LINE since has_input() is False)
-        cd_writes = [w for w in backend.writes if b"/tmp/test" in w]
-        assert len(cd_writes) == 1
-        assert cd_writes[0].endswith(b"\n")
-
-        nav_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await nav_task
-
-
-@pytest.mark.asyncio
-async def test_set_terminal_directory_no_pending_yank_when_no_input() -> None:
-    """If the cursor is at the prompt position, no yank should be scheduled."""
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = TerminalTestApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        terminal._started = True
-        terminal._prompt_cursor_x = 0
-        terminal._screen.cursor.x = 0  # no user input
-
-        nav_task = asyncio.create_task(terminal.set_terminal_directory(PurePath("/tmp")))  # noqa: S108
-        await asyncio.sleep(0)
-
-        assert terminal._pending_yank is False
-        # No KILL_LINE written
-        kill_line_writes = [w for w in backend.writes if b"\x15" in w]
-        assert len(kill_line_writes) == 0
-
-        nav_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await nav_task
-
-
-@pytest.mark.asyncio
-async def test_set_terminal_directory_sets_pending_yank_when_input_present() -> None:
-    """If the user has typed text, _pending_yank must be set so it is restored later."""
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = TerminalTestApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        terminal._started = True
-        terminal._prompt_cursor_x = 2
-        terminal._prompt_ready_received = True
-        terminal._screen.cursor.x = 6  # user has typed 4 chars
-
-        nav_task = asyncio.create_task(terminal.set_terminal_directory(PurePath("/tmp")))  # noqa: S108
-        await asyncio.sleep(0)
-
-        assert terminal._pending_yank is True
-        # KILL_LINE should have been written to backend
-        kill_line_writes = [w for w in backend.writes if b"\x15" in w]
-        assert len(kill_line_writes) == 1
-
-        nav_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await nav_task
-
-
-# ---------------------------------------------------------------------------
-# Yank mechanism: pre_cmd triggers yank when _pending_yank is True
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_yank_and_end_of_line_sent_on_pre_cmd_when_pending() -> None:
-    """When _pending_yank is True and _draining is True, the pre_cmd handler
-    must write YANK + END_OF_LINE to the backend, resume, and clear state."""
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = TerminalTestApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        recv_q = await _start_recv_only(terminal)
-        try:
-            terminal._draining = True
-            terminal._pending_yank = True
-
-            await recv_q.put(["pre_cmd", "/some/path\n"])
-            await pilot.pause(delay=0.15)
-
-            assert terminal._pending_yank is False
-            assert terminal._draining is False
-            # Backend should have received YANK + END_OF_LINE
-            yank_writes = [w for w in backend.writes if b"\x19" in w]
-            assert len(yank_writes) == 1
-            assert b"\x05" in yank_writes[0]  # END_OF_LINE
-        finally:
-            await _stop_recv_only(terminal)
-
-
-@pytest.mark.asyncio
-async def test_yank_not_sent_when_pending_yank_is_false() -> None:
-    """When _pending_yank is False, no yank must be written after pre_cmd."""
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = TerminalTestApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        recv_q = await _start_recv_only(terminal)
-        try:
-            terminal._draining = True
-            terminal._pending_yank = False
-
-            await recv_q.put(["pre_cmd", "/some/path\n"])
-            await pilot.pause(delay=0.15)
-
-            # No yank should have been written
-            yank_writes = [w for w in backend.writes if b"\x19" in w]
-            assert len(yank_writes) == 0
-        finally:
-            await _stop_recv_only(terminal)
-
-
-@pytest.mark.asyncio
-async def test_prompt_cursor_snapshotted_after_pre_cmd_on_first_stdout() -> None:
-    """_prompt_cursor_x/_prompt_cursor_y must be set on the first stdout after pre_cmd,
-    not when pre_cmd fires itself."""
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = TerminalTestApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        recv_q = await _start_recv_only(terminal)
-        try:
-            await recv_q.put(["pre_cmd", "/home/user\n"])
-            # pre_cmd fired but no stdout yet — snapshot must not have moved.
-            await asyncio.sleep(0.005)
-            assert terminal._prompt_cursor_x == 0
-
-            # First stdout after precmd: snapshot is taken automatically.
-            await recv_q.put(["stdout", "$ "])
-            await pilot.pause(delay=0.15)
-            assert terminal._prompt_cursor_x == terminal._screen.cursor.x
-            assert terminal._prompt_cursor_y == terminal._screen.cursor.y
-        finally:
-            await _stop_recv_only(terminal)
-
-
 # ---------------------------------------------------------------------------
 # Race condition tests (adapted for SIGSTOP synchronisation model)
 #
@@ -1842,67 +1684,8 @@ async def test_race_a_pre_cmd_during_draining_clears() -> None:
             await terminal.recv_task_t
 
 
-@pytest.mark.asyncio
-async def test_race_c_two_navigations_first_pre_cmd_keeps_draining() -> None:
-    """Two rapid set_terminal_directory calls buffer both cd commands.
-
-    When the first pre_cmd arrives, _nav_pending decrements from 2 to 1.
-    Draining stays on because a second navigation is still in flight.
-    When the second pre_cmd arrives, _nav_pending reaches 0 and draining clears.
-    """
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = TerminalTestApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        recv_q = await _start_recv_only(terminal)
-        terminal._started = True
-        try:
-            terminal._prompt_cursor_x = 0
-
-            # Two rapid navigations — both cd commands are written to the backend.
-            nav_task_a = asyncio.create_task(
-                terminal.set_terminal_directory(PurePath("/tmp/A")),  # noqa: S108
-            )
-            await asyncio.sleep(0)
-            nav_task_b = asyncio.create_task(
-                terminal.set_terminal_directory(PurePath("/tmp/B")),  # noqa: S108
-            )
-            await asyncio.sleep(0)
-            assert terminal._draining is True
-            assert terminal._nav_pending == 2
-
-            # First pre_cmd: nav_pending 2→1, draining stays True.
-            await recv_q.put(["pre_cmd", "/home/user/A\n"])
-            await pilot.pause(delay=0.05)
-            assert terminal._draining is True  # still draining — second nav pending
-            assert terminal._nav_pending == 1
-
-            # Second pre_cmd: nav_pending 1→0, draining clears.
-            await recv_q.put(["pre_cmd", "/home/user/B\n"])
-            await pilot.pause(delay=0.05)
-            assert terminal._draining is False
-            assert terminal._nav_pending == 0
-
-            # Prompt stdout then prompt_ready snapshots cursor.
-            await recv_q.put(["stdout", "\r\n/home/user/projects $ "])
-            await pilot.pause(delay=0.15)
-            await recv_q.put(["prompt_ready"])
-            await asyncio.sleep(0.005)
-            assert terminal._prompt_cursor_x == terminal._screen.cursor.x
-
-            # Cursor is at the end of the prompt; user has not typed anything.
-            assert terminal.has_input() is False
-
-            # The nav future should be resolved now.
-            assert nav_task_b.done()
-            assert nav_task_a.done()
-        finally:
-            await _stop_recv_only(terminal)
-
-
 # ---------------------------------------------------------------------------
-# request_cd / PathChanged: user_initiated flag & race condition tests
+# request_cd / PathChanged: owner propagation & race condition tests
 # ---------------------------------------------------------------------------
 
 
@@ -1915,20 +1698,6 @@ async def test_request_cd_does_nothing_when_not_started() -> None:
         await pilot.pause()
         assert terminal._started is False
         terminal.request_cd(PurePath("/some/path"))
-        assert len(backend.writes) == 0
-
-
-@pytest.mark.asyncio
-async def test_request_cd_skips_when_already_at_current_path() -> None:
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = TerminalTestApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        terminal._started = True
-        terminal._nav_pending = 0
-        terminal._cwd = PurePath("/current/path")
-        terminal.request_cd(PurePath("/current/path"))
         assert len(backend.writes) == 0
 
 
@@ -1946,97 +1715,6 @@ async def test_request_cd_fallback_driver_writes_cd_without_draining() -> None:
         assert terminal._draining is False
 
 
-class PathChangedCapturingApp(TerminalTestApp):
-    def __init__(self, terminal: Terminal) -> None:
-        super().__init__(terminal)
-        self.path_changed_events: list[Terminal.PathChanged] = []
-
-    def on_terminal_path_changed(self, event: Terminal.PathChanged) -> None:
-        self.path_changed_events.append(event)
-
-
-@pytest.mark.asyncio
-async def test_request_cd_path_changed_is_not_user_initiated() -> None:
-    """PathChanged from a programmatic request_cd has user_initiated=False."""
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = PathChangedCapturingApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        recv_q = await _start_recv_only(terminal)
-        try:
-            terminal._started = True
-            terminal.request_cd(PurePath("/tmp/a"))  # noqa: S108
-            assert terminal._nav_pending == 1
-
-            # Simulate precmd acknowledging the cd
-            await recv_q.put(["pre_cmd", "/home/user/a"])
-            await pilot.pause(delay=0.15)
-
-            assert len(app.path_changed_events) == 1
-            assert app.path_changed_events[0].user_initiated is False
-            assert app.path_changed_events[0].cwd == PurePath("/home/user/a")
-        finally:
-            await _stop_recv_only(terminal)
-
-
-@pytest.mark.asyncio
-async def test_user_cd_path_changed_is_user_initiated() -> None:
-    """PathChanged from a user-typed cd (no request_cd) has user_initiated=True."""
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = PathChangedCapturingApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        recv_q = await _start_recv_only(terminal)
-        try:
-            # No request_cd — user typed cd in the terminal
-            assert terminal._nav_pending == 0
-
-            await recv_q.put(["pre_cmd", "/home/user/b"])
-            await pilot.pause(delay=0.15)
-
-            assert len(app.path_changed_events) == 1
-            assert app.path_changed_events[0].user_initiated is True
-            assert app.path_changed_events[0].cwd == PurePath("/home/user/b")
-        finally:
-            await _stop_recv_only(terminal)
-
-
-@pytest.mark.asyncio
-async def test_rapid_request_cd_only_last_fires_path_changed() -> None:
-    """Multiple rapid request_cd calls only produce PathChanged for the final cd."""
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = PathChangedCapturingApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        recv_q = await _start_recv_only(terminal)
-        try:
-            terminal._started = True
-            terminal.request_cd(PurePath("/a"))
-            terminal.request_cd(PurePath("/b"))
-            terminal.request_cd(PurePath("/c"))
-            assert terminal._nav_pending == 3
-
-            # First two precmds: intermediate, no PathChanged
-            await recv_q.put(["pre_cmd", "/a"])
-            await pilot.pause(delay=0.15)
-            assert len(app.path_changed_events) == 0
-
-            await recv_q.put(["pre_cmd", "/b"])
-            await pilot.pause(delay=0.15)
-            assert len(app.path_changed_events) == 0
-
-            # Last precmd: PathChanged fires
-            await recv_q.put(["pre_cmd", "/c"])
-            await pilot.pause(delay=0.15)
-            assert len(app.path_changed_events) == 1
-            assert app.path_changed_events[0].cwd == PurePath("/c")
-        finally:
-            await _stop_recv_only(terminal)
-
-
 @pytest.mark.asyncio
 async def test_request_cd_does_not_prepend_nn_panel() -> None:
     """request_cd must not include _NN_PANEL (removed in no-SIGSTOP redesign)."""
@@ -2046,6 +1724,7 @@ async def test_request_cd_does_not_prepend_nn_panel() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         terminal._started = True
+        terminal._at_prompt = True
 
         terminal.request_cd(PurePath("/new/dir"))
         await asyncio.sleep(0)
@@ -2053,26 +1732,6 @@ async def test_request_cd_does_not_prepend_nn_panel() -> None:
         cd_writes = [w for w in backend.writes if b"/new/dir" in w]
         assert len(cd_writes) == 1
         assert b"_NN_PANEL" not in cd_writes[0]
-
-
-@pytest.mark.asyncio
-async def test_request_cd_same_path_short_circuits() -> None:
-    """When path == _cwd, nothing is written to the backend and _nav_pending stays at 0."""
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = TerminalTestApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        terminal._started = True
-        terminal._cwd = PurePath("/current/dir")
-        terminal._nav_pending = 0
-        initial_write_count = len(backend.writes)
-
-        terminal.request_cd(PurePath("/current/dir"))
-        await asyncio.sleep(0)
-
-        assert terminal._nav_pending == 0
-        assert len(backend.writes) == initial_write_count  # nothing written
 
 
 @pytest.mark.asyncio
@@ -2095,7 +1754,7 @@ async def test_path_changed_event_has_no_panel_id() -> None:
             await pilot.pause(delay=0.15)
 
             assert len(received) == 1
-            assert received[0].user_initiated is True
+            assert received[0].owner is None
             assert not hasattr(received[0], "panel_id")
         finally:
             await _stop_recv_only(terminal)
@@ -2251,47 +1910,6 @@ async def test_handle_pre_cmd_updates_cwd_from_plain_path() -> None:
             recv_q.put_nowait(["pre_cmd", "/home/user/work"])
             await pilot.pause(delay=0.05)
             assert terminal._cwd == PurePath("/home/user/work")
-        finally:
-            await _stop_recv_only(terminal)
-
-
-@pytest.mark.asyncio
-async def test_third_party_chpwd_osc7_ignored_when_nn_hooks_active() -> None:
-    """Non-NN OSC 7 (from_nn=False) is ignored by _handle_pre_cmd when NN hooks are active.
-
-    Third-party zsh chpwd hooks (oh-my-zsh, powerlevel10k, etc.) emit OSC 7 without
-    the panel= prefix.  These events must not decrement _nav_pending, update _cwd,
-    or post PathChanged — otherwise rapid panel toggling causes the display to cycle
-    through directories.
-    """
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = PathChangedCapturingApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        recv_q = await _start_recv_only(terminal)
-        try:
-            terminal._started = True
-            terminal.request_cd(PurePath("/target"))
-            assert terminal._nav_pending == 1
-            initial_cwd = terminal._cwd
-
-            # Third-party chpwd fires first (from_nn=False) — must be ignored.
-            await recv_q.put(["pre_cmd", "/target", False])
-            await pilot.pause(delay=0.1)
-
-            assert terminal._nav_pending == 1, "non-NN event must not decrement _nav_pending"
-            assert terminal._cwd == initial_cwd, "non-NN event must not update _cwd"
-            assert len(app.path_changed_events) == 0, "non-NN event must not post PathChanged"
-
-            # NN precmd fires next (from_nn=True) — must be processed normally.
-            await recv_q.put(["pre_cmd", "/target", True])
-            await pilot.pause(delay=0.1)
-
-            assert terminal._nav_pending == 0
-            assert terminal._cwd == PurePath("/target")
-            assert len(app.path_changed_events) == 1
-            assert app.path_changed_events[0].user_initiated is False
         finally:
             await _stop_recv_only(terminal)
 
@@ -2513,3 +2131,484 @@ async def test_on_resize_excludes_scrollbar_gutter_from_ncol_when_scrollback_ena
 
         assert terminal.ncol == terminal.size.width - terminal.scrollbar_size_vertical
         assert terminal.scrollbar_size_vertical > 0
+
+
+# ---------------------------------------------------------------------------
+# Prompt state and command ownership
+# ---------------------------------------------------------------------------
+
+
+def test_at_prompt_false_initially() -> None:
+    terminal = Terminal("/bin/zsh", driver=ZshDriver())
+    assert terminal._at_prompt is False
+
+
+def test_enter_key_leaves_prompt_and_records_owner() -> None:
+    terminal = Terminal("/bin/zsh", driver=ZshDriver())
+    terminal._at_prompt = True
+    owner = object()
+    terminal.owner = owner
+    terminal._note_user_input("\r", submits=True)
+    assert terminal._at_prompt is False
+    assert terminal._command_owner is owner
+
+
+def test_newline_in_pasted_text_leaves_prompt() -> None:
+    terminal = Terminal("/bin/zsh", driver=ZshDriver())
+    terminal._at_prompt = True
+    terminal._note_user_input("echo hi\n")
+    assert terminal._at_prompt is False
+
+
+def test_plain_character_keeps_prompt_state() -> None:
+    terminal = Terminal("/bin/zsh", driver=ZshDriver())
+    terminal._at_prompt = True
+    terminal._note_user_input("l")
+    assert terminal._at_prompt is True
+    assert terminal._command_owner is None
+
+
+class _PathChangedRecorder(TerminalTestApp):
+    """Test app that records every ``Terminal.PathChanged`` it receives."""
+
+    def __init__(self, terminal: Terminal) -> None:
+        super().__init__(terminal)
+        self.received: list[Terminal.PathChanged] = []
+
+    def on_terminal_path_changed(self, event: Terminal.PathChanged) -> None:
+        self.received.append(event)
+
+
+@pytest.mark.asyncio
+async def test_pre_cmd_sets_at_prompt_and_posts_path_changed_with_owner() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/zsh", backend=backend, driver=ZshDriver())
+    app = _PathChangedRecorder(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            owner = object()
+            terminal.owner = owner
+            terminal._note_user_input("cd /x\r", submits=True)
+            await recv_q.put(["pre_cmd", "/x\n"])
+            await pilot.pause(delay=0.1)
+            assert terminal._at_prompt is True
+            assert terminal._command_owner is None
+            assert len(app.received) == 1
+            assert app.received[0].cwd == PurePath("/x")
+            assert app.received[0].owner is owner
+        finally:
+            await _stop_recv_only(terminal)
+
+
+# ---------------------------------------------------------------------------
+# Navigation transaction
+# ---------------------------------------------------------------------------
+
+_KILL = b"\x05\x15"  # Ctrl+E Ctrl+U
+_YANK_BYTES = b"\x19\x05"  # Ctrl+Y Ctrl+E
+
+
+def _cd_writes(backend: FakePtyBackend) -> list[bytes]:
+    return [w for w in backend.writes if w.startswith(b" cd ")]
+
+
+def _expected_cd(path: str) -> bytes:
+    return (" " + ZshDriver().cd_command(path) + "\n").encode()
+
+
+def _new_zsh_terminal() -> tuple[FakePtyBackend, Terminal]:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/zsh", backend=backend, driver=ZshDriver())
+    return backend, terminal
+
+
+def test_request_cd_at_current_cwd_with_nothing_pending_is_noop() -> None:
+    backend, terminal = _new_zsh_terminal()
+    terminal._started = True
+    terminal._at_prompt = True
+    terminal._cwd = PurePath("/here")
+    terminal.request_cd(PurePath("/here"))
+    assert backend.writes == []
+    assert terminal._nav_target is None
+
+
+@pytest.mark.asyncio
+async def test_request_cd_at_prompt_writes_cd_and_drains() -> None:
+    backend, terminal = _new_zsh_terminal()
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._started = True
+        terminal._at_prompt = True
+        terminal.request_cd(PurePath("/opt/target"))
+        assert terminal._nav_busy is True
+        assert terminal._draining is True
+        assert terminal._at_prompt is False
+        assert _cd_writes(backend) == [_expected_cd("/opt/target")]
+        assert _KILL not in backend.writes
+        terminal._cancel_watchdog()
+
+
+@pytest.mark.asyncio
+async def test_request_cd_kills_line_once_when_input_present() -> None:
+    backend, terminal = _new_zsh_terminal()
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._started = True
+        terminal._at_prompt = True
+        terminal._note_user_input("l")
+        terminal.request_cd(PurePath("/a"))
+        assert backend.writes[0] == _KILL
+        assert terminal._nav_stashed is True
+        terminal.request_cd(PurePath("/b"))  # coalesced, no second kill
+        assert backend.writes.count(_KILL) == 1
+        terminal._cancel_watchdog()
+
+
+@pytest.mark.asyncio
+async def test_request_cd_while_busy_stores_newest_target_only() -> None:
+    backend, terminal = _new_zsh_terminal()
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._started = True
+        terminal._at_prompt = True
+        terminal.request_cd(PurePath("/a"))
+        terminal.request_cd(PurePath("/b"))
+        terminal.request_cd(PurePath("/c"))
+        assert _cd_writes(backend) == [_expected_cd("/a")]
+        assert terminal._nav_target == PurePath("/c")
+        terminal._cancel_watchdog()
+
+
+@pytest.mark.asyncio
+async def test_third_party_chpwd_osc7_ignored_during_busy_transaction() -> None:
+    """A from_nn=False precmd (third-party chpwd hook) does not affect an in-flight NN transaction."""
+    _, terminal = _new_zsh_terminal()
+    app = _PathChangedRecorder(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._started = True
+            terminal._at_prompt = True
+            terminal._cwd = PurePath("/start")
+            terminal.request_cd(PurePath("/a"))
+            assert terminal._nav_busy is True
+            assert terminal._nav_target == PurePath("/a")
+            # A third-party chpwd hook (e.g. oh-my-zsh) fires its own OSC 7; NN must ignore it.
+            await recv_q.put(["pre_cmd", "/somewhere-else\n", False])
+            await pilot.pause(delay=0.1)
+            assert terminal._nav_busy is True
+            assert terminal._nav_target == PurePath("/a")
+            assert terminal._cwd == PurePath("/start")
+            assert app.received == []
+        finally:
+            terminal._cancel_watchdog()
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_request_cd_when_not_at_prompt_defers_until_precmd() -> None:
+    backend, terminal = _new_zsh_terminal()
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._started = True
+            terminal._at_prompt = False  # a command is running
+            terminal.request_cd(PurePath("/later"))
+            assert _cd_writes(backend) == []
+            assert terminal._nav_target == PurePath("/later")
+            await recv_q.put(["pre_cmd", "/old\n"])
+            await pilot.pause(delay=0.1)
+            assert _cd_writes(backend) == [_expected_cd("/later")]
+            assert terminal._nav_busy is True
+        finally:
+            terminal._cancel_watchdog()
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_abab_sequence_ends_at_b_with_one_kill_and_one_yank() -> None:
+    backend, terminal = _new_zsh_terminal()
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._started = True
+            terminal._at_prompt = True
+            terminal._cwd = PurePath("/start")
+            terminal._note_user_input("l")
+            future = asyncio.ensure_future(terminal.set_terminal_directory(PurePath("/a")))
+            await asyncio.sleep(0)
+            terminal.request_cd(PurePath("/b"))
+            terminal.request_cd(PurePath("/a"))
+            terminal.request_cd(PurePath("/b"))
+            # Shell acknowledges the first cd; the chain re-sends the newest target.
+            await recv_q.put(["stdout", "hidden echo"])
+            await recv_q.put(["pre_cmd", "/a\n"])
+            await pilot.pause(delay=0.1)
+            assert _cd_writes(backend) == [_expected_cd("/a"), _expected_cd("/b")]
+            assert terminal._draining is True
+            await recv_q.put(["pre_cmd", "/b\n"])
+            await pilot.pause(delay=0.1)
+            assert terminal._draining is False
+            assert terminal._nav_busy is False
+            assert terminal._nav_target is None
+            assert backend.writes.count(_KILL) == 1
+            assert backend.writes.count(_YANK_BYTES) == 1
+            assert await future == PurePath("/b")
+            rendered = "".join(line.plain for line in terminal._display.lines)
+            assert "hidden echo" not in rendered
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_completed_navigation_with_stash_reports_input_present() -> None:
+    _backend, terminal = _new_zsh_terminal()
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._started = True
+            terminal._at_prompt = True
+            terminal._note_user_input("l")
+            terminal.request_cd(PurePath("/a"))
+            await recv_q.put(["pre_cmd", "/a\n"])
+            await recv_q.put(["stdout", "$ ls"])  # prompt plus yanked text
+            await pilot.pause(delay=0.1)
+            assert terminal.has_input() is True
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_precmd_during_busy_transaction_is_not_user_initiated() -> None:
+    _backend, terminal = _new_zsh_terminal()
+    app = _PathChangedRecorder(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._started = True
+            terminal._at_prompt = True
+            terminal.request_cd(PurePath("/a"))
+            await recv_q.put(["pre_cmd", "/a\n"])
+            await pilot.pause(delay=0.1)
+            assert app.received == []
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_user_precmd_with_pending_target_updates_owner_then_starts_cd() -> None:
+    backend, terminal = _new_zsh_terminal()
+    app = _PathChangedRecorder(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._started = True
+            terminal._at_prompt = True
+            owner = object()
+            terminal.owner = owner
+            terminal._note_user_input("cd /x\r", submits=True)
+            terminal.request_cd(PurePath("/y"))  # stored, shell is busy
+            assert _cd_writes(backend) == []
+            await recv_q.put(["pre_cmd", "/x\n"])
+            await pilot.pause(delay=0.1)
+            assert [e.cwd for e in app.received] == [PurePath("/x")]
+            assert app.received[0].owner is owner
+            assert _cd_writes(backend) == [_expected_cd("/y")]
+        finally:
+            terminal._cancel_watchdog()
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_user_reaching_pending_target_resolves_without_cd() -> None:
+    backend, terminal = _new_zsh_terminal()
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._started = True
+            terminal._at_prompt = False
+            future = asyncio.ensure_future(terminal.set_terminal_directory(PurePath("/y")))
+            await asyncio.sleep(0)
+            await recv_q.put(["pre_cmd", "/y\n"])
+            await pilot.pause(delay=0.1)
+            assert _cd_writes(backend) == []
+            assert terminal._nav_target is None
+            assert await future == PurePath("/y")
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_enter_during_busy_transaction_resends_cd_without_second_kill() -> None:
+    backend, terminal = _new_zsh_terminal()
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._started = True
+            terminal._at_prompt = True
+            terminal._note_user_input("l")
+            terminal.request_cd(PurePath("/a"))
+            # User presses Enter: the killed (empty) line executes and reports the old cwd.
+            terminal._note_user_input("\r", submits=True)
+            await recv_q.put(["pre_cmd", "/old\n"])
+            await pilot.pause(delay=0.1)
+            assert _cd_writes(backend) == [_expected_cd("/a"), _expected_cd("/a")]
+            assert backend.writes.count(_KILL) == 1
+            await recv_q.put(["pre_cmd", "/a\n"])
+            await pilot.pause(delay=0.1)
+            assert terminal._nav_busy is False
+            # Trailing precmd from the redundant cd: not busy, cwd unchanged, nothing happens.
+            await recv_q.put(["pre_cmd", "/a\n"])
+            await pilot.pause(delay=0.1)
+            assert _cd_writes(backend) == [_expected_cd("/a"), _expected_cd("/a")]
+        finally:
+            await _stop_recv_only(terminal)
+
+
+def test_fallback_driver_writes_visible_cd_without_transaction() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=FallbackDriver())
+    terminal._started = True
+    terminal._at_prompt = True
+    terminal.request_cd(PurePath("/a"))
+    assert len(backend.writes) == 1
+    assert backend.writes[0].startswith(b" ")
+    assert backend.writes[0].endswith(b"\n")
+    assert terminal._draining is False
+    assert terminal._nav_busy is False
+
+
+@pytest.mark.asyncio
+async def test_startup_draining_ends_on_first_precmd_when_nothing_pending() -> None:
+    _backend, terminal = _new_zsh_terminal()
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._draining = True
+            await recv_q.put(["pre_cmd", "/home\n"])
+            await pilot.pause(delay=0.1)
+            assert terminal._draining is False
+            assert terminal._at_prompt is True
+        finally:
+            await _stop_recv_only(terminal)
+
+
+# ---------------------------------------------------------------------------
+# Watchdog, hook repair, disconnect
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_watchdog_reinstalls_hook_once_and_resends_cd(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(terminal_module, "_NAV_WATCHDOG_TIMEOUT", 0.05)
+    backend, terminal = _new_zsh_terminal()
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._started = True
+            terminal._at_prompt = True
+            terminal.request_cd(PurePath("/a"))
+            await pilot.pause(delay=0.08)
+            init = ZshDriver().init_code().encode()
+            assert init in backend.writes
+            assert backend.writes.index(init) < len(backend.writes) - 1
+            assert _cd_writes(backend) == [_expected_cd("/a"), _expected_cd("/a")]
+            assert terminal._hook_repaired is True
+            assert terminal._nav_busy is True
+            # The init line's precmd reports the old cwd → chain; then the cd lands.
+            await recv_q.put(["pre_cmd", "/old\n"])
+            await recv_q.put(["pre_cmd", "/a\n"])
+            await pilot.pause(delay=0.1)
+            assert terminal._nav_busy is False
+            assert terminal._draining is False
+        finally:
+            terminal._cancel_watchdog()
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_watchdog_gives_up_on_second_timeout_and_yanks(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(terminal_module, "_NAV_WATCHDOG_TIMEOUT", 0.05)
+    backend, terminal = _new_zsh_terminal()
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._started = True
+        terminal._at_prompt = True
+        terminal._cwd = PurePath("/old")
+        terminal._note_user_input("l")
+        future = asyncio.ensure_future(terminal.set_terminal_directory(PurePath("/a")))
+        await pilot.pause(delay=0.3)
+        assert terminal._nav_busy is False
+        assert terminal._nav_target is None
+        assert terminal._draining is False
+        assert backend.writes.count(_YANK_BYTES) == 1
+        assert await future == PurePath("/old")
+
+
+@pytest.mark.asyncio
+async def test_disconnect_clears_navigation_state_and_resolves_future() -> None:
+    _backend, terminal = _new_zsh_terminal()
+    terminal.keep_alive = False
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        terminal._started = True
+        terminal._at_prompt = True
+        terminal._cwd = PurePath("/old")
+        future = asyncio.ensure_future(terminal.set_terminal_directory(PurePath("/a")))
+        await asyncio.sleep(0)
+        await recv_q.put(["disconnect", 1])
+        await pilot.pause(delay=0.1)
+        assert terminal._nav_busy is False
+        assert terminal._nav_target is None
+        assert terminal._nav_watchdog is None
+        assert terminal._at_prompt is False
+        assert await future == PurePath("/old")
+
+
+def test_start_backend_resets_prompt_and_repair_state() -> None:
+    _backend, terminal = _new_zsh_terminal()
+    terminal._at_prompt = True
+    terminal._hook_repaired = True
+    terminal._command_owner = object()
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_call_start_backend(terminal))
+    finally:
+        loop.close()
+    assert terminal._at_prompt is False
+    assert terminal._hook_repaired is False
+    assert terminal._command_owner is None
+
+
+async def _call_start_backend(terminal: Terminal) -> None:
+    terminal.recv_queue = asyncio.Queue()
+    terminal._start_backend()
+    assert terminal._run_task is not None
+    terminal._run_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await terminal._run_task

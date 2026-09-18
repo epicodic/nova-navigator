@@ -63,7 +63,7 @@ async def test_user_cd_in_terminal_updates_active_panel(app_ctx: AppCtx) -> None
     await set_panels(app_ctx)
 
     terminal = app_ctx.screen._terminal_pool.active_terminal
-    terminal.post_message(Terminal.PathChanged(terminal, PurePosixPath(target), user_initiated=True))
+    terminal.post_message(Terminal.PathChanged(terminal, PurePosixPath(target), owner=None))
     await poll_until(app_ctx.pilot, lambda: app_ctx.screen.active_panel().path.path == PurePosixPath(target))
 
     assert app_ctx.screen.active_panel().path.path == PurePosixPath(target)
@@ -72,24 +72,25 @@ async def test_user_cd_in_terminal_updates_active_panel(app_ctx: AppCtx) -> None
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_programmatic_cd_does_not_update_panel(app_ctx: AppCtx) -> None:
-    """A programmatic cd (user_initiated=False) does not change the active panel.
+    """A programmatic navigation via request_cd never updates the active panel.
 
-    Flow: Terminal.PathChanged(user_initiated=False) →
-          MainScreen._on_terminal_path_changed → handler exits early
+    Flow: terminal.request_cd(...) starts a hidden transaction handled entirely
+    by the ``_nav_busy`` branch of ``Terminal._handle_pre_cmd``, which never
+    posts ``Terminal.PathChanged`` — so ``MainScreen._on_terminal_path_changed``
+    is never invoked and the panel cannot move.
     """
+    # Let the panels' default startup listing (the real cwd) finish before navigating,
+    # so its late completion cannot reissue a stray terminal sync afterwards.
+    await app_ctx.pilot.pause(delay=1.5)
     await set_panels(app_ctx)
     original_path = app_ctx.screen.active_panel().path.path
+    target = PurePosixPath(app_ctx.dst_dir)
 
     terminal = app_ctx.screen._terminal_pool.active_terminal
-    terminal.post_message(
-        Terminal.PathChanged(
-            terminal,
-            PurePosixPath(app_ctx.dst_dir),
-            user_initiated=False,
-        )
-    )
-    await app_ctx.pilot.pause(delay=0.2)
+    terminal.request_cd(target)
+    await poll_until(app_ctx.pilot, lambda: terminal._cwd == target)
 
+    assert terminal._cwd == target
     assert app_ctx.screen.active_panel().path.path == original_path
 
 

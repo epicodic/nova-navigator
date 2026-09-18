@@ -74,6 +74,7 @@ _BRACKETED_PASTE_MODE = "2004"
 _RECV_DRAIN_LIMIT: int = 100
 _DISPLAY_FPS: float = 60.0
 _ED_ERASE_SCROLLBACK = 3  # ED (erase in display) parameter for "erase saved lines"
+_NAV_WATCHDOG_TIMEOUT = 2.0
 
 _re_ansi_sequence = re.compile(r"(\x1b\[\??[\d;]*[a-zA-Z])")
 _DECSET_PREFIX = "\x1b[?"
@@ -242,11 +243,11 @@ class Terminal(ScrollView, can_focus=True):
     Delegates process management to a ``PtyBackend`` and shell-specific
     logic to a ``ShellDriver``.
 
-    Directory navigation uses precmd-gated draining: when a programmatic
-    ``cd`` is issued, stdout output is suppressed until the shell's precmd
-    hook fires (emitting an OSC 7 CWD sequence).  This hides the ``cd``
-    echo without requiring SIGSTOP/SIGCONT synchronisation, making it
-    work identically for local shells and SSH connections.
+    Programmatic directory changes run as one serialised transaction per
+    terminal: typed input is killed, a history-excluded ``cd`` is sent under
+    output draining, and the shell's precmd hook (OSC 7) signals completion.
+    Newer requests replace the pending target, so the terminal always converges
+    on the last requested directory without showing intermediate prompts.
     """
 
     DEFAULT_CSS = """
@@ -264,16 +265,12 @@ class Terminal(ScrollView, can_focus=True):
             super().__init__()
 
     class PathChanged(Message):
-        """Posted when the shell's working directory changes.
+        """Posted when the user changes the shell's working directory.
 
-        For user commands this fires on every precmd.  For programmatic
-        navigations it fires only once the *last* pending cd completes,
-        so intermediate directories are never announced.
-
-        ``user_initiated`` is True when the cd was typed by the user in
-        the terminal (not triggered by ``request_cd``).  Handlers should
-        only update external state (e.g. directory browser panels) for
-        user-initiated changes.
+        Programmatic navigations started by ``request_cd`` never post this
+        message.  ``owner`` is the value of ``Terminal.owner`` at the moment
+        the user submitted the command, so handlers can update the pane that
+        submitted it rather than whichever pane is active on arrival.
         """
 
         def __init__(
@@ -281,11 +278,11 @@ class Terminal(ScrollView, can_focus=True):
             terminal_widget: Terminal,
             cwd: PurePath,
             *,
-            user_initiated: bool,
+            owner: object | None,
         ) -> None:
             self.terminal_widget = terminal_widget
             self.cwd = cwd
-            self.user_initiated = user_initiated
+            self.owner = owner
             super().__init__()
 
     class Closed(Message):
@@ -334,20 +331,31 @@ class Terminal(ScrollView, can_focus=True):
             on_clear_scrollback=self._clear_scrollback,
         )
         self._stream = pyte.Stream(self._screen)
-        self._prompt_cursor_x: int = 0
-        self._prompt_cursor_y: int = 0
-        self._prompt_ready_received: bool = False
-        self._snapshot_prompt_after_precmd: bool = False
-        self._pending_yank: bool = False
-        self._keys_forwarded_since_precmd: bool = False
-        # Counts navigations whose pre_cmd acknowledgement has not yet
-        # arrived.  Draining ends only when this reaches zero, preventing
-        # a rapid second cd from leaking its echo after the first pre_cmd
-        # clears draining.
-        self._nav_pending: int = 0
-        # Resolved when _nav_pending reaches 0.  Allows callers to await
-        # completion of a programmatic directory change.
+        # True once any user-originated byte was forwarded to the shell since the
+        # last precmd.  Internal writes (kill, cd, yank, init code) never set it.
+        self._input_since_precmd: bool = False
+        # (cursor row, cursor column, text of the cursor row) captured after every
+        # stdout chunk until the first user byte, i.e. the fully drawn prompt.
+        self._prompt_snapshot: tuple[int, int, str] | None = None
+        # True while the shell waits for a command line.  Set on precmd, cleared
+        # when user input containing a newline is forwarded or an internal cd is sent.
+        self._at_prompt: bool = False
+        # Opaque token set by the host (the active pane).  Copied into
+        # _command_owner when the user submits a command.
+        self.owner: object | None = None
+        self._command_owner: object | None = None
+        # Newest requested directory not yet confirmed by the shell.
+        self._nav_target: PurePath | None = None
+        # A cd has been written and its precmd is awaited.
+        self._nav_busy: bool = False
+        # User text was killed before the cd and must be yanked back on completion.
+        self._nav_stashed: bool = False
+        # Resolved when the transaction chain completes; awaited by set_terminal_directory.
         self._nav_future: Future[PurePath] | None = None
+        # Fires when no precmd follows a cd (hook lost); see _on_nav_timeout.
+        self._nav_watchdog: TimerHandle | None = None
+        # The precmd hook was re-installed once this shell session.
+        self._hook_repaired: bool = False
         # Last known cwd reported by the shell via precmd.
         self._cwd: PurePath | None = None
 
@@ -381,6 +389,7 @@ class Terminal(ScrollView, can_focus=True):
         startup prompt are suppressed.  Draining ends when the first
         precmd fires (the shell's hook emits an OSC 7 CWD sequence).
         """
+        self._reset_shell_state()
         self._backend.open(self.command, self.nrow, self.ncol)
         self.send_queue = asyncio.Queue()
         self._run_task = asyncio.create_task(self._run())
@@ -398,6 +407,7 @@ class Terminal(ScrollView, can_focus=True):
         self._display = self.initial_display()
         self._clear_scrollback()
         self._started = False
+        self._reset_shell_state()
 
         if self._rebuild_handle is not None:
             self._rebuild_handle.cancel()
@@ -557,7 +567,7 @@ class Terminal(ScrollView, can_focus=True):
         event.stop()
         char = _CTRL_KEYS.get(event.key) or event.character
         if char:
-            self._keys_forwarded_since_precmd = True
+            self._note_user_input(char, submits=event.key == "enter")
             self.scroll_end(animate=False, force=True, immediate=True)
             assert self.send_queue is not None
             self.send_queue.put_nowait(["stdin", char])
@@ -577,66 +587,80 @@ class Terminal(ScrollView, can_focus=True):
         # treats the whole paste as literal text instead of executing embedded newlines.
         if self.bracketed_paste:
             text = f"\x1b[200~{text}\x1b[201~"
-        self._keys_forwarded_since_precmd = True
+        self._note_user_input(text)
         self.scroll_end(animate=False, force=True, immediate=True)
         assert self.send_queue is not None
         self.send_queue.put_nowait(["stdin", text])
 
-    def has_input(self) -> bool:
-        """Return True if the user has typed something on the current prompt line.
+    def _note_user_input(self, data: str, *, submits: bool = False) -> None:
+        """Record that user-originated *data* is about to be forwarded to the shell.
 
-        Uses a two-tier detection strategy:
-
-        1. **Primary — cursor comparison** (when OSC 133;B is available):
-           The prompt-end cursor position is snapshotted each time
-           ``_handle_prompt_ready`` fires.  If the current cursor is past
-           that position, the user has typed something.
-
-        2. **Fallback — keystroke tracking** (when prompt position is unknown):
-           A flag (``_keys_forwarded_since_precmd``) is set whenever a key
-           event is forwarded to the shell and cleared on each precmd.
-           This works for any shell but cannot detect the "typed then
-           deleted everything" case.
+        Data containing a newline submits a command line, so the shell leaves the
+        prompt and the current ``owner`` is recorded as the command's owner.
         """
-        if self._prompt_ready_received:
-            if self._screen.cursor.y != self._prompt_cursor_y:
-                return self._screen.cursor.y > self._prompt_cursor_y
-            return self._screen.cursor.x > self._prompt_cursor_x
-        return self._keys_forwarded_since_precmd
+        self._input_since_precmd = True
+        if submits or "\r" in data or "\n" in data:
+            self._at_prompt = False
+            self._command_owner = self.owner
+
+    def _row_text(self, row: int) -> str:
+        """Return the text of pyte screen *row* including trailing padding."""
+        line = self._screen.buffer[row]
+        return "".join(line[x].data for x in range(self._screen.columns))
+
+    def _refresh_prompt_snapshot(self) -> None:
+        """Capture the cursor and its row while no user byte has been sent since precmd.
+
+        The snapshot therefore always reflects the latest drawn prompt and is
+        frozen at the moment the user starts typing.
+        """
+        if self._input_since_precmd:
+            return
+        cursor = self._screen.cursor
+        self._prompt_snapshot = (cursor.y, cursor.x, self._row_text(cursor.y))
+
+    def has_input(self) -> bool:
+        """Return True if the shell line probably holds user input.
+
+        No user byte since the last precmd means the line is empty; this is
+        certain.  Otherwise the screen is compared with the snapshot frozen at
+        the first user byte, which detects "typed, then deleted everything".
+        Without a snapshot the answer is conservatively True.
+        """
+        if not self._input_since_precmd:
+            return False
+        if self._prompt_snapshot is None:
+            return True
+        row, col, text = self._prompt_snapshot
+        cursor = self._screen.cursor
+        return cursor.y != row or cursor.x != col or self._row_text(cursor.y) != text
 
     def request_cd(self, path: PurePath) -> None:
-        """Issue a cd command to the shell without waiting for completion.
+        """Ask the shell to change to *path* without waiting for completion.
 
-        If the shell is already at *path* and no navigations are in flight,
-        the request is skipped.
-
-        Output between the ``cd`` command and the next precmd is suppressed
-        via draining.  If the user has typed something on the prompt, the
-        input is killed (Ctrl+U) before the ``cd`` and yanked back (Ctrl+Y)
-        after the precmd fires, preserving the user's partially typed command.
-        Draining starts before the kill so the Ctrl+U echo is also suppressed.
+        Requests are coalesced: only the newest target is kept.  When the shell
+        is at a prompt and no transaction is active the ``cd`` is sent now,
+        otherwise it is sent on the next precmd.  See ``_start_nav`` for the
+        hidden, input-preserving transaction.
         """
         if not self._started:
             return
-        if self._nav_pending == 0 and self._cwd is not None and path == self._cwd:
+        if not self._nav_busy and self._nav_target is None and path == self._cwd:
             return
-        cmd = " " + self._driver.cd_command(str(path)) + "\n"
-        if self._backend.supports_precmd and self._driver.supports_prompt_ready:
-            self._pending_yank = self.has_input()
-            self._nav_pending += 1
-            self._draining = True
-            if self._nav_future is None or self._nav_future.done():
-                self._nav_future = asyncio.get_running_loop().create_future()
-            if self._pending_yank:
-                self._backend.write(_KILL_LINE.encode())
-        self._backend.write(cmd.encode())
+        if not self._driver.supports_line_editing:
+            self._backend.write((" " + self._driver.cd_command(str(path)) + "\n").encode())
+            return
+        self._nav_target = path
+        if self._nav_future is None or self._nav_future.done():
+            self._nav_future = asyncio.get_running_loop().create_future()
+        if not self._nav_busy and self._at_prompt:
+            self._start_nav()
 
     async def set_terminal_directory(self, path: PurePath) -> PurePath:
-        """Change the shell's working directory to *path*, preserving any typed input.
+        """Change the shell's working directory to *path*, preserving typed input.
 
-        Returns the actual CWD reported by the shell once the last in-flight
-        navigation completes.  See ``request_cd`` for the fire-and-forget
-        variant used by the directory browser sync.
+        Returns the CWD reported by the shell once the transaction chain
+        completes, or the last known CWD when no navigation was needed.
         """
         if not self._started:
             return path
@@ -644,6 +668,109 @@ class Terminal(ScrollView, can_focus=True):
         if self._nav_future is not None and not self._nav_future.done():
             return await self._nav_future
         return self._cwd or path
+
+    def _start_nav(self) -> None:
+        """Send the hidden ``cd`` for ``_nav_target``, killing typed input first if needed.
+
+        Ctrl+E moves to the end of the line so that Ctrl+U kills the whole line
+        in bash, where Ctrl+U only kills backwards; zsh's Ctrl+U already kills
+        the whole line.  The kill happens at most once per transaction chain.
+        """
+        assert self._nav_target is not None
+        self._nav_busy = True
+        self._at_prompt = False
+        self._draining = True
+        if not self._nav_stashed and self.has_input():
+            self._nav_stashed = True
+            self._backend.write((_END_OF_LINE + _KILL_LINE).encode())
+        self._backend.write((" " + self._driver.cd_command(str(self._nav_target)) + "\n").encode())
+        self._arm_watchdog()
+
+    def _finish_nav(self, cwd: PurePath) -> None:
+        """Complete the transaction chain: yank stashed text, end draining, resolve."""
+        if self._nav_stashed:
+            self._nav_stashed = False
+            self._backend.write((_YANK + _END_OF_LINE).encode())
+            # The yank echo arrives after the prompt and would be absorbed into
+            # the snapshot, so report input as present for this prompt line.
+            self._input_since_precmd = True
+        self._nav_target = None
+        self._nav_busy = False
+        self._end_draining()
+        self._resolve_nav_future(cwd)
+
+    def _apply_pending_target(self, cwd: PurePath) -> None:
+        """Start a transaction for a target stored while the shell was busy."""
+        if self._nav_target is None:
+            return
+        if cwd != self._nav_target:
+            self._start_nav()
+        else:
+            self._nav_target = None
+            self._resolve_nav_future(cwd)
+
+    def _resolve_nav_future(self, cwd: PurePath) -> None:
+        if self._nav_future is not None and not self._nav_future.done():
+            self._nav_future.set_result(cwd)
+
+    def _end_draining(self) -> None:
+        """Stop discarding stdout and redraw the prompt in place.
+
+        The echoed command and its newline were discarded, so the cursor never
+        advanced past the old prompt.  Return to column 0 and clear the line so
+        the new prompt overwrites the old one, matching zsh's PROMPT_CR redraw.
+        """
+        self._draining = False
+        if self._screen.cursor.x != 0:
+            self._feed_stdout("\r\x1b[K")
+
+    def _arm_watchdog(self) -> None:
+        self._cancel_watchdog()
+        self._nav_watchdog = asyncio.get_running_loop().call_later(_NAV_WATCHDOG_TIMEOUT, self._on_nav_timeout)
+
+    def _cancel_watchdog(self) -> None:
+        if self._nav_watchdog is not None:
+            self._nav_watchdog.cancel()
+            self._nav_watchdog = None
+
+    def _on_nav_timeout(self) -> None:
+        """Handle a ``cd`` that produced no precmd within the watchdog interval.
+
+        The realistic cause is a wiped precmd hook.  The first time this happens
+        in a session the init code is re-sent followed by the ``cd``; the init
+        line's own precmd reports the old directory, so the normal chaining rule
+        re-sends the ``cd`` and the transaction completes.  A second timeout
+        gives up so the terminal cannot stay drained.
+        """
+        self._nav_watchdog = None
+        if not self._nav_busy:
+            return
+        if not self._hook_repaired:
+            self._hook_repaired = True
+            _logger.warning("No precmd after cd; re-installing the shell hook")
+            self._backend.write(self._driver.init_code().encode())
+            self._start_nav()
+            return
+        _logger.warning("Navigation to %s timed out; giving up", self._nav_target)
+        self._finish_nav(self._cwd if self._cwd is not None else self._nav_target_or_root())
+
+    def _nav_target_or_root(self) -> PurePath:
+        return self._nav_target if self._nav_target is not None else PurePath("/")
+
+    def _reset_shell_state(self) -> None:
+        """Forget prompt and navigation state when the shell process goes away."""
+        self._cancel_watchdog()
+        fallback = self._cwd if self._cwd is not None else self._nav_target_or_root()
+        self._nav_target = None
+        self._nav_busy = False
+        self._nav_stashed = False
+        self._at_prompt = False
+        self._hook_repaired = False
+        self._input_since_precmd = False
+        self._prompt_snapshot = None
+        self._command_owner = None
+        self._draining = False
+        self._resolve_nav_future(fallback)
 
     async def send(self, data: str, mode: Literal["normal", "silent"] = "normal") -> None:
         """Send *data* to the shell.
@@ -653,7 +780,7 @@ class Terminal(ScrollView, can_focus=True):
         """
         if not self._started:
             return
-        self._keys_forwarded_since_precmd = True
+        self._note_user_input(data)
         if mode == "silent" and self._backend.supports_precmd:
             self._draining = True
         self._backend.write(data.encode())
@@ -731,54 +858,37 @@ class Terminal(ScrollView, can_focus=True):
     # ------------------------------------------------------------------
 
     def _handle_pre_cmd(self, raw: str, from_nn: bool = True) -> None:
-        """Process a pre_cmd message: update nav state, post event.
+        """Process a precmd notification from Nova Navigator's own shell hook.
 
-        When ``from_nn`` is False the event originated from a third-party chpwd
-        hook (e.g. oh-my-zsh) rather than from Nova Navigator's own precmd hook.
-        These events are ignored so that ``_nav_pending`` is only decremented by
-        NN's own hook and third-party hooks cannot trigger spurious
-        user-initiated PathChanged events.
+        Third-party OSC 7 sequences (``from_nn`` False, e.g. oh-my-zsh) are
+        ignored.  A precmd that arrives while a transaction is busy belongs to
+        that transaction and either chains to a newer target or completes it.
+        Any other precmd is a user command cycle: it may report a user-initiated
+        directory change and then applies a target stored while the shell was busy.
         """
         if not from_nn:
             return
         cwd = PurePath(raw.strip())
         cwd_changed = cwd != self._cwd
         self._cwd = cwd
-        was_programmatic = self._nav_pending > 0
-        if self._nav_pending > 0:
-            self._nav_pending -= 1
-        if self._draining and self._nav_pending == 0:
-            # All in-flight navigations acknowledged.  Write yank bytes
-            # so they arrive at the shell before it prints the new prompt.
-            if self._pending_yank:
-                self._pending_yank = False
-                self._backend.write((_YANK + _END_OF_LINE).encode())
-            self._draining = False
-            # The echoed command and its trailing newline were discarded
-            # while draining, so the cursor never advanced past the old
-            # prompt text. Return to column 0 and clear the rest of the
-            # line so the new prompt overwrites the old one *in place* —
-            # matching zsh's own PROMPT_CR/PROMPT_SP redraw behaviour —
-            # instead of leaking onto the same row (no reset) or pushing
-            # everything down onto a new one (a hard newline).
-            if self._screen.cursor.x != 0:
-                self._feed_stdout("\r\x1b[K")
-            # Resolve the navigation future so callers unblock.
-            if self._nav_future is not None and not self._nav_future.done():
-                self._nav_future.set_result(cwd)
-        # Reset input tracking for the new prompt cycle.
-        self._keys_forwarded_since_precmd = False
-        self._prompt_ready_received = False
-        self._snapshot_prompt_after_precmd = True
-        if self._nav_pending == 0 and cwd_changed:
-            self.post_message(Terminal.PathChanged(self, cwd, user_initiated=not was_programmatic))
+        self._at_prompt = True
+        self._input_since_precmd = False
+        self._prompt_snapshot = None
+        if self._nav_busy:
+            self._cancel_watchdog()
+            if self._nav_target is not None and cwd != self._nav_target:
+                self._start_nav()
+            else:
+                self._finish_nav(cwd)
+        else:
+            if self._draining:
+                self._end_draining()
+            owner = self._command_owner
+            self._command_owner = None
+            if cwd_changed:
+                self.post_message(Terminal.PathChanged(self, cwd, owner=owner))
+            self._apply_pending_target(cwd)
         self.post_message(Terminal.PreCmd(self, cwd))
-
-    def _handle_prompt_ready(self) -> None:
-        """Snapshot cursor position as the prompt-end position."""
-        self._prompt_cursor_x = self._screen.cursor.x
-        self._prompt_cursor_y = self._screen.cursor.y
-        self._prompt_ready_received = True
 
     async def recv(self) -> None:
         """Process messages from recv_queue: stdout, pre_cmd, setup, disconnect."""
@@ -800,11 +910,7 @@ class Terminal(ScrollView, can_focus=True):
                         if not self._draining:
                             self._feed_stdout(str(message[1]))
                             stdout_fed = True
-                            if self._snapshot_prompt_after_precmd:
-                                self._snapshot_prompt_after_precmd = False
-                                self._handle_prompt_ready()
-                    elif cmd == "prompt_ready":
-                        self._handle_prompt_ready()
+                            self._refresh_prompt_snapshot()
                     elif cmd == "disconnect":
                         disconnected = True
                         break
@@ -816,6 +922,7 @@ class Terminal(ScrollView, can_focus=True):
                     self._schedule_rebuild()
                 if disconnected:
                     _logger.info("Terminal disconnected")
+                    self._reset_shell_state()
                     if self.keep_alive:
                         self.respawn()
                     else:

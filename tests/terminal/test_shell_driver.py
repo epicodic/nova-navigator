@@ -215,23 +215,23 @@ def test_detect_driver_sh() -> None:
 
 
 # ---------------------------------------------------------------------------
-# supports_prompt_ready
+# supports_line_editing
 # ---------------------------------------------------------------------------
 
 
-def test_zsh_driver_supports_prompt_ready_is_true() -> None:
+def test_zsh_driver_supports_line_editing_is_true() -> None:
     driver = ZshDriver()
-    assert driver.supports_prompt_ready is True
+    assert driver.supports_line_editing is True
 
 
-def test_bash_driver_supports_prompt_ready_is_true() -> None:
+def test_bash_driver_supports_line_editing_is_true() -> None:
     driver = BashDriver()
-    assert driver.supports_prompt_ready is True
+    assert driver.supports_line_editing is True
 
 
-def test_fallback_driver_supports_prompt_ready_is_false() -> None:
+def test_fallback_driver_supports_line_editing_is_false() -> None:
     driver = FallbackDriver()
-    assert driver.supports_prompt_ready is False
+    assert driver.supports_line_editing is False
 
 
 # ---------------------------------------------------------------------------
@@ -274,18 +274,23 @@ def test_hook_body_does_not_contain_kill_stop() -> None:
     assert "kill -STOP" not in body
 
 
-def test_zsh_driver_init_code_contains_osc133b_zle_hook() -> None:
-    driver = ZshDriver()
-    code = driver.init_code()
-    assert "zle-line-init" in code
-    assert "\\033]133;B\\007" in code
+def test_zsh_driver_init_code_has_no_prompt_marker_or_zle_hook() -> None:
+    code = ZshDriver().init_code()
+    assert "133" not in code
+    assert "zle-line-init" not in code
+    assert "add-zle-hook-widget" not in code
 
 
-def test_bash_driver_init_code_contains_osc133b_in_ps1() -> None:
-    driver = BashDriver()
-    code = driver.init_code()
-    assert "\\033]133;B\\007" in code
-    assert "PS1" in code
+def test_bash_driver_init_code_has_no_prompt_marker() -> None:
+    code = BashDriver().init_code()
+    assert "133" not in code
+    assert "PS1" not in code
+
+
+def test_bash_driver_init_code_ends_with_prompt_command_and_newline() -> None:
+    code = BashDriver().init_code()
+    assert code.rstrip("\n").endswith("_nn_precmd")
+    assert code.endswith("\n")
 
 
 def test_detect_driver_unknown_shell() -> None:
