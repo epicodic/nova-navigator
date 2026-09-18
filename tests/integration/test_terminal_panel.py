@@ -6,7 +6,7 @@ Two directions are tested:
    ``request_cd`` on the terminal so the shell follows.
 
 2. Terminal → Panel: a user-initiated ``cd`` in the shell (signalled via a
-   ``Terminal.PathChanged`` message with ``user_initiated=True``) causes the
+   ``Terminal.PathChanged`` message with ``owner=None``) causes the
    active panel to navigate to the new directory.
 """
 
@@ -56,7 +56,7 @@ async def test_panel_navigation_triggers_terminal_request_cd(app_ctx: AppCtx) ->
 async def test_user_cd_in_terminal_updates_active_panel(app_ctx: AppCtx) -> None:
     """A user-initiated cd in the terminal navigates the active panel.
 
-    Flow: Terminal.PathChanged(user_initiated=True) →
+    Flow: Terminal.PathChanged(owner=None) →
           MainScreen._on_terminal_path_changed → active_panel().set_path
     """
     target = app_ctx.dst_dir  # a real directory distinct from the panel's current path

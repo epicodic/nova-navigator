@@ -149,7 +149,6 @@ class VirtualPtyBackend(PtyBackend):
                     self._post_stdout("\r\n")
                     self._line_editor.reset()
                     self._post_stdout(self._interpreter.prompt)
-                    self._post_message(["prompt_ready"])
                 return
 
             if event == LineEditorEvent.EOF:
@@ -177,12 +176,11 @@ class VirtualPtyBackend(PtyBackend):
     # ------------------------------------------------------------------
 
     def _post_initial_prompt(self) -> None:
-        """Post pre_cmd, prompt text, and prompt_ready to the recv queue."""
+        """Post pre_cmd and prompt text to the recv queue."""
         assert self._interpreter is not None
         cwd = self._interpreter.cwd
         self._post_message(["pre_cmd", str(cwd.path), True])
         self._post_stdout(self._interpreter.prompt)
-        self._post_message(["prompt_ready"])
 
     def _schedule_command(self, line: str) -> None:
         assert self._loop is not None
@@ -243,7 +241,6 @@ class VirtualPtyBackend(PtyBackend):
         cwd = self._interpreter.cwd
         self._post_message(["pre_cmd", str(cwd.path), True])
         self._post_stdout(self._interpreter.prompt)
-        self._post_message(["prompt_ready"])
 
     def _post_stdout(self, text: str) -> None:
         self._post_message(["stdout", text])

@@ -230,7 +230,7 @@ async def test_sync_browsing_rolls_back_terminal_when_mirror_missing(app_ctx: Ap
 async def test_sync_browsing_terminal_nav_rolls_back_on_missing_mirror(app_ctx: AppCtx) -> None:
     """Terminal-driven navigation also rolls back when mirror is missing.
 
-    Flow: Terminal.PathChanged(user_initiated=True) →
+    Flow: Terminal.PathChanged(owner=None) →
           active_panel().set_path(sub) → PathChanged →
           _mirror_sync detects missing mirror → rollback.
     """

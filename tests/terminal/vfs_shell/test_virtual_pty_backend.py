@@ -48,7 +48,6 @@ async def test_open_posts_initial_messages(fs: MockFilesystem) -> None:
     msgs = await drain(queue)
     types = [m[0] for m in msgs]
     assert "pre_cmd" in types
-    assert "prompt_ready" in types
     assert "stdout" in types
     backend.teardown()
 
@@ -88,17 +87,3 @@ async def test_resize_updates_dimensions(fs: MockFilesystem) -> None:
     assert backend._rows == 40
     assert backend._cols == 120
     backend.teardown()
-
-
-@pytest.mark.asyncio
-async def test_prompt_ready_after_command(fs: MockFilesystem) -> None:
-    backend, queue = make_backend(fs)
-    await asyncio.sleep(0)
-    await drain(queue)
-
-    backend.write(b"pwd\r")
-    await asyncio.sleep(0.1)
-
-    msgs = await drain(queue)
-    types = [m[0] for m in msgs]
-    assert "prompt_ready" in types
