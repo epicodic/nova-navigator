@@ -464,3 +464,34 @@ def test_zsh_editor_integration_uses_private_symbols_only() -> None:
 def test_bash_editor_integration_uses_private_symbols_only() -> None:
     code = BashDriver().editor_integration_code("abc123")
     assert re.search(r"_nn_.*abc123", code) is not None
+
+
+# ---------------------------------------------------------------------------
+# startup_code()
+# ---------------------------------------------------------------------------
+
+_NONCE = "abc123"
+
+
+def test_zsh_startup_code_is_one_line() -> None:
+    code = ZshDriver().startup_code(_NONCE)
+    assert code.endswith("\n")
+    assert code.count("\n") == 1
+
+
+def test_zsh_startup_code_contains_init_and_editor_parts() -> None:
+    driver = ZshDriver()
+    code = driver.startup_code(_NONCE)
+    assert driver.init_code().rstrip("\n") in code
+    assert f"_nn_probe_{_NONCE}" in code
+
+
+def test_bash_startup_code_is_one_line() -> None:
+    code = BashDriver().startup_code(_NONCE)
+    assert code.endswith("\n")
+    assert code.count("\n") == 1
+
+
+def test_fallback_startup_code_equals_init_code() -> None:
+    driver = FallbackDriver()
+    assert driver.startup_code(_NONCE) == driver.init_code()

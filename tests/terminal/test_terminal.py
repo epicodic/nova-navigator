@@ -600,6 +600,26 @@ async def _stop_recv_only(terminal: Terminal) -> None:
         await terminal.recv_task_t
 
 
+def _editor_response(
+    terminal: Terminal,
+    operation: EditorOperation,
+    sequence: int,
+    buffer_length: int = 0,
+    cursor: int = 0,
+) -> list[object]:
+    """Build an editor_response recv message for *terminal*'s nonce."""
+    return [
+        "editor_response",
+        EditorResponse(
+            nonce=terminal._editor_nonce,
+            operation=operation,
+            sequence=sequence,
+            buffer_length=buffer_length,
+            cursor=cursor,
+        ),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # _feed_stdout / _rebuild_display
 # ---------------------------------------------------------------------------
@@ -973,6 +993,81 @@ async def test_draining_flag_set_by_send_silent() -> None:
 
 
 # ---------------------------------------------------------------------------
+# has_input() heuristic
+# ---------------------------------------------------------------------------
+
+
+def test_has_input_false_when_cursor_at_prompt_end(terminal_instance: Terminal) -> None:
+    terminal_instance._feed_stdout("$ ")
+    terminal_instance._handle_prompt_ready()
+    assert terminal_instance.has_input() is False
+
+
+def test_has_input_true_when_cursor_past_prompt_end(terminal_instance: Terminal) -> None:
+    terminal_instance._feed_stdout("$ ")
+    terminal_instance._handle_prompt_ready()
+    terminal_instance._feed_stdout("ls")
+    assert terminal_instance.has_input() is True
+
+
+def test_has_input_true_when_cursor_on_later_row(terminal_instance: Terminal) -> None:
+    terminal_instance._feed_stdout("$ ")
+    terminal_instance._handle_prompt_ready()
+    terminal_instance._feed_stdout("echo \\\r\n")
+    assert terminal_instance.has_input() is True
+
+
+def test_has_input_uses_keystroke_flag_when_prompt_cursor_unknown(
+    terminal_instance: Terminal,
+) -> None:
+    assert terminal_instance.has_input() is False
+    terminal_instance._keys_forwarded_since_precmd = True
+    assert terminal_instance.has_input() is True
+
+
+@pytest.mark.asyncio
+async def test_on_key_sets_keystroke_flag() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._started = True
+        terminal.send_queue = asyncio.Queue()
+        await terminal.on_key(events.Key("a", character="a"))
+        assert terminal._keys_forwarded_since_precmd is True
+
+
+@pytest.mark.asyncio
+async def test_send_sets_keystroke_flag() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._started = True
+        await terminal.send("file.txt")
+        assert terminal._keys_forwarded_since_precmd is True
+
+
+@pytest.mark.asyncio
+async def test_pre_cmd_clears_keystroke_flag() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._keys_forwarded_since_precmd = True
+            await recv_q.put(["pre_cmd", "/target", True])
+            await pilot.pause(delay=0.05)
+            assert terminal._keys_forwarded_since_precmd is False
+        finally:
+            await _stop_recv_only(terminal)
+
+
+# ---------------------------------------------------------------------------
 # submit_enter / editor_response correlation
 # ---------------------------------------------------------------------------
 
@@ -1008,7 +1103,7 @@ async def test_editor_ready_alone_does_not_enable_editor_protocol() -> None:
 
 
 @pytest.mark.asyncio
-async def test_editor_protocol_enabled_only_after_ready_prompt_and_startup_probe() -> None:
+async def test_editor_protocol_enabled_after_ready_precmd_and_startup_probe() -> None:
     backend = FakePtyBackend()
     terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
     app = TerminalTestApp(terminal)
@@ -1016,41 +1111,60 @@ async def test_editor_protocol_enabled_only_after_ready_prompt_and_startup_probe
         await pilot.pause()
         recv_q = await _start_recv_only(terminal)
         try:
-            await recv_q.put(
-                [
-                    "editor_response",
-                    EditorResponse(
-                        nonce=terminal._editor_nonce,
-                        operation=EditorOperation.READY,
-                        sequence=0,
-                        buffer_length=0,
-                        cursor=0,
-                    ),
-                ]
-            )
-            await recv_q.put(["prompt_ready"])
+            await recv_q.put(_editor_response(terminal, EditorOperation.READY, 0))
             await pilot.pause(delay=0.1)
+            assert backend.writes.count(PROBE_SEQUENCE) == 0
 
+            await recv_q.put(["pre_cmd", "/target", True])
+            await pilot.pause(delay=0.1)
             assert terminal._editor_available is False
             assert backend.writes.count(PROBE_SEQUENCE) == 1
 
-            await recv_q.put(
-                [
-                    "editor_response",
-                    EditorResponse(
-                        nonce=terminal._editor_nonce,
-                        operation=EditorOperation.PROBE,
-                        sequence=1,
-                        buffer_length=5,
-                        cursor=0,
-                    ),
-                ]
-            )
+            await recv_q.put(_editor_response(terminal, EditorOperation.PROBE, 1, 5, 0))
             await pilot.pause(delay=0.1)
-
             assert terminal._editor_available is True
         finally:
             await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_prompt_ready_alone_does_not_schedule_startup_probe() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            await recv_q.put(_editor_response(terminal, EditorOperation.READY, 0))
+            await recv_q.put(["prompt_ready"])
+            await pilot.pause(delay=0.1)
+            assert PROBE_SEQUENCE not in backend.writes
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_pre_cmd_sets_at_prompt_true() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._at_prompt = False
+            await recv_q.put(["pre_cmd", "/target", True])
+            await pilot.pause(delay=0.05)
+            assert terminal._at_prompt is True
+        finally:
+            await _stop_recv_only(terminal)
+
+
+def test_prompt_ready_does_not_change_at_prompt(terminal_instance: Terminal) -> None:
+    terminal_instance._at_prompt = False
+    terminal_instance._handle_prompt_ready()
+    assert terminal_instance._at_prompt is False
 
 
 @pytest.mark.asyncio
@@ -1523,6 +1637,14 @@ async def test_navigation_no_overlap_between_transactions() -> None:
             await pilot.pause(delay=0.05)
             await recv_q.put(["prompt_ready"])
             await pilot.pause(delay=0.05)
+
+            # A completed transaction no longer flips at_prompt back on by itself
+            # (that lands in the navigation-rungs task); simulate the shell
+            # reaching the prompt again -- before the restore ack completes the
+            # transaction -- so the coalescing behaviour under test can be
+            # observed independently of that later change.
+            terminal._at_prompt = True
+
             await recv_q.put(_restore_response(terminal, sequence=2))
             await pilot.pause(delay=0.05)
 
@@ -2290,13 +2412,13 @@ async def test_run_processes_set_size_message() -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_backend_calls_init_code_with_no_args() -> None:
-    """init_code() must be called without arguments after the pipe removal."""
+async def test_start_backend_writes_startup_code_once() -> None:
     from unittest.mock import MagicMock
 
     backend = FakePtyBackend()
     driver = MagicMock()
-    driver.init_code.return_value = ""
+    driver.startup_code.return_value = "one line\n"
+    driver.editor_integration_code.return_value = "editor"
     driver.supports_precmd = True
 
     terminal = Terminal("/bin/sh", backend=backend, driver=driver)
@@ -2305,7 +2427,90 @@ async def test_start_backend_calls_init_code_with_no_args() -> None:
         await pilot.pause()
         terminal.start()
         try:
-            driver.init_code.assert_called_once_with()
+            driver.startup_code.assert_called_once_with(terminal._editor_nonce)
+            assert backend.writes == [b"one line\n"]
+        finally:
+            terminal.stop()
+
+
+@pytest.mark.asyncio
+async def test_startup_draining_survives_precmd_before_ready() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.start()
+        recv_q = terminal.recv_queue
+        assert recv_q is not None
+        try:
+            assert terminal._draining is True
+            await recv_q.put(["pre_cmd", "/target", True])
+            await pilot.pause(delay=0.05)
+            assert terminal._draining is True
+        finally:
+            terminal.stop()
+
+
+@pytest.mark.asyncio
+async def test_startup_draining_ends_on_first_precmd_after_ready() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.start()
+        recv_q = terminal.recv_queue
+        assert recv_q is not None
+        try:
+            await recv_q.put(["pre_cmd", "/target", True])
+            await recv_q.put(["stdout", "storm"])
+            await recv_q.put(_editor_response(terminal, EditorOperation.READY, 0))
+            await pilot.pause(delay=0.05)
+            assert terminal._draining is True
+
+            await recv_q.put(["pre_cmd", "/target", True])
+            await recv_q.put(["stdout", "$ "])
+            await pilot.pause(delay=0.1)
+            assert terminal._draining is False
+            assert "storm" not in terminal._screen.display[0]
+            assert terminal._screen.display[0].startswith("$ ")
+        finally:
+            terminal.stop()
+
+
+@pytest.mark.asyncio
+async def test_startup_draining_ends_on_first_precmd_for_fallback_driver() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=FallbackDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.start()
+        recv_q = terminal.recv_queue
+        assert recv_q is not None
+        try:
+            await recv_q.put(["pre_cmd", "/target", True])
+            await pilot.pause(delay=0.05)
+            assert terminal._draining is False
+        finally:
+            terminal.stop()
+
+
+@pytest.mark.asyncio
+async def test_prompt_ready_does_not_end_startup_draining() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.start()
+        recv_q = terminal.recv_queue
+        assert recv_q is not None
+        try:
+            await recv_q.put(["prompt_ready"])
+            await pilot.pause(delay=0.05)
+            assert terminal._draining is True
         finally:
             terminal.stop()
 

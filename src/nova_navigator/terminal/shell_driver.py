@@ -125,6 +125,26 @@ class ShellDriver(ABC):
         _ = nonce
         return ""
 
+    def startup_code(self, nonce: str) -> str:
+        """Return init and editor integration code as one command line.
+
+        A single line means the shell executes both parts in one command cycle,
+        so startup draining can hide the whole echo and end on the precmd that
+        follows the READY acknowledgement.
+
+        Args:
+            nonce: The per-session nonce used to namespace editor protocol
+                identifiers.
+
+        Returns:
+            A string of shell code ending with a newline.
+        """
+        init = self.init_code()
+        editor = self.editor_integration_code(nonce)
+        if not editor:
+            return init
+        return init.rstrip("\n") + "; " + editor
+
     def editor_request(self, operation: EditorOperation) -> bytes:
         """Return the private input sequence for an editor protocol request."""
         if operation is EditorOperation.PROBE:

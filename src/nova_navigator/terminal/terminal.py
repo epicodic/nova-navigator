@@ -292,6 +292,7 @@ class Terminal(Widget, can_focus=True):
         self._driver = driver or detect_driver(command)
         self._started = False
         self._draining = False
+        self._startup_awaits_ready: bool = False
         self.ncol = 80
         self.nrow = 24
         self.mouse_tracking = False
@@ -317,9 +318,13 @@ class Terminal(Widget, can_focus=True):
         self._editor_request_lock: asyncio.Lock = asyncio.Lock()
         self._startup_probe_task: Task[None] | None = None
         self._startup_probe_sent: bool = False
-        self._first_prompt_ready_received: bool = False
+        self._precmd_after_ready_received: bool = False
 
         self._at_prompt: bool = False
+        self._prompt_cursor_x: int = 0
+        self._prompt_cursor_y: int = 0
+        self._prompt_cursor_known: bool = False
+        self._keys_forwarded_since_precmd: bool = False
         self._enter_lock: asyncio.Lock = asyncio.Lock()
         self._command_owner: object | None = None
         # Last known cwd reported by the shell via precmd.
@@ -352,18 +357,19 @@ class Terminal(Widget, can_focus=True):
         self._started = True
 
     def _start_backend(self) -> None:
-        """Open the backend, start the send loop, and inject shell init code.
+        """Open the backend, start the send loop, and inject shell startup code.
 
-        Draining is enabled immediately so that the init code echo and
-        startup prompt are suppressed.  Draining ends when the first
-        precmd fires (the shell's hook emits an OSC 7 CWD sequence).
+        Draining is enabled immediately so that the startup code echo and
+        interactive-shell startup redraw are suppressed.  Draining ends on the
+        first precmd after the editor integration's READY acknowledgement, or
+        on the first precmd when no editor integration is installed.
         """
         self._reset_editor_session_state()
         self._backend.configure_editor_protocol(self._editor_nonce)
         self._backend.open(self.command, self.nrow, self.ncol)
         self.send_queue = asyncio.Queue()
         self._run_task = asyncio.create_task(self._run())
-        # Suppress the init-code echo and interactive-shell startup redraw until
+        # Suppress the startup-code echo and interactive-shell startup redraw until
         # the shell reaches its first editable prompt.  A watchdog force-ends
         # draining if that signal never arrives so the terminal cannot stay blank.
         if self._backend.supports_precmd:
@@ -371,9 +377,8 @@ class Terminal(Widget, can_focus=True):
             self._startup_drain_handle = asyncio.get_running_loop().call_later(
                 _STARTUP_DRAIN_TIMEOUT, self._force_end_startup_draining
             )
-        init_code = self._driver.init_code()
-        editor_code = self._driver.editor_integration_code(self._editor_nonce)
-        startup_code = init_code + editor_code
+        startup_code = self._driver.startup_code(self._editor_nonce)
+        self._startup_awaits_ready = self._driver.supports_editor_protocol
         if startup_code:
             self._backend.write(startup_code.encode())
 
@@ -428,8 +433,23 @@ class Terminal(Widget, can_focus=True):
         if char:
             if event.key == "enter":
                 self._at_prompt = False
+            self._keys_forwarded_since_precmd = True
             assert self.send_queue is not None
             self.send_queue.put_nowait(["stdin", char])
+
+    def has_input(self) -> bool:
+        """Return True if the shell line probably holds input.
+
+        This is the heuristic floor of the Enter decision ladder.  When the
+        prompt-end cursor is known, the rendered cursor is compared against it.
+        Otherwise the keystroke flag is used.  Neither is authoritative; the
+        editor probe is preferred whenever it is available.
+        """
+        if self._prompt_cursor_known:
+            if self._screen.cursor.y != self._prompt_cursor_y:
+                return self._screen.cursor.y > self._prompt_cursor_y
+            return self._screen.cursor.x > self._prompt_cursor_x
+        return self._keys_forwarded_since_precmd
 
     async def submit_enter(self, owner: object | None = None) -> bool:
         """Handle an Enter key from pane focus.
@@ -480,6 +500,7 @@ class Terminal(Widget, can_focus=True):
         """
         if not self._started:
             return
+        self._keys_forwarded_since_precmd = True
         if mode == "silent" and self._backend.supports_precmd:
             self._draining = True
         self._backend.write(data.encode())
@@ -526,13 +547,17 @@ class Terminal(Widget, can_focus=True):
         hook (e.g. oh-my-zsh) rather than from Nova Navigator's own precmd hook.
         These events are ignored so only NN-originated CWD notifications can
         advance a programmatic navigation transaction.
+
+        This is also the sole driver of ``at_prompt`` and, once the editor
+        protocol has signalled READY, the trigger for scheduling the one-shot
+        startup probe.
         """
         if not from_nn:
             return
-        self._at_prompt = False
         cwd = PurePath(raw.strip())
         cwd_changed = cwd != self._cwd
         self._cwd = cwd
+        self._keys_forwarded_since_precmd = False
         is_programmatic = False
 
         if (
@@ -545,6 +570,8 @@ class Terminal(Widget, can_focus=True):
             self._nav_capture_prompt_output = True
             self._nav_wait_pre_cmd_future.set_result(cwd)
             is_programmatic = True
+
+        self._at_prompt = not is_programmatic
 
         owner: object | None = None
         if not is_programmatic:
@@ -561,16 +588,21 @@ class Terminal(Widget, can_focus=True):
             )
         self.post_message(Terminal.PreCmd(self, cwd))
 
-        # Drivers without a prompt-ready signal (fallback sh) end startup and
-        # silent-send draining here at precmd.  Prompt-ready-capable drivers end
-        # draining in _handle_prompt_ready instead, after the interactive-shell
-        # typeahead redraw has settled (precmd fires mid-redraw, too early).
+        # Startup and silent-send draining end at precmd, which fires before the
+        # prompt is drawn.  When editor integration was written, wait for the
+        # precmd that follows its READY acknowledgement so the integration echo
+        # is hidden as well.
         if (
-            not self._driver.supports_prompt_ready
+            not is_programmatic
+            and (not self._startup_awaits_ready or self._editor_ready_received)
             and not self._nav_waiting_for_cwd
             and not self._nav_capture_prompt_output
         ):
             self._end_startup_draining()
+
+        if self._editor_ready_received:
+            self._precmd_after_ready_received = True
+        self._maybe_schedule_startup_probe()
 
     def _end_startup_draining(self) -> None:
         """End startup/silent-send draining and redraw the prompt in place."""
@@ -594,18 +626,22 @@ class Terminal(Widget, can_focus=True):
             self._draining = False
 
     def _handle_prompt_ready(self) -> None:
-        """Track line-editor readiness for enter and navigation coordination."""
-        self._first_prompt_ready_received = True
-        self._at_prompt = True
-        if self._nav_capture_prompt_output:
-            if (
-                self._nav_wait_prompt_ready_future is not None
-                and not self._nav_wait_prompt_ready_future.done()
-            ):
-                self._nav_wait_prompt_ready_future.set_result(None)
-        else:
-            self._end_startup_draining()
-        self._maybe_schedule_startup_probe()
+        """Snapshot the prompt-end cursor and advance navigation capture.
+
+        Prompt-ready is a hint from a shared ZLE hook that plugins may replace.
+        It never sets ``at_prompt`` or gates editor availability, and it no
+        longer ends draining: startup/silent-send draining always ends via
+        precmd instead, which fires before the prompt is drawn.
+        """
+        self._prompt_cursor_x = self._screen.cursor.x
+        self._prompt_cursor_y = self._screen.cursor.y
+        self._prompt_cursor_known = True
+        if (
+            self._nav_capture_prompt_output
+            and self._nav_wait_prompt_ready_future is not None
+            and not self._nav_wait_prompt_ready_future.done()
+        ):
+            self._nav_wait_prompt_ready_future.set_result(None)
 
     def _send_enter(self) -> None:
         """Send a carriage return to the backend and mark prompt state busy."""
@@ -825,9 +861,12 @@ class Terminal(Widget, can_focus=True):
         self._editor_expected_operation = None
         self._editor_session_failed = False
         self._startup_probe_sent = False
-        self._first_prompt_ready_received = False
+        self._precmd_after_ready_received = False
         self._at_prompt = False
         self._command_owner = None
+        self._prompt_cursor_known = False
+        self._keys_forwarded_since_precmd = False
+        self._startup_awaits_ready = False
 
     def _disable_editor_protocol(self) -> None:
         """Disable editor protocol for the remainder of this shell session."""
@@ -850,7 +889,7 @@ class Terminal(Widget, can_focus=True):
             self._startup_probe_task = None
 
     def _maybe_schedule_startup_probe(self) -> None:
-        """Schedule exactly one startup probe after READY and first prompt-ready."""
+        """Schedule exactly one startup probe after READY and the next precmd."""
         if not self._driver.supports_editor_protocol:
             return
         if (
@@ -859,7 +898,7 @@ class Terminal(Widget, can_focus=True):
             or self._startup_probe_sent
         ):
             return
-        if not self._editor_ready_received or not self._first_prompt_ready_received:
+        if not self._editor_ready_received or not self._precmd_after_ready_received:
             return
         self._startup_probe_sent = True
         self._startup_probe_task = asyncio.create_task(self._run_startup_probe())
