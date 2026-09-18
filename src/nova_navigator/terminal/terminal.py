@@ -52,7 +52,7 @@ from textual.selection import Selection
 from textual.strip import Strip
 
 from nova_navigator.terminal.pty_backend import LocalPtyBackend, PtyBackend
-from nova_navigator.terminal.shell_driver import ShellDriver, detect_driver
+from nova_navigator.terminal.shell_driver import RESTORE_SEQUENCE, STASH_SEQUENCE, ShellDriver, detect_driver
 
 _logger = logging.getLogger(__name__)
 
@@ -670,11 +670,13 @@ class Terminal(ScrollView, can_focus=True):
         return self._cwd or path
 
     def _start_nav(self) -> None:
-        """Send the hidden ``cd`` for ``_nav_target``, killing typed input first if needed.
+        """Send the hidden ``cd`` for ``_nav_target``, stashing typed input first if needed.
 
-        Ctrl+E moves to the end of the line so that Ctrl+U kills the whole line
-        in bash, where Ctrl+U only kills backwards; zsh's Ctrl+U already kills
-        the whole line.  The kill happens at most once per transaction chain.
+        Drivers with ``supports_editor_protocol`` get an atomic stash request;
+        others are killed with Ctrl+E Ctrl+U (Ctrl+E moves to the end of the
+        line so that Ctrl+U kills the whole line in bash, where Ctrl+U only
+        kills backwards; zsh's Ctrl+U already kills the whole line).  The
+        stash/kill happens at most once per transaction chain.
         """
         assert self._nav_target is not None
         self._nav_busy = True
@@ -682,16 +684,22 @@ class Terminal(ScrollView, can_focus=True):
         self._draining = True
         if not self._nav_stashed and self.has_input():
             self._nav_stashed = True
-            self._backend.write((_END_OF_LINE + _KILL_LINE).encode())
+            if self._driver.supports_editor_protocol:
+                self._backend.write(STASH_SEQUENCE)
+            else:
+                self._backend.write((_END_OF_LINE + _KILL_LINE).encode())
         self._backend.write((" " + self._driver.cd_command(str(self._nav_target)) + "\n").encode())
         self._arm_watchdog()
 
     def _finish_nav(self, cwd: PurePath) -> None:
-        """Complete the transaction chain: yank stashed text, end draining, resolve."""
+        """Complete the transaction chain: restore stashed text, end draining, resolve."""
         if self._nav_stashed:
             self._nav_stashed = False
-            self._backend.write((_YANK + _END_OF_LINE).encode())
-            # The yank echo arrives after the prompt and would be absorbed into
+            if self._driver.supports_editor_protocol:
+                self._backend.write(RESTORE_SEQUENCE)
+            else:
+                self._backend.write((_YANK + _END_OF_LINE).encode())
+            # The restore/yank echo arrives after the prompt and would be absorbed into
             # the snapshot, so report input as present for this prompt line.
             self._input_since_precmd = True
         self._nav_target = None

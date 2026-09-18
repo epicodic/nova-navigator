@@ -20,7 +20,7 @@ from textual.geometry import Size
 
 import nova_navigator.terminal.terminal as terminal_module
 from nova_navigator.terminal.pty_backend import PtyBackend
-from nova_navigator.terminal.shell_driver import FallbackDriver, ZshDriver
+from nova_navigator.terminal.shell_driver import RESTORE_SEQUENCE, STASH_SEQUENCE, FallbackDriver, ZshDriver
 from nova_navigator.terminal.terminal import (
     Terminal,
     TerminalDisplay,
@@ -28,6 +28,7 @@ from nova_navigator.terminal.terminal import (
     _encode_mouse,
     _translate_terminal_color,
 )
+from nova_navigator.terminal.vfs_shell.virtual_pty_backend import VfsShellDriver
 
 
 class FakePtyBackend(PtyBackend):
@@ -2226,6 +2227,13 @@ def _new_zsh_terminal() -> tuple[FakePtyBackend, Terminal]:
     return backend, terminal
 
 
+def _new_vfs_terminal() -> tuple[FakePtyBackend, Terminal]:
+    """A terminal driven by VfsShellDriver, which supports the stash/restore protocol."""
+    backend = FakePtyBackend()
+    terminal = Terminal("", backend=backend, driver=VfsShellDriver())
+    return backend, terminal
+
+
 def test_request_cd_at_current_cwd_with_nothing_pending_is_noop() -> None:
     backend, terminal = _new_zsh_terminal()
     terminal._started = True
@@ -2388,6 +2396,64 @@ async def test_completed_navigation_with_stash_reports_input_present() -> None:
             await recv_q.put(["stdout", "$ ls"])  # prompt plus yanked text
             await pilot.pause(delay=0.1)
             assert terminal.has_input() is True
+        finally:
+            await _stop_recv_only(terminal)
+
+
+# ---------------------------------------------------------------------------
+# Navigation transaction — editor-protocol drivers (e.g. VfsShellDriver)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_request_cd_stashes_with_editor_protocol_when_input_present() -> None:
+    backend, terminal = _new_vfs_terminal()
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._started = True
+        terminal._at_prompt = True
+        terminal._note_user_input("l")
+        terminal.request_cd(PurePath("/a"))
+        assert backend.writes[0] == STASH_SEQUENCE
+        assert terminal._nav_stashed is True
+        assert _KILL not in backend.writes
+        terminal._cancel_watchdog()
+
+
+@pytest.mark.asyncio
+async def test_request_cd_with_editor_protocol_and_no_input_skips_stash() -> None:
+    backend, terminal = _new_vfs_terminal()
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._started = True
+        terminal._at_prompt = True
+        terminal.request_cd(PurePath("/a"))
+        assert STASH_SEQUENCE not in backend.writes
+        assert terminal._nav_stashed is False
+        terminal._cancel_watchdog()
+
+
+@pytest.mark.asyncio
+async def test_finish_nav_restores_with_editor_protocol() -> None:
+    backend, terminal = _new_vfs_terminal()
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._started = True
+            terminal._at_prompt = True
+            terminal._note_user_input("l")
+            terminal.request_cd(PurePath("/a"))
+            await recv_q.put(["pre_cmd", "/a\n"])
+            await pilot.pause(delay=0.1)
+            assert backend.writes.count(STASH_SEQUENCE) == 1
+            assert backend.writes.count(RESTORE_SEQUENCE) == 1
+            assert _YANK_BYTES not in backend.writes
+            assert terminal._draining is False
+            assert terminal._nav_busy is False
         finally:
             await _stop_recv_only(terminal)
 
