@@ -125,13 +125,9 @@ async def test_enter_with_typed_text_in_minimized_mode_executes_in_terminal(app_
     for key in "echo":
         await app_ctx.pilot.press(key)
     # Pilot.press("enter") leaves character=None (a synthesis quirk of the test
-    # harness); real keyboard input always carries the raw "\r", so inject that
-    # directly the same way Pilot itself feeds keys to the driver.
-    enter_event = events.Key("enter", "\r")
-    enter_event.set_sender(app_ctx.app)
-    driver = app_ctx.app._driver
-    assert driver is not None
-    driver.send_message(enter_event)
+    # harness); real keyboard input always carries the raw "\r", so call the
+    # handler under test directly with a Key event that carries it.
+    await app_ctx.screen._handle_key(events.Key("enter", "\r"))
     await app_ctx.pilot.pause(delay=0.5)
 
     assert app_ctx.screen._left_panel.path.path == app_ctx.src_dir

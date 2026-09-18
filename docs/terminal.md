@@ -100,20 +100,18 @@ The full lifecycle is: `open()` → `attach_readers()` → normal operation → 
 | `init_code()` | Return shell code to inject at startup (installs precmd hook) |
 | `quote(arg)` | Return a shell-safe quoted form of an argument |
 | `cd_command(path)` | Return a complete `cd` command string |
-| `supports_prompt_ready` | Property — True if init code installs an OSC 133;B prompt-end hook |
+| `supports_line_editing` | Property — True if the shell has an emacs-style line editor (kill and yank) used for hidden navigation |
 
 ### Concrete Drivers
 
 **ZshDriver** — installs a precmd hook via `precmd_functions+=(_nn_precmd)`.
 The hook emits an OSC 7 CWD sequence.
-Also installs a `zle-line-init` widget that emits OSC 133;B for prompt detection.
 
 **BashDriver** — installs a precmd hook via `PROMPT_COMMAND`.
-Also embeds OSC 133;B in PS1 for prompt detection.
 
 **FallbackDriver** — generic POSIX sh driver.
 Installs a `PS1`-based hook that emits OSC 7.
-Does not support prompt detection (no OSC 133;B).
+Has no line editor, so directory navigation writes a visible `cd` without input preservation.
 Uses `printf '%b_'` with octal escapes for cd commands (Midnight Commander technique).
 
 ### Quoting
@@ -160,14 +158,18 @@ The stored lines in `_display` are never mutated.
 | `send_queue` | `asyncio.Queue \| None` | Commands from the widget to the PTY writer task |
 | `recv_queue` | `asyncio.Queue \| None` | Events from the backend readers, consumed by `recv()` |
 | `_draining` | `bool` | When True, stdout is discarded (not fed to pyte) |
-| `_nav_pending` | `int` | Number of in-flight navigations awaiting pre_cmd acknowledgement |
-| `_nav_future` | `Future[PurePath] \| None` | Resolved when `_nav_pending` reaches zero |
-| `_prompt_cursor_x` | `int` | Cursor X position captured after the most recent prompt |
-| `_prompt_cursor_y` | `int` | Cursor Y position captured after the most recent prompt |
-| `_prompt_ready_received` | `bool` | True after the prompt position has been snapshotted |
-| `_keys_forwarded_since_precmd` | `bool` | True if any key was sent to the shell since the last precmd |
-| `_snapshot_prompt_after_precmd` | `bool` | Set True to capture prompt position on the next stdout chunk |
-| `_pending_yank` | `bool` | Whether to restore killed text after draining ends |
+| `_input_since_precmd` | `bool` | True once any user-originated byte was sent since the last precmd |
+| `_prompt_snapshot` | `tuple[int, int, str] \| None` | Cursor row, column, and row text captured after every stdout chunk until the first user byte |
+| `_at_prompt` | `bool` | True while the shell waits for a command line |
+| `owner` | `object \| None` | Token set by the host (the active pane); recorded on command submission |
+| `_command_owner` | `object \| None` | Copy of `owner` taken when the user submits a command; attached to the next user-initiated `PathChanged` |
+| `_nav_target` | `PurePath \| None` | Newest requested directory not yet confirmed by the shell |
+| `_nav_busy` | `bool` | A `cd` was written and its precmd is awaited |
+| `_nav_stashed` | `bool` | Typed text was killed and is yanked back on completion |
+| `_nav_future` | `Future[PurePath] \| None` | Resolved when the transaction chain completes |
+| `_nav_watchdog` | `TimerHandle \| None` | Fires when no precmd follows a `cd` |
+| `_hook_repaired` | `bool` | True after the precmd hook has been re-installed once this shell session |
+| `_cwd` | `PurePath \| None` | Last known working directory reported by the shell via precmd |
 | `_rebuild_handle` | `TimerHandle \| None` | Pending `call_later` for the next deferred display rebuild |
 
 ### Module-Level Constants
@@ -179,6 +181,7 @@ The stored lines in `_display` are never mutated.
 | `_MOUSE_TRACKING_MODES` | `frozenset({"1000", "1002", "1003", "1006"})` | DECSET mode numbers that toggle mouse tracking |
 | `_RECV_DRAIN_LIMIT` | `100` | Maximum messages drained per `recv()` iteration |
 | `_DISPLAY_FPS` | `60.0` | Maximum display rebuild rate in frames per second |
+| `_NAV_WATCHDOG_TIMEOUT` | `2.0` | Seconds to wait for a precmd after a `cd` before repairing the hook |
 
 ### Lifecycle
 
@@ -290,90 +293,91 @@ When the first OSC 7 arrives, draining ends and the prompt is displayed.
 
 ## Input Detection (`has_input()`)
 
-The `has_input()` method determines whether the user has typed something on the current prompt line.
-It is used by the host application to decide whether pressing Enter should execute a command in the terminal or trigger a panel action (e.g. open a file).
+`has_input()` tells the host whether the shell line holds user input, so Enter from a pane can execute a typed command or, when the line is empty, act on the pane.
 
-### Two-Tier Strategy
+It uses two facts that Nova Navigator owns and needs nothing from the shell.
 
-1. **Primary — cursor comparison** (when prompt position is known):
-   The cursor position at the end of the prompt is snapshotted.
-   If the current cursor is past that position, the user has typed something.
-   This correctly handles "typed then deleted" (cursor returns to prompt position → `False`).
+### Fact A: user bytes since precmd
 
-2. **Fallback — keystroke tracking** (when prompt position is unknown):
-   A flag (`_keys_forwarded_since_precmd`) is set whenever a key event is forwarded to the shell and cleared on each precmd.
-   This works for any shell but cannot detect the "typed then deleted everything" case (conservatively returns `True`).
+Every path into the shell goes through the widget: `on_key`, `_paste_text`, and `send()`.
+Each sets `_input_since_precmd`; every precmd clears it.
+Internal writes (kill, `cd`, yank, init code) never set it.
+If no user byte was sent, the line is empty, and this answer is certain.
 
-### Prompt Position Snapshotting
+### Fact B: the screen before the first user byte
 
-The prompt position is captured from two sources, whichever fires first:
+After precmd, `_prompt_snapshot` is refreshed after every stdout chunk while `_input_since_precmd` is false.
+It is therefore frozen at the moment the user starts typing, when the prompt is fully drawn on screen.
+No prompt-end marker or timing guess is needed, and multi-chunk or asynchronous prompts are handled by construction.
 
-- **OSC 133;B** — emitted by `zle-line-init` (zsh) or embedded in PS1 (bash).
-  This is the most precise signal: it fires at the exact moment the shell enters line-editing mode, with the cursor at the end of the prompt.
+### Decision
 
-- **First stdout after precmd** — when OSC 133;B is not available (e.g. overridden by oh-my-zsh plugins), `_snapshot_prompt_after_precmd` is set True by `_handle_pre_cmd`.
-  The next stdout chunk (which is the prompt text) triggers a cursor snapshot.
-  This is slightly less precise (may capture mid-prompt if the prompt arrives in multiple chunks) but handles the "typed then deleted" case.
+| Bytes sent since precmd | Screen vs snapshot | Result |
+|---|---|---|
+| no | — | `False` |
+| yes | cursor and row text identical | `False` (typed, then deleted everything) |
+| yes | anything differs | `True` |
 
-### Shell Compatibility
+Comparing the row text as well as the cursor handles Home, wide characters, and wrapped input.
+After a navigation that restored typed text, the flag is set and the snapshot is left empty, so the answer is `True` for that prompt line.
+The only misjudgement is "typed, deleted everything, and the prompt repainted asynchronously", which yields `True`; Enter then executes an empty line, which is harmless.
 
-| Shell | Primary detection | Fallback |
-|-------|-------------------|----------|
-| zsh (with NN hooks intact) | Cursor comparison (OSC 133;B) | Keystroke flag |
-| zsh (hooks overridden by plugins) | Cursor comparison (post-precmd snapshot) | Keystroke flag |
-| bash | Cursor comparison (PS1 OSC 133;B) | Keystroke flag |
-| POSIX sh (FallbackDriver) | Not available | Keystroke flag only |
-| SSH (any shell) | Same as corresponding shell above | Keystroke flag |
+The mechanism is identical for zsh, bash, local, and SSH terminals.
 
 ---
 
 ## Directory Navigation Flow
 
-A walkthrough of `request_cd(path)`:
+A pane-driven directory change is one serialised transaction per terminal.
 
-1. **Short-circuit.** If `_nav_pending == 0` and `_cwd == path`, return immediately.
-2. **Check for typed input.** `has_input()` determines whether the user has typed something.
-3. **Increment counter.** `_nav_pending += 1`.
-4. **Enable draining.** Set `_draining = True` so `recv()` suppresses subsequent stdout.
-5. **Save typed text.** If the user has typed something, send `Ctrl+U` (kill line) to save it to the shell's kill ring.
-   Draining is already active so the kill echo is suppressed.
-6. **Send cd command.** Write ` cd <quoted_path>\n` to the backend (leading space for history exclusion).
-7. **Shell executes cd.** The shell changes directory and runs the precmd hook.
-8. **Precmd hook fires.** The hook emits OSC 7 with the new CWD.
-9. **recv() processes pre_cmd.** Decrements `_nav_pending`.
-   If it reaches zero: writes `Ctrl+Y` + `Ctrl+E` (yank + end-of-line) if text was killed, clears `_draining`, resolves the navigation future, and enables prompt snapshotting.
-10. **Shell prints prompt.** First stdout after precmd is displayed normally.
-    Prompt position is snapshotted.
+`request_cd(path)` stores *path* as `_nav_target` and, when the shell is at a prompt and no transaction is busy, calls `_start_nav()`.
+If the shell is running a command, the target waits and is applied on the next precmd.
+If the shell already reports *path* and nothing is pending, the request is a no-op.
 
-### Rapid Panel Switching
+`_start_nav()` enables draining, kills typed input with Ctrl+E Ctrl+U if `has_input()` is true (once per chain), writes ` cd <quoted>\n`, and arms the watchdog.
+Ctrl+E is needed for bash, where Ctrl+U only kills text before the cursor.
 
-When the user switches panels faster than the shell can process cd commands, multiple navigations may be in flight.
-The `_nav_pending` counter tracks how many navigations have not yet been acknowledged by a `pre_cmd`.
-Draining stays on until the counter reaches zero, preventing intermediate cd echoes from leaking.
+The precmd hook's OSC 7 completes the step.
+If a newer target arrived meanwhile, `_handle_pre_cmd` chains directly into another `_start_nav()` while draining stays on, so intermediate prompts are never shown.
+Otherwise `_finish_nav()` yanks stashed text back with Ctrl+Y Ctrl+E, ends draining with the `\r\x1b[K` in-place redraw, and resolves `_nav_future`.
 
-Only the final `PathChanged` is posted (when `_nav_pending` reaches 0 and the cwd has changed).
-Intermediate cds are silently consumed.
+### Precmd classification
 
-### Active-Panel Routing
+A precmd that arrives while `_nav_busy` is true belongs to the transaction.
+Any other precmd is a user command cycle: a changed cwd posts `PathChanged` with the recorded `owner`, and a stored target is then applied.
 
-User-initiated directory changes (the user types `cd /somewhere` in the terminal) post `PathChanged` with `user_initiated=True`.
-The host application routes these to the **currently active panel** (Midnight Commander model).
-No shell-side panel identification variables are used, eliminating race conditions between rapid panel switches.
+### Watchdog and hook repair
+
+If no precmd follows a `cd` within `_NAV_WATCHDOG_TIMEOUT`, the precmd hook was most likely removed by an rc file or plugin.
+On the first timeout in a session the driver's `init_code()` is re-sent followed by the `cd`; the init line's own precmd reports the old directory, so the normal chaining rule re-sends the `cd` and the transaction completes.
+On a second timeout the transaction gives up, yanks stashed text, ends draining, and resolves the future with the last known cwd.
+
+### Pane ownership
+
+The host sets `Terminal.owner` to the active pane whenever it syncs the terminal.
+When user input containing a newline is forwarded, the widget copies `owner` into `_command_owner`.
+The next user-initiated `PathChanged` carries that owner, so the pane that submitted the command follows the shell even if the user switched panes before the command finished.
+
+### Derived target on the host side
+
+`MainScreen._sync_terminal_to_active_panel()` reads the active panel's path at call time and calls `request_cd` with it.
+It is invoked on Tab, on panel focus, and on every `DirectoryBrowser.PathChanged`.
+Because the target is derived rather than passed, a delayed handler can never move the terminal to a panel that is no longer active, and a path change in the inactive panel resolves to a no-op.
+
+### Startup
+
+`_start_backend()` enables draining and writes the init code.
+The first precmd ends draining and marks the shell as at a prompt; a target stored before that is applied then.
 
 ### Awaitable Return Value
 
-`set_terminal_directory` returns the actual CWD reported by the shell (a `PurePath`).
-If no navigation is needed, it returns the cached `_cwd` immediately.
+`set_terminal_directory` awaits the transaction future and returns the CWD reported by the shell.
+If no transaction is required, it returns the last known CWD, or the requested path when none is known yet.
 
-### History Exclusion
+### History exclusion
 
-Navigation cd commands must not pollute the shell's command history.
-The cd command is prefixed with a leading space.
-The init code also configures the shell to honour this convention:
-
-- **zsh:** `setopt HIST_IGNORE_SPACE` — commands starting with a space are excluded from history.
-- **bash:** `HISTCONTROL="${HISTCONTROL:+${HISTCONTROL}:}ignorespace"` — appended without overwriting user settings.
-
+Navigation `cd` commands are prefixed with a space.
+The init code enables `HIST_IGNORE_SPACE` (zsh) or appends `ignorespace` to `HISTCONTROL` (bash).
 Both settings are idempotent and have no effect on user-typed commands that do not start with a space.
 
 ---
@@ -387,7 +391,7 @@ Both settings are idempotent and have no effect on user-typed commands that do n
 3. Printable characters use `event.character` directly.
 4. `ctrl+f1` releases focus back to the application without sending to the shell.
 5. `ctrl+shift+c` copies the current text selection to the clipboard instead of being sent to the shell.
-6. The `_keys_forwarded_since_precmd` flag is set.
+6. The widget records user input via `_note_user_input`, which sets `_input_since_precmd` and, for Enter, clears `_at_prompt` and records the command owner.
 7. The result is placed on `send_queue` as `["stdin", text]`.
 8. `_run()` writes the encoded bytes to the PTY via `backend.write()`.
 
@@ -468,7 +472,6 @@ Both queues carry `list[object]` messages with a string command as the first ele
 | `setup` | `["setup", {}]` | `_run()` | Initial setup signal after readers are attached |
 | `stdout` | `["stdout", str]` | `_process_chunk` | Shell output (OSC sequences already stripped) |
 | `pre_cmd` | `["pre_cmd", path, from_nn]` | `_process_chunk` | CWD from OSC 7; `from_nn` is True for NN hooks |
-| `prompt_ready` | `["prompt_ready"]` | `_process_chunk` | OSC 133;B detected (prompt end) |
 | `disconnect` | `["disconnect", int]` | reader callback | Shell process exited or read error |
 
 The `recv()` loop drains up to `_RECV_DRAIN_LIMIT` (100) messages per wakeup to batch processing.
@@ -509,7 +512,7 @@ To add a new shell driver:
 1. Subclass `ShellDriver`.
 2. Implement `init_code()` — install a precmd hook that emits OSC 7 with the `panel=;file:///path` format.
 3. Implement `quote(arg)` — return a safely quoted string for that shell's syntax.
-4. Set `prompt_ready=True` if the hook also installs an OSC 133;B prompt-end marker.
+4. Pass `line_editing=True` to the base constructor if the shell has an emacs-style line editor.
 5. Update `detect_driver()` in `shell_driver.py` to recognise the shell name.
 
 All drivers share the same draining mechanism.
