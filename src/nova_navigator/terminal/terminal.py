@@ -870,6 +870,7 @@ class Terminal(ScrollView, can_focus=True):
             return
         cwd = PurePath(raw.strip())
         cwd_changed = cwd != self._cwd
+        is_bootstrap_precmd = self._cwd is None
         self._cwd = cwd
         self._at_prompt = True
         self._input_since_precmd = False
@@ -885,7 +886,9 @@ class Terminal(ScrollView, can_focus=True):
                 self._end_draining()
             owner = self._command_owner
             self._command_owner = None
-            if cwd_changed:
+            # The shell's very first precmd merely reports where it happened to launch, not a
+            # real navigation, unless it is itself the result of a user-submitted command.
+            if cwd_changed and (not is_bootstrap_precmd or owner is not None):
                 self.post_message(Terminal.PathChanged(self, cwd, owner=owner))
             self._apply_pending_target(cwd)
         self.post_message(Terminal.PreCmd(self, cwd))

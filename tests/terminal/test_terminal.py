@@ -1750,6 +1750,8 @@ async def test_path_changed_event_has_no_panel_id() -> None:
         await pilot.pause()
         recv_q = await _start_recv_only(terminal)
         try:
+            # A prior known cwd makes this a real (non-bootstrap) cwd change.
+            terminal._cwd = PurePath("/before")
             await recv_q.put(["pre_cmd", "/home/user\n", True])
             await pilot.pause(delay=0.15)
 
@@ -2405,6 +2407,31 @@ async def test_precmd_during_busy_transaction_is_not_user_initiated() -> None:
             await pilot.pause(delay=0.1)
             assert app.received == []
         finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_first_precmd_before_any_command_does_not_post_stale_path_changed() -> None:
+    """A freshly-started shell's first precmd reports its own launch directory, not a real
+    navigation; it must not be forwarded as PathChanged, even when a request_cd issued before
+    the shell reached its first prompt is still pending."""
+    backend, terminal = _new_zsh_terminal()
+    app = _PathChangedRecorder(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._started = True
+            terminal._at_prompt = False  # shell still booting, no prompt yet
+            terminal.request_cd(PurePath("/desired"))  # queued, not sent yet
+            assert _cd_writes(backend) == []
+            # The shell's first precmd reports wherever it actually launched, unrelated to /desired.
+            await recv_q.put(["pre_cmd", "/actual-launch-dir\n"])
+            await pilot.pause(delay=0.1)
+            assert app.received == []
+            assert _cd_writes(backend) == [_expected_cd("/desired")]
+        finally:
+            terminal._cancel_watchdog()
             await _stop_recv_only(terminal)
 
 

@@ -346,6 +346,12 @@ Otherwise `_finish_nav()` yanks stashed text back with Ctrl+Y Ctrl+E, ends drain
 A precmd that arrives while `_nav_busy` is true belongs to the transaction.
 Any other precmd is a user command cycle: a changed cwd posts `PathChanged` with the recorded `owner`, and a stored target is then applied.
 
+The shell's very first precmd (before `_cwd` is ever known) is a bootstrap exception: it reports
+wherever the shell happened to launch, not a real navigation, so it does not post `PathChanged`
+unless it is itself the result of a user-submitted command (`owner` is not `None`).
+Otherwise a slow-starting shell could report its launch directory after a navigation to a
+different directory is already in flight, clobbering it.
+
 ### Watchdog and hook repair
 
 If no precmd follows a `cd` within `_NAV_WATCHDOG_TIMEOUT`, the precmd hook was most likely removed by an rc file or plugin.
@@ -368,6 +374,7 @@ Because the target is derived rather than passed, a delayed handler can never mo
 
 `_start_backend()` enables draining and writes the init code.
 The first precmd ends draining and marks the shell as at a prompt; a target stored before that is applied then.
+That first precmd does not post `PathChanged` (see [Precmd classification](#precmd-classification)).
 
 ### Awaitable Return Value
 
