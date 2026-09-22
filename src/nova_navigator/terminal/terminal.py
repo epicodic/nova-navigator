@@ -75,6 +75,7 @@ _RECV_DRAIN_LIMIT: int = 100
 _DISPLAY_FPS: float = 60.0
 _ED_ERASE_SCROLLBACK = 3  # ED (erase in display) parameter for "erase saved lines"
 _NAV_WATCHDOG_TIMEOUT = 2.0
+_NAV_MAX_SAME_TARGET_ATTEMPTS = 3
 
 _re_ansi_sequence = re.compile(r"(\x1b\[\??[\d;]*[a-zA-Z])")
 _DECSET_PREFIX = "\x1b[?"
@@ -348,6 +349,12 @@ class Terminal(ScrollView, can_focus=True):
         self._nav_target: PurePath | None = None
         # A cd has been written and its precmd is awaited.
         self._nav_busy: bool = False
+        # The target most recently sent to the shell, and how many consecutive
+        # times it has been (re)sent without the shell ever reporting it as cwd.
+        # Distinguishes "a newer target replaced this one" (reset, keep chaining)
+        # from "the shell can't reach this target" (bounded, then give up).
+        self._nav_last_sent_target: PurePath | None = None
+        self._nav_same_target_attempts: int = 0
         # User text was killed before the cd and must be yanked back on completion.
         self._nav_stashed: bool = False
         # Resolved when the transaction chain completes; awaited by set_terminal_directory.
@@ -679,6 +686,11 @@ class Terminal(ScrollView, can_focus=True):
         stash/kill happens at most once per transaction chain.
         """
         assert self._nav_target is not None
+        if self._nav_target == self._nav_last_sent_target:
+            self._nav_same_target_attempts += 1
+        else:
+            self._nav_last_sent_target = self._nav_target
+            self._nav_same_target_attempts = 1
         self._nav_busy = True
         self._at_prompt = False
         self._draining = True
@@ -704,6 +716,8 @@ class Terminal(ScrollView, can_focus=True):
             self._input_since_precmd = True
         self._nav_target = None
         self._nav_busy = False
+        self._nav_last_sent_target = None
+        self._nav_same_target_attempts = 0
         self._end_draining()
         self._resolve_nav_future(cwd)
 
@@ -871,6 +885,10 @@ class Terminal(ScrollView, can_focus=True):
         Third-party OSC 7 sequences (``from_nn`` False, e.g. oh-my-zsh) are
         ignored.  A precmd that arrives while a transaction is busy belongs to
         that transaction and either chains to a newer target or completes it.
+        A precmd that reports the *same* mismatched target too many times in a
+        row means the shell cannot reach it (e.g. the directory was deleted or
+        is not accessible), so the transaction gives up rather than resending
+        the identical ``cd`` forever.
         Any other precmd is a user command cycle: it may report a user-initiated
         directory change and then applies a target stored while the shell was busy.
         """
@@ -885,9 +903,12 @@ class Terminal(ScrollView, can_focus=True):
         self._prompt_snapshot = None
         if self._nav_busy:
             self._cancel_watchdog()
-            if self._nav_target is not None and cwd != self._nav_target:
+            can_retry = self._nav_same_target_attempts < _NAV_MAX_SAME_TARGET_ATTEMPTS
+            if self._nav_target is not None and cwd != self._nav_target and can_retry:
                 self._start_nav()
             else:
+                if self._nav_target is not None and cwd != self._nav_target:
+                    _logger.warning("Navigation to %s did not take effect after %d attempts; giving up", self._nav_target, self._nav_same_target_attempts)
                 self._finish_nav(cwd)
         else:
             if self._draining:
