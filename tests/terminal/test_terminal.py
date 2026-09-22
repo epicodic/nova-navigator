@@ -2662,6 +2662,34 @@ async def test_watchdog_gives_up_on_second_timeout_and_yanks(monkeypatch: pytest
 
 
 @pytest.mark.asyncio
+async def test_cd_to_unreachable_target_gives_up_instead_of_retrying_forever() -> None:
+    """A precmd fires after every attempt (the hook is fine) but cwd never reaches the
+    target, e.g. because the directory was deleted or is not accessible.  Unlike the
+    watchdog (which only catches a *missing* precmd), this must still be bounded."""
+    backend, terminal = _new_zsh_terminal()
+    app = TerminalTestApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._started = True
+            terminal._at_prompt = True
+            terminal._cwd = PurePath("/start")
+            future = asyncio.ensure_future(terminal.set_terminal_directory(PurePath("/does-not-exist")))
+            await asyncio.sleep(0)
+            for _ in range(10):
+                await recv_q.put(["pre_cmd", "/start\n"])
+                await pilot.pause(delay=0.01)
+            assert terminal._nav_busy is False
+            assert terminal._nav_target is None
+            assert len(_cd_writes(backend)) <= 4
+            assert await asyncio.wait_for(future, timeout=0.5) == PurePath("/start")
+        finally:
+            terminal._cancel_watchdog()
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
 async def test_disconnect_clears_navigation_state_and_resolves_future() -> None:
     _backend, terminal = _new_zsh_terminal()
     terminal.keep_alive = False

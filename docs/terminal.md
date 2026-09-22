@@ -165,6 +165,8 @@ The stored lines in `_display` are never mutated.
 | `_command_owner` | `object \| None` | Copy of `owner` taken when the user submits a command; attached to the next user-initiated `PathChanged` |
 | `_nav_target` | `PurePath \| None` | Newest requested directory not yet confirmed by the shell |
 | `_nav_busy` | `bool` | A `cd` was written and its precmd is awaited |
+| `_nav_last_sent_target` | `PurePath \| None` | The target most recently written as a `cd`; used to tell a newer target from a repeated one |
+| `_nav_same_target_attempts` | `int` | Consecutive `cd` writes for `_nav_last_sent_target` without the shell reporting it as cwd |
 | `_nav_stashed` | `bool` | Typed text was killed and is yanked back on completion |
 | `_nav_future` | `Future[PurePath] \| None` | Resolved when the transaction chain completes |
 | `_nav_watchdog` | `TimerHandle \| None` | Fires when no precmd follows a `cd` |
@@ -182,6 +184,7 @@ The stored lines in `_display` are never mutated.
 | `_RECV_DRAIN_LIMIT` | `100` | Maximum messages drained per `recv()` iteration |
 | `_DISPLAY_FPS` | `60.0` | Maximum display rebuild rate in frames per second |
 | `_NAV_WATCHDOG_TIMEOUT` | `2.0` | Seconds to wait for a precmd after a `cd` before repairing the hook |
+| `_NAV_MAX_SAME_TARGET_ATTEMPTS` | `3` | Consecutive `cd` attempts for one target before giving up on a mismatched cwd |
 
 ### Lifecycle
 
@@ -340,6 +343,7 @@ Ctrl+E is needed for bash, where Ctrl+U only kills text before the cursor.
 The precmd hook's OSC 7 completes the step.
 If a newer target arrived meanwhile, `_handle_pre_cmd` chains directly into another `_start_nav()` while draining stays on, so intermediate prompts are never shown.
 Otherwise `_finish_nav()` yanks stashed text back with Ctrl+Y Ctrl+E, ends draining with the `\r\x1b[K` in-place redraw, and resolves `_nav_future`.
+See [Giving up on an unreachable target](#giving-up-on-an-unreachable-target) for what happens when the reported cwd keeps mismatching the *same* target instead.
 
 ### Precmd classification
 
@@ -357,6 +361,18 @@ different directory is already in flight, clobbering it.
 If no precmd follows a `cd` within `_NAV_WATCHDOG_TIMEOUT`, the precmd hook was most likely removed by an rc file or plugin.
 On the first timeout in a session the driver's `init_code()` is re-sent followed by the `cd`; the init line's own precmd reports the old directory, so the normal chaining rule re-sends the `cd` and the transaction completes.
 On a second timeout the transaction gives up, yanks stashed text, ends draining, and resolves the future with the last known cwd.
+
+### Giving up on an unreachable target
+
+A precmd can also arrive every time yet never report `_nav_target` as the cwd, because the `cd` itself keeps failing (the directory was deleted, is not accessible, and so on).
+This does not trip the watchdog: a precmd *does* arrive, so `_cancel_watchdog()` disarms it before the mismatch is even checked.
+
+`_handle_pre_cmd` tells the two cases apart by comparing `_nav_target` against `_nav_last_sent_target`, the target the most recent `_start_nav()` actually wrote:
+
+- **Target changed** (a newer `request_cd()` replaced it while busy) — `_nav_same_target_attempts` resets to 1 and the chain proceeds as normal.
+- **Same target repeated** — the counter increments; once it reaches `_NAV_MAX_SAME_TARGET_ATTEMPTS`, the transaction gives up exactly like a second watchdog timeout: `_finish_nav()` runs with the actually-reported cwd instead of resending the same `cd` again.
+
+Without this bound, a target the shell can never reach would make `_handle_pre_cmd` resend the identical `cd` forever, one resend per precmd.
 
 ### Pane ownership
 
