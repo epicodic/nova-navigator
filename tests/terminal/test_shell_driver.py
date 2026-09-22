@@ -66,6 +66,16 @@ def test_ansi_c_quote_long_path_gets_line_continuation() -> None:
     assert "\\\n" in result
 
 
+def test_ansi_c_quote_escapes_non_ascii_by_utf8_byte_not_codepoint() -> None:
+    # U+00A6 BROKEN BAR encodes as two UTF-8 bytes: 0xC2 0xA6 (octal 302, 246).
+    # Escaping by codepoint alone (ord() == 166 == octal 246) would emit a lone
+    # \246, which is not valid UTF-8 and makes the shell's cd target diverge
+    # from the real filename on disk.
+    result = _ansi_c_quote("foo ¦ bar")
+    assert "\\302\\246" in result
+    assert "\\246" not in result.replace("\\302\\246", "")
+
+
 # ---------------------------------------------------------------------------
 # _posix_octal_escape
 # ---------------------------------------------------------------------------
@@ -89,6 +99,13 @@ def test_posix_octal_escape_simple_path() -> None:
 def test_posix_octal_escape_empty_string() -> None:
     result = _posix_octal_escape("")
     assert result == ""
+
+
+def test_posix_octal_escape_non_ascii_by_utf8_byte_not_codepoint() -> None:
+    # Same UTF-8-byte requirement as _ansi_c_quote: U+00A6 must become the two
+    # bytes 0xC2 0xA6 (octal 302, 246), not a single \0246 for the codepoint.
+    result = _posix_octal_escape("¦")
+    assert result == "\\0302\\0246"
 
 
 # ---------------------------------------------------------------------------
