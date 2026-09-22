@@ -35,17 +35,21 @@ def _ansi_c_quote(arg: str) -> str:
     r"""Quote *arg* using ANSI-C ``$'...'`` syntax with octal escapes.
 
     Every byte outside ``[a-zA-Z0-9/._-]`` is escaped as ``\\ooo`` (3-digit octal).
+    *arg* is encoded to UTF-8 first and escaped byte by byte, not by Unicode
+    codepoint: a codepoint above ``0x7f`` spans multiple UTF-8 bytes, so escaping
+    by codepoint would emit the wrong (single, invalid) byte for it.
     Line continuations (``\\\\\\n``) are inserted every 250 bytes to stay within
     the kernel cooked-mode buffer limit on some platforms.
     """
     parts: list[str] = []
     line_len = 0
-    for char in arg:
+    for byte in arg.encode("utf-8"):
+        char = chr(byte)
         if char in _SAFE_CHARS:
             parts.append(char)
             line_len += 1
         else:
-            escaped = f"\\{ord(char):03o}"
+            escaped = f"\\{byte:03o}"
             parts.append(escaped)
             line_len += len(escaped)
         if line_len >= _LINE_CONTINUATION_LIMIT:
@@ -58,9 +62,11 @@ def _posix_octal_escape(arg: str) -> str:
     r"""Escape *arg* as a sequence of ``\0ooo`` octal codes for ``printf '%b'``.
 
     This is the POSIX sh fallback quoting used by Midnight Commander when
-    ANSI-C ``$'...'`` is not available.
+    ANSI-C ``$'...'`` is not available.  *arg* is encoded to UTF-8 first and
+    escaped byte by byte, not by Unicode codepoint, for the same reason as
+    ``_ansi_c_quote``: a codepoint above ``0x7f`` spans multiple UTF-8 bytes.
     """
-    return "".join(f"\\0{ord(char):03o}" for char in arg)
+    return "".join(f"\\0{byte:03o}" for byte in arg.encode("utf-8"))
 
 
 class ShellDriver(ABC):
