@@ -7,6 +7,8 @@ wheels/
 *.egg-info
 .coverage
 
+.serena/
+
 # just for local development
 .agents
 docs/agents
