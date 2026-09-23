@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from nova_navigator.terminal.shell_driver import (
+    _ZSH_RAW_END_OF_LINE_SEQUENCE,
     BashDriver,
     FallbackDriver,
     ZshDriver,
@@ -229,6 +230,80 @@ def test_detect_driver_bash() -> None:
 def test_detect_driver_sh() -> None:
     driver = detect_driver("/bin/sh")
     assert isinstance(driver, FallbackDriver)
+
+
+# ---------------------------------------------------------------------------
+# kill_line_sequence / yank_sequence
+# ---------------------------------------------------------------------------
+
+
+def test_bash_driver_kill_line_sequence_moves_to_end_before_killing() -> None:
+    """Bash's Ctrl+U (unix-line-discard) only kills backward from the cursor, so
+    the cursor must reach the true end (Ctrl+E) before it, or trailing typed text
+    would survive the kill."""
+    driver = BashDriver()
+    seq = driver.kill_line_sequence()
+    assert seq.startswith(b"\x05")  # Ctrl+E
+    assert seq.endswith(b"\x15")  # Ctrl+U
+
+
+def test_bash_driver_kill_line_sequence_types_a_space_before_killing() -> None:
+    """A literal space is typed before the kill so it is never empty: an empty kill
+    leaves the kill ring untouched, so a later kill of an already-empty line would
+    still yank back stale, unrelated text on the next ``yank_sequence()``."""
+    driver = BashDriver()
+    seq = driver.kill_line_sequence()
+    assert seq == b"\x05 \x15"
+
+
+def test_bash_driver_yank_sequence_backspaces_off_the_marker_space() -> None:
+    """Backspace (not Ctrl+E) reaches the true end: the marker space is always
+    the last character restored, so backspace removes exactly it."""
+    driver = BashDriver()
+    seq = driver.yank_sequence()
+    assert seq == b"\x19\x08"
+
+
+def test_zsh_driver_kill_line_sequence_uses_private_raw_eol_not_real_ctrl_e() -> None:
+    """Real Ctrl+E (end-of-line) is one of zsh-autosuggestions' default
+    accept-widgets: sending it while a suggestion is showing silently accepts
+    the suggestion into the real buffer.  The private CSI sequence bound in
+    ``init_code()`` to the unwrapped ``.end-of-line`` builtin reaches the true
+    end without that risk."""
+    driver = ZshDriver()
+    seq = driver.kill_line_sequence()
+    assert b"\x05" not in seq  # never the real Ctrl+E
+    assert seq.startswith(_ZSH_RAW_END_OF_LINE_SEQUENCE)
+
+
+def test_zsh_driver_kill_line_sequence_types_a_space_before_killing() -> None:
+    driver = ZshDriver()
+    seq = driver.kill_line_sequence()
+    assert seq == _ZSH_RAW_END_OF_LINE_SEQUENCE + b" \x15"
+
+
+def test_zsh_driver_yank_sequence_backspaces_off_the_marker_space() -> None:
+    """Backspace (not Ctrl+E) reaches the true end: a trailing Ctrl+E here would
+    risk accepting a new autosuggestion formed from the just-restored text."""
+    driver = ZshDriver()
+    seq = driver.yank_sequence()
+    assert seq == b"\x19\x08"
+
+
+def test_zsh_driver_init_code_defines_raw_eol_widget_bound_to_private_sequence() -> None:
+    """The private sequence kill_line_sequence() sends must be bound in
+    init_code() to a widget that calls the real, unwrapped ``.end-of-line``."""
+    code = ZshDriver().init_code()
+    assert "zle .end-of-line" in code
+    assert "zle -N _nn_raw_eol" in code
+    assert r"\e[96~" in code
+
+
+def test_fallback_driver_does_not_override_kill_or_yank_sequence() -> None:
+    """FallbackDriver has no line editor (supports_line_editing is False) and never
+    reaches hidden navigation's kill/yank step, so it relies on the base class."""
+    assert "kill_line_sequence" not in FallbackDriver.__dict__
+    assert "yank_sequence" not in FallbackDriver.__dict__
 
 
 # ---------------------------------------------------------------------------

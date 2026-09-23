@@ -30,6 +30,17 @@ _LINE_CONTINUATION_LIMIT = 250
 STASH_SEQUENCE = b"\x1b[98~"
 RESTORE_SEQUENCE = b"\x1b[97~"
 
+# Private, unassigned CSI sequence bound by ZshDriver.init_code() to a widget
+# that calls the shell's raw, unwrapped end-of-line motion (see
+# ZshDriver.kill_line_sequence()).
+_ZSH_RAW_END_OF_LINE_SEQUENCE = b"\x1b[96~"
+
+# Real-shell (emacs-mode) line editor control characters for hidden navigation.
+_END_OF_LINE = "\x05"  # Ctrl+E
+_KILL_LINE = "\x15"  # Ctrl+U
+_YANK = "\x19"  # Ctrl+Y
+_BACKSPACE = "\x08"  # Backward-delete-char
+
 
 def _ansi_c_quote(arg: str) -> str:
     r"""Quote *arg* using ANSI-C ``$'...'`` syntax with octal escapes.
@@ -94,6 +105,33 @@ class ShellDriver(ABC):
         """
         return False
 
+    def kill_line_sequence(self) -> bytes:
+        """Return the input bytes that clear the line editor's buffer for hidden navigation.
+
+        Moves to the end of the line first (a backward-only kill, as in bash,
+        would otherwise leave trailing text behind), then types a literal space
+        before killing so the kill is never empty: an empty kill leaves the line
+        editor's kill ring/cutbuffer untouched, so a later spurious kill (e.g.
+        one issued on an already-empty line) would still yank back stale,
+        unrelated text via :meth:`yank_sequence`.  Moving to the end first also
+        guarantees the marker space is always the *last* character killed, so
+        :meth:`yank_sequence` can always remove exactly it and nothing else.
+        Only called for drivers with ``supports_line_editing``.
+        """
+        return (_END_OF_LINE + " " + _KILL_LINE).encode()
+
+    def yank_sequence(self) -> bytes:
+        """Return the input bytes that restore text previously cleared by ``kill_line_sequence``.
+
+        A trailing backspace removes the marker space ``kill_line_sequence``
+        typed before the kill.  Because that space is always the last character
+        killed, it is also always the last character yank restores, so the
+        backspace removes exactly it -- never real typed text -- leaving the
+        cursor at the true end of the restored line.  Only called for drivers
+        with ``supports_line_editing``.
+        """
+        return (_YANK + _BACKSPACE).encode()
+
     def _hook_body(self) -> str:
         """Return the core of the precmd hook function body.
 
@@ -130,10 +168,39 @@ class ZshDriver(ShellDriver):
         super().__init__(line_editing=True)
 
     def init_code(self) -> str:
-        return f" setopt HIST_IGNORE_SPACE; _nn_precmd() {{ {self._hook_body()} }}; precmd_functions+=(_nn_precmd)\n"
+        return (
+            f" setopt HIST_IGNORE_SPACE; _nn_precmd() {{ {self._hook_body()} }}; precmd_functions+=(_nn_precmd); "
+            "_nn_raw_eol() { zle .end-of-line }; zle -N _nn_raw_eol; bindkey $'\\e[96~' _nn_raw_eol\n"
+        )
 
     def quote(self, arg: str) -> str:
         return _ansi_c_quote(arg)
+
+    def kill_line_sequence(self) -> bytes:
+        """Kill after moving to the end via a private, unwrapped end-of-line widget.
+
+        Real Ctrl+E (the ``end-of-line`` widget) is one of zsh-autosuggestions'
+        default accept-widgets: sending it while a suggestion is showing
+        silently accepts that suggestion into the real buffer.  ``init_code()``
+        binds :data:`_ZSH_RAW_END_OF_LINE_SEQUENCE` to a widget that calls
+        ``zle .end-of-line`` -- the dot-prefixed form always refers to zsh's
+        original, unwrapped builtin, regardless of what any plugin has layered
+        onto the public ``end-of-line`` name -- so this reaches the true end of
+        the line without ever risking acceptance.  Zsh's Ctrl+U (kill-whole-line)
+        then removes the whole buffer regardless of cursor position, same as the
+        base implementation.
+        """
+        return _ZSH_RAW_END_OF_LINE_SEQUENCE + (" " + _KILL_LINE).encode()
+
+    def yank_sequence(self) -> bytes:
+        """Yank, then backspace off the marker space typed by ``kill_line_sequence``.
+
+        Same rationale as the base implementation, plus: a trailing Ctrl+E here
+        would risk accepting a new autosuggestion formed from the just-restored
+        text, so backspace (not Ctrl+E) is used to reach the true end, same as
+        ``kill_line_sequence`` avoids Ctrl+E to position before the kill.
+        """
+        return (_YANK + _BACKSPACE).encode()
 
 
 class BashDriver(ShellDriver):

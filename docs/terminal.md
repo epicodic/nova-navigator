@@ -337,13 +337,34 @@ A pane-driven directory change is one serialised transaction per terminal.
 If the shell is running a command, the target waits and is applied on the next precmd.
 If the shell already reports *path* and nothing is pending, the request is a no-op.
 
-`_start_nav()` enables draining, kills typed input with Ctrl+E Ctrl+U if `has_input()` is true (once per chain), writes ` cd <quoted>\n`, and arms the watchdog.
-Ctrl+E is needed for bash, where Ctrl+U only kills text before the cursor.
+`_start_nav()` enables draining, kills typed input with the driver's `kill_line_sequence()` if `has_input()` is true (once per chain), writes ` cd <quoted>\n`, and arms the watchdog.
 
 The precmd hook's OSC 7 completes the step.
 If a newer target arrived meanwhile, `_handle_pre_cmd` chains directly into another `_start_nav()` while draining stays on, so intermediate prompts are never shown.
-Otherwise `_finish_nav()` yanks stashed text back with Ctrl+Y Ctrl+E, ends draining with the `\r\x1b[K` in-place redraw, and resolves `_nav_future`.
+Otherwise `_finish_nav()` yanks stashed text back with the driver's `yank_sequence()`, ends draining with the `\r\x1b[K` in-place redraw, and resolves `_nav_future`.
 See [Giving up on an unreachable target](#giving-up-on-an-unreachable-target) for what happens when the reported cwd keeps mismatching the *same* target instead.
+
+### Kill/yank sequences are driver-specific
+
+`ShellDriver.kill_line_sequence()` and `ShellDriver.yank_sequence()` return the exact bytes each shell needs, so `Terminal` never hardcodes control characters itself.
+
+Both directions follow the same pattern: move to the true end of the line, then act.
+`kill_line_sequence()` moves to the end, types a literal marker space, then kills the whole buffer (marker included).
+`yank_sequence()` yanks the killed text back, then backspaces once to remove the marker.
+
+The marker space exists so the kill is never empty.
+An empty kill leaves the shell's kill ring/cutbuffer untouched, so a spurious kill on an already-empty line (`has_input()` can return a conservative `True` after a restore, since the freshly restored prompt cannot be snapshotted safely — see below) would otherwise yank back stale, unrelated text from an earlier, unrelated kill.
+Moving to the true end first, both before the kill and before the backspace, guarantees the marker is always the *last* character killed and therefore always the *last* character yanked back, so the backspace removes exactly it and nothing else — the restore is indistinguishable from what was there before the navigation.
+
+`BashDriver` uses the base implementation, moving to the end with real Ctrl+E: bash's Ctrl+U (`unix-line-discard`) only kills text before the cursor, so positioning matters, and bash has no plugin ecosystem that intercepts `end-of-line`.
+
+`ZshDriver` cannot use real Ctrl+E for this.
+Ctrl+E (the `end-of-line` widget) is one of zsh-autosuggestions' default accept-widgets: sending it while a suggestion is showing silently accepts that suggestion into the real buffer, and the plugin recomputes its suggestion after every keystroke, so this risk exists at every point in the sequence, not just the first.
+Instead, `ZshDriver.init_code()` binds a private, unassigned CSI sequence (`_ZSH_RAW_END_OF_LINE_SEQUENCE`) to a small zle widget that calls `zle .end-of-line` — the dot-prefixed form always refers to zsh's original, unwrapped builtin, regardless of what any plugin has layered onto the public `end-of-line` name.
+`ZshDriver.kill_line_sequence()` and `yank_sequence()` send that private sequence (and a trailing backspace instead of a trailing Ctrl+E) wherever the base implementation would use real Ctrl+E, reaching the true end without ever risking suggestion acceptance.
+
+`has_input()`'s snapshot cannot be safely recaptured immediately after a restore: the shell's echo of the restored text can arrive fused with the freshly drawn prompt in the very same stdout chunk, so there is no reliable way to isolate "prompt only" from "prompt plus restored text" by observing chunk boundaries.
+This is why `_finish_nav()` forces `_input_since_precmd = True` rather than trying to snapshot, and why the never-empty-kill guarantee above is the actual defense against stale-text resurrection, not snapshot accuracy.
 
 ### Precmd classification
 

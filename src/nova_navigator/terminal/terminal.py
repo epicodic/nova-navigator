@@ -62,9 +62,6 @@ __all__ = [
     "TerminalPyteScreen",
 ]
 
-_KILL_LINE = "\x15"  # Ctrl+U — kill whole line to kill ring
-_YANK = "\x19"  # Ctrl+Y — yank from kill ring
-_END_OF_LINE = "\x05"  # Ctrl+E — move cursor to end of line
 
 _PRE_CMD_FROM_NN_IDX = 2  # index of the from_nn flag in a pre_cmd message
 
@@ -680,9 +677,8 @@ class Terminal(ScrollView, can_focus=True):
         """Send the hidden ``cd`` for ``_nav_target``, stashing typed input first if needed.
 
         Drivers with ``supports_editor_protocol`` get an atomic stash request;
-        others are killed with Ctrl+E Ctrl+U (Ctrl+E moves to the end of the
-        line so that Ctrl+U kills the whole line in bash, where Ctrl+U only
-        kills backwards; zsh's Ctrl+U already kills the whole line).  The
+        others get their driver's ``kill_line_sequence()``, which clears the
+        line editor's buffer using whatever keystrokes that shell needs.  The
         stash/kill happens at most once per transaction chain.
         """
         assert self._nav_target is not None
@@ -699,7 +695,7 @@ class Terminal(ScrollView, can_focus=True):
             if self._driver.supports_editor_protocol:
                 self._backend.write(STASH_SEQUENCE)
             else:
-                self._backend.write((_END_OF_LINE + _KILL_LINE).encode())
+                self._backend.write(self._driver.kill_line_sequence())
         self._backend.write((" " + self._driver.cd_command(str(self._nav_target)) + "\n").encode())
         self._arm_watchdog()
 
@@ -710,7 +706,7 @@ class Terminal(ScrollView, can_focus=True):
             if self._driver.supports_editor_protocol:
                 self._backend.write(RESTORE_SEQUENCE)
             else:
-                self._backend.write((_YANK + _END_OF_LINE).encode())
+                self._backend.write(self._driver.yank_sequence())
             # The restore/yank echo arrives after the prompt and would be absorbed into
             # the snapshot, so report input as present for this prompt line.
             self._input_since_precmd = True
