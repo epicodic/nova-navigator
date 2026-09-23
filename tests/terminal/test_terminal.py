@@ -2209,8 +2209,8 @@ async def test_pre_cmd_sets_at_prompt_and_posts_path_changed_with_owner() -> Non
 # Navigation transaction
 # ---------------------------------------------------------------------------
 
-_KILL = b"\x05\x15"  # Ctrl+E Ctrl+U
-_YANK_BYTES = b"\x19\x05"  # Ctrl+Y Ctrl+E
+_KILL = b"\x1b[96~ \x15"  # ZshDriver.kill_line_sequence(): raw eol, space, Ctrl+U
+_YANK_BYTES = b"\x19\x08"  # ZshDriver.yank_sequence(): Ctrl+Y, backspace
 
 
 def _cd_writes(backend: FakePtyBackend) -> list[bytes]:
