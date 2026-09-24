@@ -689,8 +689,16 @@ class Terminal(ScrollView, can_focus=True):
         Typed input is stashed first and restored after the command's precmd.
         The command is echoed and recorded in the shell history like a user command.
 
+        Completion relies on the shell's precmd hook and has no timeout, since a
+        command may legitimately run arbitrarily long.
+        If the command removes the hook (e.g. ``exec zsh``), this call never
+        returns and the terminal stays busy until the shell process exits.
+        Cancelling the awaiting coroutine does not stop the shell command; the
+        terminal stays busy until its precmd arrives.
+
         Raises:
-            TerminalBusyError: The shell is not ready, runs a command, or is navigating.
+            TerminalBusyError: The shell is not ready, runs a command, is
+                navigating, or holds typed input on a shell without line editing.
         """
         if not self._started or not self._at_prompt or self._nav_busy or self._run_future is not None:
             raise TerminalBusyError("The terminal is busy")
