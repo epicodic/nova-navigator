@@ -88,6 +88,8 @@ Always run `uv run qa` after changes and confirm zero failures before claiming w
 | `docs/terminal.md` | Terminal sub-package architecture — read before touching `terminal/` |
 | `docs/remote-uri-scheme.md` | `remote://` URI scheme design — read before touching `vfs/` or remote connection handling |
 | `docs/keymap.md` | Keymap system architecture — read before touching `nova_widgets/keymap/`, `nova_navigator/keymap/`, or key-handling code |
+| `docs/user_menu.md` | User menu (F2) config and behaviour — read before touching `usermenu/` |
+| `docs/commands.md` | Command execution service — read before touching `commands/` or `Filesystem.exec_command` |
 
 Steps:
 1. List `docs/` to see available documentation.
@@ -149,6 +151,10 @@ The codebase lives under `src/` and contains two packages:
 - `pty_backend.py` — `PtyBackend` ABC and `LocalPtyBackend` (PTY process management)
 - `shell_driver.py` — `ShellDriver` ABC with `ZshDriver`, `BashDriver`, `FallbackDriver`; shell hooks, quoting, precmd parsing
 - `terminal.py` — `Terminal` Textual widget (pyte rendering, draining, event handling)
+
+**Commands:** `nova_navigator/commands/` — Textual-free `CommandRunner` service that runs a final shell script in a terminal or as a background job. See `docs/commands.md`.
+
+**User menu:** `nova_navigator/usermenu/` — Textual-free F2 user menu: config parsing, condition evaluation, and placeholder expansion. See `docs/user_menu.md`.
 
 **UI widgets:** `nova_navigator/widgets/`
 - `directory_browser.py` — main dual-pane file browser widget
