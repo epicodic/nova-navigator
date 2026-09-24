@@ -430,11 +430,14 @@ Both settings are idempotent and have no effect on user-typed commands that do n
 
 `Terminal.run_command(line)` types *line* into the shell as if the user had typed it, then waits for it to finish.
 It refuses with `TerminalBusyError` when the shell is not at a prompt, is running a command, is navigating, or holds typed input on a shell without line editing.
-Typed input is stashed with `_stash_input()` before the line is sent and restored with `_restore_input()` once the command's precmd fires.
+Typed input is stashed with the shared `_stash_input()` helper before the line is sent and restored with `_restore_input()` once the command's precmd fires; these are the same helpers the [Directory Navigation Flow](#directory-navigation-flow) uses to protect typed input around a `cd`.
+The line is sent to the real shell, so it is echoed on screen and recorded in the shell's history exactly like a command the user typed.
 
 Completion relies entirely on the shell's precmd hook and has no timeout, since a command may legitimately run for a long time.
 If the command replaces the shell's hook (e.g. `exec zsh`), `run_command` never returns and the terminal stays busy until that shell process exits.
 Cancelling the awaiting coroutine does not stop the shell command itself; the terminal remains busy until a precmd eventually arrives.
+
+If the shell process itself goes away while a command is pending (backend closed, restarted), `_reset_shell_state()` resolves the pending `run_command()` future so the caller is not left waiting forever.
 
 ---
 
