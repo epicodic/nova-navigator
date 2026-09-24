@@ -4,7 +4,7 @@
 The package has no Textual imports; it reaches the terminal and the job list through small protocols implemented by the UI layer.
 It is used by the user menu (see `docs/user_menu.md`) and is meant for other features to reuse.
 
-## Core types
+## Core Types
 
 `Command` (`nova_navigator/commands/runner.py`) is a frozen dataclass with three fields:
 
@@ -34,7 +34,7 @@ All of these subclass `CommandError` (`nova_navigator/commands/errors.py`).
 
 The runner never refreshes panels, shows dialogs, or expands placeholders; callers do that.
 
-## Terminal mode
+## Terminal Mode
 
 `CommandRunner` depends on two protocols instead of importing Textual widgets directly:
 
@@ -52,7 +52,7 @@ The runner never refreshes panels, shows dialogs, or expands placeholders; calle
 `Terminal.run_command(line)` types `line` into the shell as if the user had typed it, and waits for it to finish.
 See `docs/terminal.md` → "Running Commands (`run_command`)" for the full behaviour: busy checks, stashing and restoring typed input, and completion on the next precmd.
 
-## Background mode
+## Background Mode
 
 `Filesystem.exec_command(command, cwd, should_cancel=None)` (`nova_navigator/vfs/filesystem.py`) is the contract background mode relies on:
 
@@ -71,8 +71,9 @@ SSH cancellation closes the channel; since no PTY is requested, the remote shell
 
 `CommandRunner._run_in_background()` wraps `exec_command()` (via `asyncio.to_thread`) in a scheduler `Job` labelled with `Command.label`.
 The job is added to the app's job sink (`JobSink.add_job()`), so it appears in the jobs dialog and can be cancelled; cancelling it sets the `should_cancel` flag `exec_command()` polls.
+See `docs/scheduler.md` for `Job` semantics: states, progress, cancellation, and how the jobs dialog drives them.
 
-## Usage example
+## Usage Example
 
 ```python
 from nova_navigator.commands import Command, CommandError, CommandMode
