@@ -1,0 +1,117 @@
+"""Integration tests for the F2 user menu."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from nova_navigator.response import Response
+from nova_navigator.usermenu.popup import UserMenuPopup
+from nova_widgets.key_types import KeySequence
+from nova_widgets.menu import Action
+from tests.integration.conftest import AppCtx, poll_until, set_panels
+
+_INPUT_DIALOG_PATH = "nova_navigator.nova_navigator.UserMenuInputDialog"
+
+
+def _write_menu(ctx: AppCtx, text: str) -> Path:
+    path = ctx.src_dir.parent / "config" / "usermenu.toml"
+    path.write_text(text)
+    return path
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_f2_opens_menu_and_hotkey_runs_background_entry(app_ctx: AppCtx) -> None:
+    (app_ctx.src_dir / "a.txt").write_text("")
+    _write_menu(app_ctx, '[touch]\nkey = "t"\nlabel = "Touch"\nmode = "background"\nrun = "touch marker-{file.stem}.txt"\n')
+    await set_panels(app_ctx)
+
+    await app_ctx.pilot.press("f2")
+    await poll_until(app_ctx.pilot, lambda: type(app_ctx.app.screen).__name__ == "MenuScreen")
+    await app_ctx.pilot.press("t")
+    await poll_until(app_ctx.pilot, lambda: (app_ctx.src_dir / "marker-a.txt").exists())
+
+    assert (app_ctx.src_dir / "marker-a.txt").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_no_visible_entries_does_not_open_popup(app_ctx: AppCtx) -> None:
+    _write_menu(app_ctx, '[never]\nlabel = "Never"\nrun = "true"\nwhen = "False"\n')
+    await set_panels(app_ctx)
+
+    with patch.object(UserMenuPopup, "exec", new=AsyncMock(return_value=None)) as exec_mock:
+        await app_ctx.pilot.app.run_action("user_menu", app_ctx.screen)
+        await app_ctx.pilot.pause(delay=0.3)
+
+    exec_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_input_values_are_substituted(app_ctx: AppCtx) -> None:
+    (app_ctx.src_dir / "a.txt").write_text("")
+    _write_menu(
+        app_ctx,
+        '[mk]\nlabel = "Make file"\nmode = "background"\nrun = "touch {name}"\n[[mk.input]]\nname = "name"\nprompt = "Name"\ndefault = "{file.stem}.out"\n',
+    )
+    await set_panels(app_ctx)
+
+    dialog = MagicMock()
+    dialog.run = AsyncMock(return_value=Response.OK)
+    dialog.values = {"name": "my file.out"}
+    with (
+        patch.object(UserMenuPopup, "exec", new=AsyncMock(return_value=Action("Make file", id="mk"))),
+        patch(_INPUT_DIALOG_PATH, return_value=dialog) as dialog_cls,
+    ):
+        await app_ctx.pilot.app.run_action("user_menu", app_ctx.screen)
+        await poll_until(app_ctx.pilot, lambda: (app_ctx.src_dir / "my file.out").exists())
+
+    fields = dialog_cls.call_args.args[1]
+    assert fields[0].value == "a.out"
+    assert (app_ctx.src_dir / "my file.out").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_cancelled_input_dialog_runs_nothing(app_ctx: AppCtx) -> None:
+    (app_ctx.src_dir / "a.txt").write_text("")
+    _write_menu(
+        app_ctx,
+        '[mk]\nlabel = "Make file"\nmode = "background"\nrun = "touch never.txt"\n[[mk.input]]\nname = "name"\nprompt = "Name"\n',
+    )
+    await set_panels(app_ctx)
+
+    dialog = MagicMock()
+    dialog.run = AsyncMock(return_value=Response.CANCEL)
+    with (
+        patch.object(UserMenuPopup, "exec", new=AsyncMock(return_value=Action("Make file", id="mk"))),
+        patch(_INPUT_DIALOG_PATH, return_value=dialog),
+    ):
+        await app_ctx.pilot.app.run_action("user_menu", app_ctx.screen)
+        await app_ctx.pilot.pause(delay=0.5)
+
+    assert not (app_ctx.src_dir / "never.txt").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_rename_moved_to_shift_f6(app_ctx: AppCtx) -> None:
+    assert app_ctx.screen._act("browser.rename").initial_shortcut == KeySequence.parse("shift+f6")
+    assert app_ctx.screen._act("app.user_menu").initial_shortcut == KeySequence.parse("f2")
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_edit_user_menu_creates_file(app_ctx: AppCtx) -> None:
+    path = app_ctx.src_dir.parent / "config" / "usermenu.toml"
+    with patch.object(type(app_ctx.app), "open_editor", new=AsyncMock()) as open_editor:
+        await app_ctx.pilot.app.run_action("edit_user_menu", app_ctx.screen)
+        await app_ctx.pilot.pause()
+
+    assert path.exists()
+    opened = open_editor.call_args.args[0]
+    assert str(opened.path) == str(path)
