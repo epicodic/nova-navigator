@@ -5,7 +5,9 @@ import base64
 import hashlib
 import logging
 import os
+import shlex
 import threading
+import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import PurePath
@@ -14,9 +16,14 @@ from typing import override
 import paramiko
 
 from ..filesystem import Filesystem, FilesystemCapabilities, Stat, StreamReaderLike, StreamWriterLike
+from ..tail_buffer import TailBuffer
+from ..types import OUTPUT_TAIL_LIMIT, ExecResult
 from ..vpath import VPath
 
 _logger = logging.getLogger(__name__)
+
+_EXEC_POLL_INTERVAL = 0.05
+_EXEC_CHUNK_SIZE = 65536
 
 
 @dataclass
@@ -248,7 +255,43 @@ class SSHFilesystem(Filesystem):
             watch=False,
             symlinks=True,
             permissions=True,
+            commands=True,
         )
+
+    @property
+    @override
+    def scheme(self) -> str:
+        return "ssh"
+
+    @override
+    def exec_command(
+        self,
+        command: str,
+        cwd: VPath,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> ExecResult:
+        self._assert_vpath(cwd)
+        script = f"cd {shlex.quote(cwd.path.as_posix())} || exit 1\n{command}"
+        try:
+            stdin, stdout, _ = self._ssh_client.exec_command(f"sh -c {shlex.quote(script)} 2>&1")
+        except paramiko.SSHException as exc:
+            raise OSError(str(exc)) from exc
+        stdin.close()
+        channel = stdout.channel
+        tail = TailBuffer(OUTPUT_TAIL_LIMIT)
+        while True:
+            if should_cancel is not None and should_cancel():
+                channel.close()
+                return ExecResult(exit_code=-1, output=tail.text())
+            if channel.recv_ready():
+                tail.append(channel.recv(_EXEC_CHUNK_SIZE))
+            elif channel.exit_status_ready():
+                break
+            else:
+                time.sleep(_EXEC_POLL_INTERVAL)
+        while channel.recv_ready():
+            tail.append(channel.recv(_EXEC_CHUNK_SIZE))
+        return ExecResult(exit_code=channel.recv_exit_status(), output=tail.text())
 
     @override
     async def iterdir(
@@ -312,18 +355,6 @@ class SSHFilesystem(Filesystem):
             is_executable=stat.permissions & 0o111 != 0,
             is_symlink=lstat.is_symlink,
         )
-
-    # @override
-    # def scheme(self) -> str | None:
-    #     return "ssh"
-
-    # @override
-    # def netloc(self) -> str | None:
-    #     transport = self._ssh_client.get_transport()
-    #     if transport is None:
-    #         return None
-    #     peername = transport.getpeername()
-    #     return f"{peername[0]}:{peername[1]}"
 
     @override
     def read(self, path: VPath) -> StreamReaderLike:

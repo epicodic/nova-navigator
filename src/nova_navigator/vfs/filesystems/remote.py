@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import PurePath
 from typing import override
 
 from nova_navigator.vfs.filesystem import Filesystem, FilesystemCapabilities, StreamReaderLike, StreamWriterLike
-from nova_navigator.vfs.types import Stat
+from nova_navigator.vfs.types import ExecResult, Stat
 from nova_navigator.vfs.vpath import VPath
 
 
@@ -67,6 +67,20 @@ class RemoteFilesystem(Filesystem):
     @override
     def capabilities(self) -> FilesystemCapabilities:
         return self._inner.capabilities
+
+    @property
+    @override
+    def scheme(self) -> str:
+        return self._inner.scheme
+
+    @override
+    def exec_command(
+        self,
+        command: str,
+        cwd: VPath,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> ExecResult:
+        return self._inner.exec_command(command, self._to_inner(cwd), should_cancel)
 
     # ------------------------------------------------------------------
     # Abstract method implementations — all delegate to inner

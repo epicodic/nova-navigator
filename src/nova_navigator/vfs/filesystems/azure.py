@@ -165,6 +165,11 @@ class AzureFilesystem(Filesystem):
             watch=False,
         )
 
+    @property
+    @override
+    def scheme(self) -> str:
+        return "azure"
+
     @override
     async def iterdir(
         self,

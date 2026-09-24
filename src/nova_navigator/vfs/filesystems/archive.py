@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import threading
 from collections.abc import AsyncIterator
 from typing import override
@@ -52,6 +53,11 @@ class ArchiveFilesystem(Filesystem):
             symlinks=False,
             permissions=False,
         )
+
+    @property
+    @override
+    def scheme(self) -> str:
+        return "archive"
 
     @override
     async def iterdir(
@@ -116,6 +122,11 @@ class ArchiveFilesystem(Filesystem):
     @override
     def refresh(self, path: VPath | None = None) -> None:
         pass  # no caching in ArchiveFilesystem
+
+    @override
+    def readlink(self, path: VPath) -> str:
+        self._assert_vpath(path)
+        raise OSError(errno.EINVAL, "Not a symbolic link", str(path.path))
 
     def __eq__(self, value: object) -> bool:
         return isinstance(value, ArchiveFilesystem) and self._archive == value._archive and self._archive_parent == value._archive_parent
