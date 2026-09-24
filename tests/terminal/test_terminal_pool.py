@@ -229,3 +229,12 @@ async def test_create_for_returns_none_when_no_factory_matches_async() -> None:
     unknown_fs.unwrap.return_value = unknown_fs
     result = await pool.create_for(unknown_fs)
     assert result is None
+
+
+def test_terminal_for_returns_registered_terminal() -> None:
+    from tests._utils.mock_filesystem import MockFilesystem
+
+    local = _make_terminal()
+    pool = TerminalPool(local)
+    assert pool.terminal_for(LocalFilesystem.singleton()) is local
+    assert pool.terminal_for(MockFilesystem()) is None

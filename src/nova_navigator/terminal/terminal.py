@@ -51,6 +51,7 @@ from textual.scroll_view import ScrollView
 from textual.selection import Selection
 from textual.strip import Strip
 
+from nova_navigator.commands.errors import TerminalBusyError
 from nova_navigator.terminal.pty_backend import LocalPtyBackend, PtyBackend
 from nova_navigator.terminal.shell_driver import RESTORE_SEQUENCE, STASH_SEQUENCE, ShellDriver, detect_driver
 
@@ -362,6 +363,10 @@ class Terminal(ScrollView, can_focus=True):
         self._hook_repaired: bool = False
         # Last known cwd reported by the shell via precmd.
         self._cwd: PurePath | None = None
+        # Resolved by the precmd that follows a run_command() line.
+        self._run_future: Future[None] | None = None
+        # Typed input was stashed before run_command() and must be restored.
+        self._run_stashed: bool = False
 
         super().__init__(name=name, id=id, classes=classes)
         # Permanently reserve a gutter column for the scrollback scrollbar so it never
@@ -372,6 +377,11 @@ class Terminal(ScrollView, can_focus=True):
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+
+    @property
+    def cwd(self) -> PurePath | None:
+        """The shell's working directory as last reported by precmd, or None before the first prompt."""
+        return self._cwd
 
     def start(self) -> None:
         if self._started:
@@ -673,6 +683,59 @@ class Terminal(ScrollView, can_focus=True):
             return await self._nav_future
         return self._cwd or path
 
+    async def run_command(self, line: str) -> None:
+        """Run *line* in the shell as if the user typed it, and wait until it finishes.
+
+        Typed input is stashed first and restored after the command's precmd.
+        The command is echoed and recorded in the shell history like a user command.
+
+        Raises:
+            TerminalBusyError: The shell is not ready, runs a command, or is navigating.
+        """
+        if not self._started or not self._at_prompt or self._nav_busy or self._run_future is not None:
+            raise TerminalBusyError("The terminal is busy")
+        has_input = self.has_input()
+        if has_input and not self._driver.supports_line_editing:
+            raise TerminalBusyError("The terminal line holds typed input")
+        future: Future[None] = asyncio.get_running_loop().create_future()
+        self._run_future = future
+        self._run_stashed = has_input
+        if has_input:
+            self._stash_input()
+        self._at_prompt = False
+        self._command_owner = self.owner
+        self._backend.write((line + "\n").encode())
+        await future
+
+    def _finish_run(self) -> None:
+        """Complete a pending ``run_command`` once its precmd arrives."""
+        future = self._run_future
+        if future is None:
+            return
+        self._run_future = None
+        if self._run_stashed:
+            self._run_stashed = False
+            self._restore_input()
+        if not future.done():
+            future.set_result(None)
+
+    def _stash_input(self) -> None:
+        """Remove typed input from the shell line so it can be restored later."""
+        if self._driver.supports_editor_protocol:
+            self._backend.write(STASH_SEQUENCE)
+        else:
+            self._backend.write(self._driver.kill_line_sequence())
+
+    def _restore_input(self) -> None:
+        """Put back input removed by ``_stash_input``."""
+        if self._driver.supports_editor_protocol:
+            self._backend.write(RESTORE_SEQUENCE)
+        else:
+            self._backend.write(self._driver.yank_sequence())
+        # The restore/yank echo arrives after the prompt and would be absorbed into
+        # the snapshot, so report input as present for this prompt line.
+        self._input_since_precmd = True
+
     def _start_nav(self) -> None:
         """Send the hidden ``cd`` for ``_nav_target``, stashing typed input first if needed.
 
@@ -692,10 +755,7 @@ class Terminal(ScrollView, can_focus=True):
         self._draining = True
         if not self._nav_stashed and self.has_input():
             self._nav_stashed = True
-            if self._driver.supports_editor_protocol:
-                self._backend.write(STASH_SEQUENCE)
-            else:
-                self._backend.write(self._driver.kill_line_sequence())
+            self._stash_input()
         self._backend.write((" " + self._driver.cd_command(str(self._nav_target)) + "\n").encode())
         self._arm_watchdog()
 
@@ -703,13 +763,7 @@ class Terminal(ScrollView, can_focus=True):
         """Complete the transaction chain: restore stashed text, end draining, resolve."""
         if self._nav_stashed:
             self._nav_stashed = False
-            if self._driver.supports_editor_protocol:
-                self._backend.write(RESTORE_SEQUENCE)
-            else:
-                self._backend.write(self._driver.yank_sequence())
-            # The restore/yank echo arrives after the prompt and would be absorbed into
-            # the snapshot, so report input as present for this prompt line.
-            self._input_since_precmd = True
+            self._restore_input()
         self._nav_target = None
         self._nav_busy = False
         self._nav_last_sent_target = None
@@ -788,6 +842,10 @@ class Terminal(ScrollView, can_focus=True):
         self._prompt_snapshot = None
         self._command_owner = None
         self._draining = False
+        self._run_stashed = False
+        if self._run_future is not None and not self._run_future.done():
+            self._run_future.set_result(None)
+        self._run_future = None
         self._resolve_nav_future(fallback)
 
     async def send(self, data: str, mode: Literal["normal", "silent"] = "normal") -> None:
@@ -915,6 +973,7 @@ class Terminal(ScrollView, can_focus=True):
             # real navigation, unless it is itself the result of a user-submitted command.
             if cwd_changed and (not is_bootstrap_precmd or owner is not None):
                 self.post_message(Terminal.PathChanged(self, cwd, owner=owner))
+            self._finish_run()
             self._apply_pending_target(cwd)
         self.post_message(Terminal.PreCmd(self, cwd))
 
