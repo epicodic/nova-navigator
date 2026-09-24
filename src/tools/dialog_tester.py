@@ -35,6 +35,7 @@ from nova_navigator.dialogs.keybindings_dialog import KeybindingsDialog, KeyCapt
 from nova_navigator.dialogs.message_box import MessageBox
 from nova_navigator.dialogs.response_dialog import OverwriteResponseDialog, ResponseDialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
+from nova_navigator.dialogs.user_menu_input_dialog import InputField, UserMenuInputDialog
 from nova_navigator.keymap.config import KeybindingsConfig
 from nova_navigator.nova_navigator_core import NovaNavigatorCore
 from nova_navigator.response import Response
@@ -278,6 +279,15 @@ _ENTRIES: list[DialogEntry] = [
         "Directory picker mode — select a folder.",
         lambda: FileDialog(mode=FileDialogMode.DIR, start_path=Path.home(), title="Select Directory"),
         result_fn=lambda d, r: f"Result: {r}  path={d.selected_path}",
+    ),
+    DialogEntry(
+        "UserMenuInputDialog",
+        "Collects the input fields of a user menu entry before it runs.",
+        lambda: UserMenuInputDialog(
+            "Compress to archive…",
+            [InputField("archive", "Archive name", "project.tar.gz"), InputField("level", "Compression level", "6")],
+        ),
+        result_fn=lambda d, r: f"Result: {r}  values={d.values if r == Response.OK else None}",
     ),
 ]
 
