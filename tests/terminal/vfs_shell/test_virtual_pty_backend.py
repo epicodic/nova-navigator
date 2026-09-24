@@ -35,9 +35,11 @@ async def drain(queue: asyncio.Queue[list[object]]) -> list[list[Any]]:
 
 @pytest.fixture
 def fs() -> MockFilesystem:
-    return MockFilesystem({
-        "/home/user/hello.txt": b"hello world\n",
-    })
+    return MockFilesystem(
+        {
+            "/home/user/hello.txt": b"hello world\n",
+        }
+    )
 
 
 @pytest.mark.asyncio
