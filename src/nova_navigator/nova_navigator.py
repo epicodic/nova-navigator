@@ -8,6 +8,7 @@ import os
 import shlex
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path, PurePath, PurePosixPath
@@ -16,13 +17,22 @@ from typing import ClassVar, NamedTuple, cast
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal
+from textual.geometry import Offset
 from textual.logging import TextualHandler
 from textual.screen import Screen
 from textual.widgets import Input
 
 from nova_navigator import debug_analytics
 from nova_navigator.clipboard import ClipboardOperation, PathClipboard
-from nova_navigator.config import conf_
+from nova_navigator.commands import (
+    Command,
+    CommandCancelledError,
+    CommandError,
+    CommandMode,
+    CommandResult,
+    CommandRunner,
+)
+from nova_navigator.config import app_config_dir, conf_
 from nova_navigator.dialogs import (
     BookmarksDialog,
     ConnectToDialog,
@@ -37,6 +47,7 @@ from nova_navigator.dialogs.dialog import ButtonSpec
 from nova_navigator.dialogs.keybindings_dialog import KeybindingsDialog
 from nova_navigator.dialogs.response_dialog import make_response_dialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
+from nova_navigator.dialogs.user_menu_input_dialog import InputField, UserMenuInputDialog
 from nova_navigator.editor import Editor
 from nova_navigator.filemanager.compare import CompareMode, compare_directories
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
@@ -54,7 +65,19 @@ from nova_navigator.response import Response
 from nova_navigator.runtime_patches import apply_runtime_patches
 from nova_navigator.scheduler import Job, ResponseRequest
 from nova_navigator.terminal import Terminal, TerminalPool
-from nova_navigator.vfs import VPath
+from nova_navigator.usermenu import (
+    USER_MENU_FILENAME,
+    MenuEntry,
+    MenuView,
+    PanelSnapshot,
+    PlaceholderError,
+    UserMenuStore,
+    build_context,
+    evaluate_menu,
+    expand,
+)
+from nova_navigator.usermenu.popup import UserMenuPopup
+from nova_navigator.vfs import Filesystem, VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
 from nova_navigator.vfs.parse_uri import parse_uri
 from nova_navigator.vfs.scheme_registry import SCHEME_REGISTRY, vfspath_from_uri
@@ -98,12 +121,29 @@ class _CompareConfig:
     mode: CompareMode | None  # None = name-presence only
 
 
+def _panel_snapshot(panel: DirectoryBrowser) -> PanelSnapshot:
+    """Capture what the user menu needs from *panel* (must run on the UI thread)."""
+    try:
+        item: VPath | None = panel.path_item_under_cursor
+    except IndexError:
+        item = None
+    selected = set(panel.selected_path_items) if panel.has_selection else set()
+    return PanelSnapshot(
+        dir=panel.path,
+        cursor=None if item is None or isinstance(item, UpPath) else item,
+        selection=tuple(p for p in panel.items if p in selected),
+        listing=frozenset(p.name for p in panel.items),
+    )
+
+
 class MainScreen(ActionsSupport, Screen[None]):
     ACTIONS: ClassVar[list[Action]] = [
         Action("Quit", id="app.quit", action="quit", description="Quit Nova Navigator", shortcut="ctrl+q", show=True, bar_priority=90),
         Action("Maximize Terminal", id="app.toggle_maximized_terminal", action="toggle_maximized_terminal", description="Toggle terminal full-screen mode", shortcut="ctrl+o", show=False),
         Action("Enlarge Terminal", id="app.toggle_terminal", action="toggle_terminal", description="Enlarge the terminal panel", shortcut="ctrl+l", show=False),
-        Action("Rename", id="browser.rename", action="rename", description="Rename the file or directory under the cursor", shortcut="f2", show=True, bar_priority=10),
+        Action("Rename", id="browser.rename", action="rename", description="Rename the file or directory under the cursor", shortcut="shift+f6", show=False),
+        Action("User Menu", id="app.user_menu", action="user_menu", description="Open the user menu", shortcut="f2", show=True, bar_priority=5),
+        Action("Edit User Menu File", id="app.edit_user_menu", action="edit_user_menu", description="Open the user menu file in the editor", show=False),
         Action("Edit", id="browser.open_editor", action="open_editor", description="Open the file under the cursor in an editor", shortcut="f4", show=True, bar_priority=15),
         Action("Copy", id="browser.copy", action="copy_or_move_files(False)", description="Copy selected files to the other panel", shortcut="f5", show=True, bar_priority=20),
         Action("Move", id="browser.move", action="copy_or_move_files(True)", description="Move selected files to the other panel", shortcut="f6", show=True, bar_priority=25),
@@ -172,6 +212,8 @@ class MainScreen(ActionsSupport, Screen[None]):
         self._keymap_config = KeybindingsConfig(config_dir=config_dir)
         self._keymap_registry: KeymapRegistry | None = None
         self._hint_bar = HintBar()
+        self._user_menu_store = UserMenuStore((config_dir if config_dir is not None else app_config_dir()) / USER_MENU_FILENAME)
+        self._command_runner: CommandRunner | None = None
 
     @property
     def app(self) -> NovaNavigator:  # type: ignore[override]
@@ -238,6 +280,11 @@ class MainScreen(ActionsSupport, Screen[None]):
             self._act("app.connect_to"),
             mc.separator(),
             mc.action("Manage Remotes…", action="manage_remotes", name="manage_remotes"),
+        )
+
+        self._menu_bar.add_menu("Command", name="command").add(
+            self._act("app.user_menu"),
+            self._act("app.edit_user_menu"),
         )
 
         self._menu_bar.add_menu("Bookmarks", name="bookmarks").add(
@@ -599,6 +646,101 @@ class MainScreen(ActionsSupport, Screen[None]):
             sync.left_prev = new_path
         else:
             sync.right_prev = new_path
+
+    # region user menu
+
+    @property
+    def command_runner(self) -> CommandRunner:
+        """The command runner, created on first use (it needs the running app)."""
+        if self._command_runner is None:
+            self._command_runner = CommandRunner(self, self.app.job_registry, self.app.request_callback)
+        return self._command_runner
+
+    async def terminal_for(self, fs: Filesystem) -> Terminal | None:
+        """Return the terminal for *fs*, provisioning it if needed (``TerminalProvider``)."""
+        await self._ensure_terminal_for(fs.root())
+        return self._terminal_pool.terminal_for(fs)
+
+    @work
+    async def _action_user_menu(self) -> None:
+        load = self._user_menu_store.load()
+        for message in load.messages:
+            self.notify(message, title="User menu", severity="warning")
+        active = self.active_panel()
+        active_snapshot = _panel_snapshot(active)
+        other_snapshot = _panel_snapshot(self.other_panel())
+        runner = self.command_runner
+        run_dir = active_snapshot.dir
+
+        def _evaluate() -> MenuView:
+            names = build_context(active_snapshot, other_snapshot)
+            return evaluate_menu(load.menu, names, run_dir.filesystem.scheme, lambda mode: runner.can_run(run_dir, mode))
+
+        view = await asyncio.to_thread(_evaluate)
+        if view.is_empty:
+            self.notify("No user menu entries apply here", title="User menu")
+            return
+        region = active.region
+        action = await UserMenuPopup(view).exec(Offset(region.x + 2, region.y + 1))
+        if action is None or action.id is None:
+            return
+        await self._run_user_menu_entry(view.entry(action.id), view.names, run_dir)
+
+    async def _run_user_menu_entry(self, entry: MenuEntry, names: Mapping[str, object], cwd: VPath) -> None:
+        values = dict(names)
+        try:
+            if entry.inputs:
+                fields = [InputField(i.name, i.prompt, expand(i.default, values, quote=False)) for i in entry.inputs]
+                dialog = UserMenuInputDialog(entry.label, fields)
+                if await dialog.run() != Response.OK:
+                    return
+                values.update(dialog.values)
+            script = expand(entry.run, values)
+        except PlaceholderError as exc:
+            await MessageBox(f"User menu entry '{entry.id}': {exc}", title="User menu", variant="error").run()
+            return
+        command = Command(script=script, cwd=cwd, label=entry.label)
+        try:
+            if entry.mode is CommandMode.TERMINAL:
+                result = await self._run_in_maximized_terminal(command)
+            else:
+                result = await self.command_runner.run(command, CommandMode.BACKGROUND)
+        except CommandCancelledError:
+            return
+        except CommandError as exc:
+            await MessageBox(str(exc), title=entry.label, variant="error").run()
+            return
+        finally:
+            self._left_panel.reload()
+            self._right_panel.reload()
+        if entry.mode is CommandMode.BACKGROUND:
+            await self._report_background_result(entry.label, result)
+
+    async def _run_in_maximized_terminal(self, command: Command) -> CommandResult:
+        """Run *command* in the terminal, maximized for the duration (like MC)."""
+        previous_mode = self._terminal_mode
+        self._terminal_mode = self._TerminalMode.MAXIMIZED
+        self._resize_terminal()
+        self._terminal_pool.active_terminal.focus()
+        try:
+            return await self.command_runner.run(command, CommandMode.TERMINAL)
+        finally:
+            self._terminal_mode = previous_mode
+            self._resize_terminal()
+            if previous_mode is not self._TerminalMode.MAXIMIZED:
+                self.active_panel().focus()
+
+    async def _report_background_result(self, label: str, result: CommandResult) -> None:
+        if result.exit_code == 0:
+            self.notify(f"{label}: done", title="User menu")
+            return
+        await MessageBox(f"Exit code {result.exit_code}\n\n{result.output}", title=label, variant="error").run()
+
+    async def _action_edit_user_menu(self) -> None:
+        path = self._user_menu_store.ensure_user_file()
+        await self.app.open_editor(VPath(path, LocalFilesystem.singleton()))
+
+    # endregion
 
     # jobs and tasks
 
