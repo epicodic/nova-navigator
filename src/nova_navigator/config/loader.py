@@ -38,6 +38,11 @@ def get_config_file_path(config_filename: str) -> Path:
     return _DEFAULT_CONFIG_DIR / config_filename
 
 
+def app_config_dir() -> Path:
+    """Return the directory holding the user's config files."""
+    return _APP_CONFIG_DIR
+
+
 class ConfigBase(abc.ABC):
     """Abstract base class for config loaders."""
 
@@ -163,4 +168,4 @@ class ListConfig(ConfigBase):
         file_path.write_text(tomlkit.dumps(doc))
 
 
-__all__ = ["ConfigBase", "ListConfig", "ModelConfig", "get_config_file_path"]
+__all__ = ["ConfigBase", "ListConfig", "ModelConfig", "app_config_dir", "get_config_file_path"]

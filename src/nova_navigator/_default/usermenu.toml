@@ -1,0 +1,69 @@
+# Nova Navigator user menu (F2).
+# Reference: docs/user_menu.md
+#
+# Each table is one entry; entries appear in file order.
+#   key     = one-character hotkey
+#   label   = text shown in the menu
+#   group   = a separator is drawn where the group changes
+#   on      = filesystems the entry may run on ("local", "ssh"); default ["local"]
+#   when    = Python expression; the entry is shown only if it is true
+#   default = Python expression or true; the first such entry is highlighted
+#   mode    = "terminal" (default) or "background"
+#   run     = shell script (POSIX sh)
+#   [[<id>.input]] = values asked before running (name, prompt, default)
+#
+# Names in expressions and placeholders:
+#   file, selection, targets, dir, other (.file .selection .targets .dir), which(cmd), env
+# Placeholders like {file}, {targets.name}, {dir} are shell-quoted; {name:raw} is not.
+
+[extract]
+key = "x"
+label = "Extract archive here"
+group = "Archives"
+on = ["local", "ssh"]
+when = "file and file.is_file and file.matches('*.tar', '*.tar.gz', '*.tgz', '*.tar.bz2', '*.tar.xz', '*.zip')"
+default = true
+run = """
+case {file} in
+  *.zip) unzip {file} ;;
+  *)     tar xaf {file} ;;
+esac
+"""
+
+[compress]
+key = "c"
+label = "Compress to archive…"
+group = "Archives"
+on = ["local", "ssh"]
+when = "targets"
+mode = "background"
+run = "tar czf {archive} -- {targets.name}"
+
+  [[compress.input]]
+  name = "archive"
+  prompt = "Archive name"
+  default = "{dir.name}.tar.gz"
+
+[sha256]
+key = "s"
+label = "SHA-256 of targets"
+group = "Files"
+on = ["local", "ssh"]
+when = "targets and all(f.is_file for f in targets)"
+run = "sha256sum -- {targets.name}"
+
+[make]
+key = "m"
+label = "Run make"
+group = "Development"
+on = ["local", "ssh"]
+when = "dir.has('Makefile')"
+run = "make"
+
+[git_log]
+key = "g"
+label = "Git log of current file"
+group = "Development"
+on = ["local", "ssh"]
+when = "file and dir.find_up('.git') and which('git')"
+run = "git log --oneline -- {file.name}"
