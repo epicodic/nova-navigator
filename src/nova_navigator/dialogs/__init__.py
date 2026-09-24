@@ -11,6 +11,7 @@ from .input_name_dialog import InputNameDialog
 from .job_registry import JobRegistry
 from .jobs_dialog import JobsDialog
 from .message_box import MessageBox, MessageBoxVariant, MessageDialog
+from .user_menu_input_dialog import InputField, UserMenuInputDialog
 
 # from .processes_dialog import ProcessesDialog
 
@@ -28,10 +29,12 @@ __all__ = [
     "FileDialogMode",
     "FileTypeFilter",
     "IconPickerDialog",
+    "InputField",
     "InputNameDialog",
     "JobRegistry",
     "JobsDialog",
     "MessageBox",
     "MessageBoxVariant",
     "MessageDialog",
+    "UserMenuInputDialog",
 ]
