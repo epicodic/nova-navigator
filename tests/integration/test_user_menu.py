@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
-from nova_navigator.commands import Command
+from nova_navigator.commands import Command, CommandMode
 from nova_navigator.response import Response
 from nova_navigator.usermenu.context import FileInfo
 from nova_navigator.usermenu.popup import UserMenuPopup
@@ -41,12 +41,33 @@ async def test_f2_opens_menu_and_hotkey_runs_background_entry(app_ctx: AppCtx) -
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_short_terminal_command_output_survives_restoring_minimized_layout(app_ctx: AppCtx) -> None:
+async def test_terminal_entry_keeps_current_terminal_layout_and_focus(app_ctx: AppCtx) -> None:
+    _write_menu(app_ctx, '[probe]\nlabel = "Probe"\nrun = "sleep 1"\n')
+    await set_panels(app_ctx)
+    terminal = app_ctx.screen._terminal_pool.active_terminal
+    await poll_until(app_ctx.pilot, lambda: terminal._at_prompt)
+    await app_ctx.pilot.pause()
+    previous_mode = app_ctx.screen._terminal_mode
+    previous_size = terminal.size
+    previous_focus = app_ctx.app.focused
+
+    with patch.object(UserMenuPopup, "exec", new=AsyncMock(return_value=Action("Probe", id="probe"))):
+        await app_ctx.pilot.app.run_action("user_menu", app_ctx.screen)
+        await poll_until(app_ctx.pilot, lambda: terminal._run_future is not None)
+
+        assert app_ctx.screen._terminal_mode == previous_mode
+        assert terminal.size == previous_size
+        assert app_ctx.app.focused is previous_focus
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_short_terminal_command_output_remains_in_scrollback(app_ctx: AppCtx) -> None:
     terminal = app_ctx.screen._terminal_pool.active_terminal
     await poll_until(app_ctx.pilot, lambda: terminal._at_prompt)
     await app_ctx.pilot.pause()
 
-    await app_ctx.screen._run_in_maximized_terminal(Command("printf 'MENU-MARKER\\n'", app_ctx.fs.path(app_ctx.src_dir), "Probe"))
+    await app_ctx.screen.command_runner.run(Command("printf 'MENU-MARKER\\n'", app_ctx.fs.path(app_ctx.src_dir), "Probe"), CommandMode.TERMINAL)
     await app_ctx.pilot.pause()
 
     assert app_ctx.screen._terminal_mode == app_ctx.screen._TerminalMode.MINIMIZED
@@ -66,7 +87,7 @@ async def test_terminal_command_after_existing_scrollback_is_visible_on_reopen(a
     await app_ctx.pilot.pause()
 
     command = Command("seq 1 60; printf 'LATEST-MARKER\\n'", app_ctx.fs.path(app_ctx.src_dir), "Probe")
-    await app_ctx.screen._run_in_maximized_terminal(command)
+    await app_ctx.screen.command_runner.run(command, CommandMode.TERMINAL)
     await app_ctx.pilot.pause()
 
     app_ctx.screen.action_toggle_maximized_terminal()

@@ -701,10 +701,7 @@ class MainScreen(ActionsSupport, Screen[None]):
             return
         command = Command(script=script, cwd=cwd, label=entry.label)
         try:
-            if entry.mode is CommandMode.TERMINAL:
-                result = await self._run_in_maximized_terminal(command)
-            else:
-                result = await self.command_runner.run(command, CommandMode.BACKGROUND)
+            result = await self.command_runner.run(command, entry.mode)
         except CommandCancelledError:
             return
         except CommandError as exc:
@@ -715,20 +712,6 @@ class MainScreen(ActionsSupport, Screen[None]):
             self._right_panel.reload()
         if entry.mode is CommandMode.BACKGROUND:
             await self._report_background_result(entry.label, result)
-
-    async def _run_in_maximized_terminal(self, command: Command) -> CommandResult:
-        """Run *command* in the terminal, maximized for the duration (like MC)."""
-        previous_mode = self._terminal_mode
-        self._terminal_mode = self._TerminalMode.MAXIMIZED
-        self._resize_terminal()
-        self._terminal_pool.active_terminal.focus()
-        try:
-            return await self.command_runner.run(command, CommandMode.TERMINAL)
-        finally:
-            self._terminal_mode = previous_mode
-            self._resize_terminal()
-            if previous_mode is not self._TerminalMode.MAXIMIZED:
-                self.active_panel().focus()
 
     async def _report_background_result(self, label: str, result: CommandResult) -> None:
         if result.exit_code == 0:
