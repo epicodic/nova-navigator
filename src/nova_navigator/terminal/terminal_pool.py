@@ -59,6 +59,10 @@ class TerminalPool:
         """Return True if a terminal is already registered for *fs*."""
         return id(fs.unwrap()) in self._terminals
 
+    def terminal_for(self, fs: Filesystem) -> Terminal | None:
+        """Return the terminal registered for *fs*, or None."""
+        return self._terminals.get(id(fs.unwrap()))
+
     async def create_for(self, fs: Filesystem) -> Terminal | None:
         """Create a new terminal for *fs* using the registered factory.
 
