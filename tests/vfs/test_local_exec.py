@@ -44,3 +44,10 @@ def test_exec_command_cancel_terminates_process(tmp_path: Path) -> None:
     result = _fs.exec_command("sleep 10", _fs.path(tmp_path), should_cancel=lambda: True)
     assert result.exit_code == -1
     assert time.monotonic() - start < 5
+
+
+def test_exec_command_cancel_kills_process_ignoring_sigterm(tmp_path: Path) -> None:
+    start = time.monotonic()
+    result = _fs.exec_command("trap '' TERM; sleep 30", _fs.path(tmp_path), should_cancel=lambda: True)
+    assert result.exit_code == -1
+    assert time.monotonic() - start < 10

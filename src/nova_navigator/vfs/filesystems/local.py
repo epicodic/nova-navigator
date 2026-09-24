@@ -27,12 +27,25 @@ logging.getLogger("watchdog").setLevel(logging.WARNING)
 _EXEC_POLL_INTERVAL = 0.05
 _EXEC_READER_JOIN_TIMEOUT = 1.0
 _EXEC_CHUNK_SIZE = 65536
+_EXEC_KILL_GRACE = 2.0
 
 
 def _pump_output(fd: int, tail: TailBuffer) -> None:
     """Copy everything readable from *fd* into *tail* until EOF."""
     while chunk := os.read(fd, _EXEC_CHUNK_SIZE):
         tail.append(chunk)
+
+
+def _terminate_group(process: subprocess.Popen[bytes]) -> None:
+    """Terminate *process*'s group, escalating to SIGKILL if it ignores SIGTERM."""
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=_EXEC_KILL_GRACE)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
 
 
 class LocalFilesystem(Filesystem):
@@ -103,9 +116,7 @@ class LocalFilesystem(Filesystem):
                 break
             except subprocess.TimeoutExpired:
                 if should_cancel is not None and should_cancel():
-                    with contextlib.suppress(ProcessLookupError):
-                        os.killpg(process.pid, signal.SIGTERM)
-                    process.wait()
+                    _terminate_group(process)
                     cancelled = True
                     break
         # A background child may keep the pipe open; never wait for it forever.
