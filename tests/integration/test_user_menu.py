@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
 from nova_navigator.response import Response
+from nova_navigator.usermenu.context import FileInfo
 from nova_navigator.usermenu.popup import UserMenuPopup
 from nova_widgets.key_types import KeySequence
 from nova_widgets.menu import Action
@@ -95,6 +96,29 @@ async def test_cancelled_input_dialog_runs_nothing(app_ctx: AppCtx) -> None:
         await app_ctx.pilot.pause(delay=0.5)
 
     assert not (app_ctx.src_dir / "never.txt").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_placeholder_io_error_shows_message_instead_of_crashing(app_ctx: AppCtx) -> None:
+    (app_ctx.src_dir / "a.txt").write_text("")
+    _write_menu(app_ctx, '[touch]\nlabel = "Touch"\nmode = "background"\nrun = "touch x-{file.size}"\n')
+    await set_panels(app_ctx)
+
+    message_box = MagicMock()
+    message_box.run = AsyncMock(return_value=Response.OK)
+    with (
+        patch.object(FileInfo, "size", new_callable=PropertyMock, side_effect=OSError("gone")),
+        patch.object(UserMenuPopup, "exec", new=AsyncMock(return_value=Action("Touch", id="touch"))),
+        patch("nova_navigator.nova_navigator.MessageBox", return_value=message_box) as message_box_cls,
+    ):
+        await app_ctx.pilot.app.run_action("user_menu", app_ctx.screen)
+        await poll_until(app_ctx.pilot, lambda: message_box_cls.called)
+
+    assert message_box_cls.called
+    message = message_box_cls.call_args.args[0]
+    assert "gone" in message
+    assert app_ctx.app.is_running
 
 
 @pytest.mark.asyncio

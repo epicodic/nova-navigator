@@ -696,7 +696,7 @@ class MainScreen(ActionsSupport, Screen[None]):
                     return
                 values.update(dialog.values)
             script = expand(entry.run, values)
-        except PlaceholderError as exc:
+        except (PlaceholderError, OSError) as exc:
             await MessageBox(f"User menu entry '{entry.id}': {exc}", title="User menu", variant="error").run()
             return
         command = Command(script=script, cwd=cwd, label=entry.label)
