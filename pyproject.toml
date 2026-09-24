@@ -149,6 +149,9 @@ ignore = [
 "src/tools/ssh_terminal_demo.py" = [
     "S507", # AutoAddPolicy is intentional behind the --accept-new-key flag
 ]
+"src/nova_navigator/usermenu/evaluate.py" = [
+    "S307", # eval() of user menu conditions is the feature; the config file is trusted user input
+]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
