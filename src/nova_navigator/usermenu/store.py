@@ -32,6 +32,7 @@ class UserMenuStore:
         self._default_path = default_path
         self._stamp: int | None = None
         self._menu = CompiledMenu(entries=(), errors=())
+        self._default_menu: CompiledMenu | None = None
 
     @property
     def path(self) -> Path:
@@ -48,17 +49,34 @@ class UserMenuStore:
         """Return the menu, re-reading the file when its modification time changed.
 
         An invalid file is reported and replaced by the built-in default menu.
+        A user file that cannot even be created, stat'd or read (permissions, a
+        deleted config directory, invalid encoding, ...) falls back the same way;
+        the mtime is not cached in that case, so a later successful read reloads it.
         """
-        path = self.ensure_user_file()
-        stamp = path.stat().st_mtime_ns
+        try:
+            stamp, text = self._read_user_file()
+        except (OSError, UnicodeDecodeError) as exc:
+            message = f"{self._path}: cannot read user menu ({exc}) — using the built-in user menu"
+            return LoadResult(menu=self._default_menu_compiled(), messages=(message,))
         if stamp == self._stamp:
             return LoadResult(menu=self._menu, messages=())
         messages: list[str] = []
         try:
-            entries = parse_menu(path.read_text())
+            entries = parse_menu(text)
         except MenuConfigError as exc:
-            messages.append(f"{path}: {exc} — using the built-in user menu")
+            messages.append(f"{self._path}: {exc} — using the built-in user menu")
             entries = parse_menu(self._default_path.read_text())
         self._menu = compile_menu(entries)
         self._stamp = stamp
         return LoadResult(menu=self._menu, messages=(*messages, *self._menu.errors))
+
+    def _read_user_file(self) -> tuple[int, str]:
+        """Return the user file's modification time (ns) and text, creating it first if needed."""
+        path = self.ensure_user_file()
+        return path.stat().st_mtime_ns, path.read_text()
+
+    def _default_menu_compiled(self) -> CompiledMenu:
+        """Return the compiled built-in default menu, computed once and cached."""
+        if self._default_menu is None:
+            self._default_menu = compile_menu(parse_menu(self._default_path.read_text()))
+        return self._default_menu

@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from nova_navigator.config import app_config_dir
 from nova_navigator.usermenu import DEFAULT_MENU_PATH, UserMenuStore, compile_menu, parse_menu
 
@@ -56,3 +58,27 @@ def test_expression_errors_are_reported_once(tmp_path: Path) -> None:
     store = UserMenuStore(path)
     assert len(store.load().messages) == 1
     assert store.load().messages == ()
+
+
+def test_unreadable_file_falls_back_to_default(tmp_path: Path) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("root ignores file permissions")
+    path = tmp_path / "usermenu.toml"
+    path.write_text('[a]\nlabel = "A"\nrun = "a"\n')
+    path.chmod(0o000)
+    try:
+        result = UserMenuStore(path).load()
+    finally:
+        path.chmod(0o644)
+    assert len(result.menu.entries) == 5
+    assert len(result.messages) == 1
+    assert "cannot read" in result.messages[0]
+
+
+def test_non_utf8_file_falls_back_to_default(tmp_path: Path) -> None:
+    path = tmp_path / "usermenu.toml"
+    path.write_bytes(b"\xff\xfe[x]")
+    result = UserMenuStore(path).load()
+    assert len(result.menu.entries) == 5
+    assert len(result.messages) == 1
+    assert "cannot read" in result.messages[0]
