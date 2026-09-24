@@ -18,6 +18,37 @@ If the menu file cannot be parsed, or cannot be read at all (permissions, invali
 It is a `nova_widgets` `Menu` with an MC-style hotkey column, shown modally with `Menu.exec()`, the same way the right-click context menu is shown.
 Pressing an entry's hotkey selects it immediately; Up/Down/Enter navigate and run, and Escape closes it, exactly as in other menus built on `Menu`.
 
+F2 was the shortcut for Rename before the user menu existed; Rename now defaults to Shift+F6, and F2 opens the user menu.
+Both shortcuts come from `~/.config/nova-navigator/keybindings.toml` like any other action, so they can be rebound.
+An existing `keybindings.toml` that still binds `browser.rename` to `f2` should be updated, since F2 no longer reaches Rename by default.
+
+## Example Entry
+
+This is the built-in `compress` entry, copied from `src/nova_navigator/_default/usermenu.toml`:
+
+```toml
+[compress]
+key = "c"
+label = "Compress to archive…"
+group = "Archives"
+on = ["local", "ssh"]
+when = "targets"
+mode = "background"
+run = "tar czf {archive} -- {targets.name}"
+
+  [[compress.input]]
+  name = "archive"
+  prompt = "Archive name"
+  default = "{dir.name}.tar.gz"
+```
+
+`key` and `label` give it the hotkey `c` and its menu text.
+`group = "Archives"` draws a separator between it and entries from a different group.
+`on` allows it on local and SSH panels; `when = "targets"` shows it only when at least one item is targeted.
+`mode = "background"` runs it as a cancellable job instead of in the terminal.
+The `[[compress.input]]` table asks for an archive name before running, pre-filled from `{dir.name}.tar.gz`.
+`run` uses `{archive}` (the input value) and `{targets.name}`, an attribute mapped over the `targets` list; `--` stops a target name that starts with `-` from being read as a `tar` option.
+
 ## Fields
 
 Each entry is one named TOML table.
@@ -43,12 +74,12 @@ Validation errors for an input field are reported as "input #N", where N is its 
 
 A TOML syntax error, an unknown field, or a validation error anywhere in the file discards the whole file: a notification names the file and the problem, and the built-in default menu is used until the file is fixed.
 
-## Condition context
+## Condition Context
 
 `when`, `default` and placeholders share the same names.
 All objects are read-only wrappers, never raw `VPath` objects.
 
-### Top-level names
+### Top-Level Names
 
 | Name | Type | Meaning |
 |---|---|---|
@@ -62,7 +93,7 @@ All objects are read-only wrappers, never raw `VPath` objects.
 
 An `input` field's name is also visible, once its dialog has been answered, wherever placeholders are expanded.
 
-### `FileInfo` members
+### `FileInfo` Members
 
 - `name`, `stem`, `ext` (last suffix without the dot, e.g. `"gz"` for `a.tar.gz`).
 - `path` (absolute path string), `uri`.
@@ -71,7 +102,7 @@ An `input` field's name is also visible, once its dialog has been answered, wher
 - `matches(*globs, ignore_case=False)`: `fnmatch` on `name`.
 - `re(pattern)`: `re.search` on `name`, returns `bool`.
 
-### `DirInfo` members
+### `DirInfo` Members
 
 - `path`, `name`, `uri`.
 - `scheme` (e.g. `"local"`, `"ssh"`), `is_local`, `host` (`""` for local).
@@ -80,7 +111,7 @@ An `input` field's name is also visible, once its dialog has been answered, wher
 
 Directories returned by `find_up()` have no listing, so `has()` is always `False` on them.
 
-### Evaluation rules
+### Evaluation Rules
 
 - All expressions are compiled once when the config file is loaded.
 - An expression with a syntax error disables its entry; a notification names the entry.
@@ -129,24 +160,22 @@ Put `--` before file arguments, or prefer `{file}` (the absolute path) over `{fi
 `on` lists the filesystem schemes an entry may run on, matched against the active panel's `Filesystem.scheme` (`"local"`, `"ssh"`, `"archive"`, `"azure"`).
 Archive panels and the (incomplete) Azure filesystem never support running commands, so entries never run there regardless of `on`.
 
-### Terminal mode (default)
+### Terminal Mode (Default)
 
 Running the entry maximizes the panel's terminal for the duration of the command, like MC, and restores the previous terminal layout afterwards.
-The script is typed into the shell as if the user had typed it; a multi-line script is wrapped as `sh -c '<script>'`.
 Output stays visible while the command runs, and can also be reached afterwards with Ctrl+O (toggle maximized terminal), since the terminal pane is not cleared.
-There is no exit code in terminal mode (`CommandResult.exit_code` is `None`); success or failure is only visible from the terminal output.
+See `docs/commands.md` → "Terminal Mode" for how the script is sent to the shell and why there is no exit code in this mode.
 
-### Background mode
+### Background Mode
 
 The command runs as a scheduler job, labelled with the entry's `label`, and appears in the jobs dialog where it can be cancelled.
-Standard input is closed, so a command that prompts for input fails instead of hanging.
-Stdout and stderr are merged, and only the last 64 KiB of output is kept.
 On a non-zero exit, a message box shows the exit code and the output tail.
-On a zero exit, a toast confirms success.
+On a zero exit, a notification confirms success.
+See `docs/commands.md` → "Background Mode" for stdin, output and exit-code mechanics.
 
 Both panels are reloaded after the entry finishes, whichever mode was used.
 
-## Error handling
+## Error Handling
 
 | Situation | Behaviour |
 |---|---|
@@ -158,11 +187,11 @@ Both panels are reloaded after the entry finishes, whichever mode was used.
 | Placeholder attribute error, or an I/O error while expanding a placeholder | The command is not run; a message box titled "User menu" names the entry and the error |
 | Terminal busy (`TerminalBusyError`) | A message box titled with the entry's label shows the error; nothing is sent to the terminal |
 | Background command exits non-zero | A message box titled with the entry's label shows the exit code and the output tail; both panels are reloaded |
-| Background command exits zero | A toast confirms success ("`<label>`: done") |
+| Background command exits zero | A notification confirms success ("`<label>`: done") |
 | Background command cancelled by the user | Nothing is reported; both panels are still reloaded |
 | Input dialog cancelled | Nothing happens; the command is never built or run |
 
-## Built-in default entries
+## Built-in Default Entries
 
 | Id | Key | Label | Group | Mode | Condition |
 |---|---|---|---|---|---|
