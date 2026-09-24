@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
 from nova_navigator.vfs.filesystems.archive import ArchiveFilesystem
@@ -28,3 +30,10 @@ def test_archive_scheme_and_no_commands() -> None:
     archive = ArchiveFilesystem(archive_parent=VPath(_DATA, local), archive=VPath(_DATA / "test_archive.zip", local))
     assert archive.scheme == "archive"
     assert archive.capabilities.commands is False
+
+
+def test_archive_readlink_raises_oserror() -> None:
+    local = LocalFilesystem.singleton()
+    archive = ArchiveFilesystem(archive_parent=VPath(_DATA, local), archive=VPath(_DATA / "test_archive.zip", local))
+    with pytest.raises(OSError, match="Not a symbolic link"):
+        archive.readlink(archive.path("/x"))

@@ -270,6 +270,12 @@ class SSHFilesystem(Filesystem):
         cwd: VPath,
         should_cancel: Callable[[], bool] | None = None,
     ) -> ExecResult:
+        """Run *command* with ``sh -c`` in *cwd* over SSH and wait for it to finish.
+
+        Cancelling (via *should_cancel*) closes the SSH channel; since no PTY is
+        requested, the remote shell receives no ``SIGHUP``, so the remote process
+        may keep running detached from the closed channel.
+        """
         self._assert_vpath(cwd)
         script = f"cd {shlex.quote(cwd.path.as_posix())} || exit 1\n{command}"
         try:
@@ -279,10 +285,29 @@ class SSHFilesystem(Filesystem):
         stdin.close()
         channel = stdout.channel
         tail = TailBuffer(OUTPUT_TAIL_LIMIT)
+        try:
+            exit_code = self._drain_channel(channel, tail, should_cancel)
+        except (paramiko.SSHException, OSError, EOFError) as exc:
+            channel.close()
+            raise OSError(str(exc)) from exc
+        if exit_code is None:
+            channel.close()
+            return ExecResult(exit_code=-1, output=tail.text())
+        return ExecResult(exit_code=exit_code, output=tail.text())
+
+    @staticmethod
+    def _drain_channel(
+        channel: paramiko.Channel,
+        tail: TailBuffer,
+        should_cancel: Callable[[], bool] | None,
+    ) -> int | None:
+        """Poll *channel* into *tail* until the command exits or cancellation is requested.
+
+        Returns the exit code, or ``None`` if *should_cancel* returned True.
+        """
         while True:
             if should_cancel is not None and should_cancel():
-                channel.close()
-                return ExecResult(exit_code=-1, output=tail.text())
+                return None
             if channel.recv_ready():
                 tail.append(channel.recv(_EXEC_CHUNK_SIZE))
             elif channel.exit_status_ready():
@@ -291,7 +316,7 @@ class SSHFilesystem(Filesystem):
                 time.sleep(_EXEC_POLL_INTERVAL)
         while channel.recv_ready():
             tail.append(channel.recv(_EXEC_CHUNK_SIZE))
-        return ExecResult(exit_code=channel.recv_exit_status(), output=tail.text())
+        return channel.recv_exit_status()
 
     @override
     async def iterdir(
