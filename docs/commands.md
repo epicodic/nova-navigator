@@ -66,7 +66,7 @@ See `docs/terminal.md` → "Running Commands (`run_command`)" for the full behav
 `Filesystem.scheme` (`"local"`, `"ssh"`, `"archive"`, `"azure"`) identifies the filesystem type; it is what the user menu's `on` field matches against, and archive/Azure filesystems never set `commands = True`.
 
 `LocalFilesystem.exec_command()` uses `subprocess.Popen(["sh", "-c", command], cwd=...)` in a new process group, so cancellation can kill the whole group.
-`SSHFilesystem.exec_command()` uses paramiko's `exec_command` with `cd <cwd> && sh -c '<command>'`.
+`SSHFilesystem.exec_command()` builds the script `cd <cwd> || exit 1\n<command>`, shell-quotes the whole script, and runs it over paramiko's `exec_command` as `sh -c '<script>' 2>&1`; it closes stdin right after issuing the command.
 SSH cancellation closes the channel; since no PTY is requested, the remote shell gets no `SIGHUP`, so the remote process can keep running detached from the closed channel.
 
 `CommandRunner._run_in_background()` wraps `exec_command()` (via `asyncio.to_thread`) in a scheduler `Job` labelled with `Command.label`.

@@ -14,6 +14,10 @@ The file is only re-read when its modification time has changed since the last l
 
 If the menu file cannot be parsed, or cannot be read at all (permissions, invalid encoding, a deleted config directory), a notification names the problem and the built-in default menu is used instead.
 
+`UserMenuPopup` (`nova_navigator/usermenu/popup.py`) is the widget F2 shows.
+It is a `nova_widgets` `Menu` with an MC-style hotkey column, shown modally with `Menu.exec()`, the same way the right-click context menu is shown.
+Pressing an entry's hotkey selects it immediately; Up/Down/Enter navigate and run, and Escape closes it, exactly as in other menus built on `Menu`.
+
 ## Fields
 
 Each entry is one named TOML table.
@@ -141,6 +145,22 @@ On a non-zero exit, a message box shows the exit code and the output tail.
 On a zero exit, a toast confirms success.
 
 Both panels are reloaded after the entry finishes, whichever mode was used.
+
+## Error handling
+
+| Situation | Behaviour |
+|---|---|
+| TOML syntax error, unknown field, or an invalid field value anywhere in the file | Notification names the file and the problem; the built-in default menu is used |
+| User menu file cannot be read (permissions, non-UTF-8 encoding, a deleted config directory) | Notification with a "cannot read user menu" message; the built-in default menu is used; the file's modification time is not cached, so the next successful read reloads it |
+| `when` or `default` expression has a syntax error | The entry is disabled (dropped when the file is loaded); a notification names the entry |
+| Exception raised while evaluating `when` | The entry is hidden; the error is logged with `logger.exception` (ERROR level), not shown to the user |
+| Exception raised while evaluating `default` | Treated as false; the entry can still be shown, just not highlighted |
+| Placeholder attribute error, or an I/O error while expanding a placeholder | The command is not run; a message box titled "User menu" names the entry and the error |
+| Terminal busy (`TerminalBusyError`) | A message box titled with the entry's label shows the error; nothing is sent to the terminal |
+| Background command exits non-zero | A message box titled with the entry's label shows the exit code and the output tail; both panels are reloaded |
+| Background command exits zero | A toast confirms success ("`<label>`: done") |
+| Background command cancelled by the user | Nothing is reported; both panels are still reloaded |
+| Input dialog cancelled | Nothing happens; the command is never built or run |
 
 ## Built-in default entries
 
