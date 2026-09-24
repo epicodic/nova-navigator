@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
+import signal
+import subprocess
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -15,9 +18,21 @@ import watchdog.events
 import watchdog.observers
 
 from ..filesystem import Filesystem, FilesystemCapabilities, Stat, StreamReaderLike, StreamWriterLike
+from ..tail_buffer import TailBuffer
+from ..types import OUTPUT_TAIL_LIMIT, ExecResult
 from ..vpath import VPath
 
 logging.getLogger("watchdog").setLevel(logging.WARNING)
+
+_EXEC_POLL_INTERVAL = 0.05
+_EXEC_READER_JOIN_TIMEOUT = 1.0
+_EXEC_CHUNK_SIZE = 65536
+
+
+def _pump_output(fd: int, tail: TailBuffer) -> None:
+    """Copy everything readable from *fd* into *tail* until EOF."""
+    while chunk := os.read(fd, _EXEC_CHUNK_SIZE):
+        tail.append(chunk)
 
 
 class LocalFilesystem(Filesystem):
@@ -53,7 +68,51 @@ class LocalFilesystem(Filesystem):
             watch=True,
             symlinks=True,
             permissions=True,
+            commands=True,
         )
+
+    @property
+    @override
+    def scheme(self) -> str:
+        return "local"
+
+    @override
+    def exec_command(
+        self,
+        command: str,
+        cwd: VPath,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> ExecResult:
+        self._assert_vpath(cwd)
+        process = subprocess.Popen(
+            ["sh", "-c", command],
+            cwd=cwd.path.as_posix(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        assert process.stdout is not None
+        tail = TailBuffer(OUTPUT_TAIL_LIMIT)
+        reader = threading.Thread(target=_pump_output, args=(process.stdout.fileno(), tail), daemon=True)
+        reader.start()
+        cancelled = False
+        while True:
+            try:
+                process.wait(timeout=_EXEC_POLL_INTERVAL)
+                break
+            except subprocess.TimeoutExpired:
+                if should_cancel is not None and should_cancel():
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(process.pid, signal.SIGTERM)
+                    process.wait()
+                    cancelled = True
+                    break
+        # A background child may keep the pipe open; never wait for it forever.
+        reader.join(timeout=_EXEC_READER_JOIN_TIMEOUT)
+        if not reader.is_alive():
+            process.stdout.close()
+        return ExecResult(exit_code=-1 if cancelled else process.returncode, output=tail.text())
 
     @override
     def is_same_device(self, path1: VPath, path2: VPath) -> bool:
