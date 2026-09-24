@@ -3,6 +3,9 @@ from __future__ import annotations
 import shlex
 from unittest.mock import MagicMock
 
+import paramiko
+import pytest
+
 from tests.vfs.test_ssh_filesystem import _make_fs
 
 
@@ -54,4 +57,14 @@ def test_ssh_exec_command_cancel_closes_channel() -> None:
     _set_channel(mock_ssh, channel)
     result = fs.exec_command("sleep 10", fs.path("/"), should_cancel=lambda: True)
     assert result.exit_code == -1
+    channel.close.assert_called_once()
+
+
+def test_ssh_exec_command_channel_error_becomes_oserror() -> None:
+    fs, mock_ssh, _ = _make_fs()
+    channel = _mock_channel([], 0)
+    channel.recv_ready.side_effect = paramiko.SSHException("boom")
+    _set_channel(mock_ssh, channel)
+    with pytest.raises(OSError, match="boom"):
+        fs.exec_command("echo", fs.path("/"))
     channel.close.assert_called_once()
