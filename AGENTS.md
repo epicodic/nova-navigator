@@ -154,7 +154,7 @@ The codebase lives under `src/` and contains two packages:
 
 **Commands:** `nova_navigator/commands/` — Textual-free `CommandRunner` service that runs a final shell script in a terminal or as a background job. See `docs/commands.md`.
 
-**User menu:** `nova_navigator/usermenu/` — Textual-free F2 user menu: config parsing, condition evaluation, and placeholder expansion. See `docs/user_menu.md`.
+**User menu:** `nova_navigator/usermenu/` — F2 user menu: config parsing, condition evaluation and placeholder expansion (Textual-free), plus the `UserMenuPopup` widget in `popup.py`. See `docs/user_menu.md`.
 
 **UI widgets:** `nova_navigator/widgets/`
 - `directory_browser.py` — main dual-pane file browser widget
