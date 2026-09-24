@@ -8,7 +8,14 @@ import pytest
 from nova_navigator.commands import TerminalBusyError
 from nova_navigator.terminal.shell_driver import ZshDriver
 from nova_navigator.terminal.terminal import Terminal
-from tests.terminal.test_terminal import FakePtyBackend, TerminalTestApp, _start_recv_only, _stop_recv_only
+from tests.terminal.test_terminal import (
+    FakePtyBackend,
+    TerminalTestApp,
+    _cd_writes,
+    _expected_cd,
+    _start_recv_only,
+    _stop_recv_only,
+)
 
 _KILL = b"\x1b[96~ \x15"  # ZshDriver.kill_line_sequence()
 _YANK = b"\x19\x08"  # ZshDriver.yank_sequence()
@@ -90,6 +97,28 @@ async def test_run_command_stashes_and_restores_typed_input() -> None:
             assert backend.writes[-1] == _YANK
             assert terminal.has_input() is True
         finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_request_cd_during_run_command_is_applied_after_completion() -> None:
+    backend, terminal = _terminal()
+    async with TerminalTestApp(terminal).run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            _ready(terminal)
+            task = asyncio.ensure_future(terminal.run_command("make"))
+            await asyncio.sleep(0.01)
+            terminal.request_cd(PurePath("/b"))
+            await asyncio.sleep(0.01)
+            assert _cd_writes(backend) == []
+            await recv_q.put(["pre_cmd", "/w\n"])
+            await pilot.pause(delay=0.1)
+            assert task.done()
+            assert _cd_writes(backend) == [_expected_cd("/b")]
+        finally:
+            terminal._cancel_watchdog()
             await _stop_recv_only(terminal)
 
 

@@ -426,6 +426,18 @@ Both settings are idempotent and have no effect on user-typed commands that do n
 
 ---
 
+## Running Commands (`run_command`)
+
+`Terminal.run_command(line)` types *line* into the shell as if the user had typed it, then waits for it to finish.
+It refuses with `TerminalBusyError` when the shell is not at a prompt, is running a command, is navigating, or holds typed input on a shell without line editing.
+Typed input is stashed with `_stash_input()` before the line is sent and restored with `_restore_input()` once the command's precmd fires.
+
+Completion relies entirely on the shell's precmd hook and has no timeout, since a command may legitimately run for a long time.
+If the command replaces the shell's hook (e.g. `exec zsh`), `run_command` never returns and the terminal stays busy until that shell process exits.
+Cancelling the awaiting coroutine does not stop the shell command itself; the terminal remains busy until a precmd eventually arrives.
+
+---
+
 ## Key and Mouse Event Flow
 
 ### Keyboard
