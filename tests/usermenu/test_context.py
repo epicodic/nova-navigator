@@ -81,7 +81,7 @@ def test_build_context_targets_fall_back_to_cursor(tmp_path: Path) -> None:
     assert set(names) == CONTEXT_NAMES
     targets = names["targets"]
     assert isinstance(targets, list)
-    assert [t.name for t in targets] == ["a.txt"]
+    assert [t.name if isinstance(t, FileInfo) else t for t in targets] == ["a.txt"]
     assert names["selection"] == []
 
 
@@ -91,7 +91,7 @@ def test_build_context_targets_prefer_selection(tmp_path: Path) -> None:
     names = build_context(_snapshot(tmp_path, cursor="a.txt", selection=("b.txt",)), _snapshot(tmp_path))
     targets = names["targets"]
     assert isinstance(targets, list)
-    assert [t.name for t in targets] == ["b.txt"]
+    assert [t.name if isinstance(t, FileInfo) else t for t in targets] == ["b.txt"]
 
 
 def test_build_context_without_cursor(tmp_path: Path) -> None:
