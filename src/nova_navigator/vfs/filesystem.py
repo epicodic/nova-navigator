@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import PurePath
 from typing import Protocol
 
-from .types import Stat
+from .types import ExecResult, Stat
 from .vpath import VPath
 
 
@@ -46,6 +46,9 @@ class FilesystemCapabilities:
     permissions: bool = False
     """True if this filesystem instance exposes POSIX permission bits."""
 
+    commands: bool = False
+    """True if shell commands can be run with :meth:`Filesystem.exec_command`."""
+
 
 class Filesystem(ABC):
     """Abstract base class for virtual filesystem implementations.
@@ -65,6 +68,33 @@ class Filesystem(ABC):
     def capabilities(self) -> FilesystemCapabilities:
         """Return the runtime capabilities of this filesystem instance."""
         return FilesystemCapabilities()
+
+    @property
+    def scheme(self) -> str:
+        """Short name of the filesystem type, e.g. ``"local"`` or ``"ssh"``.
+
+        User-facing configuration (for example the user menu ``on`` field) matches against this value.
+        """
+        return ""
+
+    def exec_command(
+        self,
+        command: str,
+        cwd: VPath,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> ExecResult:
+        """Run *command* with ``sh -c`` in *cwd* and wait for it to finish.
+
+        Stdin is closed, stdout and stderr are merged, and only the last
+        ``OUTPUT_TAIL_LIMIT`` bytes of output are kept.
+        *should_cancel* is polled while the command runs; when it returns True the
+        command is terminated and the result has ``exit_code == -1``.
+        Only available when ``capabilities.commands`` is True.
+
+        Raises:
+            NotImplementedError: This filesystem cannot run commands.
+        """
+        raise NotImplementedError(f"{type(self).__name__} cannot run commands")
 
     def path(self, p: str | PurePath) -> VPath:
         """Create a :class:`~nova_navigator.vfs.vpath.VPath` bound to this filesystem."""
