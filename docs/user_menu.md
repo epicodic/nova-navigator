@@ -162,8 +162,8 @@ Archive panels and the (incomplete) Azure filesystem never support running comma
 
 ### Terminal Mode (Default)
 
-Running the entry maximizes the panel's terminal for the duration of the command, like MC, and restores the previous terminal layout afterwards.
-Output stays visible while the command runs, and can also be reached afterwards with Ctrl+O (toggle maximized terminal), since the terminal pane is not cleared.
+Running the entry uses the panel's terminal at its current size without changing the terminal layout or focus.
+If the terminal is minimized, command output is retained in scrollback and can be viewed afterwards with Ctrl+O (toggle maximized terminal).
 See `docs/commands.md` → "Terminal Mode" for how the script is sent to the shell and why there is no exit code in this mode.
 
 ### Background Mode
