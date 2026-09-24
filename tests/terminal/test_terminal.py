@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Mapping
 from io import StringIO
 from pathlib import PurePath
 from typing import Any
@@ -209,6 +210,34 @@ def test_pyte_screen_set_margins_ignores_private_kwarg() -> None:
 def test_pyte_screen_set_margins_works_without_private_kwarg() -> None:
     screen = TerminalPyteScreen(80, 24)
     screen.set_margins(top=1, bottom=24)
+
+
+def test_pyte_screen_shrink_preserves_output_in_scrollback_and_cursor_line() -> None:
+    scrolled: list[str] = []
+
+    def capture(row: Mapping[int, Char]) -> None:
+        scrolled.append("".join(row[x].data for x in range(40)).strip())
+
+    screen = TerminalPyteScreen(40, 10, on_scroll_off=capture)
+    stream = pyte.Stream(screen)
+    stream.feed("command\r\nMARKER\r\n")
+
+    screen.resize(1, 40)
+    stream.feed("prompt")
+
+    assert "MARKER" in scrolled
+    assert screen.display[0].strip() == "prompt"
+    assert screen.cursor.y == 0
+
+
+def test_pyte_screen_shrink_also_clips_columns() -> None:
+    screen = TerminalPyteScreen(12, 4)
+    pyte.Stream(screen).feed("line0\r\n123456789")
+
+    screen.resize(1, 5)
+    screen.resize(1, 12)
+
+    assert screen.display[0].strip() == "12345"
 
 
 # ---------------------------------------------------------------------------
@@ -695,6 +724,47 @@ async def test_on_resize_puts_set_size_message_in_send_queue() -> None:
         assert item[0] == "set_size"
         assert item[1] == terminal.nrow
         assert item[2] == terminal.ncol
+
+
+@pytest.mark.asyncio
+async def test_quiet_resize_rebuilds_terminal_display() -> None:
+    terminal = Terminal("/bin/sh", backend=FakePtyBackend(), driver=ZshDriver(), scrollback_lines=100)
+    async with TerminalTestApp(terminal).run_test(size=(50, 10)) as pilot:
+        await pilot.pause()
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
+        await terminal.on_resize(events.Resize(terminal.size, Size(0, 0)))
+        terminal._process_stdout("command\r\nMARKER\r\nprompt")
+
+        terminal.styles.height = 1
+        await pilot.pause()
+
+        assert terminal._display.lines[0].plain.strip() == terminal._screen.display[0].strip()
+
+
+@pytest.mark.asyncio
+async def test_reopening_terminal_shows_recent_scrollback_after_resize() -> None:
+    terminal = Terminal("/bin/sh", backend=FakePtyBackend(), driver=ZshDriver(), scrollback_lines=100)
+    async with TerminalTestApp(terminal).run_test(size=(50, 10)) as pilot:
+        await pilot.pause()
+        terminal.send_queue = asyncio.Queue()
+        terminal._started = True
+        await terminal.on_resize(events.Resize(terminal.size, Size(0, 0)))
+        terminal._process_stdout("".join(f"line{i}\r\n" for i in range(20)) + "prompt")
+        terminal.scroll_end(animate=False, force=True, immediate=True)
+
+        terminal.styles.height = 1
+        await pilot.pause()
+        terminal._process_stdout("\r\nMARKER\r\nprompt")
+        terminal.styles.height = 10
+        await pilot.pause()
+
+        visible = [terminal.render_line(y).text.strip() for y in range(terminal.size.height)]
+        assert any("MARKER" in line for line in visible)
+
+        terminal._process_stdout("".join(f"NEW{i}\r\n" for i in range(15)))
+        visible = [terminal.render_line(y).text.strip() for y in range(terminal.size.height)]
+        assert any("NEW14" in line for line in visible)
 
 
 # ---------------------------------------------------------------------------
