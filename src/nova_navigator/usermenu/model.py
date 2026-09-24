@@ -64,9 +64,10 @@ def _parse_entry(entry_id: str, table: object) -> MenuEntry:
         raise MenuConfigError(f"{where}: must be a table")
     _check_fields(table, _ENTRY_FIELDS, where)
     key = _opt_str(table, "key", where)
-    if key is not None and len(key) != 1:
-        raise MenuConfigError(f"{where}: 'key' must be a single character")
-    mode_value = _opt_str(table, "mode", where) or CommandMode.TERMINAL.value
+    if key is not None and (len(key) != 1 or key.isspace()):
+        raise MenuConfigError(f"{where}: 'key' must be a single visible character")
+    mode_raw = _opt_str(table, "mode", where)
+    mode_value = mode_raw if mode_raw is not None else CommandMode.TERMINAL.value
     try:
         mode = CommandMode(mode_value)
     except ValueError:
@@ -92,19 +93,20 @@ def _parse_inputs(raw: object, where: str) -> tuple[MenuInput, ...]:
     if not isinstance(raw, list):
         raise MenuConfigError(f"{where}: 'input' must be an array of tables")
     inputs: list[MenuInput] = []
-    for item in raw:
+    for index, item in enumerate(raw, start=1):
+        item_where = f"{where} input #{index}"
         if not isinstance(item, dict):
             raise MenuConfigError(f"{where}: 'input' must be an array of tables")
-        _check_fields(item, _INPUT_FIELDS, f"{where} input")
-        name = _req_str(item, "name", f"{where} input")
+        _check_fields(item, _INPUT_FIELDS, item_where)
+        name = _req_str(item, "name", item_where)
         if not name.isidentifier() or keyword.iskeyword(name):
-            raise MenuConfigError(f"{where}: input name '{name}' must be a Python identifier")
+            raise MenuConfigError(f"{item_where}: input name '{name}' must be a Python identifier")
         if name in CONTEXT_NAMES:
-            raise MenuConfigError(f"{where}: input name '{name}' is reserved")
+            raise MenuConfigError(f"{item_where}: input name '{name}' is reserved")
         if any(existing.name == name for existing in inputs):
-            raise MenuConfigError(f"{where}: duplicate input name '{name}'")
-        prompt = _req_str(item, "prompt", f"{where} input")
-        inputs.append(MenuInput(name=name, prompt=prompt, default=_opt_str(item, "default", f"{where} input") or ""))
+            raise MenuConfigError(f"{item_where}: duplicate input name '{name}'")
+        prompt = _req_str(item, "prompt", item_where)
+        inputs.append(MenuInput(name=name, prompt=prompt, default=_opt_str(item, "default", item_where) or ""))
     return tuple(inputs)
 
 
@@ -122,6 +124,8 @@ def _req_str(table: dict[Any, Any], field: str, where: str) -> str:
     value = _opt_str(table, field, where)
     if value is None:
         raise MenuConfigError(f"{where}: missing required field '{field}'")
+    if not value.strip():
+        raise MenuConfigError(f"{where}: '{field}' must not be empty")
     return value
 
 
@@ -138,4 +142,6 @@ def _str_tuple(table: dict[Any, Any], field: str, where: str, *, fallback: tuple
         return fallback
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
         raise MenuConfigError(f"{where}: '{field}' must be an array of strings")
+    if not value:
+        raise MenuConfigError(f"{where}: '{field}' must not be empty")
     return tuple(value)

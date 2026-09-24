@@ -54,15 +54,26 @@ def test_entries_keep_file_order() -> None:
         ('[x]\nrun = "r"\n', "'label'"),
         ('[x]\nlabel = "L"\n', "'run'"),
         ('[x]\nlabel = "L"\nrun = "r"\ncolour = "red"\n', "unknown field 'colour'"),
-        ('[x]\nlabel = "L"\nrun = "r"\nkey = "ab"\n', "single character"),
+        ('[x]\nlabel = "L"\nrun = "r"\nkey = "ab"\n', "single visible character"),
         ('[x]\nlabel = "L"\nrun = "r"\nmode = "view"\n', "'mode'"),
         ('[x]\nlabel = "L"\nrun = "r"\non = "local"\n', "'on'"),
         ('[x]\nlabel = "L"\nrun = "r"\ndefault = 1\n', "'default'"),
         ('[x]\nlabel = "L"\nrun = "r"\n[[x.input]]\nname = "file"\nprompt = "P"\n', "reserved"),
         ('[x]\nlabel = "L"\nrun = "r"\n[[x.input]]\nname = "not valid"\nprompt = "P"\n', "identifier"),
         ('[x]\nlabel = "L"\nrun = "r"\n[[x.input]]\nname = "a"\nprompt = "P"\n[[x.input]]\nname = "a"\nprompt = "Q"\n', "duplicate"),
+        ('[x]\nlabel = "L"\nrun = "r"\nmode = ""\n', "'mode'"),
+        ('[x]\nlabel = "  "\nrun = "r"\n', "must not be empty"),
+        ('[x]\nlabel = "L"\nrun = ""\n', "must not be empty"),
+        ('[x]\nlabel = "L"\nrun = "r"\non = []\n', "must not be empty"),
+        ('[x]\nlabel = "L"\nrun = "r"\nkey = " "\n', "single visible character"),
     ],
 )
 def test_invalid_config_raises(text: str, message: str) -> None:
     with pytest.raises(MenuConfigError, match=message):
+        parse_menu(text)
+
+
+def test_second_input_error_is_identified_by_index() -> None:
+    text = '[x]\nlabel = "L"\nrun = "r"\n[[x.input]]\nname = "a"\nprompt = "P"\n[[x.input]]\nname = "not valid"\nprompt = "Q"\n'
+    with pytest.raises(MenuConfigError, match="input #2"):
         parse_menu(text)
