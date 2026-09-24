@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
+from nova_navigator.commands import Command
 from nova_navigator.response import Response
 from nova_navigator.usermenu.context import FileInfo
 from nova_navigator.usermenu.popup import UserMenuPopup
@@ -36,6 +37,41 @@ async def test_f2_opens_menu_and_hotkey_runs_background_entry(app_ctx: AppCtx) -
     await poll_until(app_ctx.pilot, lambda: (app_ctx.src_dir / "marker-a.txt").exists())
 
     assert (app_ctx.src_dir / "marker-a.txt").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_short_terminal_command_output_survives_restoring_minimized_layout(app_ctx: AppCtx) -> None:
+    terminal = app_ctx.screen._terminal_pool.active_terminal
+    await poll_until(app_ctx.pilot, lambda: terminal._at_prompt)
+    await app_ctx.pilot.pause()
+
+    await app_ctx.screen._run_in_maximized_terminal(Command("printf 'MENU-MARKER\\n'", app_ctx.fs.path(app_ctx.src_dir), "Probe"))
+    await app_ctx.pilot.pause()
+
+    assert app_ctx.screen._terminal_mode == app_ctx.screen._TerminalMode.MINIMIZED
+    assert terminal.size.height == 1
+    assert any("MENU-MARKER" in str(line) for line in terminal._history)
+
+    app_ctx.screen.action_toggle_maximized_terminal()
+    await app_ctx.pilot.pause()
+    assert any("MENU-MARKER" in terminal.render_line(y).text for y in range(terminal.size.height))
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_terminal_command_after_existing_scrollback_is_visible_on_reopen(app_ctx: AppCtx) -> None:
+    terminal = app_ctx.screen._terminal_pool.active_terminal
+    await poll_until(app_ctx.pilot, lambda: terminal._at_prompt)
+    await app_ctx.pilot.pause()
+
+    command = Command("seq 1 60; printf 'LATEST-MARKER\\n'", app_ctx.fs.path(app_ctx.src_dir), "Probe")
+    await app_ctx.screen._run_in_maximized_terminal(command)
+    await app_ctx.pilot.pause()
+
+    app_ctx.screen.action_toggle_maximized_terminal()
+    await app_ctx.pilot.pause()
+    assert any("LATEST-MARKER" in terminal.render_line(y).text for y in range(terminal.size.height))
 
 
 @pytest.mark.asyncio

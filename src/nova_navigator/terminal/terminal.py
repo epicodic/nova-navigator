@@ -104,6 +104,32 @@ class TerminalPyteScreen(pyte.Screen):
         kwargs.pop("private", None)
         return super().set_margins(*args, **kwargs)
 
+    def resize(self, lines: int | None = None, columns: int | None = None) -> None:
+        """Keep the cursor line visible and retain rows scrolled off by a height reduction."""
+        new_lines = lines or self.lines
+        new_columns = columns or self.columns
+        old_columns = self.columns
+        if new_lines >= self.lines:
+            super().resize(lines, columns)
+            return
+
+        scroll_rows = max(0, self.cursor.y - new_lines + 1)
+        if self._on_scroll_off is not None:
+            for y in range(scroll_rows):
+                self._on_scroll_off(self.buffer[y])
+        visible = {y - scroll_rows: row for y, row in self.buffer.items() if scroll_rows <= y < scroll_rows + new_lines}
+        cursor_y = self.cursor.y - scroll_rows
+
+        super().resize(new_lines, new_columns)
+        self.buffer.clear()
+        self.buffer.update(visible)
+        if new_columns < old_columns:
+            for row in self.buffer.values():
+                for x in range(new_columns, old_columns):
+                    row.pop(x, None)
+        self.cursor.y = cursor_y
+        self.dirty.update(range(new_lines))
+
     def index(self) -> None:
         """Report the row about to scroll off the top of the full screen, then scroll as normal."""
         top, bottom = self.margins or Margins(0, self.lines - 1)
@@ -315,6 +341,7 @@ class Terminal(ScrollView, can_focus=True):
         self._scrollback_lines = scrollback_lines
         # Lines scrolled off the top of the live screen, oldest first; bounded by scrollback_lines.
         self._history: deque[Text] = deque(maxlen=max(0, scrollback_lines))
+        self._follow_offset: int | None = None
 
         self.send_queue: asyncio.Queue[list[object]] | None = None
         self.recv_queue: asyncio.Queue[list[object]] | None = None
@@ -872,6 +899,8 @@ class Terminal(ScrollView, can_focus=True):
     async def on_resize(self, _event: events.Resize) -> None:
         if not self._started:
             return
+        old_rows = self._screen.lines
+        was_at_end = self.scroll_offset.y >= len(self._history) or self.is_vertical_scroll_end
         # Exclude the reserved scrollbar gutter column so the shell isn't sized wider
         # than what's actually visible.
         self.ncol = self.size.width - self.scrollbar_size_vertical
@@ -879,7 +908,17 @@ class Terminal(ScrollView, can_focus=True):
         assert self.send_queue is not None
         self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
         self._screen.resize(self.nrow, self.ncol)
-        self._update_virtual_size()
+        if self._rebuild_handle is not None:
+            self._rebuild_handle.cancel()
+            self._rebuild_handle = None
+        self._rebuild_display(follow_output=False)
+        if was_at_end and self.nrow != old_rows:
+            new_history_rows = max(0, self.nrow - old_rows)
+            target = max(0, len(self._history) - new_history_rows)
+            self.scroll_to(y=target, animate=False, force=True, immediate=True)
+            self._follow_offset = target if self.nrow > old_rows else None
+        elif self.nrow != old_rows:
+            self._follow_offset = None
 
     def _mouse_ready(self) -> bool:
         """Return True if the terminal is started and mouse tracking is active."""
@@ -1058,16 +1097,24 @@ class Terminal(ScrollView, can_focus=True):
         except TypeError as error:
             log.warning("could not feed:", error)
 
-    def _rebuild_display(self) -> None:
+    def _rebuild_display(self, *, follow_output: bool = True) -> None:
         """Rebuild Rich Text lines from the current pyte screen state and schedule a repaint."""
         was_at_end = self.is_vertical_scroll_end
+        follow_recent = follow_output and self._follow_offset is not None and self._follow_offset == self.scroll_offset.y
         lines = [self._row_to_text(self._screen.buffer[y], self._screen.columns) for y in range(self._screen.lines)]
         self._display = TerminalDisplay(lines, self._screen.cursor.x, self._screen.cursor.y)
         self._update_virtual_size()
-        if was_at_end and self.is_mounted:
+        if follow_recent and self.is_mounted:
+            history_room = max(0, self.nrow - self._screen.cursor.y - 1)
+            target = max(0, len(self._history) - history_room)
+            self.scroll_to(y=target, animate=False, force=True, immediate=True)
+            self._follow_offset = target
+        elif follow_output and was_at_end and self.is_mounted:
             # Stay pinned to the bottom on new output, but don't yank the view back
             # if the user has deliberately scrolled up to read scrollback.
             self.scroll_end(animate=False, force=True, immediate=True)
+        elif follow_output:
+            self._follow_offset = None
         self.refresh()
 
     def _row_to_text(self, line: Mapping[int, Char], columns: int) -> Text:
