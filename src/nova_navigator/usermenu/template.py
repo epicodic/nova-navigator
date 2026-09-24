@@ -22,6 +22,14 @@ def expand(template: str, names: Mapping[str, object], *, quote: bool = True) ->
 
     Raises:
         PlaceholderError: An attribute is missing or private, or the value is None or callable.
+
+    Note:
+        Do not wrap a placeholder in quotes (``'{file}'`` or ``"{file}"``) — ``{name}`` already
+        expands to a safely quoted shell token, and manual quoting splits arguments or breaks the
+        script. Use ``{name:raw}`` only when building your own quoting.
+        Quoting does not stop a value that starts with ``-`` from being read as an option by the
+        called program; scripts should put ``--`` before file arguments, or prefer ``{file}`` over
+        ``{file.name}`` so the value is an absolute path.
     """
 
     def _replace(match: re.Match[str]) -> str:
