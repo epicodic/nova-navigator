@@ -49,6 +49,9 @@ class FilesystemCapabilities:
     commands: bool = False
     """True if shell commands can be run with :meth:`Filesystem.exec_command`."""
 
+    read_only: bool = False
+    """True if the filesystem does not allow changes to its contents."""
+
 
 class Filesystem(ABC):
     """Abstract base class for virtual filesystem implementations.

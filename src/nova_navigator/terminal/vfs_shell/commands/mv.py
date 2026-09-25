@@ -8,6 +8,8 @@ from nova_navigator.terminal.vfs_shell.command import Command, ShellArgumentPars
 
 
 class MvCommand(Command):
+    mutates_filesystem = True
+
     @property
     def name(self) -> str:
         return "mv"

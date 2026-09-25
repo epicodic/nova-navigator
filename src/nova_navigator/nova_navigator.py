@@ -23,6 +23,7 @@ from textual.screen import Screen
 from textual.widgets import Input
 
 from nova_navigator import debug_analytics
+from nova_navigator.archive.terminal import ARCHIVE_PLUGIN
 from nova_navigator.clipboard import ClipboardOperation, PathClipboard
 from nova_navigator.commands import (
     Command,
@@ -1217,6 +1218,7 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         plugin_registry = PluginRegistry(SCHEME_REGISTRY, self._main_screen._terminal_pool)
         plugin_registry.register(SSH_PLUGIN)
         plugin_registry.register(AZURE_PLUGIN)
+        plugin_registry.register(ARCHIVE_PLUGIN)
         self.push_screen("main_screen")
 
     async def open_editor(self, path: VPath) -> None:

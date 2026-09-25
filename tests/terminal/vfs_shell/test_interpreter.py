@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import tarfile
+import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -10,6 +14,11 @@ from nova_navigator.terminal.vfs_shell.aliases import AliasStore
 from nova_navigator.terminal.vfs_shell.command import Command, ShellArgumentParser, ShellContext
 from nova_navigator.terminal.vfs_shell.interpreter import VfsShellInterpreter
 from nova_navigator.terminal.vfs_shell.registry import CommandRegistry
+from nova_navigator.terminal.vfs_shell.virtual_pty_backend import VirtualPtyBackend
+from nova_navigator.vfs.filesystem import FilesystemCapabilities
+from nova_navigator.vfs.filesystems.archive import ArchiveFilesystem
+from nova_navigator.vfs.filesystems.local import LocalFilesystem
+from nova_navigator.vfs.vpath import VPath
 from tests._utils.mock_filesystem import MockFilesystem
 
 
@@ -40,6 +49,16 @@ class _DummyCommandNamed(Command):
 
     async def execute(self, args: argparse.Namespace, ctx: ShellContext) -> int:
         return 0
+
+
+class _ReadOnlyMockFilesystem(MockFilesystem):
+    @property
+    def capabilities(self) -> FilesystemCapabilities:
+        return FilesystemCapabilities(read_only=True)
+
+    @property
+    def scheme(self) -> str:
+        return "snapshot"
 
 
 def _make_ctx() -> ShellContext:
@@ -195,3 +214,119 @@ async def test_pwd_command(fs: MockFilesystem) -> None:
     exit_code = await interp.execute("pwd", output.append, output.append)
     assert exit_code == 0
     assert any("/home/user" in line for line in output)
+
+
+@pytest.fixture
+def archive_fs(tmp_path: Path) -> tuple[ArchiveFilesystem, Path]:
+    archive_path = tmp_path / "sample.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("file.txt", "original")
+    local = LocalFilesystem()
+    return ArchiveFilesystem(VPath(tmp_path, local), VPath(archive_path, local)), archive_path
+
+
+@pytest.fixture
+def tar_fifo_fs(tmp_path: Path) -> ArchiveFilesystem:
+    archive_path = tmp_path / "special.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        fifo = tarfile.TarInfo("fifo")
+        fifo.type = tarfile.FIFOTYPE
+        archive.addfile(fifo)
+    local = LocalFilesystem()
+    return ArchiveFilesystem(VPath(tmp_path, local), VPath(archive_path, local))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("line", "command_name"),
+    [
+        ("cp file.txt copy.txt", "cp"),
+        ("mv file.txt moved.txt", "mv"),
+        ("rm file.txt", "rm"),
+        ("mkdir newdir", "mkdir"),
+    ],
+)
+async def test_mutating_commands_rejected_in_archive(archive_fs: tuple[ArchiveFilesystem, Path], line: str, command_name: str) -> None:
+    fs, archive_path = archive_fs
+    original_bytes = archive_path.read_bytes()
+    interp = VfsShellInterpreter(fs, fs.cwd(), cols=80, rows=24)
+    output: list[str] = []
+    errors: list[str] = []
+
+    exit_code = await interp.execute(line, output.append, errors.append)
+
+    assert exit_code == 1
+    assert errors == [f"{command_name}: archive is read-only\r\n"]
+    assert output == []
+    assert archive_path.read_bytes() == original_bytes
+    with zipfile.ZipFile(archive_path) as archive:
+        assert archive.namelist() == ["file.txt"]
+        assert archive.read("file.txt") == b"original"
+
+
+@pytest.mark.asyncio
+async def test_archive_help_still_lists_mutating_commands(archive_fs: tuple[ArchiveFilesystem, Path]) -> None:
+    fs, _ = archive_fs
+    interp = VfsShellInterpreter(fs, fs.cwd(), cols=80, rows=24)
+    output: list[str] = []
+    errors: list[str] = []
+
+    exit_code = await interp.execute("help", output.append, errors.append)
+
+    assert exit_code == 0
+    assert errors == []
+    for name in ("cp", "mv", "rm", "mkdir"):
+        assert f"  {name}\r\n" in output
+    assert fs.capabilities.commands is False
+    assert fs.capabilities.read_only is True
+
+
+@pytest.mark.asyncio
+async def test_read_only_error_names_filesystem_scheme() -> None:
+    fs = _ReadOnlyMockFilesystem({"/home/user/file.txt": b"original"})
+    interp = VfsShellInterpreter(fs, fs.cwd(), cols=80, rows=24)
+    output: list[str] = []
+    errors: list[str] = []
+
+    exit_code = await interp.execute("rm file.txt", output.append, errors.append)
+
+    assert exit_code == 1
+    assert errors == ["rm: snapshot is read-only\r\n"]
+    assert output == []
+    assert fs.stat(fs.cwd() / "file.txt").size == len(b"original")
+
+
+@pytest.mark.asyncio
+async def test_cat_tar_fifo_returns_command_error(tar_fifo_fs: ArchiveFilesystem) -> None:
+    interp = VfsShellInterpreter(tar_fifo_fs, tar_fifo_fs.cwd(), cols=80, rows=24)
+    output: list[str] = []
+    errors: list[str] = []
+
+    exit_code = await interp.execute("cat fifo", output.append, errors.append)
+
+    assert exit_code == 1
+    assert output == []
+    assert errors == ["cat: Cannot read archive member '/fifo'\r\n"]
+
+
+@pytest.mark.asyncio
+async def test_backend_reprompts_after_tar_fifo_error(tar_fifo_fs: ArchiveFilesystem) -> None:
+    backend = VirtualPtyBackend(tar_fifo_fs, tar_fifo_fs.cwd())
+    messages: asyncio.Queue[list[object]] = asyncio.Queue()
+    backend.attach_readers(asyncio.get_running_loop(), messages)
+    backend.open("", 24, 80)
+    try:
+        await asyncio.sleep(0)
+        while not messages.empty():
+            messages.get_nowait()
+
+        await backend._run_command("cat fifo")
+        await asyncio.sleep(0)
+
+        posted = []
+        while not messages.empty():
+            posted.append(messages.get_nowait())
+        assert ["stdout", "cat: Cannot read archive member '/fifo'\r\n"] in posted
+        assert ["stdout", "~$ "] in posted
+    finally:
+        backend.teardown()

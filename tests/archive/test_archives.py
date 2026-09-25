@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import io
 import tarfile
+import threading
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePath
+from typing import IO, Any, cast
 
 import pytest
 
 from nova_navigator.archive.archive import Archive
 from nova_navigator.archive.tar_archive import TarArchive
 from nova_navigator.archive.zip_archive import ZipArchive
+from nova_navigator.vfs.filesystems.archive import ArchiveFilesystem
+from nova_navigator.vfs.filesystems.local import LocalFilesystem
+from nova_navigator.vfs.vpath import VPath
 
 # ---------------------------------------------------------------------------
 # Archive structure used by all fixtures
@@ -204,3 +210,165 @@ def test_tar_stats_modified_is_numeric(tar_archive: TarArchive) -> None:
     """TarArchive.stats() exposes the numeric mtime stored in the member."""
     s = tar_archive.stats(PurePath("dir1/file11.txt"))
     assert isinstance(s.modified, (int, float))
+
+
+@pytest.mark.parametrize(("path", "expected"), [("dir1/file11.txt", _FILE11), ("dir2/dir21/nested.txt", _NESTED)])
+def test_read_returns_file_bytes(archive: Archive, path: str, expected: bytes) -> None:
+    reader = archive.read(PurePath(path))
+    try:
+        assert reader.read(4) + reader.read(100) == expected
+    finally:
+        reader.close()
+
+
+def test_read_missing_file_raises_file_not_found(archive: Archive) -> None:
+    with pytest.raises(FileNotFoundError):
+        archive.read(PurePath("no/such/file.txt"))
+
+
+@pytest.mark.parametrize("path", ["dir1", "/"])
+def test_read_directory_raises_is_a_directory(archive: Archive, path: str) -> None:
+    with pytest.raises(IsADirectoryError):
+        archive.read(PurePath(path))
+
+
+def test_archive_filesystem_read_delegates_to_archive(archive: Archive, tmp_path: Path) -> None:
+    local = LocalFilesystem.singleton()
+    filesystem = ArchiveFilesystem(VPath(tmp_path, local), archive)
+    reader = filesystem.read(filesystem.path("/dir1/file11.txt"))
+    try:
+        assert reader.read(100) == _FILE11
+    finally:
+        reader.close()
+
+
+def test_archive_filesystem_read_rejects_foreign_path(archive: Archive, tmp_path: Path) -> None:
+    local = LocalFilesystem.singleton()
+    filesystem = ArchiveFilesystem(VPath(tmp_path, local), archive)
+    with pytest.raises(ValueError, match="does not belong to filesystem"):
+        filesystem.read(VPath("/dir1/file11.txt", local))
+
+
+@pytest.mark.parametrize("archive_type", ["tar", "zip"])
+@pytest.mark.parametrize("directory", ["implicit", "implicit/nested"])
+def test_read_implicit_directory_raises_is_a_directory(tmp_path: Path, archive_type: str, directory: str) -> None:
+    member_name = "implicit/nested/file.txt"
+    if archive_type == "tar":
+        archive_path = tmp_path / "implicit.tar.gz"
+        with tarfile.open(archive_path, mode="w:gz") as tar:
+            info = tarfile.TarInfo(member_name)
+            info.size = len(_OTHER)
+            tar.addfile(info, io.BytesIO(_OTHER))
+        archive = TarArchive(archive_path, mode="r")
+    else:
+        archive_path = tmp_path / "implicit.zip"
+        with zipfile.ZipFile(archive_path, mode="w") as zf:
+            zf.writestr(member_name, _OTHER)
+        archive = ZipArchive(archive_path, mode="r")
+
+    with pytest.raises(IsADirectoryError):
+        archive.read(PurePath(directory))
+
+
+def test_tar_concurrent_readers_return_their_own_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive_path = tmp_path / "concurrent.tar"
+    contents = {"a.bin": b"a" * 4096, "b.bin": b"b" * 4096}
+    with tarfile.open(archive_path, mode="w") as tar:
+        for name, data in contents.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+    archive = TarArchive(archive_path, mode="r")
+    fileobj = archive._tar_file.fileobj
+    assert fileobj is not None
+
+    class InterleavingFile:
+        def __init__(self, wrapped: IO[bytes]) -> None:
+            self._wrapped = wrapped
+            self._seek_count = 0
+            self._seek_lock = threading.Lock()
+            self._second_seek = threading.Event()
+
+        def seek(self, offset: int, whence: int = 0) -> int:
+            result = self._wrapped.seek(offset, whence)
+            with self._seek_lock:
+                self._seek_count += 1
+                first = self._seek_count == 1
+                if self._seek_count == 2:
+                    self._second_seek.set()
+            if first:
+                self._second_seek.wait(timeout=0.2)
+            return result
+
+        def read(self, size: int = -1) -> bytes:
+            return self._wrapped.read(size)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._wrapped, name)
+
+    monkeypatch.setattr(archive._tar_file, "fileobj", InterleavingFile(cast("IO[bytes]", fileobj)))
+    start = threading.Barrier(2)
+
+    def read_member(name: str) -> bytes:
+        reader = archive.read(PurePath(name))
+        try:
+            start.wait(timeout=2)
+            return reader.read(4096)
+        finally:
+            reader.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {name: executor.submit(read_member, name) for name in contents}
+        results = {name: future.result() for name, future in futures.items()}
+    assert results == contents
+
+
+def test_tar_read_dangling_symlink_raises_file_not_found(tmp_path: Path) -> None:
+    archive_path = tmp_path / "dangling.tar"
+    with tarfile.open(archive_path, mode="w") as tar:
+        info = tarfile.TarInfo("dangling.txt")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "missing.txt"
+        tar.addfile(info)
+
+    archive = TarArchive(archive_path, mode="r")
+    with pytest.raises(FileNotFoundError):
+        archive.read(PurePath("dangling.txt"))
+
+
+@pytest.fixture(params=["tar", "zip"])
+def implicit_archive(request: pytest.FixtureRequest, tmp_path: Path) -> Archive:
+    member_name = "implicit/nested/file.txt"
+    if request.param == "tar":
+        archive_path = tmp_path / "implicit.tar.gz"
+        with tarfile.open(archive_path, mode="w:gz") as tar:
+            info = tarfile.TarInfo(member_name)
+            info.size = len(_OTHER)
+            tar.addfile(info, io.BytesIO(_OTHER))
+        return TarArchive(archive_path, mode="r")
+    archive_path = tmp_path / "implicit.zip"
+    with zipfile.ZipFile(archive_path, mode="w") as zf:
+        zf.writestr(member_name, _OTHER)
+    return ZipArchive(archive_path, mode="r")
+
+
+@pytest.mark.parametrize("directory", ["implicit", "implicit/nested"])
+def test_stats_implicit_directory(implicit_archive: Archive, directory: str) -> None:
+    stat = implicit_archive.stats(PurePath(directory))
+    assert stat.is_directory
+    assert stat.size == 0
+
+
+@pytest.mark.asyncio
+async def test_archive_filesystem_lists_implicit_directory(implicit_archive: Archive, tmp_path: Path) -> None:
+    local = LocalFilesystem.singleton()
+    filesystem = ArchiveFilesystem(VPath(tmp_path, local), implicit_archive)
+    entries = [entry async for entry in filesystem.iterdir(filesystem.root())]
+    assert len(entries) == 1
+    assert entries[0].name == "implicit"
+    assert entries[0].stat.is_directory
+    nested = [entry async for entry in filesystem.iterdir(entries[0])]
+    assert len(nested) == 1
+    assert nested[0].name == "nested"
+    assert nested[0].stat.is_directory

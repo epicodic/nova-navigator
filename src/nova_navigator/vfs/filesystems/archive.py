@@ -52,6 +52,7 @@ class ArchiveFilesystem(Filesystem):
             watch=False,
             symlinks=False,
             permissions=False,
+            read_only=True,
         )
 
     @property
@@ -93,7 +94,8 @@ class ArchiveFilesystem(Filesystem):
 
     @override
     def read(self, path: VPath) -> StreamReaderLike:
-        raise NotImplementedError("ArchiveFilesystem does not support read()")
+        self._assert_vpath(path)
+        return self._archive.read(path.path)
 
     @override
     def write(self, path: VPath) -> StreamWriterLike:
