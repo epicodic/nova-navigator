@@ -5,12 +5,13 @@ This file is also served as `CLAUDE.md` via symlink for Claude Code.
 
 ---
 
-## CRITICAL: Do Not Implement Without Explicit Approval
+## Shared Rules
 
-**Never start writing or modifying code as part of a design discussion.**
-When a design is being discussed or refined, your role is to present options, answer questions, and iterate on the design.
-Only begin implementation after the user has explicitly said something like "go ahead", "implement it", "looks good", or equivalent.
-This applies even if the design appears final or complete.
+**Read [`.agents/AGENTS.md`](.agents/AGENTS.md) before anything else.**
+It holds the rules shared by all projects: approval rules, reading and writing documentation, `uv` usage, Serena, communication style, private development files (`.devkit/`), and the skills.
+It is private tooling that is linked in locally; if it is missing, ignore this section.
+
+@.agents/AGENTS.md
 
 ---
 
@@ -33,10 +34,6 @@ It supports a virtual file system (VFS) abstraction for local, SSH, and archive 
 ## Setup
 
 No setup step is required before running commands.
-All commands use `uv run ...` which automatically uses the venv.
-Do NOT run `source activate.sh` before commands — it is unnecessary.
-
-The venv is at `.venv/` (managed by `uv`). The project uses `uv` for dependency management.
 
 ---
 
@@ -77,7 +74,7 @@ Always run `uv run qa` after changes and confirm zero failures before claiming w
 
 ## Read Documentation First
 
-**Before making any design decision or starting an implementation**, look for and read all relevant documentation in `docs/`.
+Key documents in `docs/` — read every one whose topic overlaps with your task:
 
 | File | Topic |
 |------|-------|
@@ -90,32 +87,6 @@ Always run `uv run qa` after changes and confirm zero failures before claiming w
 | `docs/keymap.md` | Keymap system architecture — read before touching `nova_widgets/keymap/`, `nova_navigator/keymap/`, or key-handling code |
 | `docs/user_menu.md` | User menu (F2) config and behaviour — read before touching `usermenu/` |
 | `docs/commands.md` | Command execution service — read before touching `commands/` or `Filesystem.exec_command` |
-
-Steps:
-1. List `docs/` to see available documentation.
-2. Read every file whose topic overlaps with your task.
-3. Only then proceed with design decisions or code changes.
-
----
-
-## Documentation
-
-If the change involves documentation updates in `docs/`, verify that changes are correct.
-
-### Writing Documentation
-
-- Write one sentence per line. This is mandatory.
-- Keep pages short. One idea per paragraph.
-
----
-
-## Python Virtual Environment
-
-The venv is at `.venv/`, managed by `uv`. After adding, removing, or updating Python dependencies in `pyproject.toml`, run:
-
-```sh
-uv sync
-```
 
 ---
 
@@ -198,9 +169,6 @@ For implementing long-running async operations: see `docs/scheduler.md` for the 
 - Naming: `snake_case` functions/variables/members, `UpperCamelCase` types/classes, `_` prefix for private names
 - Constants: `UPPER_CASE`
 - Docstrings: Google style, encouraged for public API, not required by linter; multiline docstrings must start immediately after the opening `"""` (no blank line)
-- **Never suppress lint or type warnings with `# noqa` or `# type: ignore` comments.**
-  Fix the root cause instead.
-  For example, a B027 warning ("empty method in abstract base class") means the method should be decorated with `@abstractmethod`; all concrete subclasses must then provide an implementation (even a one-line `pass` for no-op cases).
 - **Never suppress lint or type warnings with `# noqa` or `# type: ignore` comments.**
   Fix the root cause instead.
   For example, a B027 warning ("empty method in abstract base class") means the method should be decorated with `@abstractmethod`; all concrete subclasses must then provide an implementation (even a one-line `pass` for no-op cases).
@@ -298,28 +266,4 @@ Run a single test with output visible:
 ```sh
 uv run pytest tests/nova_widgets/test_menu.py::test_mouse_click_triggers_hovered_item -s
 ```
-
-## Skills
-
-Process skills for agentic work live in `.agents/skills/`. Load the relevant skill before starting any non-trivial task.
-Keep this list updated as new skills are added or removed.
-
-| Situation | Skill |
-|-----------|-------|
-| Starting any conversation | `using-skills` |
-| Starting creative or feature work | `brainstorming` |
-| Implementing a feature or fixing a bug | `test-driven-development` |
-| Debugging unexpected behaviour | `systematic-debugging` |
-| Writing an implementation plan | `writing-plans` |
-| Executing a written plan (this session) | `subagent-driven-development` |
-| Executing a written plan (separate session) | `executing-plans` |
-| Receiving code review feedback | `receiving-code-review` |
-| Requesting code review | `requesting-code-review` |
-| About to claim work is complete | `verification-before-completion` |
-| Committing staged changes with a well-formed message | `git-commit` |
-| Writing or updating documentation pages in docs/ | `writing-documentation` |
-| Dispatching parallel agents | `dispatching-parallel-agents` |
-| Creating, updating, or debugging skills | `writing-skills` |
-
-
 
