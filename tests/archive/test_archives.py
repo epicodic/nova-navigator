@@ -372,3 +372,10 @@ async def test_archive_filesystem_lists_implicit_directory(implicit_archive: Arc
     assert len(nested) == 1
     assert nested[0].name == "nested"
     assert nested[0].stat.is_directory
+
+
+def test_close_releases_archive_handle(archive: Archive) -> None:
+    archive.close()
+    archive.close()
+    with pytest.raises((OSError, ValueError)):
+        archive.read(PurePath("dir1/file11.txt"))

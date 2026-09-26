@@ -27,6 +27,7 @@ from nova_navigator.dialogs.credentials_dialog import CredentialsDialog
 from nova_navigator.dialogs.dialog import Dialog
 from nova_navigator.dialogs.edit_bookmarks_dialog import EditBookmarksDialog
 from nova_navigator.dialogs.edit_remotes_dialog import EditRemotesDialog
+from nova_navigator.dialogs.editing_sessions_dialog import EditingSessionsDialog
 from nova_navigator.dialogs.file_dialog import FileDialog, FileDialogMode, FileTypeFilter
 from nova_navigator.dialogs.files_dialog import CopyMoveFilesDialog, DeleteFilesDialog
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
@@ -36,6 +37,7 @@ from nova_navigator.dialogs.message_box import MessageBox
 from nova_navigator.dialogs.response_dialog import OverwriteResponseDialog, ResponseDialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
 from nova_navigator.dialogs.user_menu_input_dialog import InputField, UserMenuInputDialog
+from nova_navigator.editing.model import EditingSession, SessionState, SourceVersion
 from nova_navigator.keymap.config import KeybindingsConfig
 from nova_navigator.nova_navigator_core import NovaNavigatorCore
 from nova_navigator.response import Response
@@ -78,6 +80,41 @@ class DialogEntry:
 # ── dialog registry ───────────────────────────────────────────────────────────
 
 _ENTRIES: list[DialogEntry] = [
+    DialogEntry(
+        "EditingSessionsDialog",
+        "Manage local mirrors for external editing.",
+        lambda: EditingSessionsDialog(
+            [
+                EditingSession(
+                    "0ac5462d-7e31-4240-b16c-3bedbbc5ecb9",
+                    "ssh://example.test/report.txt",
+                    None,
+                    None,
+                    Path.cwd() / "report.txt",
+                    None,
+                    "digest",
+                    SourceVersion("digest", "digest", 6),
+                    False,
+                    False,
+                    SessionState.CHANGED,
+                )
+            ],
+            lambda _session_id, _force: EditingSession(
+                "0ac5462d-7e31-4240-b16c-3bedbbc5ecb9",
+                "ssh://example.test/report.txt",
+                None,
+                None,
+                Path.cwd() / "report.txt",
+                None,
+                "digest",
+                SourceVersion("digest", "digest", 6),
+                False,
+                False,
+                SessionState.CHANGED,
+            ),
+            lambda _session_id: None,
+        ),
+    ),
     DialogEntry(
         "ConnectToDialog",
         "Pick a saved remote connection (uses real config).",

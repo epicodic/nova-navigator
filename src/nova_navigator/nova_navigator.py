@@ -38,6 +38,7 @@ from nova_navigator.dialogs import (
     BookmarksDialog,
     ConnectToDialog,
     EditBookmarksDialog,
+    EditingSessionsDialog,
     EditRemotesDialog,
     InputNameDialog,
     JobsDialog,
@@ -151,6 +152,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         Action("Directory", id="browser.new_directory", action="new_directory", description="Create a new directory", shortcut="f7", show=True, bar_priority=30, icon="folder"),
         Action("Delete", id="browser.delete", action="delete_files", description="Delete selected files", shortcut="f8", show=True, bar_priority=35),
         Action("Bookmarks", id="app.show_bookmarks", action="show_bookmarks", description="Open bookmarks dialog", shortcut="ctrl+b", show=True, bar_priority=80),
+        Action("Editing Sessions", id="app.editing_sessions", action="editing_sessions", description="Manage mirrored external files", show=False),
         Action("Hidden Files", id="browser.toggle_hidden", action="toggle_hidden", description="Toggle display of hidden files", shortcut="ctrl+h", show=False),
         Action("Dummy Op", id="app.start_dummy_operation", action="start_dummy_operation", description="Start dummy operation (development)", shortcut="ctrl+d", show=False),
         Action("Go to Path…", id="browser.go_to_path", action="go_to_path", description="Navigate to a typed path", shortcut="ctrl+g", show=False),
@@ -1162,6 +1164,28 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
 
     def action_help_quit(self) -> None:
         pass
+
+    async def action_editing_sessions(self) -> None:
+        """Open the local-mirror session manager."""
+        dialog = EditingSessionsDialog(
+            self.editing_service.sessions,
+            self.editing_service.finish,
+            self.editing_service.discard,
+        )
+        await dialog.run()
+
+    async def open_external_editing_session(self, path: VPath, command: list[str], wait_for_exit: bool) -> None:
+        """Launch a mirror while leaving the TUI available for detached apps."""
+        session = await asyncio.to_thread(self.editing_service.prepare, path, wait_for_exit=wait_for_exit)
+        mirror_command = self.mirror_command(path, command, session.mirror_path)
+        if not wait_for_exit:
+            await asyncio.to_thread(subprocess.Popen, mirror_command, cwd=session.mirror_path.parent)
+            return
+        with self.suspend():
+            process = await asyncio.to_thread(subprocess.Popen, mirror_command, cwd=session.mirror_path.parent)
+            exit_code = await asyncio.to_thread(process.wait)
+        if exit_code == 0:
+            await asyncio.to_thread(self.editing_service.finish, session.session_id)
 
     async def on_event(self, event: events.Event) -> None:
         if isinstance(event, events.Key):

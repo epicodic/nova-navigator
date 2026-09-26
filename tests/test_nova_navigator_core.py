@@ -68,6 +68,16 @@ def test_open_path_executable_runs_directly(tmp_path: Path) -> None:
     assert core.command_args == [str(script)]
 
 
+def test_mirror_command_does_not_rewrite_archive_root_slashes(tmp_path: Path) -> None:
+    archive_filesystem = MockFilesystem({"/member.html": b"content"})
+    member = archive_filesystem.path("/member.html")
+    mirror = tmp_path / "mirror" / "member.html"
+
+    command = NovaNavigatorCore.mirror_command(member, ["xdg-open", "%f"], mirror)
+
+    assert command == ["xdg-open", str(mirror)]
+
+
 # ── NerdFont mode resolution ──────────────────────────────────────────────────
 
 

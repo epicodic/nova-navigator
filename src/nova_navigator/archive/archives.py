@@ -42,3 +42,8 @@ def open_archive(archive_path: str | PurePath, mode: Archive.Mode) -> Archive:
         if archive_path.name.endswith(ext):
             return archive.archive_class(archive_path, mode)
     raise ValueError(f"Unsupported archive format for file: {archive_path}")
+
+
+def is_archive_writable(path: PurePath) -> bool:
+    """Whether this filename supports archive member write-back."""
+    return any(path.name.endswith(ext) and not archive.read_only for ext, archive in _SUPPORTED_ARCHIVES.items())

@@ -52,3 +52,13 @@ class Archive:
     def read(self, path: PurePath) -> StreamReaderLike:
         """Return a binary stream for a file inside the archive."""
         raise NotImplementedError
+
+    @property
+    def archive_path(self) -> PurePath:
+        """Return the local archive file path."""
+        return self._archive_path
+
+    @abstractmethod
+    def close(self) -> None:
+        """Release the archive file handle."""
+        raise NotImplementedError

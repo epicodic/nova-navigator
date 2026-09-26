@@ -54,6 +54,14 @@ class AzureFilesystem(Filesystem):
             data = self._downloader.read(size)
             return data.encode() if isinstance(data, str) else data
 
+        @property
+        def etag(self) -> str:
+            """ETag from the response that created this downloader."""
+            etag = self._downloader.properties.etag
+            if not isinstance(etag, str):
+                raise ValueError("Download response has no ETag")
+            return etag
+
         def close(self) -> None:
             pass  # StorageStreamDownloader has no close; nothing to release
 

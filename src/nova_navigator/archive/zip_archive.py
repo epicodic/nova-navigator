@@ -94,3 +94,7 @@ class ZipArchive(Archive):
         if member.is_dir():
             raise IsADirectoryError(path)
         return _ArchiveReader(self._zip_file.open(member))
+
+    @override
+    def close(self) -> None:
+        self._zip_file.close()

@@ -104,3 +104,7 @@ class TarArchive(Archive):
         if stream is None:
             raise OSError(f"Cannot read archive member '{path}'")
         return _ArchiveReader(stream, self._read_lock)
+
+    @override
+    def close(self) -> None:
+        self._tar_file.close()
