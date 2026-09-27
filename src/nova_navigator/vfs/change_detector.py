@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import logging
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -13,6 +14,8 @@ from pathlib import Path
 import watchdog.events
 import watchdog.observers
 from watchdog.observers.api import BaseObserver
+
+_logger = logging.getLogger(__name__)
 
 _CHUNK_SIZE = 1024 * 1024
 
@@ -58,7 +61,11 @@ class _NameFilterHandler(watchdog.events.FileSystemEventHandler):
     def on_any_event(self, event: watchdog.events.FileSystemEvent) -> None:
         paths = {os.fsdecode(event.src_path), os.fsdecode(getattr(event, "dest_path", "") or "")}
         if self._target in paths:
-            self._loop.call_soon_threadsafe(self._mark, f"event:{event.event_type}")
+            with contextlib.suppress(RuntimeError):
+                # The event loop may have been closed (e.g. detector stopped, interpreter
+                # shutting down) between scheduling and this callback; the watchdog thread
+                # must survive that so it can be joined cleanly by stop().
+                self._loop.call_soon_threadsafe(self._mark, f"event:{event.event_type}")
 
 
 class ChangeDetector:
@@ -68,6 +75,11 @@ class ChangeDetector:
     silences a watch on the file itself) and the file is also polled. Both only
     mark the file as possibly changed; a change is reported after the fingerprint
     has been stable for *settle_time* and the digest differs from the baseline.
+
+    ``on_change`` errors are logged and do not stop detection; the reported digest
+    becomes the new baseline regardless of whether ``on_change`` succeeds. Retrying
+    a failed sync is the caller's responsibility, not the detector's: it reports
+    settled saves only.
     """
 
     def __init__(
@@ -81,7 +93,10 @@ class ChangeDetector:
         use_watcher: bool = True,
         log: LogCallback | None = None,
     ) -> None:
-        self._path = path
+        # Resolve the parent only, not the full path: the target may not exist yet,
+        # and if it is itself a symlink we still want to watch this directory/name
+        # rather than follow the link to a different location.
+        self._path = path.parent.resolve() / path.name
         self._on_change = on_change
         self._baseline = baseline_digest
         self._poll_interval = poll_interval
@@ -92,6 +107,7 @@ class ChangeDetector:
         self._last_seen: FileFingerprint | None = None
         self._tasks: list[asyncio.Task[None]] = []
         self._observer: BaseObserver | None = None
+        self._started = False
 
     @property
     def path(self) -> Path:
@@ -102,7 +118,15 @@ class ChangeDetector:
         self._baseline = digest
 
     async def start(self) -> None:
-        """Start watching; must be called from a running event loop."""
+        """Start watching; must be called from a running event loop.
+
+        Raises:
+            RuntimeError: if the detector is already started. Call :meth:`stop` first
+                (a detector may be started again after being stopped).
+        """
+        if self._started:
+            raise RuntimeError("ChangeDetector already started")
+        self._started = True
         self._last_seen = FileFingerprint.of(self._path)
         if self._use_watcher:
             handler = _NameFilterHandler(self._path, asyncio.get_running_loop(), self._mark)
@@ -125,6 +149,7 @@ class ChangeDetector:
             self._observer = None
             observer.stop()
             await asyncio.to_thread(observer.join)
+        self._started = False
 
     async def check_now(self) -> None:
         """Mark the file as possibly changed, e.g. after the editor process exited."""
@@ -161,6 +186,10 @@ class ChangeDetector:
             except FileNotFoundError:
                 self._dirty.set()
                 continue
+            except Exception as exc:
+                _logger.exception("ChangeDetector: failed to digest %s", self._path)
+                self._report_error(exc)
+                continue
             if digest == self._baseline:
                 if self._log is not None:
                     self._log("unchanged", digest[:12])
@@ -168,4 +197,12 @@ class ChangeDetector:
             self._baseline = digest
             if self._log is not None:
                 self._log("changed", digest[:12])
-            await self._on_change(digest)
+            try:
+                await self._on_change(digest)
+            except Exception as exc:
+                _logger.exception("ChangeDetector: on_change callback failed for %s", self._path)
+                self._report_error(exc)
+
+    def _report_error(self, exc: Exception) -> None:
+        if self._log is not None:
+            self._log("error", repr(exc))
