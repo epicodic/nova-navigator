@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import mimetypes
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import PurePath
 from typing import ClassVar
 
@@ -12,15 +12,6 @@ from nova_navigator.config.loader import ListConfig
 from nova_navigator.config.model import BaseModel, computed, key_field
 from nova_navigator.icons import ICONS
 from nova_widgets import Icon
-
-
-@dataclass(frozen=True)
-class OpenRule:
-    """A resolved open command and whether the caller should wait for it to exit."""
-
-    command: list[str]
-    wait_for_exit: bool
-    template: list[str] | None = field(default=None, compare=False)
 
 
 @dataclass
@@ -34,7 +25,6 @@ class Section(BaseModel):
     regex_pattern: re.Pattern[str] | None = computed(lambda s: re.compile(s.regex) if s.regex else None)  # noqa: RUF009
     open: str | None = None
     open_cmd: list[str] | None = computed(lambda s: s.open.split() if s.open else None)  # noqa: RUF009
-    wait_for_exit: bool = False
     color: str | None = None
     icon: str | None = None
     background_color: str | None = None
@@ -95,20 +85,12 @@ class FileTypeConfig(ListConfig):
                 return section
         return self._default_section
 
-    def get_open_rule_for_file_path(self, path: PurePath) -> OpenRule:
+    def get_open_command_for_file_path(self, path: PurePath) -> list[str]:
         section = self._find_section_for_path(path)
-        command_section = section if section.open_cmd else self._default_section
-        open_cmd = command_section.open_cmd
+        open_cmd = section.open_cmd or self._default_section.open_cmd
         if open_cmd is None:
             raise RuntimeError("No open command found and default section has no open command")
-        return OpenRule(
-            command=self._replace_variables(open_cmd, path),
-            wait_for_exit=command_section.wait_for_exit,
-            template=open_cmd,
-        )
-
-    def get_open_command_for_file_path(self, path: PurePath) -> list[str]:
-        return self.get_open_rule_for_file_path(path).command
+        return self._replace_variables(open_cmd, path)
 
     def get_colors_for_filename(self, filename: str) -> tuple[str | None, str | None]:
         section = self._find_section_for_path(PurePath(filename))
