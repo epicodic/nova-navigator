@@ -206,3 +206,39 @@ async def test_second_start_without_stop_raises(target: Path) -> None:
             await detector.start()
     finally:
         await detector.stop()
+
+
+@pytest.mark.asyncio
+async def test_no_further_digests_after_settle_while_untouched(target: Path) -> None:
+    """Regression test: the detector's own file_digest() read must not re-trigger itself.
+
+    watchdog reports read-only "opened"/"closed_no_write" events for the directory entry
+    when ChangeDetector digests the file. If those were forwarded as possible changes, the
+    detector would loop forever: mark -> settle -> digest -> opened event -> mark -> ...
+    A long poll_interval isolates the watcher as the only source of marks here.
+    """
+    logs: list[tuple[str, str]] = []
+
+    def log(kind: str, detail: str) -> None:
+        logs.append((kind, detail))
+
+    async def on_change(_digest: str) -> None:
+        pass
+
+    detector = ChangeDetector(
+        target,
+        on_change,
+        baseline_digest=file_digest(target),
+        poll_interval=60,
+        settle_time=_FAST_SETTLE_TIME,
+        log=log,
+    )
+    await detector.start()
+    try:
+        target.write_bytes(b"changed\n")
+        await _wait_until(lambda: any(kind == "changed" for kind, _ in logs))
+        logs.clear()
+        await asyncio.sleep(1.0)
+        assert [entry for entry in logs if entry[0] == "unchanged"] == []
+    finally:
+        await detector.stop()
