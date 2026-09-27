@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import logging
 import os
 import shlex
+import stat
 import threading
 import time
+import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import PurePath
@@ -15,7 +18,7 @@ from typing import override
 
 import paramiko
 
-from ..filesystem import Filesystem, FilesystemCapabilities, Stat, StreamReaderLike, StreamWriterLike
+from ..filesystem import AtomicWriterLike, Filesystem, FilesystemCapabilities, Stat, StreamReaderLike, StreamWriterLike
 from ..tail_buffer import TailBuffer
 from ..types import OUTPUT_TAIL_LIMIT, ExecResult
 from ..vpath import VPath
@@ -105,6 +108,70 @@ class _CaptureUnknownHostPolicy(paramiko.MissingHostKeyPolicy):
 
     def missing_host_key(self, client: paramiko.SSHClient, hostname: str, key: paramiko.PKey) -> None:
         raise UnknownHostKeyError(hostname, key)
+
+
+class _SftpAtomicWriter:
+    """Upload to a sibling temporary name and replace with ``posix_rename``.
+
+    ``posix_rename`` (the ``posix-rename@openssh.com`` SFTP extension) replaces the
+    target atomically, unlike plain SFTP ``rename`` which fails if the target
+    already exists.  Servers that do not implement the extension raise ``OSError``
+    on ``close()``, leaving the original target untouched and the temporary file
+    removed.
+    """
+
+    def __init__(self, filesystem: SSHFilesystem, path: VPath) -> None:
+        client = filesystem._sftp_client
+        target = path.path.as_posix()
+        try:
+            mode = client.lstat(target).st_mode
+        except FileNotFoundError:
+            mode = None
+        if mode is not None and stat.S_ISLNK(mode):
+            raise ValueError(f"Cannot atomically replace a symlink: {target}")
+        self._filesystem = filesystem
+        self._path = path
+        self._client = client
+        self._target = target
+        self._tmp = (path.path.parent / f".{path.name}.{uuid.uuid4().hex}.nn-tmp").as_posix()
+        self._file = client.open(self._tmp, "wx")
+        self._file.set_pipelined(True)
+        self._done = False
+
+    def write(self, data: bytes) -> int:
+        self._file.write(data)
+        return len(data)
+
+    def close(self) -> None:
+        if self._done:
+            return
+        self._done = True
+        try:
+            self._file.close()
+            try:
+                mode = self._client.stat(self._target).st_mode
+            except FileNotFoundError:
+                mode = None
+            if mode is not None:
+                self._client.chmod(self._tmp, stat.S_IMODE(mode))
+            try:
+                self._client.posix_rename(self._tmp, self._target)
+            except (OSError, paramiko.SSHException) as error:
+                raise OSError(f"SSH server does not support atomic replacement: {error}") from error
+        except BaseException:
+            self._remove_tmp()
+            raise
+        self._filesystem.refresh(self._filesystem.parent(self._path))
+
+    def abort(self) -> None:
+        if not self._done:
+            self._done = True
+            self._file.close()
+            self._remove_tmp()
+
+    def _remove_tmp(self) -> None:
+        with contextlib.suppress(OSError, paramiko.SSHException):
+            self._client.remove(self._tmp)
 
 
 class SSHFilesystem(Filesystem):
@@ -392,6 +459,11 @@ class SSHFilesystem(Filesystem):
         f = self._sftp_client.open(path.path.as_posix(), "wb")
         f.set_pipelined(True)
         return self._PipelinedWriter(f, lambda: self.refresh(self.parent(path)))
+
+    @override
+    def write_atomic(self, path: VPath) -> AtomicWriterLike:
+        self._assert_vpath(path)
+        return _SftpAtomicWriter(self, path)
 
     @override
     def remove(self, path: VPath) -> None:
