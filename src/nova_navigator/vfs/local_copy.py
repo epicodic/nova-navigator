@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -14,7 +15,7 @@ from .filesystems.archive import ArchiveFilesystem
 from .filesystems.local import LocalFilesystem
 from .vpath import VPath
 
-LOCAL_COPY_ROOT = Path("/tmp/nova-navigator")
+LOCAL_COPY_ROOT = Path(tempfile.gettempdir()) / "nova-navigator"
 _MAX_SEGMENT_BYTES = 255
 _MAX_SUFFIX_BYTES = 16
 _CHUNK_SIZE = 1024 * 1024
@@ -132,6 +133,10 @@ class LocalCopy:
         even one mounted from a local archive) is a pass-through: ``path``
         is the source file itself and nothing is copied or created below *root*.
         """
+        # ArchiveFilesystem.unwrap() returns itself (the base Filesystem.unwrap() default), so
+        # a member of a *local* archive would otherwise unwrap to a LocalFilesystem and be
+        # mistaken for a pass-through; the explicit exclusion keeps archive members non-pass-through
+        # regardless of what their container unwraps to.
         if isinstance(source.filesystem.unwrap(), LocalFilesystem) and not isinstance(source.filesystem, ArchiveFilesystem):
             path = Path(source.path)
             return cls(source, path, Baseline(SourceFingerprint.of(source), ""), read_only=read_only, pass_through=True)
