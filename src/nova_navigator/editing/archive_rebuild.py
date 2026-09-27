@@ -15,8 +15,10 @@ from nova_navigator.archive.archives import is_archive_writable
 _ZIP_LOCAL_HEADER_SIZE = 30
 _COPY_BUFFER_SIZE = 1024 * 1024
 _ZIP_COMPRESSION = {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA}
+_ZIP_EXTENDED_TIMESTAMP_FIELD = 0x5455
+_ZIP_UNIX_OWNERSHIP_FIELD = 0x7875
 # Timestamp and Unix ownership fields do not depend on content or archive offsets.
-_ZIP_EXTRA_FIELDS = {0x5455, 0x7875}
+_ZIP_EXTRA_FIELDS = {_ZIP_EXTENDED_TIMESTAMP_FIELD, _ZIP_UNIX_OWNERSHIP_FIELD}
 
 
 def rebuild_archive(source: Path, member_path: PurePosixPath, replacement: Path, output: Path) -> None:
@@ -62,6 +64,19 @@ def _check_zip_extra(extra: bytes) -> None:
             raise ValueError(f"Unsupported ZIP extra metadata: {field:#x}")
 
 
+def _zip_extra_fields(extra: bytes) -> list[tuple[int, bytes]]:
+    """Return the validated extra fields as identifier and payload pairs."""
+    _check_zip_extra(extra)
+    offset = 0
+    fields: list[tuple[int, bytes]] = []
+    while offset < len(extra):
+        field, size = struct.unpack_from("<HH", extra, offset)
+        offset += 4
+        fields.append((field, extra[offset : offset + size]))
+        offset += size
+    return fields
+
+
 def _check_zip_member(info: zipfile.ZipInfo) -> None:
     if info.flag_bits & 1:
         raise ValueError("Unsupported encrypted ZIP member")
@@ -73,7 +88,7 @@ def _check_zip_member(info: zipfile.ZipInfo) -> None:
     _check_zip_extra(info.extra)
 
 
-def _check_zip_local_metadata(source: IO[bytes], info: zipfile.ZipInfo) -> None:
+def _local_zip_extra(source: IO[bytes], info: zipfile.ZipInfo) -> bytes:
     source.seek(info.header_offset)
     header = source.read(_ZIP_LOCAL_HEADER_SIZE)
     if len(header) != _ZIP_LOCAL_HEADER_SIZE or header[:4] != b"PK\x03\x04":
@@ -81,11 +96,17 @@ def _check_zip_local_metadata(source: IO[bytes], info: zipfile.ZipInfo) -> None:
     name_size, extra_size = struct.unpack_from("<HH", header, 26)
     source.seek(name_size, 1)
     extra = source.read(extra_size)
-    _check_zip_extra(extra)
-    # zipfile writes one extra field set into both headers. Different local
-    # fields cannot be copied faithfully through its public writer API.
-    if extra != info.extra:
+    local_fields = _zip_extra_fields(extra)
+    central_fields = _zip_extra_fields(info.extra)
+    # ZIP writers commonly store more timestamp values in the local header
+    # than in the central directory. Preserve that richer timestamp record by
+    # promoting it to the rebuilt central entry. Other conflicting metadata
+    # remains rejected because zipfile cannot represent both forms separately.
+    local_non_timestamp = sorted(field for field in local_fields if field[0] != _ZIP_EXTENDED_TIMESTAMP_FIELD)
+    central_non_timestamp = sorted(field for field in central_fields if field[0] != _ZIP_EXTENDED_TIMESTAMP_FIELD)
+    if extra and info.extra and extra != info.extra and local_non_timestamp != central_non_timestamp:
         raise ValueError("Unsupported differing ZIP local and central metadata")
+    return extra or info.extra
 
 
 def _rebuild_zip(source: Path, name: str, replacement: Path, output: IO[bytes]) -> None:
@@ -101,16 +122,18 @@ def _rebuild_zip(source: Path, name: str, replacement: Path, output: IO[bytes]) 
         _check_selected([info.filename for info in members], name)
         if min(info.header_offset for info in members) != 0:
             raise ValueError("Unsupported ZIP archive prefix")
+        local_extras: list[bytes] = []
         for info in members:
             _check_zip_member(info)
-            _check_zip_local_metadata(raw, info)
+            local_extras.append(_local_zip_extra(raw, info))
             file_type = stat.S_IFMT(info.external_attr >> 16)
             if info.filename == name and (info.is_dir() or file_type not in {0, stat.S_IFREG}):
                 raise ValueError("Selected ZIP member must be a regular file")
         with zipfile.ZipFile(output, "w") as rebuilt:
             rebuilt.comment = original.comment
-            for info in members:
+            for info, local_extra in zip(members, local_extras, strict=True):
                 updated = copy.copy(info)
+                updated.extra = local_extra
                 selected = info.filename == name
                 if selected:
                     updated.file_size = replacement.stat().st_size

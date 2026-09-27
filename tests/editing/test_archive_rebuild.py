@@ -1,3 +1,4 @@
+import binascii
 import io
 import stat
 import struct
@@ -88,6 +89,86 @@ def test_zip_preserves_metadata_and_compression(tmp_path: Path, compression: int
             for field in ["date_time", "compress_type", "comment", "create_system", "external_attr", "internal_attr", "extra"]:
                 assert getattr(new, field) == getattr(old, field)
             assert rebuilt.read(new) == (replacement.read_bytes() if new.filename == "selected" else original.read(old))
+
+
+def test_zip_allows_local_only_extended_timestamp_metadata(tmp_path: Path) -> None:
+    source, replacement, output = tmp_path / "source.zip", tmp_path / "edited", tmp_path / "output.zip"
+    replacement.write_bytes(b"new")
+    name = b"selected"
+    content = b"old"
+    local_extra = struct.pack("<HHBI", 0x5455, 5, 1, 1234567890)
+    crc = binascii.crc32(content)
+    local = (
+        struct.pack(
+            "<IHHHHHIIIHH",
+            0x04034B50,
+            20,
+            0,
+            0,
+            0,
+            0,
+            crc,
+            len(content),
+            len(content),
+            len(name),
+            len(local_extra),
+        )
+        + name
+        + local_extra
+        + content
+    )
+    central = (
+        struct.pack(
+            "<IHHHHHHIIIHHHHHII",
+            0x02014B50,
+            0x0314,
+            20,
+            0,
+            0,
+            0,
+            0,
+            crc,
+            len(content),
+            len(content),
+            len(name),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+        + name
+    )
+    ending = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 1, 1, len(central), len(local), 0)
+    source.write_bytes(local + central + ending)
+
+    rebuild_archive(source, PurePosixPath("selected"), replacement, output)
+
+    with zipfile.ZipFile(output) as archive:
+        assert archive.read("selected") == b"new"
+        assert archive.getinfo("selected").extra == local_extra
+
+
+def test_zip_allows_different_local_and_central_extended_timestamps(tmp_path: Path) -> None:
+    source, replacement, output = tmp_path / "source.zip", tmp_path / "edited", tmp_path / "output.zip"
+    replacement.write_bytes(b"new")
+    name = b"selected"
+    content = b"old"
+    ownership_extra = struct.pack("<HHB", 0x7875, 1, 1)
+    local_extra = struct.pack("<HHBIII", 0x5455, 13, 7, 1234567890, 1234567891, 1234567892) + ownership_extra
+    central_extra = struct.pack("<HHBI", 0x5455, 5, 1, 1234567890) + ownership_extra
+    crc = binascii.crc32(content)
+    local = struct.pack("<IHHHHHIIIHH", 0x04034B50, 20, 0, 0, 0, 0, crc, len(content), len(content), len(name), len(local_extra)) + name + local_extra + content
+    central = struct.pack("<IHHHHHHIIIHHHHHII", 0x02014B50, 0x0314, 20, 0, 0, 0, 0, crc, len(content), len(content), len(name), len(central_extra), 0, 0, 0, 0, 0) + name + central_extra
+    ending = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 1, 1, len(central), len(local), 0)
+    source.write_bytes(local + central + ending)
+
+    rebuild_archive(source, PurePosixPath("selected"), replacement, output)
+
+    with zipfile.ZipFile(output) as archive:
+        assert archive.read("selected") == b"new"
+        assert archive.getinfo("selected").extra == local_extra
 
 
 @pytest.mark.parametrize("suffix", [".zip", *[suffix for suffix, _ in TAR_FORMATS]])

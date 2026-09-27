@@ -78,6 +78,14 @@ def test_mirror_command_does_not_rewrite_archive_root_slashes(tmp_path: Path) ->
     assert command == ["xdg-open", str(mirror)]
 
 
+def test_editing_sessions_is_a_visible_main_screen_action() -> None:
+    from nova_navigator.nova_navigator import MainScreen
+
+    action = next(action for action in MainScreen.ACTIONS if action.id == "app.editing_sessions")
+    assert action._show_in_bar is True
+    assert hasattr(MainScreen, "_action_editing_sessions")
+
+
 # ── NerdFont mode resolution ──────────────────────────────────────────────────
 
 
