@@ -4,17 +4,13 @@ import errno
 import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
-from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING, override
+from typing import override
 from weakref import WeakValueDictionary
 
 from ...archive import Archive, open_archive
 from ..filesystem import Filesystem, FilesystemCapabilities, Stat, StreamReaderLike, StreamWriterLike
 from ..vpath import VPath
 from .local import LocalFilesystem
-
-if TYPE_CHECKING:
-    from ...editing.model import SourceVersion
 
 
 class ArchiveFilesystem(Filesystem):
@@ -25,9 +21,6 @@ class ArchiveFilesystem(Filesystem):
     the local filesystem.  *archive_parent* is the :class:`VPath` returned by
     :meth:`parent` when the caller asks for the parent of the archive root —
     i.e. the directory that contains the archive file itself.
-    Passing *stage* transfers ownership to this mount; closing it removes that
-    directory. Editing sessions must retain the mount or copy its bytes before
-    closing it.
     """
 
     _archive_parent: VPath
@@ -39,12 +32,8 @@ class ArchiveFilesystem(Filesystem):
         archive: Archive | VPath,
         *,
         source: VPath | None = None,
-        stage: TemporaryDirectory[str] | None = None,
-        source_version: SourceVersion | None = None,
     ) -> None:
         self._archive_parent = archive_parent
-        self._stage = stage
-        self._source_version = source_version
         self._closed = False
         self._member_paths: WeakValueDictionary[int, VPath] = WeakValueDictionary()
         if isinstance(archive, Archive):
@@ -62,23 +51,16 @@ class ArchiveFilesystem(Filesystem):
         return self._source
 
     @property
-    def source_version(self) -> SourceVersion | None:
-        """Version of remote bytes captured during staging, if staged remotely."""
-        return self._source_version
-
-    @property
     def local_path(self) -> Path:
         """Local archive bytes backing this mount."""
         return self._local_path
 
     def close(self) -> None:
-        """Close the reader and remove this mount's owned temporary stage."""
+        """Close the underlying archive reader."""
         if self._closed:
             return
         self._archive.close()
         self._closed = True
-        if self._stage is not None:
-            self._stage.cleanup()
 
     def reload(self) -> None:
         """Reopen replaced archive bytes and invalidate cached member metadata."""
