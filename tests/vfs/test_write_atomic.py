@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from nova_navigator.vfs.filesystems import local as local_module
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from tests._utils.mock_filesystem import MockFilesystem
 
@@ -30,6 +31,57 @@ def test_local_write_atomic_abort_keeps_original(tmp_path: Path) -> None:
     writer = fs.write_atomic(fs.path(target))
     writer.write(b"partial")
     writer.abort()
+    assert target.read_bytes() == b"old"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["f.txt"]
+
+
+def test_local_write_atomic_new_file_uses_umask_default(tmp_path: Path) -> None:
+    target = tmp_path / "new.txt"
+    fs = LocalFilesystem.singleton()
+    writer = fs.write_atomic(fs.path(target))
+    writer.write(b"data")
+    writer.close()
+    assert target.read_bytes() == b"data"
+    assert target.stat().st_mode & 0o777 == 0o666 & ~local_module._PROCESS_UMASK
+
+
+def test_local_write_atomic_replace_failure_leaves_target_and_cleans_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = tmp_path / "f.txt"
+    target.write_bytes(b"old")
+    fs = LocalFilesystem.singleton()
+    writer = fs.write_atomic(fs.path(target))
+    writer.write(b"new")
+
+    def _raise_replace(_src: object, _dst: object) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(local_module.os, "replace", _raise_replace)
+    with pytest.raises(OSError, match="replace failed"):
+        writer.close()
+    assert target.read_bytes() == b"old"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["f.txt"]
+
+
+def test_local_write_atomic_close_is_idempotent(tmp_path: Path) -> None:
+    target = tmp_path / "f.txt"
+    target.write_bytes(b"old")
+    fs = LocalFilesystem.singleton()
+    writer = fs.write_atomic(fs.path(target))
+    writer.write(b"new")
+    writer.close()
+    writer.close()
+    assert target.read_bytes() == b"new"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["f.txt"]
+
+
+def test_local_write_atomic_close_after_abort_is_noop(tmp_path: Path) -> None:
+    target = tmp_path / "f.txt"
+    target.write_bytes(b"old")
+    fs = LocalFilesystem.singleton()
+    writer = fs.write_atomic(fs.path(target))
+    writer.write(b"partial")
+    writer.abort()
+    writer.close()
     assert target.read_bytes() == b"old"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["f.txt"]
 

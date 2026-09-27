@@ -28,7 +28,11 @@ class StreamWriterLike(Protocol):
 
 
 class AtomicWriterLike(Protocol):
-    """Writer whose ``close()`` publishes all data at once and ``abort()`` discards it."""
+    """Writer whose ``close()`` publishes all data at once and ``abort()`` discards it.
+
+    Callers must call exactly one of ``close()`` or ``abort()`` — typically ``abort()``
+    from an ``except`` block when writing fails partway through.
+    """
 
     def write(self, data: bytes) -> int: ...
     def close(self) -> None: ...
@@ -36,7 +40,14 @@ class AtomicWriterLike(Protocol):
 
 
 class _SpooledAtomicWriter:
-    """Default atomic writer: spool locally, upload through ``write()`` on close."""
+    """Default atomic writer: spool locally, upload through ``write()`` on close.
+
+    This is only as atomic as the backend's :meth:`Filesystem.write`: for backends
+    whose ``write()`` truncates the destination before writing, a failure partway
+    through the upload can leave a partial file in place. Backends that can do
+    better (e.g. rename-based replacement) should override :meth:`Filesystem.write_atomic`
+    for true all-or-nothing semantics.
+    """
 
     def __init__(self, filesystem: Filesystem, path: VPath) -> None:
         self._filesystem = filesystem
@@ -286,7 +297,10 @@ class Filesystem(ABC):
         """Return a writer that replaces *path* in one step on ``close()``.
 
         ``abort()`` discards the data and leaves *path* untouched. The default
-        spools to a local temporary file and uploads with :meth:`write`.
+        spools to a local temporary file and uploads with :meth:`write`; this is
+        only as atomic as :meth:`write` itself, so a mid-upload failure may leave
+        a partial destination for backends whose ``write()`` truncates. Backends
+        that can guarantee true atomicity (e.g. via rename) should override this.
         """
         self._assert_vpath(path)
         return _SpooledAtomicWriter(self, path)
