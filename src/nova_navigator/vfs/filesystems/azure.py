@@ -335,3 +335,13 @@ class AzureFilesystem(Filesystem):
     @override
     def readlink(self, path: VPath) -> str:
         raise OSError(errno.EINVAL, "Not a symbolic link", str(path.path))
+
+    @override
+    def version_tag(self, path: VPath) -> str | None:
+        self._assert_vpath(path)
+        try:
+            props = self._client.get_blob_client(_blob_name(path)).get_blob_properties()
+        except ResourceNotFoundError:
+            raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path.path)) from None
+        etag = props.etag
+        return etag if isinstance(etag, str) else None

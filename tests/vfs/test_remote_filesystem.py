@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 import pytest
 
+from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_navigator.vfs.filesystems.remote import RemoteFilesystem
 from nova_navigator.vfs.vpath import VPath
 from tests._utils.mock_filesystem import MockFilesystem
@@ -151,6 +152,38 @@ def test_readlink_delegates_to_inner() -> None:
     # MockFilesystem does not support symlinks; readlink raises OSError
     with pytest.raises((OSError, NotImplementedError)):
         fs.readlink(VPath("/home/user", fs))
+
+
+def test_write_atomic_delegates_to_inner() -> None:
+    """The explicit override re-binds the VPath to the inner filesystem.
+
+    Without it, __getattr__ would forward the wrapper-bound VPath straight to
+    MockFilesystem.write_atomic, whose _assert_vpath check would reject it.
+    """
+    inner, fs = _make(files={"/a.txt": b"old"})
+    writer = fs.write_atomic(VPath("/a.txt", fs))
+    writer.write(b"new")
+    writer.close()
+    assert inner.read(inner.path("/a.txt")).read(3) == b"new"
+
+
+def test_write_atomic_abort_delegates_to_inner() -> None:
+    inner, fs = _make(files={"/a.txt": b"old"})
+    writer = fs.write_atomic(VPath("/a.txt", fs))
+    writer.write(b"new")
+    writer.abort()
+    assert inner.read(inner.path("/a.txt")).read(3) == b"old"
+
+
+def test_version_tag_delegates_to_inner(tmp_path: Path) -> None:
+    """version_tag must re-bind the VPath the same way write_atomic does."""
+    target = tmp_path / "f.txt"
+    target.write_bytes(b"same")
+    local = LocalFilesystem.singleton()
+    fs = RemoteFilesystem("prod", local)
+    before = fs.version_tag(VPath(target, fs))
+    target.write_bytes(b"different")
+    assert fs.version_tag(VPath(target, fs)) != before
 
 
 def test_is_same_device_delegates_to_inner() -> None:

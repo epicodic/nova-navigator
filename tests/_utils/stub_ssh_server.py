@@ -158,6 +158,14 @@ class StubSFTPServerInterface(paramiko.SFTPServerInterface):
         except OSError as exc:
             return paramiko.SFTPServer.convert_errno(exc.errno or _errno.EIO)
 
+    def posix_rename(self, oldpath: str, newpath: str) -> int:
+        """Rename / move a file, overwriting newpath if it already exists (OpenSSH extension)."""
+        try:
+            os.replace(oldpath, newpath)
+            return SFTP_OK
+        except OSError as exc:
+            return paramiko.SFTPServer.convert_errno(exc.errno or _errno.EIO)
+
     def mkdir(self, path: str, attr: paramiko.SFTPAttributes) -> int:
         """Create a directory."""
         try:
