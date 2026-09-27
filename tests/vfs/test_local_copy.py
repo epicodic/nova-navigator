@@ -110,6 +110,15 @@ def test_read_only_copy_refuses_write_back(tmp_path: Path) -> None:
         copy.write_back()
 
 
+def test_read_only_copy_refresh_replaces_content_and_stays_read_only(tmp_path: Path) -> None:
+    fs = SchemeFs({"/d/f.txt": b"hello"})
+    copy = LocalCopy.create(fs.path("/d/f.txt"), tmp_path, read_only=True)
+    overwrite(fs, "/d/f.txt", b"server side change")
+    copy.refresh()
+    assert copy.path.read_bytes() == b"server side change"
+    assert copy.path.stat().st_mode & 0o777 == 0o400
+
+
 def test_local_source_is_pass_through(tmp_path: Path) -> None:
     real = tmp_path / "real.txt"
     real.write_bytes(b"x")

@@ -153,9 +153,6 @@ ignore = [
 "src/nova_navigator/usermenu/evaluate.py" = [
     "S307", # eval() of user menu conditions is the feature; the config file is trusted user input
 ]
-"src/nova_navigator/vfs/local_copy.py" = [
-    "S108", # /tmp/nova-navigator is the documented, deliberate local-copy root, not an insecure temp path
-]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
