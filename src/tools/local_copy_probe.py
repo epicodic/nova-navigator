@@ -1,6 +1,10 @@
 """Probe how an editor saves a file, as seen by ChangeDetector.
 
 Usage: uv run local_copy_probe [--file PATH] [--settle S] [--poll S] -- EDITOR ARGS... (%f = file)
+
+All probe output goes to stderr, so terminal editors can own the screen:
+
+    uv run local_copy_probe -- nano %f 2> probe.log
 """
 
 from __future__ import annotations
@@ -9,6 +13,7 @@ import argparse
 import asyncio
 import contextlib
 import shutil
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -38,7 +43,7 @@ async def _run(args: argparse.Namespace) -> None:
     changes = 0
 
     def log(kind: str, detail: str) -> None:
-        print(f"{time.monotonic() - start:8.3f}  {kind:<10} {detail}", flush=True)
+        print(f"{time.monotonic() - start:8.3f}  {kind:<10} {detail}", file=sys.stderr, flush=True)
 
     async def on_change(digest: str) -> None:
         nonlocal changes
@@ -66,12 +71,12 @@ async def _run(args: argparse.Namespace) -> None:
             log("signal", "interrupted while the editor was running")
             raise
         await detector.check_now()
-        print("Editor process exited. Keep editing in detached editors; press Ctrl+C to finish.", flush=True)
+        print("Editor process exited. Keep editing in detached editors; press Ctrl+C to finish.", file=sys.stderr, flush=True)
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.Event().wait()
     finally:
         await detector.stop()
-        print(f"Reported changes: {changes}; probe directory: {work}", flush=True)
+        print(f"Reported changes: {changes}; probe directory: {work}", file=sys.stderr, flush=True)
 
 
 def main() -> None:
