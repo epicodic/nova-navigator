@@ -133,10 +133,9 @@ class LocalCopy:
         even one mounted from a local archive) is a pass-through: ``path``
         is the source file itself and nothing is copied or created below *root*.
         """
-        # ArchiveFilesystem.unwrap() returns itself (the base Filesystem.unwrap() default), so
-        # a member of a *local* archive would otherwise unwrap to a LocalFilesystem and be
-        # mistaken for a pass-through; the explicit exclusion keeps archive members non-pass-through
-        # regardless of what their container unwraps to.
+        # ArchiveFilesystem.unwrap() currently returns the archive filesystem itself, so the first
+        # check alone already rejects archive members. The explicit exclusion keeps members of local
+        # archives non-pass-through even if unwrap() is ever changed to return the container's filesystem.
         if isinstance(source.filesystem.unwrap(), LocalFilesystem) and not isinstance(source.filesystem, ArchiveFilesystem):
             path = Path(source.path)
             return cls(source, path, Baseline(SourceFingerprint.of(source), ""), read_only=read_only, pass_through=True)
