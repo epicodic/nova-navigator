@@ -19,6 +19,20 @@ _logger = logging.getLogger(__name__)
 
 _CHUNK_SIZE = 1024 * 1024
 
+# Only events that can actually change the file's content or identity are worth a settle
+# cycle. In particular "opened" and "closed_no_write" (read-only access, e.g. our own
+# file_digest() call) must be excluded, or the detector would re-trigger itself forever:
+# mark -> settle -> digest (opens+reads the file) -> opened/closed_no_write event -> mark -> ...
+_FORWARDED_EVENT_TYPES = frozenset(
+    {
+        watchdog.events.EVENT_TYPE_MODIFIED,
+        watchdog.events.EVENT_TYPE_CLOSED,
+        watchdog.events.EVENT_TYPE_CREATED,
+        watchdog.events.EVENT_TYPE_DELETED,
+        watchdog.events.EVENT_TYPE_MOVED,
+    }
+)
+
 ChangeCallback = Callable[[str], Awaitable[None]]
 LogCallback = Callable[[str, str], None]
 
@@ -59,6 +73,8 @@ class _NameFilterHandler(watchdog.events.FileSystemEventHandler):
         self._mark = mark
 
     def on_any_event(self, event: watchdog.events.FileSystemEvent) -> None:
+        if event.event_type not in _FORWARDED_EVENT_TYPES:
+            return
         paths = {os.fsdecode(event.src_path), os.fsdecode(getattr(event, "dest_path", "") or "")}
         if self._target in paths:
             with contextlib.suppress(RuntimeError):
