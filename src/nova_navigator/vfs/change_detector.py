@@ -191,11 +191,18 @@ class ChangeDetector:
             before = FileFingerprint.of(self._path)
             await asyncio.sleep(self._settle_time)
             after = FileFingerprint.of(self._path)
-            if self._dirty.is_set() or before is None or before != after:
+            # A window is settled purely by the fingerprint holding steady, regardless of
+            # whether something marked dirty again during the sleep: the poll loop updates
+            # _last_seen as soon as it notices a change (before the settle loop confirms
+            # it), so it re-marks dirty for the very change this window is already about to
+            # report. Requiring the dirty flag to also be clear would force one needless
+            # extra settle round on every change.
+            if before is None or before != after:
                 if self._log is not None:
                     self._log("unsettled", f"{before} -> {after}")
                 self._dirty.set()
                 continue
+            self._dirty.clear()
             self._last_seen = after
             try:
                 digest = await asyncio.to_thread(file_digest, self._path)

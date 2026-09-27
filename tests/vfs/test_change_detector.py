@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -240,5 +241,27 @@ async def test_no_further_digests_after_settle_while_untouched(target: Path) -> 
         logs.clear()
         await asyncio.sleep(1.0)
         assert [entry for entry in logs if entry[0] == "unchanged"] == []
+    finally:
+        await detector.stop()
+
+
+@pytest.mark.asyncio
+async def test_change_settles_in_one_round(target: Path) -> None:
+    """Regression test: a stale poll re-mark during the settle window must not add a round.
+
+    The poll loop updates `_last_seen` as soon as it notices a fingerprint change, before
+    the settle loop confirms it, so it re-marks dirty for the very change already being
+    settled. That must not force a second settle_time wait: one write should be reported
+    well under two settle rounds after it happens.
+    """
+    settle_time = 0.5
+    detector, queue = await _detector(target, poll_interval=0.05, settle_time=settle_time)
+    try:
+        write_time = time.monotonic()
+        target.write_bytes(b"single round\n")
+        digest = await asyncio.wait_for(queue.get(), settle_time * 3)
+        elapsed = time.monotonic() - write_time
+        assert digest == file_digest(target)
+        assert elapsed < settle_time * 1.8
     finally:
         await detector.stop()
