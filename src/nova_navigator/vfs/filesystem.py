@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import tempfile
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import PurePath
 from typing import Protocol
@@ -24,6 +25,49 @@ class StreamWriterLike(Protocol):
 
     def write(self, data: bytes) -> int: ...
     def close(self) -> None: ...
+
+
+class AtomicWriterLike(Protocol):
+    """Writer whose ``close()`` publishes all data at once and ``abort()`` discards it."""
+
+    def write(self, data: bytes) -> int: ...
+    def close(self) -> None: ...
+    def abort(self) -> None: ...
+
+
+class _SpooledAtomicWriter:
+    """Default atomic writer: spool locally, upload through ``write()`` on close."""
+
+    def __init__(self, filesystem: Filesystem, path: VPath) -> None:
+        self._filesystem = filesystem
+        self._path = path
+        with ExitStack() as stack:
+            self._spool = stack.enter_context(tempfile.TemporaryFile())
+            self._exit_stack = stack.pop_all()
+        self._done = False
+
+    def write(self, data: bytes) -> int:
+        return self._spool.write(data)
+
+    def close(self) -> None:
+        if self._done:
+            return
+        self._done = True
+        try:
+            self._spool.seek(0)
+            writer = self._filesystem.write(self._path)
+            try:
+                while chunk := self._spool.read(1024 * 1024):
+                    writer.write(chunk)
+            finally:
+                writer.close()
+        finally:
+            self._exit_stack.close()
+
+    def abort(self) -> None:
+        if not self._done:
+            self._done = True
+            self._exit_stack.close()
 
 
 @dataclass(frozen=True)
@@ -237,3 +281,17 @@ class Filesystem(ABC):
         delegate to their inner filesystem recursively.
         """
         return self
+
+    def write_atomic(self, path: VPath) -> AtomicWriterLike:
+        """Return a writer that replaces *path* in one step on ``close()``.
+
+        ``abort()`` discards the data and leaves *path* untouched. The default
+        spools to a local temporary file and uploads with :meth:`write`.
+        """
+        self._assert_vpath(path)
+        return _SpooledAtomicWriter(self, path)
+
+    def version_tag(self, path: VPath) -> str | None:
+        """Opaque token that changes whenever *path* is rewritten or replaced; None if unavailable."""
+        self._assert_vpath(path)
+        return None
