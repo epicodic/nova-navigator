@@ -23,6 +23,7 @@ qa = "tools.qa:main"
 dialog_tester = "tools.dialog_tester:main"
 widget_tester = "tools.widget_tester:main"
 ssh_terminal_demo = "tools.ssh_terminal_demo:main"
+local_copy_probe = "tools.local_copy_probe:main"
 
 [build-system]
 requires = ["uv_build"]
