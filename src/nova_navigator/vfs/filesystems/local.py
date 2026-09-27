@@ -30,6 +30,12 @@ _EXEC_READER_JOIN_TIMEOUT = 1.0
 _EXEC_CHUNK_SIZE = 65536
 _EXEC_KILL_GRACE = 2.0
 
+# os.umask() reads/sets the process-wide umask as a side effect, with no thread-local
+# variant, so probing it lazily at write time would race with concurrent worker
+# threads. Capture it once at import time instead and restore it immediately.
+_PROCESS_UMASK = os.umask(0o022)
+os.umask(_PROCESS_UMASK)
+
 
 def _pump_output(fd: int, tail: TailBuffer) -> None:
     """Copy everything readable from *fd* into *tail* until EOF."""
@@ -74,16 +80,16 @@ class _LocalAtomicWriter:
             try:
                 mode = S_IMODE(os.stat(self._target).st_mode)
             except FileNotFoundError:
-                umask = os.umask(0)
-                os.umask(umask)
-                mode = 0o666 & ~umask
+                mode = 0o666 & ~_PROCESS_UMASK
             os.fchmod(self._file.fileno(), mode)
             os.fsync(self._file.fileno())
             self._file.close()
             os.replace(self._tmp, self._target)
         except BaseException:
-            self._file.close()
-            self._tmp.unlink(missing_ok=True)
+            try:
+                self._file.close()
+            finally:
+                self._tmp.unlink(missing_ok=True)
             raise
 
     def abort(self) -> None:
