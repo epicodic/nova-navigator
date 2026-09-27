@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,15 @@ from nova_navigator.vfs.change_detector import ChangeDetector, file_digest
 
 _FAST_POLL_INTERVAL = 0.05
 _FAST_SETTLE_TIME = 0.15
+
+
+async def _wait_until(predicate: Callable[[], bool], max_wait: float = 3.0) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max_wait
+    while not predicate():
+        if loop.time() >= deadline:
+            raise AssertionError("condition not met within timeout")
+        await asyncio.sleep(0.01)
 
 
 async def _detector(
@@ -144,5 +154,55 @@ async def test_set_baseline_suppresses_known_digest(target: Path) -> None:
         target.write_bytes(target.read_bytes())
         await asyncio.sleep(0.5)
         assert queue.empty()
+    finally:
+        await detector.stop()
+
+
+@pytest.mark.asyncio
+async def test_on_change_error_does_not_stop_detection(target: Path) -> None:
+    calls: list[str] = []
+
+    async def flaky_on_change(digest: str) -> None:
+        calls.append(digest)
+        if len(calls) == 1:
+            raise RuntimeError("simulated sync failure")
+
+    detector = ChangeDetector(
+        target,
+        flaky_on_change,
+        baseline_digest=file_digest(target),
+        poll_interval=_FAST_POLL_INTERVAL,
+        settle_time=_FAST_SETTLE_TIME,
+    )
+    await detector.start()
+    try:
+        target.write_bytes(b"first\n")
+        await _wait_until(lambda: len(calls) >= 1)
+
+        target.write_bytes(b"second\n")
+        await _wait_until(lambda: len(calls) >= 2)
+        assert calls[-1] == file_digest(target)
+    finally:
+        await detector.stop()
+
+
+@pytest.mark.asyncio
+async def test_restart_after_stop_detects_change(target: Path) -> None:
+    detector, queue = await _detector(target)
+    await detector.stop()
+    await detector.start()
+    try:
+        target.write_bytes(b"restarted\n")
+        assert await asyncio.wait_for(queue.get(), 3) == file_digest(target)
+    finally:
+        await detector.stop()
+
+
+@pytest.mark.asyncio
+async def test_second_start_without_stop_raises(target: Path) -> None:
+    detector, _queue = await _detector(target)
+    try:
+        with pytest.raises(RuntimeError):
+            await detector.start()
     finally:
         await detector.stop()
