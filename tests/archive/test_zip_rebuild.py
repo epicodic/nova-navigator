@@ -239,3 +239,67 @@ def test_rebuild_zip_does_not_delete_preexisting_output(tmp_path: Path) -> None:
     with pytest.raises(FileExistsError):
         rebuild_zip(source, "dir/edit.txt", replacement, output)
     assert output.read_bytes() == b"unrelated pre-existing content"
+
+
+def _local_header(data: bytes, header_offset: int) -> bytes:
+    """Local header, name, and extra field of the entry starting at *header_offset*."""
+    name_len, extra_len = struct.unpack_from("<HH", data, header_offset + 26)
+    return data[header_offset : header_offset + 30 + name_len + extra_len]
+
+
+def _central_record(data: bytes, name: bytes) -> bytes:
+    offset = _central_record_offsets(data)[name]
+    name_len, extra_len, comment_len = struct.unpack_from("<HHH", data, offset + 28)
+    return data[offset : offset + 46 + name_len + extra_len + comment_len]
+
+
+def _local_extra(data: bytes, header_offset: int) -> bytes:
+    name_len, extra_len = struct.unpack_from("<HH", data, header_offset + 26)
+    start = header_offset + 30 + name_len
+    return data[start : start + extra_len]
+
+
+def _central_extra(record: bytes) -> bytes:
+    name_len, extra_len = struct.unpack_from("<HH", record, 28)
+    return record[46 + name_len : 46 + name_len + extra_len]
+
+
+def test_zip_cli_archive_with_differing_extras_keeps_untouched_entries(tmp_path: Path) -> None:
+    """Regression test with an archive built by Info-ZIP `zip`, the case the previous implementation rejected.
+
+    Info-ZIP stores a fuller extended timestamp in the local header than in the central
+    directory, so local and central extra fields differ.
+    """
+    if shutil.which("zip") is None or shutil.which("unzip") is None:
+        pytest.skip("zip and unzip are required")
+    content = tmp_path / "content"
+    (content / "sub").mkdir(parents=True)
+    (content / "first.txt").write_bytes(b"first line\n" * 50)
+    (content / "sub" / "middle.txt").write_bytes(b"middle\n")
+    (content / "last.txt").write_bytes(b"last line\n" * 50)
+    source, output, replacement = tmp_path / "cli.zip", tmp_path / "out.zip", tmp_path / "new.txt"
+    subprocess.run(["zip", "-q", str(source), "first.txt", "sub/middle.txt", "last.txt"], cwd=content, check=True)
+    original = source.read_bytes()
+    with zipfile.ZipFile(source) as archive:
+        before = {info.filename: info.header_offset for info in archive.infolist()}
+    first_central = _central_record(original, b"first.txt")
+    assert _local_extra(original, before["first.txt"]) != _central_extra(first_central), "precondition"
+
+    replacement.write_bytes(b"middle, now much longer than before\n" * 100)
+    rebuild_zip(source, "sub/middle.txt", replacement, output)
+
+    result = subprocess.run(["unzip", "-tq", str(output)], capture_output=True, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    rebuilt = output.read_bytes()
+    with zipfile.ZipFile(output) as archive:
+        after = {info.filename: info.header_offset for info in archive.infolist()}
+        assert archive.read("sub/middle.txt") == replacement.read_bytes()
+    assert after["first.txt"] == before["first.txt"]
+    assert after["last.txt"] > before["last.txt"]
+    for name in ("first.txt", "last.txt"):
+        assert _local_header(rebuilt, after[name]) == _local_header(original, before[name])
+        assert _raw_entry(output, name) == _raw_entry(source, name)
+        old_record = _central_record(original, name.encode())
+        new_record = _central_record(rebuilt, name.encode())
+        # Only the 32-bit local header offset at byte 42 may differ.
+        assert new_record[:42] + new_record[46:] == old_record[:42] + old_record[46:]
