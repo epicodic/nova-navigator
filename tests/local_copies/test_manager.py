@@ -379,3 +379,22 @@ async def test_archive_members_sync_independently_without_prompt(tmp_path: Path)
         assert zf.read("a.txt") == b"A2"
         assert zf.read("b.txt") == b"B2"
     await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_closes_cached_archive_mounts(tmp_path: Path) -> None:
+    """shutdown() must close every archive mounted via mount_archive(), not just clear the cache."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr("a.txt", "A1")
+    fs = SchemeFs({"/d/x.zip": buffer.getvalue()})
+    runner = _Runner()
+    manager = await _manager(tmp_path, runner)
+
+    archive_fs = await manager.mount_archive(fs.path("/d/x.zip"))
+    assert archive_fs is not None
+
+    await manager.shutdown()
+
+    with pytest.raises(ValueError, match="closed"):
+        archive_fs.refresh_from_source()

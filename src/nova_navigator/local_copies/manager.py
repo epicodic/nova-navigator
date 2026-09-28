@@ -283,7 +283,7 @@ class LocalCopyManager:
             await asyncio.sleep(0.05)
 
     async def shutdown(self, remove_files: bool = True) -> None:
-        """Stop all detectors, await any running syncs, and optionally remove the local-copy root."""
+        """Stop all detectors, await any running syncs, close cached archive mounts, and optionally remove the local-copy root."""
         for entry in self._entries.values():
             if entry.detector is not None:
                 await entry.detector.stop()
@@ -292,6 +292,8 @@ class LocalCopyManager:
                 with contextlib.suppress(Exception):
                     await entry.sync_task
         self._entries.clear()
+        for archive_fs in self._archive_mounts.values():
+            archive_fs.close()
         self._archive_mounts.clear()
         if remove_files:
             await asyncio.to_thread(shutil.rmtree, self._root, ignore_errors=True)
