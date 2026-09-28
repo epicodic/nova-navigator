@@ -94,6 +94,24 @@ class ArchiveFilesystem(Filesystem):
             raise ValueError("Archive mount is closed")
         self._reopen()
 
+    def refresh_from_source(self) -> None:
+        """Refresh the local archive copy from its source if it changed, then reopen the reader.
+
+        Takes the same write lock as a member commit, since both mutate the local file
+        backing this mount (the local copy of a non-local archive): without it, a mount
+        refresh racing a member write could reopen the reader onto a half-written rebuild,
+        or a commit could rebuild onto bytes a concurrent refresh is replacing. A no-op for
+        a mount with no backing (a pre-opened :class:`Archive` with nothing behind it to
+        refresh from).
+        """
+        if self._backing is None:
+            return
+        if self._closed:
+            raise ValueError("Archive mount is closed")
+        with self._write_lock:
+            self._backing.prepare_write()
+            self._reopen()
+
     def _reopen(self) -> None:
         """Reopen the archive reader from ``local_path`` and invalidate cached member stats.
 

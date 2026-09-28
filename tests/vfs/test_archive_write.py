@@ -208,3 +208,27 @@ def test_close_does_not_delete_remote_local_copy(tmp_path: Path) -> None:
     assert copy.path.exists()
     archive_fs.close()
     assert copy.path.exists()
+
+
+def test_refresh_from_source_downloads_when_source_changed(tmp_path: Path) -> None:
+    """A changed remote archive is re-downloaded and the reader reopened onto the new bytes."""
+    fs = SchemeFs({"/archives/a.zip": _zip_bytes({"dir/edit.txt": b"old", "keep.txt": b"keep"})})
+    archive_fs, _ = _mount_remote(fs, "/archives/a.zip", tmp_path)
+    assert archive_fs.read(archive_fs.path("/keep.txt")).read(10) == b"keep"
+
+    overwrite(fs, "/archives/a.zip", _zip_bytes({"dir/edit.txt": b"old", "keep.txt": b"changed"}))
+    archive_fs.refresh_from_source()
+
+    assert archive_fs.read(archive_fs.path("/keep.txt")).read(10) == b"changed"
+
+
+def test_refresh_from_source_skips_download_when_source_unchanged(tmp_path: Path) -> None:
+    """An unchanged remote source is not re-downloaded (CopiedArchiveBacking.prepare_write() no-ops)."""
+    fs = SchemeFs({"/archives/a.zip": _zip_bytes({"dir/edit.txt": b"old", "keep.txt": b"keep"})})
+    archive_fs, _ = _mount_remote(fs, "/archives/a.zip", tmp_path)
+    reads_before = len(fs.readers)
+
+    archive_fs.refresh_from_source()
+
+    assert len(fs.readers) == reads_before
+    assert archive_fs.read(archive_fs.path("/keep.txt")).read(10) == b"keep"

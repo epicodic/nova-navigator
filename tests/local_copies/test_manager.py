@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from nova_navigator.local_copies.manager import CopyStatus, LocalCopyManager
+from nova_navigator.local_copies.manager import CopyStatus, JobStarter, LocalCopyManager
 from nova_navigator.response import Response
 from nova_navigator.scheduler import Job
 from nova_navigator.vfs.filesystem import FilesystemCapabilities, StreamWriterLike
@@ -33,6 +33,35 @@ class _Runner:
         async def answer(request: object, future: asyncio.Future[Response]) -> None:
             self.prompts.append(getattr(request, "title", ""))
             future.set_result(self.answers.pop(0))
+
+        await job.start(answer)
+
+
+class _WaitingRunner:
+    """Like _Runner, but the scripted answer blocks on an event before resolving.
+
+    Lets a test deterministically inject work (e.g. a second save) while a
+    request_response() prompt is pending, instead of racing sleeps against it.
+    """
+
+    def __init__(self, answer: Response) -> None:
+        self._answer = answer
+        self.jobs: list[Job] = []
+        self.prompts: list[str] = []
+        self.prompted = asyncio.Event()
+        self._proceed = asyncio.Event()
+
+    def proceed(self) -> None:
+        self._proceed.set()
+
+    async def __call__(self, job: Job) -> None:
+        self.jobs.append(job)
+
+        async def answer(request: object, future: asyncio.Future[Response]) -> None:
+            self.prompts.append(getattr(request, "title", ""))
+            self.prompted.set()
+            await self._proceed.wait()
+            future.set_result(self._answer)
 
         await job.start(answer)
 
@@ -62,7 +91,7 @@ def _slow_to_write(monkeypatch: pytest.MonkeyPatch, fs: SchemeFs, delay: float) 
     monkeypatch.setattr(fs, "write", slow_write)
 
 
-async def _manager(tmp_path: Path, runner: _Runner) -> LocalCopyManager:
+async def _manager(tmp_path: Path, runner: JobStarter) -> LocalCopyManager:
     return LocalCopyManager(tmp_path / "root", runner, poll_interval=0.05, settle_time=0.1)
 
 
@@ -114,6 +143,34 @@ async def test_conflict_skip_pauses_sync(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_save_during_pending_conflict_prompt_does_not_add_a_second_prompt(tmp_path: Path) -> None:
+    """A save that lands while a conflict prompt is already pending must not race a second one.
+
+    _run_sync must stop looping (and drop any queued follow-up) once a sync ends in
+    CONFLICT, even if a save was detected and queued while the prompt was pending.
+    """
+    fs = SchemeFs({"/d/f.txt": b"old"})
+    runner = _WaitingRunner(Response.SKIP)
+    manager = await _manager(tmp_path, runner)
+    entry = await manager.open(fs.path("/d/f.txt"))
+    assert entry is not None
+
+    overwrite(fs, "/d/f.txt", b"server")
+    entry.copy.path.write_bytes(b"local")
+    await asyncio.wait_for(runner.prompted.wait(), timeout=3)
+
+    # A second save lands while the user has not yet answered the conflict prompt.
+    entry.copy.path.write_bytes(b"local again")
+    await asyncio.sleep(0.3)  # comfortably more than poll_interval + settle_time (0.15s)
+    runner.proceed()
+
+    await manager.wait_idle(max_wait=3)
+    assert entry.status is CopyStatus.CONFLICT
+    assert len(runner.prompts) == 1
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_conflict_overwrite_writes_local(tmp_path: Path) -> None:
     fs = SchemeFs({"/d/f.txt": b"old"})
     manager = await _manager(tmp_path, _Runner([Response.OVERWRITE]))
@@ -158,6 +215,25 @@ async def test_discard_deletes_local_file(tmp_path: Path) -> None:
     assert entry is not None
     await manager.discard(entry)
     assert not entry.copy.path.exists()
+    assert manager.entries == []
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_discard_while_slow_sync_runs_waits_and_cleans_up(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """discard() must wait for an in-flight sync (like shutdown()) before deleting the file."""
+    fs = SchemeFs({"/d/f.txt": b"old"}, write_errors={"/d/f.txt": OSError("disk full")})
+    _slow_to_write(monkeypatch, fs, delay=0.3)
+    manager = await _manager(tmp_path, _Runner())
+    entry = await manager.open(fs.path("/d/f.txt"))
+    assert entry is not None
+    entry.copy.path.write_bytes(b"new")
+    await _wait_until(lambda: entry.status is CopyStatus.SYNCING, max_wait=3)
+    local_path = entry.copy.path
+
+    await manager.discard(entry)  # must not raise, even though the slow sync ends up failing
+
+    assert not local_path.exists()
     assert manager.entries == []
     await manager.shutdown()
 
