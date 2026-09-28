@@ -10,6 +10,11 @@ on:
         options:
           - windows-latest
           - macos-latest
+      ref:
+        description: Nova Navigator branch, tag, or commit SHA to check out
+        required: true
+        default: main
+        type: string
 
 permissions: {}
 
@@ -18,9 +23,13 @@ jobs:
     runs-on: ${{ inputs.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out Nova Navigator
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
+          ref: ${{ inputs.ref }}
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv sync --locked --all-groups
       - name: Open tmate debug session on ${{ inputs.os }}
         uses: mxschmitt/action-tmate@v3
         with:
