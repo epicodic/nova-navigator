@@ -46,7 +46,13 @@ def find_orphans(root: Path = LOCAL_COPY_ROOT, is_alive: Callable[[int], bool] =
     for child in sorted(root.iterdir()):
         if not child.is_dir() or not child.name.isdigit() or is_alive(int(child.name)):
             continue
-        if any(p.is_file() for p in child.rglob("*")):
+        try:
+            has_files = any(p.is_file() for p in child.rglob("*"))
+        except (OSError, RecursionError):
+            # e.g. a symlink loop inside a stale directory; report it rather than abort the whole scan.
+            orphans.append(child)
+            continue
+        if has_files:
             orphans.append(child)
         else:
             shutil.rmtree(child, ignore_errors=True)

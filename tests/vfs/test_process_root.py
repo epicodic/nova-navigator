@@ -56,3 +56,19 @@ def test_find_orphans_ignores_files_at_root(tmp_path: Path) -> None:
 
 def test_find_orphans_missing_root_returns_empty(tmp_path: Path) -> None:
     assert find_orphans(tmp_path / "does-not-exist", lambda _pid: False) == []
+
+
+def test_find_orphans_survives_symlinks_and_never_deletes_their_targets(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    looped = root / "111" / "sub"
+    looped.mkdir(parents=True)
+    (looped / "loop").symlink_to(looped, target_is_directory=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("x")
+    (root / "222").mkdir()
+    (root / "222" / "link").symlink_to(outside, target_is_directory=True)
+
+    find_orphans(root, lambda _pid: False)
+
+    assert (outside / "keep.txt").read_text() == "x"
