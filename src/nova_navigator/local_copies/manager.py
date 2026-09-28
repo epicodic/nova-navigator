@@ -24,7 +24,7 @@ from nova_navigator.scheduler import Job
 from nova_navigator.vfs.change_detector import ChangeDetector
 from nova_navigator.vfs.filesystems.archive import ArchiveFilesystem
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
-from nova_navigator.vfs.local_copy import LocalCopy, ReuseAction
+from nova_navigator.vfs.local_copy import LocalCopy
 from nova_navigator.vfs.vpath import VPath
 
 from .tasks import TaskResult, create_copy_task, reopen_copy_task, sync_copy_task
@@ -85,11 +85,11 @@ class LocalCopyManager:
         self._settle_time = settle_time
         self._entries: dict[str, CopyEntry] = {}
         # Archive files mounted through mount_archive(), keyed by source URI. Reusing the
-        # same ArchiveFilesystem instance (not just the same LocalCopy) on a second mount of
-        # the same archive matters because sibling-member sync rebasing matches archive
-        # filesystems by `is`-identity (see _rebase_siblings) -- a fresh instance would
-        # defeat it even if it wrapped the very same local file.
-        self._archive_mounts: dict[str, tuple[LocalCopy, ArchiveFilesystem]] = {}
+        # same ArchiveFilesystem instance on a second mount of the same archive matters
+        # because sibling-member sync rebasing matches archive filesystems by `is`-identity
+        # (see _rebase_siblings) -- a fresh instance would defeat it even if it wrapped the
+        # very same local file.
+        self._archive_mounts: dict[str, ArchiveFilesystem] = {}
 
     @property
     def entries(self) -> list[CopyEntry]:
@@ -151,10 +151,16 @@ class LocalCopyManager:
     # -- Sync ---------------------------------------------------------------
 
     async def _on_change(self, entry: CopyEntry) -> None:
-        """React to a settled local edit; syncing stays paused while the entry is in conflict."""
+        """React to a settled local edit; syncing stays paused while the entry is in conflict.
+
+        A change detected while a sync is already running (status SYNCING) only queues a
+        follow-up; it must not overwrite the SYNCING status with MODIFIED, since a sync
+        really is in progress right now.
+        """
         if entry.status is CopyStatus.CONFLICT:
             return
-        entry.status = CopyStatus.MODIFIED
+        if entry.status is not CopyStatus.SYNCING:
+            entry.status = CopyStatus.MODIFIED
         self._schedule_sync(entry, force=False)
 
     def _schedule_sync(self, entry: CopyEntry, force: bool) -> None:
@@ -180,34 +186,54 @@ class LocalCopyManager:
             job = Job(f"Sync: {entry.copy.source.name}", sync_copy_task, entry.copy, force, result)
             await self._start_job(job)
             entry.error = None
+
             if result.conflict:
+                # A conflict pauses automatic syncing until a manual sync_now(); any change
+                # queued while the prompt was pending must not trigger another sync loop --
+                # it stays folded into the paused copy's next manual sync.
                 entry.status = CopyStatus.CONFLICT
-            elif job.state is Job.State.COMPLETED:
-                entry.status = CopyStatus.SYNCED
+                entry.sync_queued = False
+                break
+
+            if job.state is Job.State.COMPLETED:
                 if entry.detector is not None:
                     entry.detector.set_baseline(entry.copy.baseline.digest)
-                await asyncio.to_thread(self._rebase_siblings, entry)
+                await self._rebase_siblings(entry)
             else:
                 entry.status = CopyStatus.FAILED
                 entry.error = job.error or f"Sync ended in unexpected state: {job.state.name}"
+
             if not entry.sync_queued:
+                # Only report SYNCED once the loop is truly done; a queued follow-up means
+                # another edit is already waiting, so the copy is not actually settled yet.
+                if job.state is Job.State.COMPLETED:
+                    entry.status = CopyStatus.SYNCED
                 break
             entry.sync_queued = False
             force = False
         entry.sync_task = None
 
-    def _rebase_siblings(self, entry: CopyEntry) -> None:
-        """Let sibling copies from the same archive absorb its new fingerprint (runs in a thread)."""
+    async def _rebase_siblings(self, entry: CopyEntry) -> None:
+        """Let sibling copies from the same archive absorb its new fingerprint.
+
+        The registry (self._entries) is only ever read or mutated on the GUI loop, so the
+        sibling LocalCopy list is snapshotted here before handing it to a worker thread;
+        only the blocking rebase_container() calls themselves run off the GUI loop.
+        """
         filesystem = entry.copy.source.filesystem
         if not isinstance(filesystem, ArchiveFilesystem):
             return
-        for other in self._entries.values():
-            if other is entry or other.copy.source.filesystem is not filesystem:
-                continue
+        siblings = [other.copy for other in self._entries.values() if other is not entry and other.copy.source.filesystem is filesystem]
+        if siblings:
+            await asyncio.to_thread(self._rebase_copies, siblings)
+
+    @staticmethod
+    def _rebase_copies(copies: list[LocalCopy]) -> None:
+        for copy in copies:
             try:
-                other.copy.rebase_container()
+                copy.rebase_container()
             except Exception:
-                _logger.exception("Failed to rebase sibling archive member %s", other.copy.source.uri)
+                _logger.exception("Failed to rebase sibling archive member %s", copy.source.uri)
 
     async def sync_now(self, entry: CopyEntry) -> None:
         """Force a sync now; a CONFLICT status means "I checked, overwrite the source"."""
@@ -236,6 +262,9 @@ class LocalCopyManager:
         if entry.detector is not None:
             await entry.detector.stop()
             entry.detector = None
+        if entry.sync_task is not None:
+            with contextlib.suppress(Exception):
+                await entry.sync_task
         entry.copy.discard()
         self._entries.pop(entry.key, None)
 
@@ -278,12 +307,13 @@ class LocalCopyManager:
         mounting the same archive again while that copy is still fresh reuses the very same
         ArchiveFilesystem instance rather than re-downloading and re-mounting it (see the
         ``_archive_mounts`` comment above for why the instance itself must be reused, not
-        just the copy). A cached copy whose reuse action is not REUSE -- the source changed,
-        or, in principle, the local copy itself changed, though nothing but our own member
-        commits ever writes to it -- is refreshed and the mount reloaded silently. There is
-        no interactive session on the archive file itself, so unlike ``open()`` a conflict
-        here has nothing worth prompting about; it is resolved by keeping the source's
-        content, same as a plain REFRESH.
+        just the copy). A cached mount is refreshed through
+        :meth:`ArchiveFilesystem.refresh_from_source`, which serializes with any concurrent
+        member commit via the mount's own write lock (both mutate the same local archive
+        file) and only re-downloads when the source actually changed. There is no
+        interactive session on the archive file itself, so unlike ``open()`` a conflict here
+        has nothing worth prompting about; it is resolved by keeping the source's content,
+        same as a plain REFRESH.
         """
         if isinstance(source.filesystem.unwrap(), LocalFilesystem):
             return ArchiveFilesystem(source.parent, source)
@@ -291,11 +321,8 @@ class LocalCopyManager:
         key = source.uri
         cached = self._archive_mounts.get(key)
         if cached is not None:
-            copy, archive_fs = cached
-            if copy.reuse_action() is not ReuseAction.REUSE:
-                await asyncio.to_thread(copy.refresh)
-                archive_fs.reload()
-            return archive_fs
+            await asyncio.to_thread(cached.refresh_from_source)
+            return cached
 
         read_only = not is_archive_writable(source.path) or source.filesystem.capabilities.read_only
         result = TaskResult()
@@ -304,5 +331,5 @@ class LocalCopyManager:
         if not result.opened or job.state is not Job.State.COMPLETED or result.copy is None:
             return None
         archive_fs = ArchiveFilesystem(source.parent, CopiedArchiveBacking(result.copy))
-        self._archive_mounts[key] = (result.copy, archive_fs)
+        self._archive_mounts[key] = archive_fs
         return archive_fs
