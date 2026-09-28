@@ -174,7 +174,7 @@ async def test_enum_select_has_all_members_as_options() -> None:
     async with _TestApp(editor).run_test() as pilot:
         await pilot.pause()
         sel = editor.query_one(Select)
-        option_values = {value for _, value in sel._options if value is not Select.BLANK}  # type: ignore[attr-defined]
+        option_values = {value for _, value in sel._options if value is not Select.NULL}  # type: ignore[attr-defined]
         assert option_values == {_Color.RED, _Color.GREEN, _Color.BLUE}
 
 

@@ -583,8 +583,8 @@ async def test_mouse_drag_selects_text_and_populates_screen_selections() -> None
         await pilot.pause()
 
         await pilot.mouse_down(terminal, offset=(0, 0))
-        await pilot.hover(terminal, offset=(5, 0))
-        await pilot.mouse_up(terminal, offset=(5, 0))
+        await pilot.hover(terminal, offset=(4, 0))
+        await pilot.mouse_up(terminal, offset=(4, 0))
         await pilot.pause()
 
         assert terminal in pilot.app.screen.selections
@@ -624,8 +624,8 @@ async def test_ctrl_shift_c_copies_selection_to_clipboard(monkeypatch: pytest.Mo
         terminal._rebuild_display()
 
         await pilot.mouse_down(terminal, offset=(0, 0))
-        await pilot.hover(terminal, offset=(5, 0))
-        await pilot.mouse_up(terminal, offset=(5, 0))
+        await pilot.hover(terminal, offset=(4, 0))
+        await pilot.mouse_up(terminal, offset=(4, 0))
         await pilot.pause()
 
         copied: list[str] = []
@@ -2122,8 +2122,8 @@ async def test_mouse_drag_selects_scrollback_history_row() -> None:
         assert "history00" in terminal.render_line(0).text
 
         await pilot.mouse_down(terminal, offset=(0, 0))
-        await pilot.hover(terminal, offset=(7, 0))
-        await pilot.mouse_up(terminal, offset=(7, 0))
+        await pilot.hover(terminal, offset=(6, 0))
+        await pilot.mouse_up(terminal, offset=(6, 0))
         await pilot.pause()
 
         assert terminal in pilot.app.screen.selections
