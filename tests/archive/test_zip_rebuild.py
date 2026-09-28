@@ -98,6 +98,13 @@ def _build_rejected(source: Path, setup: str) -> None:
     elif setup == "lzma":
         with zipfile.ZipFile(source, "w") as archive:
             archive.writestr("edit.txt", b"data", zipfile.ZIP_LZMA)
+    elif setup == "multi-volume":
+        with zipfile.ZipFile(source, "w") as archive:
+            archive.writestr("edit.txt", b"content")
+        data = bytearray(source.read_bytes())
+        eocd = data.rindex(b"PK\x05\x06")
+        data[eocd + 4] = 1  # number of this disk
+        source.write_bytes(bytes(data))
     else:
         raise ValueError(setup)
 
@@ -173,6 +180,7 @@ def test_data_descriptor_entries_are_copied(tmp_path: Path) -> None:
         ("encrypted", "encrypted"),
         ("prefix", "prefix"),
         ("lzma", "LZMA"),
+        ("multi-volume", "multi-volume"),
     ],
 )
 def test_rejections(tmp_path: Path, setup: str, message: str) -> None:

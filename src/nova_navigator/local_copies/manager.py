@@ -342,6 +342,7 @@ class LocalCopyManager:
         await self._start_job(job)
         if not result.opened or job.state is not Job.State.COMPLETED or result.copy is None:
             return None
-        archive_fs = ArchiveFilesystem(source.parent, CopiedArchiveBacking(result.copy))
+        # The rebuilt archive is renamed into the copy, so its work dir must share the copy's root (same device).
+        archive_fs = ArchiveFilesystem(source.parent, CopiedArchiveBacking(result.copy), work_dir=self._root / "work")
         self._archive_mounts[key] = archive_fs
         return archive_fs
