@@ -41,6 +41,7 @@ from nova_navigator.dialogs import (
     EditRemotesDialog,
     InputNameDialog,
     JobsDialog,
+    LocalCopiesDialog,
     MessageBox,
 )
 from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
@@ -151,6 +152,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         Action("Directory", id="browser.new_directory", action="new_directory", description="Create a new directory", shortcut="f7", show=True, bar_priority=30, icon="folder"),
         Action("Delete", id="browser.delete", action="delete_files", description="Delete selected files", shortcut="f8", show=True, bar_priority=35),
         Action("Bookmarks", id="app.show_bookmarks", action="show_bookmarks", description="Open bookmarks dialog", shortcut="ctrl+b", show=True, bar_priority=80),
+        Action("Local Copies", id="app.local_copies", action="local_copies", description="Manage local copies of remote files", shortcut="ctrl+e", show=True, bar_priority=85),
         Action("Hidden Files", id="browser.toggle_hidden", action="toggle_hidden", description="Toggle display of hidden files", shortcut="ctrl+h", show=False),
         Action("Dummy Op", id="app.start_dummy_operation", action="start_dummy_operation", description="Start dummy operation (development)", shortcut="ctrl+d", show=False),
         Action("Go to Path…", id="browser.go_to_path", action="go_to_path", description="Navigate to a typed path", shortcut="ctrl+g", show=False),
@@ -286,6 +288,8 @@ class MainScreen(ActionsSupport, Screen[None]):
         self._menu_bar.add_menu("Command", name="command").add(
             self._act("app.user_menu"),
             self._act("app.edit_user_menu"),
+            mc.separator(),
+            self._act("app.local_copies"),
         )
 
         self._menu_bar.add_menu("Bookmarks", name="bookmarks").add(
@@ -1018,6 +1022,9 @@ class MainScreen(ActionsSupport, Screen[None]):
         await self.mount(self._bookmark_dialog)
         self._bookmark_dialog.focus()
 
+    async def _action_local_copies(self) -> None:
+        await self.app.action_local_copies()
+
     def _action_go_back(self) -> None:
         self.active_panel().go_back()
 
@@ -1236,6 +1243,10 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         except Exception:
             self.pop_screen()
             raise
+
+    async def action_local_copies(self) -> None:
+        dialog = LocalCopiesDialog(self.local_copies, reopen=lambda entry: self.open_path(entry.copy.source))
+        await dialog.run()
 
     async def start_job(self, job: Job) -> None:
         self.job_registry.add_job(job)
