@@ -8,6 +8,13 @@ from ..vfs.filesystem import StreamReaderLike
 from .archive import Archive, Stat, _ArchiveReader
 
 
+def _normalize_member_name(name: str) -> str:
+    """Strip a leading './' as produced by e.g. `tar -C dir -cf x.tar .`; '.' or './' is the archive root."""
+    if name in (".", "./"):
+        return ""
+    return name.removeprefix("./")
+
+
 class TarArchive(Archive):
     """A class providing an abstraction for TAR archive files."""
 
@@ -27,7 +34,7 @@ class TarArchive(Archive):
         normalized_path = path.as_posix().lstrip("/")
 
         for member in self._members:
-            if member.name == normalized_path:
+            if _normalize_member_name(member.name) == normalized_path:
                 return member
 
         return None
@@ -39,7 +46,7 @@ class TarArchive(Archive):
 
         contents = set()
         for member in self._members:
-            member_path = member.name
+            member_path = _normalize_member_name(member.name)
             if not member_path.startswith(prefix):
                 continue
 
