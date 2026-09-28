@@ -82,6 +82,7 @@ from nova_navigator.usermenu.popup import UserMenuPopup
 from nova_navigator.vfs import Filesystem, VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
 from nova_navigator.vfs.parse_uri import parse_uri
+from nova_navigator.vfs.process_root import find_orphans
 from nova_navigator.vfs.scheme_registry import SCHEME_REGISTRY, vfspath_from_uri
 from nova_navigator.widgets import DirectoryBrowser, JobStatusIcon
 from nova_navigator.widgets.directory_browser import GoToPathWidget, UpPath
@@ -400,7 +401,7 @@ class MainScreen(ActionsSupport, Screen[None]):
             self._jobs_dialog._update_position()
 
     def _action_quit(self) -> None:
-        self.app.exit()
+        self.app.run_worker(self.app.request_quit())
 
     async def _on_key(self, event: events.Key) -> None:
         if await self._handle_key(event):
@@ -1223,6 +1224,62 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         plugin_registry.register(AZURE_PLUGIN)
         plugin_registry.register(ARCHIVE_PLUGIN)
         self.push_screen("main_screen")
+        self.run_worker(self._notify_orphans())
+
+    async def _notify_orphans(self) -> None:
+        """Report local-copy directories left behind by processes that no longer run.
+
+        Runs as a background worker rather than being awaited from ``on_mount`` so a slow or
+        failing scan (e.g. a permission error walking the shared temp root) never delays
+        startup. Errors are logged, not raised.
+        """
+        try:
+            orphans = await asyncio.to_thread(find_orphans)
+        except OSError:
+            _logger.exception("Failed to scan for orphaned local-copy directories")
+            return
+        if orphans:
+            self.notify(
+                f"Unsaved local copies from an earlier session: {', '.join(str(p) for p in orphans)}",
+                title="Local copies",
+                severity="warning",
+                timeout=15,
+            )
+
+    async def request_quit(self) -> None:
+        """Quit, prompting first when a local copy has changes not yet safely on its source.
+
+        No unsynced copies: shut down and exit right away (this still runs the manager's own
+        cleanup so ``on_unmount``'s later call is a no-op, see ``LocalCopyManager.shutdown``).
+        Otherwise ask **Sync and quit**, **Quit and keep files**, or **Cancel**. A failed or
+        still-conflicting sync after "Sync and quit" is reported and the app stays open.
+        """
+        pending = self.local_copies.unsynced()
+        if not pending:
+            await self.local_copies.shutdown()
+            self.exit()
+            return
+
+        dialog = MessageBox(
+            f"{len(pending)} local cop{'y has' if len(pending) == 1 else 'ies have'} unsynced changes.",
+            title="Quit",
+            buttons=[
+                ButtonSpec(Response.SAVE, label="Sync and quit", variant="primary"),
+                ButtonSpec(Response.IGNORE, label="Quit and keep files"),
+                ButtonSpec(Response.CANCEL, label="Cancel"),
+            ],
+        )
+        answer = await dialog.run()
+        if answer == Response.SAVE:
+            for entry in pending:
+                await self.local_copies.sync_now(entry)
+            if self.local_copies.unsynced():
+                self.notify("Some local copies could not be synced; Nova Navigator stays open.", title="Quit", severity="error")
+                return
+        elif answer != Response.IGNORE:
+            return
+        await self.local_copies.shutdown(remove_files=answer != Response.IGNORE)
+        self.exit()
 
     async def on_unmount(self) -> None:
         """Stop local-copy detectors/syncs and remove this process's local-copy directory on exit.
