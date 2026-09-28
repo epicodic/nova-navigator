@@ -1,0 +1,28 @@
+name: Platform Debug
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: Operating system for the debug runner
+        required: true
+        type: choice
+        options:
+          - windows-latest
+          - macos-latest
+
+permissions: {}
+
+jobs:
+  debug:
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Open tmate debug session on ${{ inputs.os }}
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
+          connect-timeout-seconds: 1800
