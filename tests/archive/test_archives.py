@@ -379,3 +379,83 @@ def test_close_releases_archive_handle(archive: Archive) -> None:
     archive.close()
     with pytest.raises((OSError, ValueError)):
         archive.read(PurePath("dir1/file11.txt"))
+
+
+# ---------------------------------------------------------------------------
+# TarArchive — './'-prefixed member names (e.g. `tar -C dir -czf x.tar.gz .`)
+# ---------------------------------------------------------------------------
+
+_DOTSLASH_CONTENT = b"hello"
+
+
+def _build_dotslash_tar(path: Path) -> None:
+    with tarfile.open(path, mode="w:gz") as tar:
+        root = tarfile.TarInfo("./")
+        root.type = tarfile.DIRTYPE
+        root.mode = 0o755
+        tar.addfile(root)
+
+        directory = tarfile.TarInfo("./dir/")
+        directory.type = tarfile.DIRTYPE
+        directory.mode = 0o755
+        tar.addfile(directory)
+
+        file_info = tarfile.TarInfo("./dir/a.txt")
+        file_info.size = len(_DOTSLASH_CONTENT)
+        tar.addfile(file_info, io.BytesIO(_DOTSLASH_CONTENT))
+
+
+@pytest.fixture
+def dotslash_tar_archive(tmp_path: Path) -> TarArchive:
+    path = tmp_path / "dotslash.tar.gz"
+    _build_dotslash_tar(path)
+    return TarArchive(archive_path=path, mode="r")
+
+
+def test_dotslash_prefixed_listdir_root_shows_dir_not_dot(dotslash_tar_archive: TarArchive) -> None:
+    entries = {p.as_posix() for p in dotslash_tar_archive.listdir(PurePath("/"))}
+    assert entries == {"dir"}
+
+
+def test_dotslash_prefixed_listdir_nested(dotslash_tar_archive: TarArchive) -> None:
+    entries = {p.as_posix() for p in dotslash_tar_archive.listdir(PurePath("dir"))}
+    assert entries == {"a.txt"}
+
+
+def test_dotslash_prefixed_stats_directory(dotslash_tar_archive: TarArchive) -> None:
+    assert dotslash_tar_archive.stats(PurePath("dir")).is_directory
+
+
+def test_dotslash_prefixed_stats_file(dotslash_tar_archive: TarArchive) -> None:
+    s = dotslash_tar_archive.stats(PurePath("dir/a.txt"))
+    assert not s.is_directory
+    assert s.size == len(_DOTSLASH_CONTENT)
+
+
+def test_dotslash_prefixed_read_returns_file_bytes(dotslash_tar_archive: TarArchive) -> None:
+    reader = dotslash_tar_archive.read(PurePath("dir/a.txt"))
+    try:
+        assert reader.read(100) == _DOTSLASH_CONTENT
+    finally:
+        reader.close()
+
+
+def test_write_through_archive_filesystem_targets_dotslash_prefixed_member(tmp_path: Path) -> None:
+    """A member write must land on the archive's actual './dir/a.txt' entry, not a new one."""
+    archive_path = tmp_path / "dotslash.tar.gz"
+    _build_dotslash_tar(archive_path)
+    local = LocalFilesystem.singleton()
+    fs = ArchiveFilesystem(VPath(tmp_path, local), VPath(archive_path, local), work_dir=tmp_path / "work")
+
+    writer = fs.write(fs.path("/dir/a.txt"))
+    writer.write(b"updated")
+    writer.close()
+
+    assert fs.read(fs.path("/dir/a.txt")).read(20) == b"updated"
+    with tarfile.open(archive_path, "r:gz") as tar:
+        names = [info.name for info in tar.getmembers()]
+        assert names.count("./dir/a.txt") == 1
+        assert "dir/a.txt" not in names
+        member = tar.extractfile("./dir/a.txt")
+        assert member is not None
+        assert member.read() == b"updated"

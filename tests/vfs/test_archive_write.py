@@ -1,6 +1,8 @@
 """Tests for writing archive members through ArchiveFilesystem."""
 
+import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -63,3 +65,35 @@ def test_failed_rebuild_leaves_archive_untouched(tmp_path: Path) -> None:
         writer.close()
     assert archive.read_bytes() == duplicated != original
     assert list((tmp_path / "work").iterdir()) == []
+
+
+def test_concurrent_reads_survive_a_slow_commit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reader must never see ``self._archive`` pointing at an already-closed reader.
+
+    Slows down the backing's commit() so a batch of concurrent fs.read() calls overlaps the
+    window where the rebuilt archive is being published; before the race fix, roughly half of
+    a similar batch failed with "Attempt to use ZIP archive that was already closed".
+    """
+    _, fs = _mount(tmp_path)
+    assert fs._backing is not None
+    real_commit = fs._backing.commit
+
+    def slow_commit(rebuilt: Path) -> None:
+        time.sleep(0.05)
+        real_commit(rebuilt)
+
+    monkeypatch.setattr(fs._backing, "commit", slow_commit)
+
+    def read_keep() -> bytes:
+        reader = fs.read(fs.path("/keep.txt"))
+        try:
+            return reader.read(10)
+        finally:
+            reader.close()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(read_keep) for _ in range(100)]
+        _write(fs, "/dir/edit.txt", b"new")
+        results = [future.result() for future in futures]
+
+    assert results == [b"keep"] * 100

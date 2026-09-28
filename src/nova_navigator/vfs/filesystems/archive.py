@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import io
 import tarfile
 import tempfile
 import threading
@@ -11,7 +12,7 @@ from collections.abc import AsyncIterator
 from contextlib import ExitStack
 from pathlib import Path
 from typing import IO, Literal, override
-from weakref import WeakValueDictionary
+from weakref import WeakSet
 
 from ...archive import Archive, open_archive
 from ...archive.archives import is_archive_writable, is_zip_archive
@@ -51,7 +52,7 @@ class ArchiveFilesystem(Filesystem):
     ) -> None:
         self._archive_parent = archive_parent
         self._closed = False
-        self._member_paths: WeakValueDictionary[int, VPath] = WeakValueDictionary()
+        self._member_paths: WeakSet[VPath] = WeakSet()
         self._write_lock = threading.Lock()
         if isinstance(archive, Archive):
             self._backing = None
@@ -94,11 +95,20 @@ class ArchiveFilesystem(Filesystem):
         self._reopen()
 
     def _reopen(self) -> None:
-        """Reopen the archive reader from ``local_path`` and invalidate cached member stats."""
-        self._archive.close()
-        for member in self._member_paths.values():
+        """Reopen the archive reader from ``local_path`` and invalidate cached member stats.
+
+        Opens the replacement archive before touching ``self._archive`` and only closes the
+        previous reader afterwards, so a concurrent ``read()``/``stat()`` sees either the old or
+        the new reader through ``self._archive`` and never one that has already been closed. If
+        opening the replacement fails, ``self._archive`` is left untouched (still open) and the
+        mount stays usable with stale content; the exception propagates to the caller.
+        """
+        new_archive = open_archive(self._local_path, mode="r")
+        old_archive = self._archive
+        self._archive = new_archive
+        for member in self._member_paths:
             member._stat = None
-        self._archive = open_archive(self._local_path, mode="r")
+        old_archive.close()
 
     @override
     def cwd(self) -> VPath:
@@ -154,7 +164,7 @@ class ArchiveFilesystem(Filesystem):
     @override
     def stat(self, path: VPath) -> Stat:
         self._assert_vpath(path)
-        self._member_paths[id(path)] = path
+        self._member_paths.add(path)
         return self._archive.stats(path.path)
 
     @override
@@ -187,9 +197,12 @@ class ArchiveFilesystem(Filesystem):
     def _commit_member(self, member: str, spooled: Path) -> None:
         """Rebuild the archive with *member* replaced by *spooled* and publish it.
 
-        Runs under ``_write_lock`` so concurrent member writes serialize. The archive reader is
-        always reopened afterwards — including on failure — so the mount stays usable; a failed
-        rebuild never touches the source archive.
+        Runs under ``_write_lock`` so concurrent member writes serialize. ``self._archive`` is
+        kept open through the (potentially slow) rebuild, validation, and commit — os.replace()/
+        rename() work fine against a path with an open reader on Linux — and reopened only in
+        ``_reopen()``, which never leaves ``self._archive`` pointing at a closed reader. The
+        archive reader is always reopened afterwards — including on failure — so the mount stays
+        usable; a failed rebuild never touches the source archive.
         """
         assert self._backing is not None
         with self._write_lock:
@@ -199,34 +212,34 @@ class ArchiveFilesystem(Filesystem):
                 rebuild = rebuild_zip if self._archive_format == "zip" else rebuild_tar
                 rebuild(self._backing.local_path, member, spooled, rebuilt)
                 _validate_member(rebuilt, member, spooled, self._archive_format)
-                self._archive.close()
                 self._backing.commit(rebuilt)
             finally:
                 rebuilt.unlink(missing_ok=True)
                 self._reopen()
 
     # Only member content can be replaced (via write()); archive structure stays unsupported
-    # regardless of whether this mount is writable.
+    # regardless of whether this mount is writable. io.UnsupportedOperation is an OSError
+    # subclass, so callers (e.g. the vfs shell) that catch OSError handle it uniformly.
 
     @override
     def remove(self, path: VPath) -> None:
-        raise NotImplementedError("ArchiveFilesystem does not support removing members")
+        raise io.UnsupportedOperation("ArchiveFilesystem does not support removing members")
 
     @override
     def rename(self, src_path: VPath, dst_path: VPath) -> None:
-        raise NotImplementedError("ArchiveFilesystem does not support renaming members")
+        raise io.UnsupportedOperation("ArchiveFilesystem does not support renaming members")
 
     @override
     def rmdir(self, path: VPath) -> None:
-        raise NotImplementedError("ArchiveFilesystem does not support removing directories")
+        raise io.UnsupportedOperation("ArchiveFilesystem does not support removing directories")
 
     @override
     def mkdir(self, path: VPath) -> None:
-        raise NotImplementedError("ArchiveFilesystem does not support creating directories")
+        raise io.UnsupportedOperation("ArchiveFilesystem does not support creating directories")
 
     @override
     def copy_stat(self, path: VPath, stat: Stat) -> None:
-        raise NotImplementedError("ArchiveFilesystem does not support setting attributes")
+        pass  # no attribute support; Filesystem.copy_stat() calls for a no-op here
 
     @override
     def refresh(self, path: VPath | None = None) -> None:
