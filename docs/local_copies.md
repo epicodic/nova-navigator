@@ -149,6 +149,32 @@ A sync conflict sets `CopyStatus.CONFLICT` and pauses automatic syncing for that
 `LocalArchiveBacking` commits straight through `Filesystem.write_atomic()` on the archive's own source.
 `CopiedArchiveBacking` wraps a `LocalCopy` of a non-local archive: `prepare_write()` refreshes it if the source changed underneath, and `commit()` replaces the local copy's file and calls its `write_back()`.
 `archive/zip_rebuild.py` rebuilds a ZIP by copying every unchanged entry's bytes verbatim and only patching the changed entry and its central-directory offsets (stored, deflate, and bzip2 are supported for the changed entry); it rejects encrypted entries, multi-volume archives, an unsupported archive prefix, and an ambiguous duplicate member name.
+#### Why ZIP archives are rebuilt by hand
+
+Python's `zipfile` writes one extra-field block for both the local header and the central directory record of an entry.
+Many real archives, including those made by the Info-ZIP `zip` tool, store different extra fields in the two places, for example a fuller extended timestamp in the local header.
+Rewriting such an archive with `zipfile` either loses that metadata or has to reject the archive; the previous implementation rejected it and failed on ordinary archives.
+
+`zip_rebuild.py` therefore reads and writes the ZIP format itself and copies every unchanged entry as raw bytes.
+
+Advantages:
+
+- Untouched entries stay byte-identical, including metadata the code does not understand.
+- Unchanged entries are never decompressed or recompressed, so large archives rebuild quickly.
+- No external tool is needed, which keeps the feature portable.
+
+Costs:
+
+- About 570 lines of format code (end-of-central-directory, Zip64, central and local headers) to maintain.
+- Unusual layouts are rejected rather than handled: encrypted or LZMA-compressed edited entries, multi-volume archives, data before the first entry, duplicate member names, and Zip64 offsets for the edited or appended entry.
+
+Alternatives that were rejected:
+
+- **Rewrite with `zipfile`, keeping only the central extra fields.** Much less code, but every entry is recompressed, untouched entries change on disk, and local-only metadata is lost.
+- **Call the `zip` command line tool.** It also copies unchanged entries raw, but it adds an external dependency that conflicts with planned Windows and macOS support, takes the edited entry's timestamp and permissions from a temporary file, and leaves name encoding outside our control.
+
+`tests/archive/test_zip_rebuild.py` covers differing local and central extras, data descriptors, Zip64, each supported compression method, and the rejected layouts.
+
 `archive/tar_rebuild.py` streams a TAR (plain, gzip, bzip2, or xz) through `tarfile`, preserving every member's metadata and substituting only the target member's content; it rejects a sparse member and a rebuild that would need to change the archive's global PAX headers.
 JAR, WAR, EAR, APK, and WHL report `FilesystemCapabilities.read_only` and raise `PermissionError` on write, as does any archive whose source filesystem is itself read-only (see `archive/archives.py`, `is_archive_writable`).
 The archive virtual shell's `cp` command (`terminal/vfs_shell/commands/cp.py`) writes through the same generic `Filesystem.write()`, so it can copy a file into a writable archive too.
