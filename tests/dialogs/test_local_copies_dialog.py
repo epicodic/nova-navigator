@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from nova_navigator.local_copies import CopyEntry, CopyStatus, LocalCopyManager
 from nova_navigator.response import Response
 from nova_navigator.scheduler import Job
 from nova_navigator.vfs.change_detector import ChangeDetector
+from nova_navigator.vfs.filesystems.archive import ArchiveFilesystem
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_navigator.vfs.local_copy import Baseline, LocalCopy, SourceFingerprint
 from nova_navigator.vfs.vpath import VPath
@@ -290,3 +292,28 @@ async def test_empty_state_shows_label_and_disables_actions() -> None:
         assert app.screen.query_one("#reopen", Button).disabled is True
         assert app.screen.query_one("#close_copy", Button).disabled is True
         assert app.screen.query_one("#discard", Button).disabled is True
+
+
+@pytest.mark.asyncio
+async def test_archive_member_source_names_the_archive(tmp_path: Path) -> None:
+    archive_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("dir/a.txt", b"x")
+    archive_fs = ArchiveFilesystem(_fs.path(tmp_path), _fs.path(archive_path))
+    member = VPath("/dir/a.txt", archive_fs)
+    baseline = Baseline(SourceFingerprint(0, 0.0, None), "digest")
+    copy = LocalCopy(member, tmp_path / "copy" / "a.txt", baseline, read_only=False, pass_through=False)
+    entry = CopyEntry(copy=copy, status=CopyStatus.SYNCED, detector=_watching_detector(copy))
+    manager = _FakeLocalCopyManager([entry])
+
+    async def reopen(_entry: CopyEntry) -> None:
+        pass
+
+    dialog = LocalCopiesDialog(manager, reopen=reopen)
+    app = _make_app(dialog)()
+    async with app.run_test(size=(160, 40)) as pilot:
+        await pilot.pause()
+        table = app.screen.query_one("#local_copies_table", DataTable)
+        source_cell = table.get_row_at(0)[1]
+        assert source_cell == f"{archive_fs.source.uri}#/dir/a.txt"
+        archive_fs.close()

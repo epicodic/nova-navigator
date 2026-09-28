@@ -23,7 +23,7 @@ The table lists, for each copy:
 | Column | Meaning |
 |---|---|
 | File | The file's name |
-| Source | The file's full URI (`ssh://...`, `azure://...`, `archive://...`) |
+| Source | The file's full URI (`ssh://...`, `azure://...`); for an archive member, the archive's URI followed by `#` and the member path |
 | Status | `synced`, `modified`, `syncing`, `failed`, `conflict`, or `read-only`; ` (closed)` is appended once the copy has been closed (see below) |
 | Error | The last sync failure, if any |
 

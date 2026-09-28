@@ -195,7 +195,8 @@ class LocalCopiesDialog(Dialog):
             status_text = entry.status.value
             if entry.detector is None and entry.status is not CopyStatus.READ_ONLY:
                 status_text += " (closed)"
-            self._table.add_row(copy.source.name, copy.source.uri, status_text, _truncate(entry.error or "", _ERROR_COLUMN_WIDTH))
+            # entry.key names the archive for members, whose own URI is only the member path.
+            self._table.add_row(copy.source.name, entry.key, status_text, _truncate(entry.error or "", _ERROR_COLUMN_WIDTH))
         has_entries = bool(self._entries)
         self._table.display = has_entries
         self._empty_label.display = not has_entries
