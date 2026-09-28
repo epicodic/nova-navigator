@@ -85,12 +85,18 @@ class FileTypeConfig(ListConfig):
                 return section
         return self._default_section
 
-    def get_open_command_for_file_path(self, path: PurePath) -> list[str]:
+    def get_open_command_for_file_path(self, path: PurePath, target: PurePath | None = None) -> list[str]:
+        """Return the open command for *path*'s section, with `%f`/`%d` substituted from *target*.
+
+        *target* defaults to *path* itself; pass the local copy's path when *path* refers to a
+        non-local file, so the section is chosen by the original path but the command runs
+        against the local file.
+        """
         section = self._find_section_for_path(path)
         open_cmd = section.open_cmd or self._default_section.open_cmd
         if open_cmd is None:
             raise RuntimeError("No open command found and default section has no open command")
-        return self._replace_variables(open_cmd, path)
+        return self._replace_variables(open_cmd, target if target is not None else path)
 
     def get_colors_for_filename(self, filename: str) -> tuple[str | None, str | None]:
         section = self._find_section_for_path(PurePath(filename))

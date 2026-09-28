@@ -739,8 +739,7 @@ class MainScreen(ActionsSupport, Screen[None]):
             move=move,
         )
         if job is not None:
-            self.app.job_registry.add_job(job)
-            await job.start(self.app.request_callback)
+            await self.app.start_job(job)
 
     @work
     async def action_delete_files(self) -> None:
@@ -750,14 +749,12 @@ class MainScreen(ActionsSupport, Screen[None]):
             paths=paths,
         )
         if job is not None:
-            self.app.job_registry.add_job(job)
-            await job.start(self.app.request_callback)
+            await self.app.start_job(job)
 
     @work
     async def action_start_dummy_operation(self) -> None:
         job = Job("Dummy Operation", dummy_task)
-        self.app.job_registry.add_job(job)
-        await job.start(self.app.request_callback)
+        await self.app.start_job(job)
 
     @work
     async def on_bookmarks_dialog_bookmark_selected(self, event: BookmarksDialog.BookmarkSelected) -> None:
@@ -955,8 +952,7 @@ class MainScreen(ActionsSupport, Screen[None]):
             move=operation == ClipboardOperation.CUT,
         )
         if job is not None:
-            self.app.job_registry.add_job(job)
-            await job.start(self.app.request_callback)
+            await self.app.start_job(job)
             if operation == ClipboardOperation.CUT:
                 self.app._path_clipboard.clear()
                 self._update_actions(self.active_panel().path_item_under_cursor)
@@ -977,8 +973,7 @@ class MainScreen(ActionsSupport, Screen[None]):
             move=True,
         )
         if job is not None:
-            self.app.job_registry.add_job(job)
-            await job.start(self.app.request_callback)
+            await self.app.start_job(job)
 
     @work
     async def _action_new_directory(self) -> None:
@@ -1221,6 +1216,14 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         plugin_registry.register(ARCHIVE_PLUGIN)
         self.push_screen("main_screen")
 
+    async def on_unmount(self) -> None:
+        """Stop local-copy detectors/syncs and remove this process's local-copy directory on exit.
+
+        Prompting about unsynced copies before quitting is a separate concern (not handled
+        here); this only ensures a clean, non-leaking shutdown on a normal exit.
+        """
+        await self.local_copies.shutdown()
+
     async def open_editor(self, path: VPath) -> None:
         editor_screen = Editor()
         self.push_screen(editor_screen)
@@ -1229,6 +1232,10 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         except Exception:
             self.pop_screen()
             raise
+
+    async def start_job(self, job: Job) -> None:
+        self.job_registry.add_job(job)
+        await job.start(self.request_callback)
 
     async def execute_command(self, args: list[str], cwd: PurePath) -> None:
         with self.suspend():
