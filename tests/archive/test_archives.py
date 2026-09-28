@@ -432,6 +432,23 @@ def test_dotslash_prefixed_stats_file(dotslash_tar_archive: TarArchive) -> None:
     assert s.size == len(_DOTSLASH_CONTENT)
 
 
+def test_dotslash_prefixed_members_are_not_hidden(dotslash_tar_archive: TarArchive) -> None:
+    assert not dotslash_tar_archive.stats(PurePath("dir")).is_hidden
+    assert not dotslash_tar_archive.stats(PurePath("dir/a.txt")).is_hidden
+
+
+def test_hidden_flag_uses_the_member_basename(tmp_path: Path) -> None:
+    path = tmp_path / "hidden.tar"
+    with tarfile.open(path, mode="w") as tar:
+        for name in (".config/settings.ini", "dir/.secret"):
+            info = tarfile.TarInfo(name)
+            info.size = len(_DOTSLASH_CONTENT)
+            tar.addfile(info, io.BytesIO(_DOTSLASH_CONTENT))
+    archive = TarArchive(archive_path=path, mode="r")
+    assert not archive.stats(PurePath(".config/settings.ini")).is_hidden
+    assert archive.stats(PurePath("dir/.secret")).is_hidden
+
+
 def test_dotslash_prefixed_read_returns_file_bytes(dotslash_tar_archive: TarArchive) -> None:
     reader = dotslash_tar_archive.read(PurePath("dir/a.txt"))
     try:

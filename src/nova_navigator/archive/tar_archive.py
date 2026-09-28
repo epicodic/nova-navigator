@@ -86,7 +86,7 @@ class TarArchive(Archive):
         return Stat(
             size=member.size,
             modified=member.mtime,
-            is_hidden=member.name.startswith("."),
+            is_hidden=path.name.startswith("."),
             is_directory=member.isdir(),
             is_executable=member.mode & 0o111 != 0,
             is_symlink=member.issym() or member.islnk(),
