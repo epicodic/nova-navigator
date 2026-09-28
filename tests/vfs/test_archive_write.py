@@ -1,5 +1,7 @@
 """Tests for writing archive members through ArchiveFilesystem."""
 
+import io
+import tarfile
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -7,9 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from nova_navigator.archive.backing import LocalArchiveBacking
+from nova_navigator.archive.backing import CopiedArchiveBacking, LocalArchiveBacking
 from nova_navigator.vfs.filesystems.archive import ArchiveFilesystem
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
+from nova_navigator.vfs.local_copy import LocalCopy
+from tests._utils.local_copy_helpers import SchemeFs, overwrite
 
 
 def _mount(tmp_path: Path, name: str = "a.zip") -> tuple[Path, ArchiveFilesystem]:
@@ -97,3 +101,110 @@ def test_concurrent_reads_survive_a_slow_commit(tmp_path: Path, monkeypatch: pyt
         results = [future.result() for future in futures]
 
     assert results == [b"keep"] * 100
+
+
+# ---------------------------------------------------------------------------
+# Task 12: archives mounted from a remote filesystem (CopiedArchiveBacking)
+# ---------------------------------------------------------------------------
+
+
+def _zip_bytes(members: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, data in members.items():
+            archive.writestr(name, data)
+    return buffer.getvalue()
+
+
+def _targz_bytes(members: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for name, data in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+def _read_remote(fs: SchemeFs, path: str) -> bytes:
+    """Read *path*'s full content back out of the mock filesystem."""
+    reader = fs.read(fs.path(path))
+    chunks: list[bytes] = []
+    while chunk := reader.read(65536):
+        chunks.append(chunk)
+    reader.close()
+    return b"".join(chunks)
+
+
+def _mount_remote(fs: SchemeFs, remote_path: str, root: Path) -> tuple[ArchiveFilesystem, LocalCopy]:
+    """Mount *remote_path* the way a remote archive is mounted in production: through a LocalCopy."""
+    zip_vpath = fs.path(remote_path)
+    copy = LocalCopy.create(zip_vpath, root)
+    backing = CopiedArchiveBacking(copy)
+    archive_fs = ArchiveFilesystem(zip_vpath.parent, backing, work_dir=root / "work")
+    return archive_fs, copy
+
+
+def test_write_replaces_member_on_remote_zip(tmp_path: Path) -> None:
+    fs = SchemeFs({"/archives/a.zip": _zip_bytes({"dir/edit.txt": b"old", "keep.txt": b"keep"})})
+    archive_fs, _ = _mount_remote(fs, "/archives/a.zip", tmp_path)
+
+    _write(archive_fs, "/dir/edit.txt", b"new")
+
+    with zipfile.ZipFile(io.BytesIO(_read_remote(fs, "/archives/a.zip"))) as z:
+        assert z.read("dir/edit.txt") == b"new"
+        assert z.read("keep.txt") == b"keep"
+
+
+def test_write_replaces_member_on_remote_targz(tmp_path: Path) -> None:
+    """Cheap tar.gz variant of the ZIP write-through-a-remote-copy test above."""
+    fs = SchemeFs({"/archives/a.tar.gz": _targz_bytes({"dir/edit.txt": b"old", "keep.txt": b"keep"})})
+    archive_fs, _ = _mount_remote(fs, "/archives/a.tar.gz", tmp_path)
+
+    _write(archive_fs, "/dir/edit.txt", b"new")
+
+    with tarfile.open(fileobj=io.BytesIO(_read_remote(fs, "/archives/a.tar.gz")), mode="r:gz") as t:
+        edit_member = t.extractfile("dir/edit.txt")
+        keep_member = t.extractfile("keep.txt")
+        assert edit_member is not None
+        assert edit_member.read() == b"new"
+        assert keep_member is not None
+        assert keep_member.read() == b"keep"
+
+
+def test_write_after_remote_change_keeps_both_edits(tmp_path: Path) -> None:
+    """prepare_write() re-downloads a remotely-changed archive so an overwrite doesn't lose it.
+
+    Member A (dir/edit.txt) is written locally first; then member B (keep.txt) is changed
+    directly on the remote, independently of this mount. Writing member A again must not
+    clobber the remote change to member B: CopiedArchiveBacking.prepare_write() notices the
+    source changed since the last download and refreshes the local copy before rebuilding.
+    """
+    fs = SchemeFs({"/archives/a.zip": _zip_bytes({"dir/edit.txt": b"old", "keep.txt": b"keep"})})
+    archive_fs, _ = _mount_remote(fs, "/archives/a.zip", tmp_path)
+
+    _write(archive_fs, "/dir/edit.txt", b"new")
+
+    # Someone else replaces the whole archive on the remote, changing keep.txt, independent
+    # of our local copy; overwrite() bumps the mock's recorded mtime so it is detected.
+    overwrite(fs, "/archives/a.zip", _zip_bytes({"dir/edit.txt": b"new", "keep.txt": b"changed"}))
+
+    _write(archive_fs, "/dir/edit.txt", b"newer")
+
+    with zipfile.ZipFile(io.BytesIO(_read_remote(fs, "/archives/a.zip"))) as z:
+        assert z.read("dir/edit.txt") == b"newer"
+        assert z.read("keep.txt") == b"changed"
+
+
+def test_close_does_not_delete_remote_local_copy(tmp_path: Path) -> None:
+    """ArchiveFilesystem.close() only closes the archive reader; it never deletes the LocalCopy.
+
+    The LocalCopy's lifetime (and cleanup of the process root on quit) belongs to a later
+    LocalCopyManager task, not to ArchiveFilesystem.close().
+    """
+    fs = SchemeFs({"/archives/a.zip": _zip_bytes({"dir/edit.txt": b"old", "keep.txt": b"keep"})})
+    archive_fs, copy = _mount_remote(fs, "/archives/a.zip", tmp_path)
+
+    assert copy.path.exists()
+    archive_fs.close()
+    assert copy.path.exists()
