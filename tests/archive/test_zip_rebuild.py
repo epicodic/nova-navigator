@@ -12,7 +12,12 @@ from typing import IO
 
 import pytest
 
-from nova_navigator.archive.zip_rebuild import rebuild_zip
+from nova_navigator.archive.zip_rebuild import (
+    _build_appended_central_record,
+    _build_replaced_central_record,
+    _Entry,
+    rebuild_zip,
+)
 
 
 def _make_zip(path: Path, compression: int = zipfile.ZIP_DEFLATED) -> None:
@@ -202,3 +207,27 @@ def test_zip64_extras_are_copied(tmp_path: Path) -> None:
         assert archive.read("keep.txt") == b"zip64 content"
         assert archive.read("edit.txt") == b"new"
         assert archive.testzip() is None
+
+
+_OFFSET_BEYOND_32_BITS = 1 << 32  # 0x1_0000_0000, one past _U32_MAX
+
+
+def test_build_replaced_central_record_rejects_offset_beyond_32_bits() -> None:
+    entry = _Entry(central=bytes(46), name=b"edit.txt", flags=0, method=zipfile.ZIP_STORED, offset=0, offset_in_zip64=None)
+    with pytest.raises(ValueError, match="Zip64"):
+        _build_replaced_central_record(io.BytesIO(), entry, _OFFSET_BEYOND_32_BITS)
+
+
+def test_build_appended_central_record_rejects_offset_beyond_32_bits() -> None:
+    with pytest.raises(ValueError, match="Zip64"):
+        _build_appended_central_record(io.BytesIO(), "new.txt", _OFFSET_BEYOND_32_BITS)
+
+
+def test_rebuild_zip_does_not_delete_preexisting_output(tmp_path: Path) -> None:
+    source, output, replacement = tmp_path / "a.zip", tmp_path / "out.zip", tmp_path / "new.txt"
+    _make_zip(source)
+    replacement.write_bytes(b"new content")
+    output.write_bytes(b"unrelated pre-existing content")
+    with pytest.raises(FileExistsError):
+        rebuild_zip(source, "dir/edit.txt", replacement, output)
+    assert output.read_bytes() == b"unrelated pre-existing content"

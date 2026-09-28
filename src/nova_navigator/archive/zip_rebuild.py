@@ -126,9 +126,11 @@ def rebuild_zip(source: Path, member: str, replacement: Path, output: Path) -> N
             trailing data, an ambiguous duplicate member, an encrypted or LZMA-compressed
             *member*, or a replacement too large to fit a 32-bit ZIP field).
     """
-    completed = False
-    try:
-        with source.open("rb") as raw, output.open("xb+") as out:
+    # output.open("xb+") is deliberately outside the try/finally below: if it fails (e.g. because
+    # output already exists), that failure must propagate without deleting a file we never created.
+    with source.open("rb") as raw, output.open("xb+") as out:
+        completed = False
+        try:
             directory = _read_directory(raw)
             selected = [entry for entry in directory.entries if entry.decoded_name() == member]
             if len(selected) > 1:
@@ -143,10 +145,10 @@ def rebuild_zip(source: Path, member: str, replacement: Path, output: Path) -> N
                     raise ValueError(f"Cannot replace ZIP member with method {target.method} (e.g. LZMA)")
             new_offsets = _copy_entries(raw, out, directory, target, replacement, member)
             _write_central(out, directory, target, new_offsets, member)
-        completed = True
-    finally:
-        if not completed:
-            output.unlink(missing_ok=True)
+            completed = True
+        finally:
+            if not completed:
+                output.unlink(missing_ok=True)
 
 
 def _read_directory(raw: IO[bytes]) -> _Directory:
@@ -456,8 +458,20 @@ def _patch_unchanged_central_record(entry: _Entry, new_offset: int) -> bytes:
     return bytes(record)
 
 
+def _require_32bit_offset(new_offset: int) -> None:
+    """Raise if *new_offset* cannot be stored in a plain 32-bit central-record offset field.
+
+    Replaced and appended entries never carry a Zip64 extra field for their offset (any such
+    field is stripped from a replaced entry's extra, and an appended entry never gets one), so
+    there is nowhere to store a 64-bit offset for either.
+    """
+    if new_offset > _U32_MAX:
+        raise ValueError("Rebuilt ZIP entry offset needs Zip64, which is not supported for replaced or appended entries")
+
+
 def _build_replaced_central_record(out: IO[bytes], entry: _Entry, new_offset: int) -> bytes:
     """Rebuild *entry*'s central record around the freshly written replacement data."""
+    _require_32bit_offset(new_offset)
     crc, compressed_size, uncompressed_size = _read_local_sizes(out, new_offset)
     record = bytearray(entry.central)
 
@@ -482,6 +496,7 @@ def _build_replaced_central_record(out: IO[bytes], entry: _Entry, new_offset: in
 
 def _build_appended_central_record(out: IO[bytes], member: str, new_offset: int) -> bytes:
     """Build a central record for the newly appended *member*, matching its local header."""
+    _require_32bit_offset(new_offset)
     crc, compressed_size, uncompressed_size = _read_local_sizes(out, new_offset)
     current = out.tell()
     out.seek(new_offset + _LOCAL_TIME_OFFSET)
