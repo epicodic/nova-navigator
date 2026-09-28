@@ -7,7 +7,13 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import PurePath
 from typing import override
 
-from nova_navigator.vfs.filesystem import Filesystem, FilesystemCapabilities, StreamReaderLike, StreamWriterLike
+from nova_navigator.vfs.filesystem import (
+    AtomicWriterLike,
+    Filesystem,
+    FilesystemCapabilities,
+    StreamReaderLike,
+    StreamWriterLike,
+)
 from nova_navigator.vfs.types import ExecResult, Stat
 from nova_navigator.vfs.vpath import VPath
 
@@ -155,3 +161,14 @@ class RemoteFilesystem(Filesystem):
     @override
     def readlink(self, path: VPath) -> str:
         return self._inner.readlink(self._to_inner(path))
+
+    @override
+    def write_atomic(self, path: VPath) -> AtomicWriterLike:
+        # Explicit override: the __getattr__ fallback would pass a VPath still
+        # bound to this wrapper, which fails the inner filesystem's _assert_vpath.
+        return self._inner.write_atomic(self._to_inner(path))
+
+    @override
+    def version_tag(self, path: VPath) -> str | None:
+        # Explicit override for the same reason as write_atomic above.
+        return self._inner.version_tag(self._to_inner(path))

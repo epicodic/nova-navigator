@@ -6,18 +6,19 @@ import logging
 import os
 import signal
 import subprocess
+import tempfile
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from io import BufferedReader, BufferedWriter
-from pathlib import PurePath
+from pathlib import Path, PurePath
 from stat import S_IMODE, S_ISDIR, S_ISLNK
 from typing import Any, override
 
 import watchdog.events
 import watchdog.observers
 
-from ..filesystem import Filesystem, FilesystemCapabilities, Stat, StreamReaderLike, StreamWriterLike
+from ..filesystem import AtomicWriterLike, Filesystem, FilesystemCapabilities, Stat, StreamReaderLike, StreamWriterLike
 from ..tail_buffer import TailBuffer
 from ..types import OUTPUT_TAIL_LIMIT, ExecResult
 from ..vpath import VPath
@@ -28,6 +29,12 @@ _EXEC_POLL_INTERVAL = 0.05
 _EXEC_READER_JOIN_TIMEOUT = 1.0
 _EXEC_CHUNK_SIZE = 65536
 _EXEC_KILL_GRACE = 2.0
+
+# os.umask() reads/sets the process-wide umask as a side effect, with no thread-local
+# variant, so probing it lazily at write time would race with concurrent worker
+# threads. Capture it once at import time instead and restore it immediately.
+_PROCESS_UMASK = os.umask(0o022)
+os.umask(_PROCESS_UMASK)
 
 
 def _pump_output(fd: int, tail: TailBuffer) -> None:
@@ -46,6 +53,50 @@ def _terminate_group(process: subprocess.Popen[bytes]) -> None:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
         process.wait()
+
+
+class _LocalAtomicWriter:
+    """Write a sibling temporary file and ``os.replace()`` it over the target."""
+
+    def __init__(self, target: Path) -> None:
+        if target.is_symlink():
+            raise ValueError(f"Cannot atomically replace a symlink: {target}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".nn-tmp", dir=target.parent)
+        self._target = target
+        self._tmp = Path(name)
+        self._file = os.fdopen(fd, "wb")
+        self._done = False
+
+    def write(self, data: bytes) -> int:
+        return self._file.write(data)
+
+    def close(self) -> None:
+        if self._done:
+            return
+        self._done = True
+        try:
+            self._file.flush()
+            try:
+                mode = S_IMODE(os.stat(self._target).st_mode)
+            except FileNotFoundError:
+                mode = 0o666 & ~_PROCESS_UMASK
+            os.fchmod(self._file.fileno(), mode)
+            os.fsync(self._file.fileno())
+            self._file.close()
+            os.replace(self._tmp, self._target)
+        except BaseException:
+            try:
+                self._file.close()
+            finally:
+                self._tmp.unlink(missing_ok=True)
+            raise
+
+    def abort(self) -> None:
+        if not self._done:
+            self._done = True
+            self._file.close()
+            self._tmp.unlink(missing_ok=True)
 
 
 class LocalFilesystem(Filesystem):
@@ -320,6 +371,17 @@ class LocalFilesystem(Filesystem):
 
         os.makedirs(path.path.parent, exist_ok=True)
         return StreamWriterWrapper(open(path.path, "wb"))
+
+    @override
+    def write_atomic(self, path: VPath) -> AtomicWriterLike:
+        self._assert_vpath(path)
+        return _LocalAtomicWriter(Path(path.path))
+
+    @override
+    def version_tag(self, path: VPath) -> str | None:
+        self._assert_vpath(path)
+        st = os.stat(path.path)
+        return f"{st.st_dev}:{st.st_ino}:{st.st_mtime_ns}:{st.st_size}"
 
     @override
     def remove(self, path: VPath) -> None:

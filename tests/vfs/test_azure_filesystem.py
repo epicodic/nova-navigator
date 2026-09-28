@@ -295,3 +295,23 @@ def test_readlink_raises_einval() -> None:
     with pytest.raises(OSError, match="Not a symbolic link") as exc_info:
         fs.readlink(fs.path("/file.txt"))
     assert exc_info.value.errno == errno.EINVAL
+
+
+# ── version_tag ───────────────────────────────────────────────────────────────
+
+
+def test_version_tag_returns_blob_etag() -> None:
+    fs, mock_client = _make_fs()
+    props = MagicMock(spec=BlobProperties)
+    props.etag = '"0x8D1234567890ABC"'
+    mock_client.get_blob_client.return_value.get_blob_properties.return_value = props
+    tag = fs.version_tag(fs.path("/data/file.txt"))
+    mock_client.get_blob_client.assert_called_with("data/file.txt")
+    assert tag == '"0x8D1234567890ABC"'
+
+
+def test_version_tag_missing_blob_raises_file_not_found() -> None:
+    fs, mock_client = _make_fs()
+    mock_client.get_blob_client.return_value.get_blob_properties.side_effect = ResourceNotFoundError
+    with pytest.raises(FileNotFoundError):
+        fs.version_tag(fs.path("/missing.txt"))

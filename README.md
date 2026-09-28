@@ -62,6 +62,8 @@ User configuration is stored in `~/.config/nova-navigator/` and overrides the de
 | `filetypes.toml` | MIME type to icon mappings |
 | `icons.csv` | Icon name to NerdFont glyph mappings |
 
+See [local copies](docs/local_copies.md) for how Nova Navigator mirrors SSH, Azure, and archive files for external applications.
+
 ## Development
 
 ### Running tests

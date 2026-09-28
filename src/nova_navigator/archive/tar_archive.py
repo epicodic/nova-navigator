@@ -1,8 +1,18 @@
 import tarfile
+from _thread import LockType
 from pathlib import PurePath
+from threading import Lock
 from typing import override
 
-from .archive import Archive, Stat
+from ..vfs.filesystem import StreamReaderLike
+from .archive import Archive, Stat, _ArchiveReader
+
+
+def _normalize_member_name(name: str) -> str:
+    """Strip a leading './' as produced by e.g. `tar -C dir -cf x.tar .`; '.' or './' is the archive root."""
+    if name in (".", "./"):
+        return ""
+    return name.removeprefix("./")
 
 
 class TarArchive(Archive):
@@ -10,11 +20,13 @@ class TarArchive(Archive):
 
     _tar_file: tarfile.TarFile
     _members: list[tarfile.TarInfo]
+    _read_lock: LockType
 
     def __init__(self, archive_path: PurePath, mode: Archive.Mode) -> None:
         super().__init__(archive_path, mode)
         self._tar_file = tarfile.open(name=archive_path, mode=mode + ":*")  # type: ignore # noqa: SIM115
         self._members = self._tar_file.getmembers()
+        self._read_lock = Lock()
 
     # TODO: implement faster lookup for members and directory listing
 
@@ -22,7 +34,7 @@ class TarArchive(Archive):
         normalized_path = path.as_posix().lstrip("/")
 
         for member in self._members:
-            if member.name == normalized_path:
+            if _normalize_member_name(member.name) == normalized_path:
                 return member
 
         return None
@@ -34,7 +46,7 @@ class TarArchive(Archive):
 
         contents = set()
         for member in self._members:
-            member_path = member.name
+            member_path = _normalize_member_name(member.name)
             if not member_path.startswith(prefix):
                 continue
 
@@ -60,13 +72,46 @@ class TarArchive(Archive):
 
         member = self._find_member(path)
         if member is None:
+            if self.listdir(path):
+                return Stat(
+                    size=0,
+                    modified=0,
+                    is_hidden=path.name.startswith("."),
+                    is_directory=True,
+                    is_executable=False,
+                    is_symlink=False,
+                )
             raise FileNotFoundError(f"Path '{path}', {path.name} not found in archive '{self._archive_path}'")
 
         return Stat(
             size=member.size,
             modified=member.mtime,
-            is_hidden=member.name.startswith("."),
+            is_hidden=path.name.startswith("."),
             is_directory=member.isdir(),
             is_executable=member.mode & 0o111 != 0,
             is_symlink=member.issym() or member.islnk(),
         )
+
+    @override
+    def read(self, path: PurePath) -> StreamReaderLike:
+        if path == path.parent:
+            raise IsADirectoryError(path)
+        member = self._find_member(path)
+        if member is None:
+            if self.listdir(path):
+                raise IsADirectoryError(path)
+            raise FileNotFoundError(path)
+        if member.isdir():
+            raise IsADirectoryError(path)
+        try:
+            with self._read_lock:
+                stream = self._tar_file.extractfile(member)
+        except KeyError as exc:
+            raise FileNotFoundError(path) from exc
+        if stream is None:
+            raise OSError(f"Cannot read archive member '{path}'")
+        return _ArchiveReader(stream, self._read_lock)
+
+    @override
+    def close(self) -> None:
+        self._tar_file.close()

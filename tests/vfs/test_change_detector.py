@@ -1,0 +1,267 @@
+"""Tests for ChangeDetector save-pattern detection."""
+
+import asyncio
+import os
+import time
+from collections.abc import Callable
+from pathlib import Path
+
+import pytest
+
+from nova_navigator.vfs.change_detector import ChangeDetector, file_digest
+
+_FAST_POLL_INTERVAL = 0.05
+_FAST_SETTLE_TIME = 0.15
+
+
+async def _wait_until(predicate: Callable[[], bool], max_wait: float = 3.0) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max_wait
+    while not predicate():
+        if loop.time() >= deadline:
+            raise AssertionError("condition not met within timeout")
+        await asyncio.sleep(0.01)
+
+
+async def _detector(
+    path: Path,
+    *,
+    poll_interval: float = _FAST_POLL_INTERVAL,
+    settle_time: float = _FAST_SETTLE_TIME,
+    use_watcher: bool = True,
+) -> tuple[ChangeDetector, asyncio.Queue[str]]:
+    queue: asyncio.Queue[str] = asyncio.Queue()
+
+    async def on_change(digest: str) -> None:
+        await queue.put(digest)
+
+    detector = ChangeDetector(
+        path,
+        on_change,
+        baseline_digest=file_digest(path),
+        poll_interval=poll_interval,
+        settle_time=settle_time,
+        use_watcher=use_watcher,
+    )
+    await detector.start()
+    return detector, queue
+
+
+@pytest.fixture
+def target(tmp_path: Path) -> Path:
+    path = tmp_path / "doc.txt"
+    path.write_bytes(b"original\n")
+    return path
+
+
+@pytest.mark.asyncio
+async def test_in_place_write_is_reported(target: Path) -> None:
+    detector, queue = await _detector(target)
+    try:
+        target.write_bytes(b"changed\n")
+        digest = await asyncio.wait_for(queue.get(), 3)
+        assert digest == file_digest(target)
+    finally:
+        await detector.stop()
+
+
+@pytest.mark.asyncio
+async def test_rename_over_save_is_reported_repeatedly(target: Path) -> None:
+    detector, queue = await _detector(target)
+    try:
+        for text in (b"one\n", b"two\n"):
+            tmp = target.with_name(".doc.txt.swp")
+            tmp.write_bytes(text)
+            os.replace(tmp, target)
+            assert await asyncio.wait_for(queue.get(), 3) == file_digest(target)
+    finally:
+        await detector.stop()
+
+
+@pytest.mark.asyncio
+async def test_delete_then_recreate_is_reported(target: Path) -> None:
+    detector, queue = await _detector(target)
+    try:
+        target.unlink()
+        await asyncio.sleep(0.05)
+        target.write_bytes(b"recreated\n")
+        assert await asyncio.wait_for(queue.get(), 3) == file_digest(target)
+    finally:
+        await detector.stop()
+
+
+@pytest.mark.asyncio
+async def test_truncate_then_delayed_write_reports_final_content_once(target: Path) -> None:
+    detector, queue = await _detector(target, settle_time=0.3)
+    try:
+        target.write_bytes(b"")
+        await asyncio.sleep(0.1)
+        target.write_bytes(b"final\n")
+        assert await asyncio.wait_for(queue.get(), 3) == file_digest(target)
+        await asyncio.sleep(0.5)
+        assert queue.empty()
+    finally:
+        await detector.stop()
+
+
+@pytest.mark.asyncio
+async def test_touch_without_content_change_is_not_reported(target: Path) -> None:
+    detector, queue = await _detector(target)
+    try:
+        os.utime(target)
+        await asyncio.sleep(0.5)
+        assert queue.empty()
+    finally:
+        await detector.stop()
+
+
+@pytest.mark.asyncio
+async def test_other_files_in_directory_are_ignored(target: Path) -> None:
+    detector, queue = await _detector(target)
+    try:
+        (target.parent / "other.txt").write_bytes(b"noise")
+        await asyncio.sleep(0.5)
+        assert queue.empty()
+    finally:
+        await detector.stop()
+
+
+@pytest.mark.asyncio
+async def test_poll_detects_change_without_watcher(target: Path) -> None:
+    detector, queue = await _detector(target, use_watcher=False)
+    try:
+        target.write_bytes(b"polled\n")
+        assert await asyncio.wait_for(queue.get(), 3) == file_digest(target)
+    finally:
+        await detector.stop()
+
+
+@pytest.mark.asyncio
+async def test_check_now_reports_pending_change(target: Path) -> None:
+    detector, queue = await _detector(target, poll_interval=60, use_watcher=False)
+    try:
+        target.write_bytes(b"after exit\n")
+        await detector.check_now()
+        assert await asyncio.wait_for(queue.get(), 3) == file_digest(target)
+    finally:
+        await detector.stop()
+
+
+@pytest.mark.asyncio
+async def test_set_baseline_suppresses_known_digest(target: Path) -> None:
+    detector, queue = await _detector(target)
+    try:
+        detector.set_baseline(file_digest(target))
+        target.write_bytes(target.read_bytes())
+        await asyncio.sleep(0.5)
+        assert queue.empty()
+    finally:
+        await detector.stop()
+
+
+@pytest.mark.asyncio
+async def test_on_change_error_does_not_stop_detection(target: Path) -> None:
+    calls: list[str] = []
+
+    async def flaky_on_change(digest: str) -> None:
+        calls.append(digest)
+        if len(calls) == 1:
+            raise RuntimeError("simulated sync failure")
+
+    detector = ChangeDetector(
+        target,
+        flaky_on_change,
+        baseline_digest=file_digest(target),
+        poll_interval=_FAST_POLL_INTERVAL,
+        settle_time=_FAST_SETTLE_TIME,
+    )
+    await detector.start()
+    try:
+        target.write_bytes(b"first\n")
+        await _wait_until(lambda: len(calls) >= 1)
+
+        target.write_bytes(b"second\n")
+        await _wait_until(lambda: len(calls) >= 2)
+        assert calls[-1] == file_digest(target)
+    finally:
+        await detector.stop()
+
+
+@pytest.mark.asyncio
+async def test_restart_after_stop_detects_change(target: Path) -> None:
+    detector, queue = await _detector(target)
+    await detector.stop()
+    await detector.start()
+    try:
+        target.write_bytes(b"restarted\n")
+        assert await asyncio.wait_for(queue.get(), 3) == file_digest(target)
+    finally:
+        await detector.stop()
+
+
+@pytest.mark.asyncio
+async def test_second_start_without_stop_raises(target: Path) -> None:
+    detector, _queue = await _detector(target)
+    try:
+        with pytest.raises(RuntimeError):
+            await detector.start()
+    finally:
+        await detector.stop()
+
+
+@pytest.mark.asyncio
+async def test_no_further_digests_after_settle_while_untouched(target: Path) -> None:
+    """Regression test: the detector's own file_digest() read must not re-trigger itself.
+
+    watchdog reports read-only "opened"/"closed_no_write" events for the directory entry
+    when ChangeDetector digests the file. If those were forwarded as possible changes, the
+    detector would loop forever: mark -> settle -> digest -> opened event -> mark -> ...
+    A long poll_interval isolates the watcher as the only source of marks here.
+    """
+    logs: list[tuple[str, str]] = []
+
+    def log(kind: str, detail: str) -> None:
+        logs.append((kind, detail))
+
+    async def on_change(_digest: str) -> None:
+        pass
+
+    detector = ChangeDetector(
+        target,
+        on_change,
+        baseline_digest=file_digest(target),
+        poll_interval=60,
+        settle_time=_FAST_SETTLE_TIME,
+        log=log,
+    )
+    await detector.start()
+    try:
+        target.write_bytes(b"changed\n")
+        await _wait_until(lambda: any(kind == "changed" for kind, _ in logs))
+        logs.clear()
+        await asyncio.sleep(1.0)
+        assert [entry for entry in logs if entry[0] == "unchanged"] == []
+    finally:
+        await detector.stop()
+
+
+@pytest.mark.asyncio
+async def test_change_settles_in_one_round(target: Path) -> None:
+    """Regression test: a stale poll re-mark during the settle window must not add a round.
+
+    The poll loop updates `_last_seen` as soon as it notices a fingerprint change, before
+    the settle loop confirms it, so it re-marks dirty for the very change already being
+    settled. That must not force a second settle_time wait: one write should be reported
+    well under two settle rounds after it happens.
+    """
+    settle_time = 0.5
+    detector, queue = await _detector(target, poll_interval=0.05, settle_time=settle_time)
+    try:
+        write_time = time.monotonic()
+        target.write_bytes(b"single round\n")
+        digest = await asyncio.wait_for(queue.get(), settle_time * 3)
+        elapsed = time.monotonic() - write_time
+        assert digest == file_digest(target)
+        assert elapsed < settle_time * 1.8
+    finally:
+        await detector.stop()

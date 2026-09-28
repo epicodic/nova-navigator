@@ -9,10 +9,13 @@ from nova_navigator.config import conf_, get_config_file_path
 from nova_navigator.config.settings import NerdFontMode
 from nova_navigator.dialogs import JobRegistry
 from nova_navigator.icons import ICONS, IconSet
+from nova_navigator.local_copies import LocalCopyManager
 from nova_navigator.nerd_font_detect import detect_nerd_font
+from nova_navigator.scheduler import Job
 from nova_navigator.vfs import VPath
-from nova_navigator.vfs.filesystems import ArchiveFilesystem
-from nova_navigator.vfs.scheme_registry import register_common_schemes, vfspath_from_uri  # noqa: F401 (re-exported)
+from nova_navigator.vfs.filesystems import ArchiveFilesystem, LocalFilesystem
+from nova_navigator.vfs.process_root import process_root
+from nova_navigator.vfs.scheme_registry import register_common_schemes
 from nova_widgets.menu import SYMBOL_TABLE, set_icon_provider
 
 # ---------------------------------------------------------------------------
@@ -66,9 +69,14 @@ class NovaNavigatorCore:
         register_common_schemes()
 
         self._job_registry = JobRegistry()
+        self.local_copies = LocalCopyManager(process_root(), self.start_job)
 
     async def open_editor(self, path: VPath) -> None:
         """Open *path* in an editor. Must be overridden by subclasses."""
+        raise NotImplementedError
+
+    async def start_job(self, job: Job) -> None:
+        """Register and run *job* to completion. Must be overridden by subclasses."""
         raise NotImplementedError
 
     async def open_path(self, path: VPath, panel: PanelRef = PanelRef.ACTIVE) -> None:
@@ -77,16 +85,36 @@ class NovaNavigatorCore:
             await self.set_panel_directory(path, panel)
             return
 
+        # ArchiveFilesystem.unwrap() currently returns the archive filesystem itself, so the first
+        # check alone already rejects archive members. The explicit exclusion keeps archive members
+        # treated as non-local even if unwrap() is ever changed to return the container's filesystem.
+        is_non_local = not isinstance(path.filesystem.unwrap(), LocalFilesystem) or isinstance(path.filesystem, ArchiveFilesystem)
+
         if archive.is_supported_archive(path.path):
-            archive_vpath = VPath("/", ArchiveFilesystem(archive_parent=path.parent, archive=path))
+            if not is_non_local:
+                archive_vpath = VPath("/", ArchiveFilesystem(archive_parent=path.parent, archive=path))
+            else:
+                fs = await self.local_copies.mount_archive(path)
+                if fs is None:
+                    return
+                archive_vpath = VPath("/", fs)
             await self.set_panel_directory(archive_vpath, panel)
             return
 
-        if path.stat.is_executable:
+        if not is_non_local and path.stat.is_executable:
             mimetype = path.guess_mimetype()
             if mimetype is None or re.match(r".*/x-.*$", mimetype) is not None:
                 await self.execute_command([path.path.as_posix()], path.parent.path)
                 return
+
+        if is_non_local:
+            entry = await self.local_copies.open(path)
+            if entry is None:
+                return
+            command = conf_.filetypes.get_open_command_for_file_path(path.path, target=entry.copy.path)
+            await self.execute_command(command, entry.copy.path.parent)
+            await self.local_copies.check_now(entry)
+            return
 
         open_cmd = conf_.filetypes.get_open_command_for_file_path(path.path)
         await self.execute_command(open_cmd, path.parent.path)

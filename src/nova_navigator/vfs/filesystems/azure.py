@@ -54,6 +54,14 @@ class AzureFilesystem(Filesystem):
             data = self._downloader.read(size)
             return data.encode() if isinstance(data, str) else data
 
+        @property
+        def etag(self) -> str:
+            """ETag from the response that created this downloader."""
+            etag = self._downloader.properties.etag
+            if not isinstance(etag, str):
+                raise ValueError("Download response has no ETag")
+            return etag
+
         def close(self) -> None:
             pass  # StorageStreamDownloader has no close; nothing to release
 
@@ -327,3 +335,13 @@ class AzureFilesystem(Filesystem):
     @override
     def readlink(self, path: VPath) -> str:
         raise OSError(errno.EINVAL, "Not a symbolic link", str(path.path))
+
+    @override
+    def version_tag(self, path: VPath) -> str | None:
+        self._assert_vpath(path)
+        try:
+            props = self._client.get_blob_client(_blob_name(path)).get_blob_properties()
+        except ResourceNotFoundError:
+            raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path.path)) from None
+        etag = props.etag
+        return etag if isinstance(etag, str) else None

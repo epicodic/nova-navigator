@@ -87,6 +87,7 @@ Key documents in `docs/` — read every one whose topic overlaps with your task:
 | `docs/keymap.md` | Keymap system architecture — read before touching `nova_widgets/keymap/`, `nova_navigator/keymap/`, or key-handling code |
 | `docs/user_menu.md` | User menu (F2) config and behaviour — read before touching `usermenu/` |
 | `docs/commands.md` | Command execution service — read before touching `commands/` or `Filesystem.exec_command` |
+| `docs/local_copies.md` | Local copies of non-local files — read before touching `vfs/local_copy.py`, `vfs/change_detector.py`, `local_copies/`, or archive writes |
 
 ---
 

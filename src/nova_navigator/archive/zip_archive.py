@@ -2,7 +2,8 @@ import zipfile
 from pathlib import PurePath
 from typing import override
 
-from .archive import Archive, Stat
+from ..vfs.filesystem import StreamReaderLike
+from .archive import Archive, Stat, _ArchiveReader
 
 
 class ZipArchive(Archive):
@@ -61,6 +62,15 @@ class ZipArchive(Archive):
 
         member = self._find_member(path)
         if member is None:
+            if self.listdir(path):
+                return Stat(
+                    size=0,
+                    modified=0,
+                    is_hidden=path.name.startswith("."),
+                    is_directory=True,
+                    is_executable=False,
+                    is_symlink=False,
+                )
             raise FileNotFoundError(f"Path '{path}', {path.name} not found in archive '{self._archive_path}'")
 
         return Stat(
@@ -71,3 +81,27 @@ class ZipArchive(Archive):
             is_executable=(member.external_attr >> 16) & 0o111 != 0,
             is_symlink=False,  # ZIP format does not support symlinks
         )
+
+    @override
+    def read(self, path: PurePath) -> StreamReaderLike:
+        if path == path.parent:
+            raise IsADirectoryError(path)
+        member = self._find_member(path)
+        if member is None:
+            if self.listdir(path):
+                raise IsADirectoryError(path)
+            raise FileNotFoundError(path)
+        if member.is_dir():
+            raise IsADirectoryError(path)
+        return _ArchiveReader(self._zip_file.open(member))
+
+    @override
+    def version_tag(self, path: PurePath) -> str | None:
+        member = self._find_member(path)
+        if member is None:
+            return None
+        return f"crc:{member.CRC:08x}"
+
+    @override
+    def close(self) -> None:
+        self._zip_file.close()

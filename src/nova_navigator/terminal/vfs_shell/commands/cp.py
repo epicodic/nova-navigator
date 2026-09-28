@@ -9,6 +9,8 @@ from nova_navigator.vfs.vpath import VPath
 
 
 class CpCommand(Command):
+    mutates_filesystem = True
+
     @property
     def name(self) -> str:
         return "cp"

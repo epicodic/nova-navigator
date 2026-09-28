@@ -17,14 +17,14 @@ class FilesystemPlugin:
     """Self-contained descriptor for a filesystem type.
 
     Carries everything needed to register the filesystem with the application:
-    the URI scheme, the connector for resolving URIs, the concrete filesystem
+    the URI scheme, an optional connector for resolving URIs, the concrete filesystem
     type (used for isinstance dispatch in TerminalPool), and an optional
     terminal factory callable.
     """
 
     scheme: str
     fs_type: type[Filesystem]
-    connector: Connector
+    connector: Connector | None = None
     terminal_factory: TerminalFactory | None = field(default=None)
 
 
@@ -41,7 +41,8 @@ class PluginRegistry:
 
     def register(self, plugin: FilesystemPlugin) -> None:
         """Register *plugin* into the scheme registry and terminal pool."""
-        self._scheme_registry.register_scheme(plugin.scheme, plugin.connector)
+        if plugin.connector is not None:
+            self._scheme_registry.register_scheme(plugin.scheme, plugin.connector)
         if plugin.terminal_factory is not None:
             fs_type = plugin.fs_type
             factory = plugin.terminal_factory

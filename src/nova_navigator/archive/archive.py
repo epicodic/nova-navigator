@@ -1,8 +1,29 @@
+from _thread import LockType
 from abc import abstractmethod
 from pathlib import PurePath
-from typing import Literal
+from typing import IO, Literal
 
+from ..vfs.filesystem import StreamReaderLike
 from ..vfs.types import Stat
+
+
+class _ArchiveReader:
+    def __init__(self, stream: IO[bytes], lock: LockType | None = None) -> None:
+        self._stream = stream
+        self._lock = lock
+
+    def read(self, size: int) -> bytes:
+        if self._lock is None:
+            return self._stream.read(size)
+        with self._lock:
+            return self._stream.read(size)
+
+    def close(self) -> None:
+        if self._lock is None:
+            self._stream.close()
+        else:
+            with self._lock:
+                self._stream.close()
 
 
 class Archive:
@@ -25,4 +46,23 @@ class Archive:
     @abstractmethod
     def stats(self, path: PurePath) -> Stat:
         """Get the stats of a file/directory inside the archive."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def read(self, path: PurePath) -> StreamReaderLike:
+        """Return a binary stream for a file inside the archive."""
+        raise NotImplementedError
+
+    @property
+    def archive_path(self) -> PurePath:
+        """Return the local archive file path."""
+        return self._archive_path
+
+    def version_tag(self, path: PurePath) -> str | None:
+        """Opaque token that changes whenever the member at *path* is rewritten; None if unavailable."""
+        return None
+
+    @abstractmethod
+    def close(self) -> None:
+        """Release the archive file handle."""
         raise NotImplementedError

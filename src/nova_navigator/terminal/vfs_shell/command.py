@@ -95,6 +95,8 @@ class ShellContext:
 class Command(ABC):
     """Base class for VFS shell commands."""
 
+    mutates_filesystem: bool = False
+
     @property
     @abstractmethod
     def name(self) -> str:
