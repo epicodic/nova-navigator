@@ -339,7 +339,7 @@ class FileDialog(Dialog):
         super().action_accept_dialog()
 
     def on_select_changed(self, event: Select.Changed) -> None:
-        if event.value is Select.BLANK:
+        if event.value is Select.NULL:
             return
         try:
             listing = self.query_one("#listing", _FileListing)
