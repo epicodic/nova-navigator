@@ -1022,6 +1022,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         await self.mount(self._bookmark_dialog)
         self._bookmark_dialog.focus()
 
+    @work
     async def _action_local_copies(self) -> None:
         await self.app.action_local_copies()
 

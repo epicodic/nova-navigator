@@ -44,6 +44,7 @@ from nova_navigator.nova_navigator_core import NovaNavigatorCore
 from nova_navigator.response import Response
 from nova_navigator.scheduler import Job
 from nova_navigator.scheduler.context import ResponseRequest
+from nova_navigator.vfs.change_detector import ChangeDetector
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_navigator.vfs.local_copy import Baseline, LocalCopy, SourceFingerprint
 from nova_navigator.vfs.vpath import VPath
@@ -72,7 +73,7 @@ class _DemoLocalCopyManager(LocalCopyManager):
         entry.error = None
 
     async def close(self, entry: CopyEntry) -> None:
-        pass
+        entry.detector = None  # matches LocalCopyManager.close(): stops watching, keeps the file
 
     async def discard(self, entry: CopyEntry) -> None:
         self._entries.pop(entry.key, None)
@@ -85,15 +86,29 @@ def _demo_local_copy(name: str, *, read_only: bool = False) -> LocalCopy:
     return LocalCopy(source, path, baseline, read_only=read_only, pass_through=True)
 
 
+async def _demo_change_callback(_digest: str) -> None:
+    """No-op change callback for demo detectors below — never started, so never invoked."""
+
+
+def _demo_detector(copy: LocalCopy) -> ChangeDetector:
+    """An unstarted detector standing in for "this demo copy is still open and watched"."""
+    return ChangeDetector(copy.path, _demo_change_callback, baseline_digest="demo-digest")
+
+
 def _demo_local_copies_manager() -> _DemoLocalCopyManager:
+    report = _demo_local_copy("report.docx")
+    notes = _demo_local_copy("notes.txt")
     entries = [
-        CopyEntry(copy=_demo_local_copy("report.docx"), status=CopyStatus.SYNCED),
+        CopyEntry(copy=report, status=CopyStatus.SYNCED, detector=_demo_detector(report)),
         CopyEntry(
-            copy=_demo_local_copy("notes.txt"),
+            copy=notes,
             status=CopyStatus.CONFLICT,
             error="Source changed on the server; sync manually to overwrite it.",
+            detector=_demo_detector(notes),
         ),
         CopyEntry(copy=_demo_local_copy("readonly.pdf", read_only=True), status=CopyStatus.READ_ONLY),
+        # No detector: shows the "closed" state (kept for fast reuse, no longer watched).
+        CopyEntry(copy=_demo_local_copy("archived.log"), status=CopyStatus.SYNCED),
     ]
     return _DemoLocalCopyManager(entries)
 
