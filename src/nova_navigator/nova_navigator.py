@@ -401,7 +401,8 @@ class MainScreen(ActionsSupport, Screen[None]):
             self._jobs_dialog._update_position()
 
     def _action_quit(self) -> None:
-        self.app.run_worker(self.app.request_quit())
+        # Exclusive: a repeated quit key while the prompt is being opened must not stack a second prompt.
+        self.app.run_worker(self.app.request_quit(), exclusive=True, group="quit")
 
     async def _on_key(self, event: events.Key) -> None:
         if await self._handle_key(event):
@@ -1240,7 +1241,7 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
             return
         if orphans:
             self.notify(
-                f"Unsaved local copies from an earlier session: {', '.join(str(p) for p in orphans)}",
+                "Unsaved local copies from an earlier session:\n" + "\n".join(str(p) for p in orphans),
                 title="Local copies",
                 severity="warning",
                 timeout=15,
