@@ -39,6 +39,9 @@ jobs:
           Invoke-WebRequest `
             -Uri https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe `
             -OutFile "$env:RUNNER_TEMP/cloudflared.exe"
+          $compatibility_path = 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers'
+          New-Item -Path $compatibility_path -Force | Out-Null
+          Set-ItemProperty -Path $compatibility_path -Name "$env:RUNNER_TEMP\ttyd.exe" -Value '~ WIN8RTM'
           Start-Process `
             -FilePath "$env:RUNNER_TEMP/ttyd.exe" `
             -ArgumentList @('-W', '-p', '7681', 'powershell.exe')
