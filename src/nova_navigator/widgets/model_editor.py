@@ -133,7 +133,7 @@ class ModelEditor(Widget):
             if isinstance(control, Checkbox):
                 value: Any = bool(control.value)
             elif isinstance(control, Select):
-                if control.value is Select.BLANK:
+                if control.value is Select.NULL:
                     value = getattr(target, field_name)
                 else:
                     value = control.value
