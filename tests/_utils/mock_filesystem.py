@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import override
@@ -51,10 +51,11 @@ class _Reader:
 class _Writer:
     close_count: int
 
-    def __init__(self, node: _FileNode, error: Exception | None = None) -> None:
+    def __init__(self, node: _FileNode, error: Exception | None = None, on_close: Callable[[_FileNode], None] | None = None) -> None:
         self.close_count = 0
         self._node = node
         self._error = error
+        self._on_close = on_close
 
     def write(self, data: bytes) -> int:
         if self._error is not None:
@@ -64,7 +65,10 @@ class _Writer:
 
     def close(self) -> None:
         self.close_count += 1
-        self._node.modified = time.time()
+        if self._on_close is not None:
+            self._on_close(self._node)
+        else:
+            self._node.modified = time.time()
 
 
 class MockFilesystem(Filesystem):
@@ -105,6 +109,7 @@ class MockFilesystem(Filesystem):
         self._write_errors: dict[str, Exception] = write_errors or {}
         self.readers = []
         self.writers = []
+        self._write_counter = 0
 
         for fixed_dir in (self._root_path, self._home_path, self._cwd_path):
             self._mkdir_p(fixed_dir)
@@ -147,6 +152,15 @@ class MockFilesystem(Filesystem):
     def _to_posix(self, vpath: VPath) -> PurePosixPath:
         self._assert_vpath(vpath)
         return PurePosixPath(str(vpath.path))
+
+    def _touch(self, node: _FileNode) -> None:
+        """Advance *node*'s modified time, guaranteeing it differs from any earlier write.
+
+        Plain ``time.time()`` can return the same value for two writes issued back to
+        back within one clock tick; a strictly increasing offset avoids that flakiness.
+        """
+        self._write_counter += 1
+        node.modified = time.time() + self._write_counter
 
     # ------------------------------------------------------------------
     # Filesystem ABC
@@ -229,7 +243,7 @@ class MockFilesystem(Filesystem):
         node = _FileNode(content=bytearray())
         self._nodes[posix] = node
         error = self._write_errors.get(str(posix))
-        writer = _Writer(node, error=error)
+        writer = _Writer(node, error=error, on_close=self._touch)
         self.writers.append(writer)
         return writer
 

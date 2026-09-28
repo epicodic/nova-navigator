@@ -122,6 +122,10 @@ class VfsShellInterpreter:
             write_error_fn(f"{e}\r\n")
             return 2
 
+        if self._filesystem.capabilities.read_only and cmd.mutates_filesystem:
+            write_error_fn(f"{cmd.name}: {self._filesystem.scheme} is read-only\r\n")
+            return 1
+
         # Build context
         ctx = ShellContext(
             filesystem=self._filesystem,
@@ -135,7 +139,11 @@ class VfsShellInterpreter:
         )
 
         # Execute
-        exit_code = await cmd.execute(args, ctx)
+        try:
+            exit_code = await cmd.execute(args, ctx)
+        except OSError as e:
+            write_error_fn(f"{cmd.name}: {e}\r\n")
+            return 1
 
         # Commands that change directory update ctx.cwd — sync back to interpreter
         self._cwd = ctx.cwd

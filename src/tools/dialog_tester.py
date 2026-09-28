@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+import tempfile
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,15 +33,20 @@ from nova_navigator.dialogs.files_dialog import CopyMoveFilesDialog, DeleteFiles
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.dialogs.input_name_dialog import InputNameDialog
 from nova_navigator.dialogs.keybindings_dialog import KeybindingsDialog, KeyCaptureDialog
+from nova_navigator.dialogs.local_copies_dialog import LocalCopiesDialog
 from nova_navigator.dialogs.message_box import MessageBox
 from nova_navigator.dialogs.response_dialog import OverwriteResponseDialog, ResponseDialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
 from nova_navigator.dialogs.user_menu_input_dialog import InputField, UserMenuInputDialog
 from nova_navigator.keymap.config import KeybindingsConfig
+from nova_navigator.local_copies import CopyEntry, CopyStatus, LocalCopyManager
 from nova_navigator.nova_navigator_core import NovaNavigatorCore
 from nova_navigator.response import Response
+from nova_navigator.scheduler import Job
 from nova_navigator.scheduler.context import ResponseRequest
+from nova_navigator.vfs.change_detector import ChangeDetector
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
+from nova_navigator.vfs.local_copy import Baseline, LocalCopy, SourceFingerprint
 from nova_navigator.vfs.vpath import VPath
 from nova_widgets.action import Action as NavAction
 
@@ -48,6 +54,68 @@ _fs = LocalFilesystem.singleton()
 
 # Absolute path so CSS_PATH resolves regardless of cwd.
 _TCSS = str(Path(__file__).parent.parent / "nova_navigator" / "nn.tcss")
+
+
+async def _noop_start_job(_job: Job) -> None:
+    """No-op job starter for the LocalCopiesDialog demo manager below."""
+
+
+class _DemoLocalCopyManager(LocalCopyManager):
+    """Stub manager for the dialog tester: fixed demo entries, actions recorded not executed."""
+
+    def __init__(self, entries: list[CopyEntry]) -> None:
+        super().__init__(Path(tempfile.gettempdir()) / "nova-navigator-dialog-tester", _noop_start_job)
+        for entry in entries:
+            self._entries[entry.key] = entry
+
+    async def sync_now(self, entry: CopyEntry) -> None:
+        entry.status = CopyStatus.SYNCED
+        entry.error = None
+
+    async def close(self, entry: CopyEntry) -> None:
+        entry.detector = None  # matches LocalCopyManager.close(): stops watching, keeps the file
+
+    async def discard(self, entry: CopyEntry) -> None:
+        self._entries.pop(entry.key, None)
+
+
+def _demo_local_copy(name: str, *, read_only: bool = False) -> LocalCopy:
+    source = VPath(f"/home/user/{name}", _fs)
+    baseline = Baseline(SourceFingerprint(0, 0.0, None), "demo-digest")
+    path = Path(tempfile.gettempdir()) / "nova-navigator-dialog-tester" / name
+    return LocalCopy(source, path, baseline, read_only=read_only, pass_through=True)
+
+
+async def _demo_change_callback(_digest: str) -> None:
+    """No-op change callback for demo detectors below — never started, so never invoked."""
+
+
+def _demo_detector(copy: LocalCopy) -> ChangeDetector:
+    """An unstarted detector standing in for "this demo copy is still open and watched"."""
+    return ChangeDetector(copy.path, _demo_change_callback, baseline_digest="demo-digest")
+
+
+def _demo_local_copies_manager() -> _DemoLocalCopyManager:
+    report = _demo_local_copy("report.docx")
+    notes = _demo_local_copy("notes.txt")
+    entries = [
+        CopyEntry(copy=report, status=CopyStatus.SYNCED, detector=_demo_detector(report)),
+        CopyEntry(
+            copy=notes,
+            status=CopyStatus.CONFLICT,
+            error="Source changed on the server; sync manually to overwrite it.",
+            detector=_demo_detector(notes),
+        ),
+        CopyEntry(copy=_demo_local_copy("readonly.pdf", read_only=True), status=CopyStatus.READ_ONLY),
+        # No detector: shows the "closed" state (kept for fast reuse, no longer watched).
+        CopyEntry(copy=_demo_local_copy("archived.log"), status=CopyStatus.SYNCED),
+    ]
+    return _DemoLocalCopyManager(entries)
+
+
+async def _demo_reopen(_entry: CopyEntry) -> None:
+    """Reopen stand-in for the dialog tester — there is no real panel to reopen into."""
+
 
 _LauncherFn = Callable[[], Coroutine[Any, Any, str]]
 _DialogFactory = Callable[[], Dialog]
@@ -172,6 +240,11 @@ _ENTRIES: list[DialogEntry] = [
         "EditRemotesDialog",
         "Remote connection editor with real config.",
         lambda: EditRemotesDialog(conf_.remotes),
+    ),
+    DialogEntry(
+        "LocalCopiesDialog",
+        "Manage local copies of non-local files (synced, conflict, and read-only demo rows).",
+        lambda: LocalCopiesDialog(_demo_local_copies_manager(), reopen=_demo_reopen),
     ),
     DialogEntry(
         "CopyMoveFilesDialog (copy)",

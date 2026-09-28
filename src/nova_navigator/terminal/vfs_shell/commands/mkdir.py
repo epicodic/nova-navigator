@@ -11,6 +11,8 @@ from nova_navigator.vfs.vpath import VPath
 
 
 class MkdirCommand(Command):
+    mutates_filesystem = True
+
     @property
     def name(self) -> str:
         return "mkdir"

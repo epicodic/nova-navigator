@@ -12,13 +12,16 @@ Two directions are tested:
 
 from __future__ import annotations
 
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from unittest.mock import AsyncMock, MagicMock, patch
+from zipfile import ZipFile
 
 import pytest
 
 from nova_navigator.terminal import Terminal
+from nova_navigator.terminal.vfs_shell import VirtualPtyBackend
 from nova_navigator.vfs import VPath
+from nova_navigator.vfs.filesystems import ArchiveFilesystem
 from tests.integration.conftest import AppCtx, poll_until, set_panels
 
 # ---------------------------------------------------------------------------
@@ -97,6 +100,61 @@ async def test_programmatic_cd_does_not_update_panel(app_ctx: AppCtx) -> None:
 # ---------------------------------------------------------------------------
 # Auto-provisioning: new filesystem → terminal created automatically
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_archive_panel_switches_to_virtual_terminal_and_reuses_it(app_ctx: AppCtx, tmp_path: Path) -> None:
+    archive_path = tmp_path / "sample.zip"
+    with ZipFile(archive_path, "w") as archive:
+        archive.writestr("notes.txt", "archive contents\n")
+
+    await set_panels(app_ctx)
+    pool = app_ctx.screen._terminal_pool
+    local_terminal = pool.active_terminal
+    archive_fs = ArchiveFilesystem(VPath(tmp_path, app_ctx.fs), VPath(archive_path, app_ctx.fs))
+    archive_root = archive_fs.root()
+
+    app_ctx.screen._left_panel.set_path(archive_root)
+    await poll_until(app_ctx.pilot, lambda: pool.active_terminal is not local_terminal)
+    archive_terminal = pool.active_terminal
+    assert isinstance(archive_terminal._backend, VirtualPtyBackend)
+    assert pool.terminal_for(archive_fs) is archive_terminal
+
+    await archive_terminal._backend._run_command("cd ..")
+    await app_ctx.pilot.pause()
+    assert archive_terminal._backend._interpreter is not None
+    assert archive_terminal._backend._interpreter.cwd == archive_root
+    assert app_ctx.screen._left_panel.path == archive_root
+
+    app_ctx.screen._left_panel.set_path(archive_root.parent)
+    await poll_until(app_ctx.pilot, lambda: pool.active_terminal is local_terminal)
+    assert pool.active_terminal is local_terminal
+
+    app_ctx.screen._left_panel.set_path(archive_root)
+    await poll_until(app_ctx.pilot, lambda: pool.active_terminal is archive_terminal)
+    assert pool.active_terminal is archive_terminal
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_archive_virtual_terminal_reads_members(app_ctx: AppCtx, tmp_path: Path) -> None:
+    archive_path = tmp_path / "sample.zip"
+    with ZipFile(archive_path, "w") as archive:
+        archive.writestr("notes.txt", "first line\nlast line\n")
+
+    await set_panels(app_ctx)
+    archive_fs = ArchiveFilesystem(VPath(tmp_path, app_ctx.fs), VPath(archive_path, app_ctx.fs))
+    app_ctx.screen._left_panel.set_path(archive_fs.root())
+    pool = app_ctx.screen._terminal_pool
+    await poll_until(app_ctx.pilot, lambda: pool.active_terminal is pool.terminal_for(archive_fs))
+    backend = pool.active_terminal._backend
+    assert isinstance(backend, VirtualPtyBackend)
+
+    for command, expected in (("cat", "first line"), ("head", "first line"), ("tail", "last line")):
+        with patch.object(backend, "_post_stdout") as output:
+            await backend._run_command(f"{command} notes.txt")
+        assert expected in "".join(call.args[0] for call in output.call_args_list)
 
 
 @pytest.mark.asyncio

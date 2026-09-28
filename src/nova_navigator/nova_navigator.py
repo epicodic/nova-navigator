@@ -23,6 +23,7 @@ from textual.screen import Screen
 from textual.widgets import Input
 
 from nova_navigator import debug_analytics
+from nova_navigator.archive.terminal import ARCHIVE_PLUGIN
 from nova_navigator.clipboard import ClipboardOperation, PathClipboard
 from nova_navigator.commands import (
     Command,
@@ -40,6 +41,7 @@ from nova_navigator.dialogs import (
     EditRemotesDialog,
     InputNameDialog,
     JobsDialog,
+    LocalCopiesDialog,
     MessageBox,
 )
 from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
@@ -80,6 +82,7 @@ from nova_navigator.usermenu.popup import UserMenuPopup
 from nova_navigator.vfs import Filesystem, VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
 from nova_navigator.vfs.parse_uri import parse_uri
+from nova_navigator.vfs.process_root import find_orphans
 from nova_navigator.vfs.scheme_registry import SCHEME_REGISTRY, vfspath_from_uri
 from nova_navigator.widgets import DirectoryBrowser, JobStatusIcon
 from nova_navigator.widgets.directory_browser import GoToPathWidget, UpPath
@@ -150,6 +153,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         Action("Directory", id="browser.new_directory", action="new_directory", description="Create a new directory", shortcut="f7", show=True, bar_priority=30, icon="folder"),
         Action("Delete", id="browser.delete", action="delete_files", description="Delete selected files", shortcut="f8", show=True, bar_priority=35),
         Action("Bookmarks", id="app.show_bookmarks", action="show_bookmarks", description="Open bookmarks dialog", shortcut="ctrl+b", show=True, bar_priority=80),
+        Action("Local Copies", id="app.local_copies", action="local_copies", description="Manage local copies of remote files", shortcut="ctrl+e", show=True, bar_priority=85),
         Action("Hidden Files", id="browser.toggle_hidden", action="toggle_hidden", description="Toggle display of hidden files", shortcut="ctrl+h", show=False),
         Action("Dummy Op", id="app.start_dummy_operation", action="start_dummy_operation", description="Start dummy operation (development)", shortcut="ctrl+d", show=False),
         Action("Go to Path…", id="browser.go_to_path", action="go_to_path", description="Navigate to a typed path", shortcut="ctrl+g", show=False),
@@ -285,6 +289,8 @@ class MainScreen(ActionsSupport, Screen[None]):
         self._menu_bar.add_menu("Command", name="command").add(
             self._act("app.user_menu"),
             self._act("app.edit_user_menu"),
+            mc.separator(),
+            self._act("app.local_copies"),
         )
 
         self._menu_bar.add_menu("Bookmarks", name="bookmarks").add(
@@ -395,7 +401,8 @@ class MainScreen(ActionsSupport, Screen[None]):
             self._jobs_dialog._update_position()
 
     def _action_quit(self) -> None:
-        self.app.exit()
+        # Exclusive: a repeated quit key while the prompt is being opened must not stack a second prompt.
+        self.app.run_worker(self.app.request_quit(), exclusive=True, group="quit")
 
     async def _on_key(self, event: events.Key) -> None:
         if await self._handle_key(event):
@@ -738,8 +745,7 @@ class MainScreen(ActionsSupport, Screen[None]):
             move=move,
         )
         if job is not None:
-            self.app.job_registry.add_job(job)
-            await job.start(self.app.request_callback)
+            await self.app.start_job(job)
 
     @work
     async def action_delete_files(self) -> None:
@@ -749,14 +755,12 @@ class MainScreen(ActionsSupport, Screen[None]):
             paths=paths,
         )
         if job is not None:
-            self.app.job_registry.add_job(job)
-            await job.start(self.app.request_callback)
+            await self.app.start_job(job)
 
     @work
     async def action_start_dummy_operation(self) -> None:
         job = Job("Dummy Operation", dummy_task)
-        self.app.job_registry.add_job(job)
-        await job.start(self.app.request_callback)
+        await self.app.start_job(job)
 
     @work
     async def on_bookmarks_dialog_bookmark_selected(self, event: BookmarksDialog.BookmarkSelected) -> None:
@@ -954,8 +958,7 @@ class MainScreen(ActionsSupport, Screen[None]):
             move=operation == ClipboardOperation.CUT,
         )
         if job is not None:
-            self.app.job_registry.add_job(job)
-            await job.start(self.app.request_callback)
+            await self.app.start_job(job)
             if operation == ClipboardOperation.CUT:
                 self.app._path_clipboard.clear()
                 self._update_actions(self.active_panel().path_item_under_cursor)
@@ -976,8 +979,7 @@ class MainScreen(ActionsSupport, Screen[None]):
             move=True,
         )
         if job is not None:
-            self.app.job_registry.add_job(job)
-            await job.start(self.app.request_callback)
+            await self.app.start_job(job)
 
     @work
     async def _action_new_directory(self) -> None:
@@ -1021,6 +1023,10 @@ class MainScreen(ActionsSupport, Screen[None]):
         self._bookmark_dialog = BookmarksDialog(position=(region.x + 1, region.y + 1))
         await self.mount(self._bookmark_dialog)
         self._bookmark_dialog.focus()
+
+    @work
+    async def _action_local_copies(self) -> None:
+        await self.app.action_local_copies()
 
     def _action_go_back(self) -> None:
         self.active_panel().go_back()
@@ -1217,7 +1223,76 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         plugin_registry = PluginRegistry(SCHEME_REGISTRY, self._main_screen._terminal_pool)
         plugin_registry.register(SSH_PLUGIN)
         plugin_registry.register(AZURE_PLUGIN)
+        plugin_registry.register(ARCHIVE_PLUGIN)
         self.push_screen("main_screen")
+        self.run_worker(self._notify_orphans())
+
+    async def _notify_orphans(self) -> None:
+        """Report local-copy directories left behind by processes that no longer run.
+
+        Runs as a background worker rather than being awaited from ``on_mount`` so a slow or
+        failing scan (e.g. a permission error walking the shared temp root) never delays
+        startup. Errors are logged, not raised.
+        """
+        try:
+            orphans = await asyncio.to_thread(find_orphans)
+        except OSError:
+            _logger.exception("Failed to scan for orphaned local-copy directories")
+            return
+        if orphans:
+            self.notify(
+                "Unsaved local copies from an earlier session:\n" + "\n".join(str(p) for p in orphans),
+                title="Local copies",
+                severity="warning",
+                timeout=15,
+            )
+
+    async def request_quit(self) -> None:
+        """Quit, prompting first when a local copy has changes not yet safely on its source.
+
+        No unsynced copies: shut down and exit right away (this still runs the manager's own
+        cleanup so ``on_unmount``'s later call is a no-op, see ``LocalCopyManager.shutdown``).
+        Otherwise ask **Sync and quit**, **Quit and keep files**, or **Cancel**. A failed or
+        still-conflicting sync after "Sync and quit" is reported and the app stays open.
+        """
+        pending = self.local_copies.unsynced()
+        if not pending:
+            await self.local_copies.shutdown()
+            self.exit()
+            return
+
+        dialog = MessageBox(
+            f"{len(pending)} local cop{'y has' if len(pending) == 1 else 'ies have'} unsynced changes.",
+            title="Quit",
+            buttons=[
+                ButtonSpec(Response.SAVE, label="Sync and quit", variant="primary"),
+                ButtonSpec(Response.IGNORE, label="Quit and keep files"),
+                ButtonSpec(Response.CANCEL, label="Cancel"),
+            ],
+        )
+        answer = await dialog.run()
+        if answer == Response.SAVE:
+            for entry in pending:
+                await self.local_copies.sync_now(entry)
+            if self.local_copies.unsynced():
+                self.notify("Some local copies could not be synced; Nova Navigator stays open.", title="Quit", severity="error")
+                return
+        elif answer != Response.IGNORE:
+            return
+        await self.local_copies.shutdown(remove_files=answer != Response.IGNORE)
+        self.exit()
+
+    async def on_unmount(self) -> None:
+        """Stop local-copy detectors/syncs and remove this process's local-copy directory on exit.
+
+        Prompting about unsynced copies before quitting is a separate concern (not handled
+        here); this only ensures a clean, non-leaking shutdown on a normal exit. Bounded by a
+        timeout so a stuck sync (e.g. an unreachable remote) can never hang app shutdown.
+        """
+        try:
+            await asyncio.wait_for(self.local_copies.shutdown(), timeout=5)
+        except TimeoutError:
+            _logger.warning("Timed out shutting down local copies; continuing exit")
 
     async def open_editor(self, path: VPath) -> None:
         editor_screen = Editor()
@@ -1227,6 +1302,14 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         except Exception:
             self.pop_screen()
             raise
+
+    async def action_local_copies(self) -> None:
+        dialog = LocalCopiesDialog(self.local_copies, reopen=lambda entry: self.open_path(entry.copy.source))
+        await dialog.run()
+
+    async def start_job(self, job: Job) -> None:
+        self.job_registry.add_job(job)
+        await job.start(self.request_callback)
 
     async def execute_command(self, args: list[str], cwd: PurePath) -> None:
         with self.suspend():

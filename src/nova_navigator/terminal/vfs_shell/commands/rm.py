@@ -9,6 +9,8 @@ from nova_navigator.vfs.vpath import VPath
 
 
 class RmCommand(Command):
+    mutates_filesystem = True
+
     @property
     def name(self) -> str:
         return "rm"
