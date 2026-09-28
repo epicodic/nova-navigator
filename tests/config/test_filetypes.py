@@ -53,6 +53,21 @@ def test_filetypes_get_open_command_for_file(tmp_path: Path, monkeypatch: pytest
     assert len(cmd) > 0
 
 
+def test_filetypes_get_open_command_uses_target_for_substitution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    from nova_navigator.config.filetypes import FileTypeConfig
+
+    cfg = FileTypeConfig.load()
+    # Section is chosen from "path" (a video, by mimetype) but %f/%d are substituted from "target".
+    cmd = cfg.get_open_command_for_file_path(PurePath("/remote/a.mp4"), target=PurePath("/local/copy/a.mp4"))
+    assert isinstance(cmd, list)
+    assert any("/local/copy/a.mp4" in c for c in cmd)
+    assert not any("/remote/a.mp4" in c for c in cmd)
+
+
 def test_filetypes_get_colors_returns_tuple(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from nova_navigator.config import loader
 
