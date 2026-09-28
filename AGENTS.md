@@ -79,6 +79,7 @@ Key documents in `docs/` — read every one whose topic overlaps with your task:
 | File | Topic |
 |------|-------|
 | `docs/coding_conventions.md` | Naming, style, and code patterns for this project |
+| `docs/editor.md` | Text editor package (`nova_editor`) — architecture, layering, vendoring policy, and update instructions |
 | `docs/dialog.md` | Dialog base class — read before creating new dialogs |
 | `docs/scheduler.md` | Async task scheduler framework — read before touching `scheduler/` or long-running operations |
 | `docs/directory_browser.md` | Directory browser widget design — read before touching `widgets/directory_browser.py` |
