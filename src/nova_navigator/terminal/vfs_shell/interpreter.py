@@ -141,7 +141,10 @@ class VfsShellInterpreter:
         # Execute
         try:
             exit_code = await cmd.execute(args, ctx)
-        except OSError as e:
+        except (OSError, NotImplementedError) as e:
+            # NotImplementedError covers structural operations (mkdir, remove, rmdir, rename)
+            # that a partially writable mount (e.g. an archive with member writes but no
+            # structural changes) still refuses, even though capabilities.read_only is False.
             write_error_fn(f"{cmd.name}: {e}\r\n")
             return 1
 

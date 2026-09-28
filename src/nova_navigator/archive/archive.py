@@ -58,6 +58,10 @@ class Archive:
         """Return the local archive file path."""
         return self._archive_path
 
+    def version_tag(self, path: PurePath) -> str | None:
+        """Opaque token that changes whenever the member at *path* is rewritten; None if unavailable."""
+        return None
+
     @abstractmethod
     def close(self) -> None:
         """Release the archive file handle."""

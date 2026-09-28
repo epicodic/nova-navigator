@@ -47,3 +47,8 @@ def open_archive(archive_path: str | PurePath, mode: Archive.Mode) -> Archive:
 def is_archive_writable(path: PurePath) -> bool:
     """Whether this filename supports archive member write-back."""
     return any(path.name.endswith(ext) and not archive.read_only for ext, archive in _SUPPORTED_ARCHIVES.items())
+
+
+def is_zip_archive(path: PurePath) -> bool:
+    """Whether this filename maps to the ZIP archive format (including the read-only ZIP-based ones)."""
+    return any(path.name.endswith(ext) and archive.archive_class is ZipArchive for ext, archive in _SUPPORTED_ARCHIVES.items())

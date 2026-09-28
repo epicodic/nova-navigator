@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -15,15 +14,9 @@ from .filesystems.archive import ArchiveFilesystem
 from .filesystems.local import LocalFilesystem
 from .vpath import VPath
 
-LOCAL_COPY_ROOT = Path(tempfile.gettempdir()) / "nova-navigator"
 _MAX_SEGMENT_BYTES = 255
 _MAX_SUFFIX_BYTES = 16
 _CHUNK_SIZE = 1024 * 1024
-
-
-def process_root(pid: int | None = None) -> Path:
-    """Directory holding this process's local copies."""
-    return LOCAL_COPY_ROOT / str(os.getpid() if pid is None else pid)
 
 
 def sanitize_segment(segment: str) -> str:
