@@ -12,6 +12,7 @@ from nova_navigator.dialogs.local_copies_dialog import LocalCopiesDialog
 from nova_navigator.local_copies import CopyEntry, CopyStatus, LocalCopyManager
 from nova_navigator.response import Response
 from nova_navigator.scheduler import Job
+from nova_navigator.vfs.change_detector import ChangeDetector
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_navigator.vfs.local_copy import Baseline, LocalCopy, SourceFingerprint
 from nova_navigator.vfs.vpath import VPath
@@ -24,11 +25,20 @@ async def _noop_start_job(_job: Job) -> None:
     """No-op job starter — the fake manager below never starts real jobs."""
 
 
+async def _noop_change_callback(_digest: str) -> None:
+    """No-op change callback for detectors below — never started, so never invoked."""
+
+
 def _fake_copy(name: str, *, read_only: bool = False) -> LocalCopy:
     source = VPath(f"/home/user/{name}", _fs)
     baseline = Baseline(SourceFingerprint(0, 0.0, None), "digest")
     path = Path(tempfile.gettempdir()) / "nn-local-copies-dialog-test" / name
     return LocalCopy(source, path, baseline, read_only=read_only, pass_through=True)
+
+
+def _watching_detector(copy: LocalCopy) -> ChangeDetector:
+    """An unstarted detector standing in for "this copy is still open and watched"."""
+    return ChangeDetector(copy.path, _noop_change_callback, baseline_digest="digest")
 
 
 class _FakeLocalCopyManager(LocalCopyManager):
@@ -47,6 +57,7 @@ class _FakeLocalCopyManager(LocalCopyManager):
 
     async def close(self, entry: CopyEntry) -> None:
         self.close_calls.append(entry)
+        entry.detector = None  # matches LocalCopyManager.close(): stops watching, keeps the file
 
     async def discard(self, entry: CopyEntry) -> None:
         self.discard_calls.append(entry)
@@ -54,9 +65,18 @@ class _FakeLocalCopyManager(LocalCopyManager):
 
 
 def _three_entries() -> list[CopyEntry]:
+    synced_copy = _fake_copy("synced.txt")
+    conflict_copy = _fake_copy("conflict.txt")
     return [
-        CopyEntry(copy=_fake_copy("synced.txt"), status=CopyStatus.SYNCED),
-        CopyEntry(copy=_fake_copy("conflict.txt"), status=CopyStatus.CONFLICT, error="Source changed."),
+        # SYNCED and CONFLICT represent still-open, watched copies (real detector, unstarted).
+        CopyEntry(copy=synced_copy, status=CopyStatus.SYNCED, detector=_watching_detector(synced_copy)),
+        CopyEntry(
+            copy=conflict_copy,
+            status=CopyStatus.CONFLICT,
+            error="Source changed.",
+            detector=_watching_detector(conflict_copy),
+        ),
+        # READ_ONLY copies never get a detector in production (LocalCopyManager.open()).
         CopyEntry(copy=_fake_copy("readonly.pdf", read_only=True), status=CopyStatus.READ_ONLY),
     ]
 
@@ -138,12 +158,59 @@ async def test_sync_now_disabled_for_read_only_row() -> None:
         assert sync_button.disabled is True
 
 
+# ── close copy ───────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_close_copy_calls_manager_for_selected_row() -> None:
+    entries = _three_entries()
+    manager = _FakeLocalCopyManager(entries)
+
+    async def reopen(_entry: CopyEntry) -> None:
+        pass
+
+    dialog = LocalCopiesDialog(manager, reopen=reopen)
+    app = _make_app(dialog)()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        table = app.screen.query_one("#local_copies_table", DataTable)
+        table.move_cursor(row=1)  # conflict row
+        await pilot.pause()
+        await pilot.click(app.screen.query_one("#close_copy", Button))
+        await pilot.pause()
+        assert manager.close_calls == [entries[1]]
+
+
+@pytest.mark.asyncio
+async def test_closed_copy_shows_closed_suffix_in_status_column() -> None:
+    entries = _three_entries()
+    manager = _FakeLocalCopyManager(entries)
+
+    async def reopen(_entry: CopyEntry) -> None:
+        pass
+
+    dialog = LocalCopiesDialog(manager, reopen=reopen)
+    app = _make_app(dialog)()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        table = app.screen.query_one("#local_copies_table", DataTable)
+        table.move_cursor(row=0)  # synced row
+        await pilot.pause()
+        await pilot.click(app.screen.query_one("#close_copy", Button))
+        await pilot.pause()
+        assert entries[0].detector is None
+        assert table.get_row_at(0)[2] == "synced (closed)"
+        # A read-only entry has no detector either, but is never shown as "(closed)".
+        assert table.get_row_at(2)[2] == "read-only"
+
+
 # ── discard ──────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_discard_on_modified_entry_asks_then_only_discards_after_confirm() -> None:
-    entry = CopyEntry(copy=_fake_copy("draft.txt"), status=CopyStatus.MODIFIED)
+    copy = _fake_copy("draft.txt")
+    entry = CopyEntry(copy=copy, status=CopyStatus.MODIFIED, detector=_watching_detector(copy))
     manager = _FakeLocalCopyManager([entry])
 
     async def reopen(_entry: CopyEntry) -> None:
