@@ -96,5 +96,12 @@ class ZipArchive(Archive):
         return _ArchiveReader(self._zip_file.open(member))
 
     @override
+    def version_tag(self, path: PurePath) -> str | None:
+        member = self._find_member(path)
+        if member is None:
+            return None
+        return f"crc:{member.CRC:08x}"
+
+    @override
     def close(self) -> None:
         self._zip_file.close()

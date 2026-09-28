@@ -240,13 +240,13 @@ def tar_fifo_fs(tmp_path: Path) -> ArchiveFilesystem:
 @pytest.mark.parametrize(
     ("line", "command_name"),
     [
-        ("cp file.txt copy.txt", "cp"),
         ("mv file.txt moved.txt", "mv"),
         ("rm file.txt", "rm"),
         ("mkdir newdir", "mkdir"),
     ],
 )
-async def test_mutating_commands_rejected_in_archive(archive_fs: tuple[ArchiveFilesystem, Path], line: str, command_name: str) -> None:
+async def test_structural_mutating_commands_rejected_in_archive(archive_fs: tuple[ArchiveFilesystem, Path], line: str, command_name: str) -> None:
+    """mv, rm, and mkdir change archive structure, which stays unsupported even for a writable archive."""
     fs, archive_path = archive_fs
     original_bytes = archive_path.read_bytes()
     interp = VfsShellInterpreter(fs, fs.cwd(), cols=80, rows=24)
@@ -256,12 +256,31 @@ async def test_mutating_commands_rejected_in_archive(archive_fs: tuple[ArchiveFi
     exit_code = await interp.execute(line, output.append, errors.append)
 
     assert exit_code == 1
-    assert errors == [f"{command_name}: archive is read-only\r\n"]
+    assert len(errors) == 1
+    assert errors[0].startswith(f"{command_name}: ")
     assert output == []
     assert archive_path.read_bytes() == original_bytes
     with zipfile.ZipFile(archive_path) as archive:
         assert archive.namelist() == ["file.txt"]
         assert archive.read("file.txt") == b"original"
+
+
+@pytest.mark.asyncio
+async def test_cp_writes_new_member_in_writable_archive(archive_fs: tuple[ArchiveFilesystem, Path]) -> None:
+    """cp only needs write(), which a writable archive supports, so it adds a new member."""
+    fs, archive_path = archive_fs
+    interp = VfsShellInterpreter(fs, fs.cwd(), cols=80, rows=24)
+    output: list[str] = []
+    errors: list[str] = []
+
+    exit_code = await interp.execute("cp file.txt copy.txt", output.append, errors.append)
+
+    assert exit_code == 0
+    assert errors == []
+    with zipfile.ZipFile(archive_path) as archive:
+        assert set(archive.namelist()) == {"file.txt", "copy.txt"}
+        assert archive.read("file.txt") == b"original"
+        assert archive.read("copy.txt") == b"original"
 
 
 @pytest.mark.asyncio
@@ -278,7 +297,9 @@ async def test_archive_help_still_lists_mutating_commands(archive_fs: tuple[Arch
     for name in ("cp", "mv", "rm", "mkdir"):
         assert f"  {name}\r\n" in output
     assert fs.capabilities.commands is False
-    assert fs.capabilities.read_only is True
+    # A writable ZIP mount is no longer categorically read-only; mv/rm/mkdir are still
+    # rejected individually because they change archive structure, not member content.
+    assert fs.capabilities.read_only is False
 
 
 @pytest.mark.asyncio

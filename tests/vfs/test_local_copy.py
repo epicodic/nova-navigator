@@ -129,7 +129,6 @@ def test_local_source_is_pass_through(tmp_path: Path) -> None:
     assert not (tmp_path / "root").exists()
 
 
-@pytest.mark.xfail(strict=True, reason="ArchiveFilesystem.version_tag (ZIP CRC) lands in a later task")
 def test_zip_member_content_change_detected_via_crc(tmp_path: Path) -> None:
     zip_path = tmp_path / "x.zip"
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as zf:
