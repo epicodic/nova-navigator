@@ -15,7 +15,6 @@ on:
         required: true
         default: main
         type: string
-
 permissions: {}
 
 jobs:
@@ -30,8 +29,23 @@ jobs:
           ref: ${{ inputs.ref }}
       - uses: astral-sh/setup-uv@v10.2.0
       - run: uv sync --locked --all-groups
-      - name: Open tmate debug session on ${{ inputs.os }}
-        uses: mxschmitt/action-tmate@v3
-        with:
-          limit-access-to-actor: false
-          connect-timeout-seconds: 1800
+      - name: Open browser terminal on Windows
+        if: inputs.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest `
+            -Uri https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.win32.exe `
+            -OutFile "$env:RUNNER_TEMP/ttyd.exe"
+          Invoke-WebRequest `
+            -Uri https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe `
+            -OutFile "$env:RUNNER_TEMP/cloudflared.exe"
+          Start-Process `
+            -FilePath "$env:RUNNER_TEMP/ttyd.exe" `
+            -ArgumentList @('-W', '-p', '7681', 'powershell.exe')
+          & "$env:RUNNER_TEMP/cloudflared.exe" tunnel --url http://127.0.0.1:7681 --protocol http2
+      - name: Open browser terminal on macOS
+        if: inputs.os == 'macos-latest'
+        run: |
+          brew install cloudflared ttyd
+          ttyd -W -p 7681 zsh &
+          cloudflared tunnel --url http://127.0.0.1:7681 --protocol http2
