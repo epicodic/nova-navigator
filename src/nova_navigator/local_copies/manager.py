@@ -90,6 +90,7 @@ class LocalCopyManager:
         # (see _rebase_siblings) -- a fresh instance would defeat it even if it wrapped the
         # very same local file.
         self._archive_mounts: dict[str, ArchiveFilesystem] = {}
+        self._shutdown_started = False
 
     @property
     def entries(self) -> list[CopyEntry]:
@@ -283,7 +284,16 @@ class LocalCopyManager:
             await asyncio.sleep(0.05)
 
     async def shutdown(self, remove_files: bool = True) -> None:
-        """Stop all detectors, await any running syncs, close cached archive mounts, and optionally remove the local-copy root."""
+        """Stop all detectors, await any running syncs, close cached archive mounts, and optionally remove the local-copy root.
+
+        Idempotent: a first call decides *remove_files* for the whole process, and every later
+        call (e.g. the app's unconditional cleanup on unmount, after a quit prompt already shut
+        things down explicitly) is a no-op, so an earlier "keep files" decision is never undone
+        by a later default-argument call.
+        """
+        if self._shutdown_started:
+            return
+        self._shutdown_started = True
         for entry in self._entries.values():
             if entry.detector is not None:
                 await entry.detector.stop()
