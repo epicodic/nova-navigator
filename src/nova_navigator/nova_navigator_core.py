@@ -85,6 +85,9 @@ class NovaNavigatorCore:
             await self.set_panel_directory(path, panel)
             return
 
+        # ArchiveFilesystem.unwrap() currently returns the archive filesystem itself, so the first
+        # check alone already rejects archive members. The explicit exclusion keeps archive members
+        # treated as non-local even if unwrap() is ever changed to return the container's filesystem.
         is_non_local = not isinstance(path.filesystem.unwrap(), LocalFilesystem) or isinstance(path.filesystem, ArchiveFilesystem)
 
         if archive.is_supported_archive(path.path):

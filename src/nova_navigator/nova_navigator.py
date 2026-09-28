@@ -1220,9 +1220,13 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         """Stop local-copy detectors/syncs and remove this process's local-copy directory on exit.
 
         Prompting about unsynced copies before quitting is a separate concern (not handled
-        here); this only ensures a clean, non-leaking shutdown on a normal exit.
+        here); this only ensures a clean, non-leaking shutdown on a normal exit. Bounded by a
+        timeout so a stuck sync (e.g. an unreachable remote) can never hang app shutdown.
         """
-        await self.local_copies.shutdown()
+        try:
+            await asyncio.wait_for(self.local_copies.shutdown(), timeout=5)
+        except TimeoutError:
+            _logger.warning("Timed out shutting down local copies; continuing exit")
 
     async def open_editor(self, path: VPath) -> None:
         editor_screen = Editor()
