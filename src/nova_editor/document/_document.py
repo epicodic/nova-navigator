@@ -11,6 +11,8 @@ if TYPE_CHECKING:
 from textual._cells import cell_len
 from textual.geometry import Size
 
+from nova_editor.core.text_width import advance_disp, locate_cover
+
 Newline = Literal["\r\n", "\n", "\r"]
 """The type representing valid line separators."""
 VALID_NEWLINES = set(get_args(Newline))
@@ -198,6 +200,42 @@ class DocumentBase(ABC):
         Returns:
             The line or list of lines requested.
         """
+
+    # -- row access (nova_editor addition; lazy documents override these) ---------------------------------
+    def is_long(self, row: int) -> bool:
+        """Return whether the row must never be decoded as a whole (always False for in-memory documents)."""
+        return False
+
+    def line_length(self, row: int) -> int | None:
+        """Return the character count of the row, or None when it is not yet known."""
+        return len(self.get_line(row))
+
+    def row_byte_length(self, row: int) -> int:
+        """Return the UTF-8 length of the row content."""
+        return len(self.get_line(row).encode("utf-8", "surrogateescape"))
+
+    def column_slice(self, row: int, start: int, stop: int) -> str:
+        """Return characters [start, stop) of the row (at most 8192 characters for lazy documents)."""
+        return self.get_line(row)[start:stop]
+
+    def has_char_at(self, row: int, column: int) -> bool:
+        """Return whether the row has a character at `column`."""
+        return column < len(self.get_line(row))
+
+    def display_column(self, row: int, column: int, tab_width: int = 4) -> int | None:
+        """Return the display column of character column `column`, or None when unknown."""
+        return advance_disp(self.get_line(row)[:column], 0, tab_width)
+
+    def column_at_display(self, row: int, x: int, tab_width: int = 4) -> int | None:
+        """Return the character column covering display column `x`, or None when unknown."""
+        index, _hit = locate_cover(self.get_line(row), 0, x, tab_width)
+        return index
+
+    def byte_offset(self, row: int, column: int) -> int | None:
+        """Return the byte offset from the start of the document of a location, or None when unknown."""
+        newline = len(self.newline) if hasattr(self, "newline") else 1
+        before = sum(len(self.get_line(r).encode("utf-8", "surrogateescape")) + newline for r in range(row))
+        return before + len(self.get_line(row)[:column].encode("utf-8", "surrogateescape"))
 
 
 class Document(DocumentBase):
