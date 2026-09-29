@@ -6,7 +6,7 @@ an empty file has exactly one empty row. Unicode separators, VT, FF and NEL are 
 
 from __future__ import annotations
 
-import contextlib
+import logging
 import re
 import threading
 import time
@@ -14,6 +14,7 @@ from array import array
 from bisect import bisect_left
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from types import TracebackType
 
 from nova_editor.core.byte_source import ByteSource, SourceChanged
 
@@ -25,6 +26,7 @@ DEFAULT_MAX_LINES_PER_CALL = 128
 DEFAULT_SCAN_BLOCK = 1 << 20
 DEFAULT_WALK_WINDOW = 64 * 1024
 
+_LOG = logging.getLogger(__name__)
 _TERMINATOR = re.compile(rb"\r\n|\n|\r")
 TAIL_BYTES = 2  # the longest terminator
 
@@ -52,6 +54,25 @@ class LineSnapshot:
     count: int
     complete: bool
     error: BaseException | None
+
+
+class _ContainAndLog:
+    """Context manager that swallows an `Exception` from its block and logs it at debug level."""
+
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None) -> bool:
+        if exc is None or not isinstance(exc, Exception):
+            return False
+        _LOG.debug("subscriber callback raised", exc_info=exc)
+        return True
+
+
+def call_subscriber(callback: Callable[[], None]) -> None:
+    """Run a subscriber callback; an exception it raises is contained and logged at debug level."""
+    with _ContainAndLog():
+        callback()
 
 
 class _OverBudget(Exception):
@@ -183,9 +204,17 @@ class LineIndex:
         return self.snapshot().complete
 
     def subscribe(self, callback: Callable[[], None]) -> None:
-        """Register a callback run on the scan thread, outside every lock, after progress and at completion."""
+        """Register a callback run on the scan thread, outside every lock, after progress and at completion.
+
+        When the scan already completed or failed, the callback is also run once, immediately, on the calling thread (outside
+        the lock), so a late subscriber sees the terminal state.
+        An exception raised by a callback is contained and logged at debug level.
+        """
         with self._lock:
             self._subscribers.append(callback)
+            terminal = self._complete or self._error is not None
+        if terminal:
+            call_subscriber(callback)
 
     def snapshot(self) -> LineSnapshot:
         with self._lock:
@@ -203,19 +232,39 @@ class LineIndex:
 
     @property
     def long_overflow(self) -> bool:
-        """Whether long rows beyond the side-table cap were left unrecorded."""
+        """Whether long rows beyond the side-table cap were left unrecorded.
+
+        Once set, walks over an unrecorded long row can exceed the read budget, so `row_range` and `lines` may return `None`
+        or a short list for rows the scan has already counted.
+        """
         with self._lock:
             return self._long_overflow
 
     def row_range(self, row: int) -> RowRange | None:
-        """Return the byte range of `row`, or `None` when it is not known yet or cannot be resolved within the read budget."""
+        """Return the byte range of `row`, or `None` when it is not known yet or cannot be resolved within the read budget.
+
+        `None` therefore means one of two things: the scan has not reached the row yet, or the walk from the nearest stored
+        entry would exceed `read_budget` (for example a long row that overflowed the side table).
+        To tell them apart, check `snapshot().complete` and `long_overflow`: on a complete scan every row exists, so `None`
+        means the budget was exceeded; on an incomplete scan a row at or beyond `snapshot().count - 1` is not scanned yet,
+        and a row below it that returns `None` was cut off by the budget, most likely because `long_overflow` is set.
+
+        Raises `SourceChanged` when the walk's own source reads find that the file changed.
+        """
         if row < 0:
             raise IndexError(row)
         found = self._resolve(row, 1)
         return found[0] if found else None
 
     def lines(self, first: int, count: int) -> list[RowRange]:
-        """Return up to `min(count, max_lines_per_call)` consecutive known rows from `first` (a prefix when the frontier or the budget is reached)."""
+        """Return up to `min(count, max_lines_per_call)` consecutive known rows from `first`.
+
+        A list shorter than requested is a prefix: it ends where the scan frontier is (the rows are not scanned yet) or where
+        the read budget is exhausted (the next row is unresolved, for example after a side-table overflow).
+        To tell them apart, check `snapshot().complete` and `long_overflow`.
+
+        Raises `SourceChanged` when the walk's own source reads find that the file changed.
+        """
         if first < 0:
             raise IndexError(first)
         if count <= 0:
@@ -321,8 +370,7 @@ class LineIndex:
         with self._lock:
             subscribers = list(self._subscribers)
         for callback in subscribers:
-            with contextlib.suppress(Exception):
-                callback()
+            call_subscriber(callback)
 
     def _scan_bytes(self, block: bytes, base: int, final: bool, state: _ScanState) -> None:
         begin = 0

@@ -7,7 +7,6 @@ through `wait_until_known`.
 
 from __future__ import annotations
 
-import contextlib
 import threading
 import time
 from array import array
@@ -16,12 +15,20 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from nova_editor.core.byte_source import ByteSource, SourceChanged
-from nova_editor.core.text_width import SURROGATE_ESCAPE, TAB_WIDTH, advance_disp, locate_cover, resync, safe_cut, utf8_len
+from nova_editor.core.line_index import DEFAULT_SCAN_BLOCK, call_subscriber
+from nova_editor.core.text_width import (
+    MAX_SEQUENCE,
+    SURROGATE_ESCAPE,
+    TAB_WIDTH,
+    advance_disp,
+    locate_cover,
+    resync,
+    safe_cut,
+    utf8_len,
+)
 
 CHECKPOINT_CHARS = 65_536
-SCAN_BLOCK = 1 << 20
 _WAIT_SLICE = 0.05
-_MAX_UTF8_BYTES = 4
 
 
 @dataclass(frozen=True)
@@ -35,7 +42,13 @@ class Frontier:
 
 
 class LongLineIndex:
-    """Checkpoints of one row `[start, end)` of the source; the row is never held as `str`."""
+    """Checkpoints of one row `[start, end)` of the source; the row is never held as `str`.
+
+    Every query that decodes text (`try_char_to_byte`, `try_char_to_disp`, `try_disp_to_char`, `try_get_slice`,
+    `decode_from_byte`, `byte_to_char_approx`) reads the source itself and can raise `SourceChanged` when the file changed;
+    a caller on the UI path must be ready to handle it.
+    Before closing the source, call `cancel()` and then `join()`, so that no scan read is still in flight.
+    """
 
     def __init__(
         self,
@@ -45,7 +58,7 @@ class LongLineIndex:
         *,
         tab_width: int = TAB_WIDTH,
         checkpoint_chars: int = CHECKPOINT_CHARS,
-        scan_block: int = SCAN_BLOCK,
+        scan_block: int = DEFAULT_SCAN_BLOCK,
         yield_seconds: float = 0.0,
         autostart: bool = True,
     ) -> None:
@@ -87,15 +100,39 @@ class LongLineIndex:
         with self._cond:
             self._cond.notify_all()
 
+    def join(self, timeout: float | None = None) -> bool:
+        """Wait for the scan thread to finish (tests and shutdown); return whether the scan completed.
+
+        Call `cancel()` first, then `join()`, before closing the source: a cancelled scan stops at the next block boundary,
+        after the read in flight returns.
+        """
+        if self._thread is not None:
+            self._thread.join(timeout)
+        return self.frontier().complete
+
     def subscribe(self, callback: Callable[[], None]) -> None:
-        """Call `callback` on the scan thread on each frontier advance and on completion."""
+        """Call `callback` on the scan thread on each frontier advance and on completion.
+
+        When the scan already completed or failed, the callback is also run once, immediately, on the calling thread (outside
+        the lock), so a late subscriber sees the terminal state.
+        An exception raised by a callback is contained and logged at debug level.
+        """
         with self._cond:
             self._subscribers.append(callback)
+            terminal = self._complete or self._error is not None
+        if terminal:
+            call_subscriber(callback)
 
     def frontier(self) -> Frontier:
         """Return a consistent snapshot of the scan progress."""
         with self._cond:
             return Frontier(self._cp_chars[-1], self._cp_disp[-1], self._cp_byte[-1], self._complete)
+
+    @property
+    def checkpoint_count(self) -> int:
+        """Number of checkpoints stored so far, including the one at the row start."""
+        with self._cond:
+            return len(self._cp_chars)
 
     @property
     def total_chars(self) -> int | None:
@@ -150,16 +187,25 @@ class LongLineIndex:
             self._notify()
 
     def _publish(self, text: str, chars: int, disp: int, rel: int) -> tuple[int, int, int]:
-        """Append one checkpoint per `checkpoint_chars` of `text`; return the new running totals."""
+        """Append one checkpoint per `checkpoint_chars` of `text`; return the new running totals.
+
+        The widths and byte lengths are computed before the lock is taken, so queries never wait for them.
+        """
+        new_chars: list[int] = []
+        new_disp: list[int] = []
+        new_byte: list[int] = []
+        for k in range(0, len(text), self._step):
+            piece = text[k : k + self._step]
+            chars += len(piece)
+            disp = advance_disp(piece, disp, self._tab)
+            rel += utf8_len(piece)
+            new_chars.append(chars)
+            new_disp.append(disp)
+            new_byte.append(rel)
         with self._cond:
-            for k in range(0, len(text), self._step):
-                piece = text[k : k + self._step]
-                chars += len(piece)
-                disp = advance_disp(piece, disp, self._tab)
-                rel += utf8_len(piece)
-                self._cp_chars.append(chars)
-                self._cp_disp.append(disp)
-                self._cp_byte.append(rel)
+            self._cp_chars.extend(new_chars)
+            self._cp_disp.extend(new_disp)
+            self._cp_byte.extend(new_byte)
             self._cond.notify_all()
         return chars, disp, rel
 
@@ -167,8 +213,7 @@ class LongLineIndex:
         with self._cond:
             subscribers = list(self._subscribers)
         for callback in subscribers:
-            with contextlib.suppress(Exception):
-                callback()
+            call_subscriber(callback)
 
     # -- waiting (tests, worker threads; never the UI thread) ----------------------------------
     def _known(self, char_col: int | None, disp_col: int | None) -> bool:
@@ -210,7 +255,7 @@ class LongLineIndex:
     def _decode_from(self, byte_rel: int, nchars: int) -> str:
         """Decode up to `nchars` characters from a known character boundary."""
         pos = self.start_offset + byte_rel
-        size = min(nchars * _MAX_UTF8_BYTES, self.end_offset - pos)
+        size = min(nchars * MAX_SEQUENCE, self.end_offset - pos)
         if size <= 0:
             return ""
         return self._source.read(pos, size).decode("utf-8", SURROGATE_ESCAPE)[:nchars]
@@ -219,9 +264,10 @@ class LongLineIndex:
         """Decode from an arbitrary byte offset, skipping up to three continuation bytes first.
 
         Returns `(text, skipped)`. Needs no prefix scan.
+        Raises `SourceChanged` when the file changed.
         """
         pos = self.start_offset + byte_rel
-        size = min(nchars * _MAX_UTF8_BYTES + _MAX_UTF8_BYTES, self.end_offset - pos)
+        size = min(nchars * MAX_SEQUENCE + MAX_SEQUENCE, self.end_offset - pos)
         if size <= 0:
             return "", 0
         data = self._source.read(pos, size)
@@ -250,7 +296,10 @@ class LongLineIndex:
 
     # -- non-blocking queries: `None` means "not scanned that far yet" ------------------------
     def try_char_to_byte(self, col: int) -> int | None:
-        """Byte offset (relative to the row start) of character column `col`, clamped to the row end."""
+        """Byte offset (relative to the row start) of character column `col`, clamped to the row end.
+
+        Raises `SourceChanged` when the file changed.
+        """
         found = self._char_checkpoint(max(0, col))
         if found is None:
             return None
@@ -258,7 +307,10 @@ class LongLineIndex:
         return b0 if col == ch0 else b0 + utf8_len(self._decode_from(b0, col - ch0))
 
     def try_char_to_disp(self, col: int) -> int | None:
-        """Display column of character column `col`, clamped to the row end."""
+        """Display column of character column `col`, clamped to the row end.
+
+        Raises `SourceChanged` when the file changed.
+        """
         found = self._char_checkpoint(max(0, col))
         if found is None:
             return None
@@ -269,6 +321,7 @@ class LongLineIndex:
         """Column of the character covering display column `target` (the row length beyond the end).
 
         `ceil` picks the first column starting at or after `target`.
+        Raises `SourceChanged` when the file changed.
         """
         if ceil:
             if target <= 0:
@@ -294,13 +347,24 @@ class LongLineIndex:
                 return ch
 
     def try_get_slice(self, a: int, b: int) -> str | None:
-        """Text of columns `[a, b)`, or `None` when `a` is beyond the scanned frontier."""
-        if b <= a:
-            return ""
+        """Text of columns `[a, b)`, or `None` when `a` is beyond the scanned frontier.
+
+        One call is bounded to one checkpoint interval: the request is clamped to at most `checkpoint_chars` characters
+        (`b = min(b, a + checkpoint_chars)`), so a caller that wants more asks again from the end of the returned text.
+        While the scan is incomplete the request is also clamped to the scanned frontier, so the text never extends beyond it.
+        An empty range returns `""` only when `a` is within the frontier (or the scan is complete).
+        Raises `SourceChanged` when the file changed.
+        """
         found = self._char_checkpoint(max(0, a))
         if found is None:
             return None
         ch0, _, b0, a = found
+        b = min(b, a + self._step)
+        with self._cond:
+            if not self._complete:
+                b = min(b, int(self._cp_chars[-1]))
+        if b <= a:
+            return ""
         return self._decode_from(b0, b - ch0)[a - ch0 :]
 
     # -- immediate estimates ------------------------------------------------------------------
@@ -314,15 +378,20 @@ class LongLineIndex:
         return max(value, int(value * total / byte))
 
     def estimate_length(self) -> int:
-        """Character count: exact once complete, otherwise the scanned prefix scaled by bytes."""
+        """Character count, available at any time: the scanned prefix scaled by bytes, exact once the scan completed."""
         return self._scaled(self._cp_chars)
 
     def estimate_display_width(self) -> int:
-        """Display width: exact once complete, otherwise the scanned prefix scaled by bytes."""
+        """Display width, available at any time: the scanned prefix scaled by bytes, exact once the scan completed."""
         return self._scaled(self._cp_disp)
 
     def byte_to_char_approx(self, byte_rel: int) -> int:
-        """Approximate character column of a byte offset: exact inside the frontier, scaled beyond it."""
+        """Approximate character column of a byte offset: exact inside the frontier, scaled beyond it.
+
+        A negative offset counts as 0.
+        Raises `SourceChanged` when the file changed.
+        """
+        byte_rel = max(0, byte_rel)
         with self._cond:
             i = bisect_right(self._cp_byte, byte_rel) - 1
             ch0, b0 = int(self._cp_chars[i]), int(self._cp_byte[i])
