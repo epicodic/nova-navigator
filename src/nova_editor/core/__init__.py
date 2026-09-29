@@ -1,13 +1,19 @@
-"""Core text editing logic (Textual-free).
+"""Textual-free core of the editor: byte source, line index and long-line index.
 
-This subpackage contains non-Textual text editing logic and data structures,
-designed to be reusable in different UI contexts. It will eventually include:
-
-- Buffer management for very large files (currently stubbed)
-- Efficient indexing and navigation primitives
-- Line/column management for long lines
-- Lazy document loading strategies
-
-Currently empty as all editor logic is in the vendored TextArea.
-No imports from textual are permitted in this module.
+No module in this package may import Textual (REQ-17); a test enforces it.
 """
+
+from nova_editor.core.byte_source import ByteSource, PreadSource, SourceChanged
+from nova_editor.core.line_index import LineIndex, LineSnapshot, RowRange
+from nova_editor.core.long_line_index import Frontier, LongLineIndex
+
+__all__ = [
+    "ByteSource",
+    "Frontier",
+    "LineIndex",
+    "LineSnapshot",
+    "LongLineIndex",
+    "PreadSource",
+    "RowRange",
+    "SourceChanged",
+]
