@@ -71,6 +71,10 @@ For a 5 GB file: 733,516 entries, about 36 MiB RssAnon with full cache; a full a
 Background thread appends and publishes `(count, complete)` snapshots under one lock.
 Count is a lower bound until complete; UI-path calls never wait.
 Callbacks run on the scan thread, outside locks.
+Scanning 512 MiB of 99-byte rows takes 0.65 s with LF terminators (byte-search fast path), about 2.3 s with CRLF, and about 2.4 s with lone CR (regex path).
+Files with CR bytes scan about 3.5 times slower per byte.
+Scan of the 5 GB file takes about 6.6 s warm and 8.4 s cold, against 4.1 s in the ACT1 prototype.
+Each row now also checks the long-row rule.
 
 **UI-path byte budget (DEC-14):**
 
@@ -86,7 +90,10 @@ With defaults, worst case is about 3.1 MB per call; measured worst 0.31 ms on a 
 
 Checkpoints (character column, display column, byte offset) are stored relative to the row start.
 Their spacing is at most 65,536 characters: each scan block of 1 MiB adds a shorter tail piece when its length is not a multiple of 65,536.
-For a 200 MB line: 3,201 checkpoints (`checkpoint_count`), about 77 KB of arrays, peak 77.5 MiB RssAnon.
+For a 200 MB line: 3,201 checkpoints (`checkpoint_count`), about 77 KB of arrays.
+Peak about 35 MiB RssAnon in the measurement.
+A first version peaked at 77.5 MiB because rich's caching cell-width function retained every 65,536-character piece.
+text_width now uses the non-caching rich.cells.cell_len.
 UTF-8 resync on block boundaries; surrogateescape for invalid bytes; tabs, wide chars and combining marks via `rich.cells`.
 Non-blocking `try_*` queries return `None` beyond the scanned frontier (no waiting; a far query returned in 0.003 ms vs ACT1's 1.8–4.3 s blocking).
 Blocking is opt-in via `wait_until_known` with timeout/cancel support.
