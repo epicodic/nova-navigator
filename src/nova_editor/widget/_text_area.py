@@ -18,7 +18,7 @@ from textual.actions import SkipAction
 from textual.cache import LRUCache
 from textual.color import Color
 from textual.content import Content
-from textual.expand_tabs import expand_tabs_inline, expand_text_tabs_from_widths
+from textual.expand_tabs import expand_text_tabs_from_widths
 from textual.screen import Screen
 from textual.style import Style as ContentStyle
 
@@ -44,13 +44,15 @@ if TYPE_CHECKING:
     from tree_sitter import Language, Query
 
 from textual import events, log
-from textual._cells import cell_len, cell_width_to_column_index
 from textual.binding import Binding
 from textual.events import Message, MouseEvent
 from textual.geometry import Offset, Region, Size, Spacing, clamp
 from textual.reactive import Reactive, reactive
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
+
+_WORD_WINDOW = 8192
+"""Characters scanned on each side of the cursor by the word locators."""
 
 _OPENING_BRACKETS = {"{": "}", "[": "]", "(": ")"}
 _CLOSING_BRACKETS = {v: k for k, v in _OPENING_BRACKETS.items()}
@@ -869,7 +871,7 @@ NovaTextArea {
         cursor_row, cursor_column = cursor_location
 
         try:
-            character = self.document[cursor_row][cursor_column]
+            character = self.document.column_slice(cursor_row, cursor_column, cursor_column + 1)
         except IndexError:
             character = ""
 
@@ -1307,7 +1309,7 @@ NovaTextArea {
         Returns:
             A rendered line.
         """
-        if not self.text and self.placeholder:
+        if self.placeholder and not self.text:
             placeholder_lines = Content.from_text(self.placeholder).wrap(self.content_size.width)
             if y < len(placeholder_lines):
                 style = self.get_visual_style("text-area--placeholder")
@@ -1898,8 +1900,9 @@ NovaTextArea {
         Returns:
             The column corresponding to the cell width on that row.
         """
-        line = self.document[row_index]
-        return cell_width_to_column_index(line, cell_width, self.indent_width)
+        column = self.document.column_at_display(row_index, cell_width, self.indent_width)
+        # None means unknown (lazy documents only); the conservative answer is the start of the row.
+        return 0 if column is None else column
 
     def clamp_visitable(self, location: Location) -> Location:
         """Clamp the given location to the nearest visitable location.
@@ -1914,12 +1917,18 @@ NovaTextArea {
 
         row, column = location
         try:
-            line_text = document[row]
+            fits = column <= 0 or document.has_char_at(row, column - 1)
+            length = None if fits else document.line_length(row)
         except IndexError:
-            line_text = ""
+            fits = False
+            length = 0
 
         row = clamp(row, 0, document.line_count - 1)
-        column = clamp(column, 0, len(line_text))
+        if fits or length is None:
+            # An unknown length (lazy documents only) keeps the column instead of guessing a clamp.
+            column = max(column, 0)
+        else:
+            column = clamp(column, 0, length)
 
         return row, column
 
@@ -2013,12 +2022,14 @@ NovaTextArea {
             index: The index of the line to select (starting from 0).
         """
         try:
-            line = self.document[index]
+            length = self.document.line_length(index)
         except IndexError:
             return
-        else:
-            self.selection = Selection((index, 0), (index, len(line)))
-            self.record_cursor_width()
+        if length is None:
+            # Unknown length (lazy documents only): leave the selection unchanged.
+            return
+        self.selection = Selection((index, 0), (index, length))
+        self.record_cursor_width()
 
     def action_select_line(self) -> None:
         """Select all the text on the current line."""
@@ -2028,7 +2039,10 @@ NovaTextArea {
     def select_all(self) -> None:
         """Select all of the text in the `NovaTextArea`."""
         last_line = self.document.line_count - 1
-        length_of_last_line = len(self.document[last_line])
+        length_of_last_line = self.document.line_length(last_line)
+        if length_of_last_line is None:
+            # Unknown length (lazy documents only): leave the selection unchanged.
+            return
         selection_start = (0, 0)
         selection_end = (last_line, length_of_last_line)
         self.selection = Selection(selection_start, selection_end)
@@ -2085,9 +2099,7 @@ NovaTextArea {
     def cursor_at_end_of_line(self) -> bool:
         """True if and only if the cursor is at the end of a row."""
         cursor_row, cursor_column = self.selection.end
-        row_length = len(self.document[cursor_row])
-        cursor_at_end = cursor_column == row_length
-        return cursor_at_end
+        return not self.document.has_char_at(cursor_row, cursor_column)
 
     @property
     def cursor_at_start_of_text(self) -> bool:
@@ -2245,19 +2257,25 @@ NovaTextArea {
     def get_cursor_word_left_location(self) -> Location:
         """Get the location the cursor will jump to if it goes 1 word left.
 
+        At most `_WORD_WINDOW` (8192) characters left of the cursor are searched; a word that is longer
+        ends at the window edge. Rows shorter than the window give the stock result.
+
         Returns:
             The location the cursor will jump on "jump word left".
         """
         cursor_row, cursor_column = self.cursor_location
         if cursor_row > 0 and cursor_column == 0:
             # Going to the previous row
-            return cursor_row - 1, len(self.document[cursor_row - 1])
+            previous_length = self.document.line_length(cursor_row - 1)
+            # Unknown length (lazy documents only): fall back to the start of the previous row.
+            return cursor_row - 1, 0 if previous_length is None else previous_length
 
         # Staying on the same row
-        line = self.document[cursor_row][:cursor_column]
+        window_start = max(0, cursor_column - _WORD_WINDOW)
+        line = self.document.column_slice(cursor_row, window_start, cursor_column)
         search_string = line.rstrip()
         matches = list(re.finditer(self._word_pattern, search_string))
-        cursor_column = matches[-1].start() if matches else 0
+        cursor_column = window_start + matches[-1].start() if matches else window_start
         return cursor_row, cursor_column
 
     def action_cursor_word_right(self, select: bool = False) -> None:
@@ -2273,17 +2291,20 @@ NovaTextArea {
     def get_cursor_word_right_location(self) -> Location:
         """Get the location the cursor will jump to if it goes 1 word right.
 
+        At most `_WORD_WINDOW` (8192) characters right of the cursor are searched; a word that is longer
+        ends at the window edge. Rows shorter than the window give the stock result.
+
         Returns:
             The location the cursor will jump on "jump word right".
         """
         cursor_row, cursor_column = self.selection.end
-        line = self.document[cursor_row]
-        if cursor_row < self.document.line_count - 1 and cursor_column == len(line):
+        if cursor_row < self.document.line_count - 1 and not self.document.has_char_at(cursor_row, cursor_column):
             # Moving to the line below
             return cursor_row + 1, 0
 
         # Staying on the same line
-        search_string = line[cursor_column:]
+        search_string = self.document.column_slice(cursor_row, cursor_column, cursor_column + _WORD_WINDOW)
+        window_length = len(search_string)
         pre_strip_length = len(search_string)
         search_string = search_string.lstrip()
         strip_offset = pre_strip_length - len(search_string)
@@ -2292,7 +2313,7 @@ NovaTextArea {
         if matches:
             cursor_column += matches[0].start() + strip_offset
         else:
-            cursor_column = len(line)
+            cursor_column += window_length
 
         return cursor_row, cursor_column
 
@@ -2334,8 +2355,9 @@ NovaTextArea {
         Returns:
             The cell width of the column relative to the start of the row.
         """
-        line = self.document[row]
-        return cell_len(expand_tabs_inline(line[:column], self.indent_width))
+        width = self.document.display_column(row, column, self.indent_width)
+        # None means unknown (lazy documents only); the conservative answer is the start of the row.
+        return 0 if width is None else width
 
     def record_cursor_width(self) -> None:
         """Record the current cell width of the cursor.
@@ -2625,16 +2647,16 @@ NovaTextArea {
         cursor_row, cursor_column = end
 
         # Check the current line for a word boundary
-        line = self.document[cursor_row][cursor_column:]
+        line = self.document.column_slice(cursor_row, cursor_column, cursor_column + _WORD_WINDOW)
         matches = list(re.finditer(r"\s*\w+", line))
 
-        current_row_length = len(self.document[cursor_row])
+        at_end = not self.document.has_char_at(cursor_row, cursor_column)
         if matches:
             to_location = (cursor_row, cursor_column + matches[0].end())
-        elif cursor_row < self.document.line_count - 1 and cursor_column == current_row_length:
+        elif cursor_row < self.document.line_count - 1 and at_end:
             to_location = (cursor_row + 1, 0)
         else:
-            to_location = (cursor_row, current_row_length)
+            to_location = (cursor_row, cursor_column + len(line))
 
         self._delete_via_keyboard(end, to_location)
 
