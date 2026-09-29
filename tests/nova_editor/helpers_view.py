@@ -12,6 +12,8 @@ from typing import NamedTuple
 
 from rich.cells import cell_len
 
+from nova_editor.document._lazy_document import LazyDocument
+
 # Lowered options for testing lazy document with small synthetic files
 LOWERED_OPTIONS = {
     "stride": 4,
@@ -191,3 +193,70 @@ def oracle_display_column(text: str, column: int, tab_width: int = 4) -> int:
         else:
             display_col += cell_len(char)
     return display_col
+
+
+def oracle_cells(text: str, tab_width: int = 4) -> list[str]:
+    """Return the display cells of `text`: one entry per cell, a wide character is followed by an empty continuation cell.
+
+    A zero-width character is appended to the cell of the character before it (dropped at the start of the text).
+    """
+    cells: list[str] = []
+    for char in text:
+        if char == "\t":
+            cells.extend(" " * (tab_width - len(cells) % tab_width))
+            continue
+        cells_wide = cell_len(char)
+        if cells_wide == 0:
+            if cells:
+                previous = len(cells) - 1
+                while previous > 0 and cells[previous] == "":
+                    previous -= 1
+                cells[previous] += char
+            continue
+        cells.append(char)
+        cells.extend([""] * (cells_wide - 1))
+    return cells
+
+
+def cells_to_text(cells: list[str], start: int, width: int) -> str:
+    """Join `width` cells from `start` like a cropped strip: a wide character cut by either edge becomes spaces; padded to `width`."""
+    picked = cells[start : start + width]
+    if picked and picked[0] == "" and start > 0:
+        picked[0] = " "
+    if picked and start + len(picked) < len(cells) and cells[start + len(picked)] == "" and picked[-1] != "":
+        picked[-1] = " "
+    text = "".join(picked)
+    return text + " " * (width - len(picked))
+
+
+def oracle_window(data: bytes, row: int, x: int, width: int, tab_width: int = 4) -> str:
+    """Return the text of the display cells [x, x + width) of a row, padded with spaces to `width`."""
+    cells = oracle_cells(oracle_row_text(data, row), tab_width)
+    return cells_to_text(cells, x, width)
+
+
+def oracle_section(data: bytes, row: int, section: int, grid_width: int, view_width: int, tab_width: int = 4) -> str:
+    """Return the grid-wrapped section `section` of a row as displayed: first `view_width` cells from its first character.
+
+    Section k holds the characters whose display start lies in [k*grid_width, (k+1)*grid_width); tab phase is the true display column.
+    """
+    display = 0
+    members: list[str] = []
+    first_disp: int | None = None
+    for char in oracle_row_text(data, row):
+        if section * grid_width <= display < (section + 1) * grid_width:
+            if first_disp is None:
+                first_disp = display
+            members.append(char)
+        display += tab_width - display % tab_width if char == "\t" else cell_len(char)
+    if first_disp is None:
+        return " " * view_width
+    phantom = first_disp % tab_width
+    cells = oracle_cells(" " * phantom + "".join(members), tab_width)
+    return cells_to_text(cells, phantom, view_width)
+
+
+def wait_frontier(document: LazyDocument, row: int, timeout: float = 10.0) -> None:
+    """Wait until the line index is complete and the long index of `row` has scanned the whole row."""
+    assert document.wait_indexed(timeout)
+    assert document.long_index(row).join(timeout)
