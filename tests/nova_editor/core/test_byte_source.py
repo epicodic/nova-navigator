@@ -213,7 +213,7 @@ def test_close_waits_for_an_in_flight_read(tmp_path: Path, monkeypatch: pytest.M
     def reader() -> None:
         try:
             results.append(source.read(10, 20))
-        except Exception as error:
+        except (ValueError, SourceChanged, OSError) as error:
             errors.append(error)
 
     reading = threading.Thread(target=reader)

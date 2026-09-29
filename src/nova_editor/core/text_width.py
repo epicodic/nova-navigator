@@ -11,7 +11,7 @@ TAB_WIDTH = 4
 SURROGATE_ESCAPE = "surrogateescape"
 
 _CHUNK = 1024
-_MAX_SEQUENCE = 4
+MAX_SEQUENCE = 4  # the longest UTF-8 sequence in bytes
 _CONTINUATION_MASK = 0xC0
 _CONTINUATION_TAG = 0x80
 _LEAD_2_LIMIT = 0xE0
@@ -67,7 +67,7 @@ def locate_cover(text: str, disp0: int, target: int, tab: int = TAB_WIDTH) -> tu
 def safe_cut(data: bytes) -> int:
     """Return the length of `data` without a trailing incomplete UTF-8 sequence."""
     size = len(data)
-    for back in range(1, min(_MAX_SEQUENCE, size) + 1):
+    for back in range(1, min(MAX_SEQUENCE, size) + 1):
         byte = data[-back]
         if byte & _CONTINUATION_MASK == _CONTINUATION_TAG:
             continue

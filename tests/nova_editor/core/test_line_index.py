@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -110,14 +112,16 @@ def test_rows_past_the_frontier_return_none_immediately() -> None:
     gate = threading.Event()
     index = LineIndex(MemorySource(b"a\nb\nc\n", gate=gate), scan_block=2)
     index.start()
-    began = time.perf_counter()
-    assert index.snapshot().count == 1
-    assert not index.snapshot().complete
-    assert index.row_range(1) is None
-    assert index.row_range(0) is None  # row 0 is open: its terminator is not scanned yet
-    assert index.lines(0, 5) == []
-    assert time.perf_counter() - began < 0.05
-    gate.set()
+    try:
+        began = time.perf_counter()
+        assert index.snapshot().count == 1
+        assert not index.snapshot().complete
+        assert index.row_range(1) is None
+        assert index.row_range(0) is None  # row 0 is open: its terminator is not scanned yet
+        assert index.lines(0, 5) == []
+        assert time.perf_counter() - began < 0.05
+    finally:
+        gate.set()
     assert index.join(10)
     assert index.row_range(1) == RowRange(2, 3, 4)
 
@@ -140,9 +144,11 @@ def test_subscriber_called_and_raising_subscriber_does_not_stop_scan() -> None:
 def test_cancel_leaves_a_lower_bound() -> None:
     gate = threading.Event()
     index = LineIndex(MemorySource(b"a\n" * 100, gate=gate), scan_block=4)
-    index.start()
-    index.cancel()
-    gate.set()
+    try:
+        index.start()
+        index.cancel()
+    finally:
+        gate.set()
     index.join(10)
     snap = index.snapshot()
     assert not snap.complete
@@ -206,3 +212,66 @@ def test_unexpected_scan_error_is_recorded_and_subscribers_are_notified() -> Non
     assert isinstance(snap.error, RuntimeError)
     assert not snap.complete
     assert called.is_set()
+
+
+def test_late_subscriber_of_a_completed_scan_is_called_once() -> None:
+    index = build(b"a\n" * 50, scan_block=8)
+    calls: list[bool] = []
+    index.subscribe(lambda: calls.append(index.snapshot().complete))
+    assert calls == [True]
+
+
+def test_late_subscriber_of_a_failed_scan_is_called_once() -> None:
+    index = LineIndex(_FailingScanSource(b"a\nb\n"))
+    previous_hook = threading.excepthook
+    threading.excepthook = lambda _args: None  # the scan thread re-raises on purpose
+    try:
+        index.start()
+        index.join(10)
+    finally:
+        threading.excepthook = previous_hook
+    calls: list[int] = []
+    index.subscribe(lambda: calls.append(1))
+    assert calls == [1]
+
+
+def test_subscriber_of_a_running_scan_is_not_called_at_subscription() -> None:
+    gate = threading.Event()
+    index = LineIndex(MemorySource(b"a\n" * 50, gate=gate), scan_block=8)
+    calls: list[int] = []
+    try:
+        index.subscribe(lambda: calls.append(1))
+        assert calls == []
+    finally:
+        gate.set()
+        index.cancel()
+        index.join(10)
+
+
+def test_raising_subscriber_is_contained_and_logged(caplog: pytest.LogCaptureFixture) -> None:
+    index = build(b"a\n" * 50, scan_block=8)
+
+    def bad() -> None:
+        raise RuntimeError("subscriber failure")
+
+    with caplog.at_level(logging.DEBUG, logger="nova_editor.core"):
+        index.subscribe(bad)
+    assert any(record.exc_info is not None and "subscriber" in record.getMessage() for record in caplog.records)
+
+
+def test_lines_and_row_range_raise_source_changed_after_the_file_is_truncated(tmp_path: Path) -> None:
+    path = tmp_path / "f"
+    path.write_bytes(b"one\ntwo\nthree\nfour\n" * 10)
+    source = PreadSource(path)
+    index = LineIndex(source, stride=2, scan_block=16)
+    try:
+        index.start()
+        assert index.join(10)
+        assert len(index.lines(0, 5)) == 5
+        os.truncate(path, 5)
+        with pytest.raises(SourceChanged):
+            index.lines(0, 5)
+        with pytest.raises(SourceChanged):
+            index.row_range(3)
+    finally:
+        source.close()
