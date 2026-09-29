@@ -11,8 +11,12 @@ from pathlib import Path
 from typing import NamedTuple
 
 from rich.cells import cell_len
+from textual.app import App, ComposeResult
+from textual.widget import Widget
 
 from nova_editor.document._lazy_document import LazyDocument
+from nova_editor.document._lazy_wrapped_document import LazyWrappedDocument
+from nova_editor.widget import NovaTextArea
 
 # Lowered options for testing lazy document with small synthetic files
 LOWERED_OPTIONS = {
@@ -260,3 +264,32 @@ def wait_frontier(document: LazyDocument, row: int, timeout: float = 10.0) -> No
     """Wait until the line index is complete and the long index of `row` has scanned the whole row."""
     assert document.wait_indexed(timeout)
     assert document.long_index(row).join(timeout)
+
+
+class HostApp(App[None]):
+    """Minimal app that hosts one widget and counts `SourceChanged` messages."""
+
+    def __init__(self, widget: Widget) -> None:
+        super().__init__()
+        self._widget = widget
+        self.source_changed: list[str] = []
+
+    def compose(self) -> ComposeResult:
+        yield self._widget
+
+    def on_nova_text_area_source_changed(self, message: NovaTextArea.SourceChanged) -> None:
+        self.source_changed.append(message.reason)
+
+
+def lazy_wrapped(area: NovaTextArea) -> LazyWrappedDocument:
+    """Return the wrapped view of a lazily opened widget."""
+    wrapped = area.wrapped_document
+    assert isinstance(wrapped, LazyWrappedDocument)
+    return wrapped
+
+
+def row_strip_text(area: NovaTextArea, row: int, width: int | None = None, section: int = 0) -> str:
+    """Return the text of the first `width` cells (default: the visible text width) of the screen line that shows `section` of `row`."""
+    y = lazy_wrapped(area).y_of_row(row) + section - area.scroll_offset.y
+    strip = area.render_line(y).crop(area.gutter_width, area.gutter_width + (width or (area.scrollable_content_region.width - area.gutter_width)))
+    return strip.text
