@@ -36,7 +36,10 @@ class ByteSource(Protocol):
         ...
 
     def close(self) -> None:
-        """Release the source."""
+        """Release the source.
+
+        Callers that share the source with a background scan should `cancel()` and `join()` the scan before closing.
+        """
         ...
 
 
@@ -53,8 +56,10 @@ class PreadSource:
         self._block_size = block_size
         self._max_blocks = cache_blocks
         self._cache: OrderedDict[int, bytes] = OrderedDict()
-        self._lock = threading.Lock()  # guards _cache and _failed; never held across I/O
+        self._lock = threading.Condition()  # guards _cache, _failed and the close state; never held across I/O
         self._failed: SourceChanged | None = None
+        self._inflight = 0
+        self._closing = False
         self._closed = False
 
     def length(self) -> int:
@@ -63,8 +68,19 @@ class PreadSource:
     def read(self, offset: int, size: int, *, cache: bool = True) -> bytes:
         if offset < 0 or size < 0:
             raise ValueError("offset and size must not be negative")
-        if self._closed:
-            raise ValueError("read of a closed source")
+        with self._lock:
+            if self._closing:
+                raise ValueError("read of a closed source")
+            self._inflight += 1
+        try:
+            return self._read(offset, size, cache)
+        finally:
+            with self._lock:
+                self._inflight -= 1
+                if self._inflight == 0:
+                    self._lock.notify_all()
+
+    def _read(self, offset: int, size: int, cache: bool) -> bytes:
         self._check()
         end = min(offset + size, self._size)
         if end <= offset:
@@ -78,9 +94,23 @@ class PreadSource:
         return data[skip : skip + (end - offset)]
 
     def close(self) -> None:
-        if not self._closed:
-            self._closed = True
+        """Close the file descriptor once every read in flight has finished.
+
+        Reads that start after `close` began raise `ValueError`.
+        Callers that share the source with a background scan should `cancel()` and `join()` the scan before closing, otherwise
+        the scan's next read raises `ValueError` on its thread.
+        """
+        with self._lock:
+            if self._closing:
+                while not self._closed:
+                    self._lock.wait()
+                return
+            self._closing = True
+            while self._inflight:
+                self._lock.wait()
             os.close(self._fd)
+            self._closed = True
+            self._lock.notify_all()
 
     def _check(self) -> None:
         with self._lock:

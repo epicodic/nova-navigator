@@ -192,3 +192,46 @@ def test_concurrent_reads(tmp_path: Path) -> None:
     for thread in threads:
         thread.join()
     assert not errors
+
+
+def test_close_waits_for_an_in_flight_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path, data = make_file(tmp_path)
+    source = PreadSource(path, block_size=BLOCK, cache_blocks=4)
+    entered = threading.Event()
+    release = threading.Event()
+    real = os.pread
+
+    def slow(fd: int, size: int, offset: int) -> bytes:
+        entered.set()
+        release.wait()
+        return real(fd, size, offset)
+
+    monkeypatch.setattr(byte_source.os, "pread", slow)
+    results: list[bytes] = []
+    errors: list[BaseException] = []
+
+    def reader() -> None:
+        try:
+            results.append(source.read(10, 20))
+        except Exception as error:
+            errors.append(error)
+
+    reading = threading.Thread(target=reader)
+    closing = threading.Thread(target=source.close)
+    try:
+        reading.start()
+        assert entered.wait(5)
+        closing.start()
+        closing.join(0.2)
+        assert closing.is_alive()  # close blocks while the read is in flight
+        with pytest.raises(ValueError, match="closed source"):
+            source.read(0, 1)  # a read that starts after close began is refused
+    finally:
+        release.set()
+        reading.join(5)
+        closing.join(5)
+    assert not closing.is_alive()
+    assert errors == []
+    assert results == [data[10:30]]
+    with pytest.raises(ValueError, match="closed source"):
+        source.read(0, 1)
