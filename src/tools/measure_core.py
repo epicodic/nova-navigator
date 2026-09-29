@@ -163,7 +163,6 @@ def _measure_longline(args: argparse.Namespace, guard: _Guard) -> dict[str, obje
     index.wait_until_known(char_col=size + 1)
     scan_seconds = time.perf_counter() - started
     after = _rss_anon_kb()
-    frontier = index.frontier()
     source.close()
     return {
         "kind": "longline",
@@ -171,7 +170,7 @@ def _measure_longline(args: argparse.Namespace, guard: _Guard) -> dict[str, obje
         "size": size,
         "total_chars": index.total_chars,
         "total_disp": index.total_disp,
-        "checkpoints": frontier.chars // 65_536 + 1,
+        "checkpoints": index.checkpoint_count,
         "scan_seconds": round(scan_seconds, 3),
         "far_query_ms": round(far_query_ms, 4),
         "far_query_was_none": far is None,
