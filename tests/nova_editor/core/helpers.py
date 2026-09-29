@@ -143,3 +143,12 @@ class LongLineReference:
         if ceil:
             return next((j for j in range(len(self.text) + 1) if self.disp[j] >= target), len(self.text))
         return next((j for j in range(len(self.text)) if self.disp[j + 1] > target), len(self.text))
+
+
+def reference_row_at_offset(data: bytes, offset: int) -> tuple[int, tuple[int, int, int]]:
+    """Return `(row, (start, content_end, end))` of the row containing `offset`; `offset == len(data)` maps to the last row."""
+    rows = reference_rows(data)
+    for row, (start, content_end, end) in enumerate(rows):
+        if start <= offset < end:
+            return row, (start, content_end, end)
+    return len(rows) - 1, rows[-1]
