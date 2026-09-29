@@ -10,7 +10,7 @@ from typing import Any
 
 
 def run(*args: str) -> dict[str, Any]:
-    result = subprocess.run([sys.executable, "-m", "tools.measure_core", *args], capture_output=True, text=True, check=True)
+    result = subprocess.run([sys.executable, "-m", "tools.measure_core", *args], capture_output=True, text=True, check=True, timeout=120)
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
@@ -31,6 +31,7 @@ def test_longline_mode(tmp_path: Path) -> None:
     out = run("longline", str(path))
     assert out["kind"] == "longline"
     assert out["total_chars"] == 150_000
+    assert out["checkpoints"] == 4  # the array holds the row start and one checkpoint per piece of at most 65,536 characters
 
 
 def test_calls_mode_reports_worst_call(tmp_path: Path) -> None:
