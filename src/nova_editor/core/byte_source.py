@@ -96,7 +96,9 @@ class PreadSource:
     def close(self) -> None:
         """Close the file descriptor once every read in flight has finished.
 
+        This call blocks until reads already in flight return; it never interrupts them.
         Reads that start after `close` began raise `ValueError`.
+        A second `close()` waits until the first one finished and then returns, also when `os.close` raised.
         Callers that share the source with a background scan should `cancel()` and `join()` the scan before closing, otherwise
         the scan's next read raises `ValueError` on its thread.
         """
@@ -108,9 +110,11 @@ class PreadSource:
             self._closing = True
             while self._inflight:
                 self._lock.wait()
-            os.close(self._fd)
-            self._closed = True
-            self._lock.notify_all()
+            try:
+                os.close(self._fd)
+            finally:
+                self._closed = True
+                self._lock.notify_all()
 
     def _check(self) -> None:
         with self._lock:
