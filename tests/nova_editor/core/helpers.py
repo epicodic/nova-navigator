@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import threading
 
+from rich.cells import cell_len
+
 from nova_editor.core.byte_source import ByteSource
 
 LF = 0x0A
@@ -105,3 +107,39 @@ def reference_rows(data: bytes) -> list[tuple[int, int, int]]:
             i += 1
     rows.append((start, size, size))
     return rows
+
+
+LONG_ATOMS: list[bytes] = [
+    b"a",
+    b"b",
+    b" ",
+    b"\t",
+    "é".encode(),
+    "漢".encode(),
+    "é".encode(),
+    "\U0001f600".encode(),
+    b"\x80",
+    b"\xff",
+    b"\xe2\x82",
+]
+
+VALID_LONG_ATOMS: list[bytes] = [b"a", b"b", b" ", b"\t", "é".encode(), "漢".encode(), "é".encode(), "\U0001f600".encode()]
+
+
+class LongLineReference:
+    """Whole-line reference: text, and per-character cumulative display column and byte offset."""
+
+    def __init__(self, data: bytes, tab: int = 4) -> None:
+        self.text = data.decode("utf-8", "surrogateescape")
+        self.disp = [0]
+        self.byte = [0]
+        for char in self.text:
+            width = tab - self.disp[-1] % tab if char == "\t" else cell_len(char)
+            self.disp.append(self.disp[-1] + width)
+            self.byte.append(self.byte[-1] + len(char.encode("utf-8", "surrogateescape")))
+
+    def disp_to_char(self, target: int, *, ceil: bool = False) -> int:
+        """Return the column covering display column `target` (`ceil`: first column starting at or after it)."""
+        if ceil:
+            return next((j for j in range(len(self.text) + 1) if self.disp[j] >= target), len(self.text))
+        return next((j for j in range(len(self.text)) if self.disp[j + 1] > target), len(self.text))
