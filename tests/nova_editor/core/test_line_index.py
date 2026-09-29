@@ -180,3 +180,29 @@ def test_walk_on_a_shrunk_source_raises_instead_of_looping() -> None:
     source._data = b""  # simulate truncation after the scan
     with pytest.raises(SourceChanged):
         index.row_range(1)
+
+
+class _FailingScanSource(MemorySource):
+    """Fails every scan read (`cache=False`) with a RuntimeError."""
+
+    def read(self, offset: int, size: int, *, cache: bool = True) -> bytes:
+        if not cache:
+            raise RuntimeError("scan read failed")
+        return super().read(offset, size, cache=cache)
+
+
+def test_unexpected_scan_error_is_recorded_and_subscribers_are_notified() -> None:
+    index = LineIndex(_FailingScanSource(b"a\nb\n"))
+    called = threading.Event()
+    index.subscribe(called.set)
+    previous_hook = threading.excepthook
+    threading.excepthook = lambda _args: None  # the scan thread re-raises on purpose
+    try:
+        index.start()
+        index.join(10)
+    finally:
+        threading.excepthook = previous_hook
+    snap = index.snapshot()
+    assert isinstance(snap.error, RuntimeError)
+    assert not snap.complete
+    assert called.is_set()

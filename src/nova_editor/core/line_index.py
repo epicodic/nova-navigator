@@ -11,18 +11,25 @@ import re
 import threading
 import time
 from array import array
+from bisect import bisect_left
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from nova_editor.core.byte_source import ByteSource, SourceChanged
 
 DEFAULT_STRIDE = 64
+DEFAULT_LONG_LINE_THRESHOLD = 16 * 1024
+DEFAULT_LONG_LINE_CAP = 524_288
 DEFAULT_READ_BUDGET = 4 * 1024 * 1024
 DEFAULT_MAX_LINES_PER_CALL = 128
 DEFAULT_SCAN_BLOCK = 1 << 20
 DEFAULT_WALK_WINDOW = 64 * 1024
 
 _TERMINATOR = re.compile(rb"\r\n|\n|\r")
+TAIL_BYTES = 2  # the longest terminator
+
+# (row, start, end) of a row longer than the long-line threshold
+_LongRow = tuple[int, int, int]
 
 
 @dataclass(frozen=True)
@@ -56,6 +63,8 @@ class _ScanState:
     count: int = 1
     prev: int = 0
     carry: bool = False
+    entries: list[int] = field(default_factory=list)  # stride entries found in the current block
+    longs: list[_LongRow] = field(default_factory=list)  # long rows found in the current block
 
 
 class _Walker:
@@ -110,8 +119,9 @@ class _Walker:
 class LineIndex:
     """Sparse row index built by a background thread that only appends.
 
-    Every `stride`-th row start is stored. UI-path calls (`row_range`, `lines`) walk forward from the nearest entry and read at
-    most `read_budget` bytes; they never wait for the scan.
+    Every `stride`-th row start is stored. Rows longer than `long_line_threshold` are recorded in a side table (at most
+    `long_line_cap` entries) so that walks cross them without reading. UI-path calls (`row_range`, `lines`) walk forward from
+    the nearest entry and read at most `read_budget` bytes; they never wait for the scan.
     """
 
     def __init__(
@@ -119,24 +129,36 @@ class LineIndex:
         source: ByteSource,
         *,
         stride: int = DEFAULT_STRIDE,
+        long_line_threshold: int = DEFAULT_LONG_LINE_THRESHOLD,
+        long_line_cap: int = DEFAULT_LONG_LINE_CAP,
         read_budget: int = DEFAULT_READ_BUDGET,
         max_lines_per_call: int = DEFAULT_MAX_LINES_PER_CALL,
         scan_block: int = DEFAULT_SCAN_BLOCK,
         walk_window: int = DEFAULT_WALK_WINDOW,
         yield_seconds: float = 0.0,
     ) -> None:
-        if min(stride, read_budget, max_lines_per_call, scan_block, walk_window) <= 0:
-            raise ValueError("stride, read_budget, max_lines_per_call, scan_block and walk_window must be positive")
+        if min(stride, long_line_threshold, read_budget, max_lines_per_call, scan_block, walk_window) <= 0:
+            raise ValueError("stride, long_line_threshold, read_budget, max_lines_per_call, scan_block and walk_window must be positive")
+        if long_line_cap < 0:
+            raise ValueError("long_line_cap must not be negative")
         self._source = source
         self._length = source.length()
         self._stride = stride
+        self._threshold = long_line_threshold
+        self._long_cap = long_line_cap
         self._read_budget = read_budget
         self._max_lines = max_lines_per_call
         self._scan_block = scan_block
-        self._walk_window = walk_window
+        # An unrecorded row is at most `long_line_threshold` bytes plus its terminator, so one fill of that size always finds its
+        # end. Larger fills would over-read at every jump over a recorded row and break the byte bound (design 5.4).
+        self._fill_size = min(walk_window, long_line_threshold + TAIL_BYTES)
         self._yield_seconds = yield_seconds
         self._lock = threading.Lock()
         self._starts = array("Q", [0])
+        self._long_rows = array("Q")  # row numbers of recorded long rows, ascending
+        self._long_starts = array("Q")
+        self._long_ends = array("Q")
+        self._long_overflow = False
         self._count = 1
         self._complete = False
         self._error: BaseException | None = None
@@ -173,6 +195,18 @@ class LineIndex:
         with self._lock:
             return len(self._starts)
 
+    @property
+    def long_row_count(self) -> int:
+        """Number of recorded rows longer than the long-line threshold."""
+        with self._lock:
+            return len(self._long_rows)
+
+    @property
+    def long_overflow(self) -> bool:
+        """Whether long rows beyond the side-table cap were left unrecorded."""
+        with self._lock:
+            return self._long_overflow
+
     def row_range(self, row: int) -> RowRange | None:
         """Return the byte range of `row`, or `None` when it is not known yet or cannot be resolved within the read budget."""
         if row < 0:
@@ -198,19 +232,43 @@ class LineIndex:
             entry = first // self._stride
             row = entry * self._stride
             pos = self._starts[entry]
-        walker = _Walker(self._source, self._length, pos, self._read_budget, self._walk_window)
+            recorded = self._recorded_between(row, stop)
+        walker = _Walker(self._source, self._length, pos, self._read_budget, self._fill_size)
         out: list[RowRange] = []
         try:
             while row < stop:
-                start = walker.pos
-                found = walker.advance()
-                end, terminator = (self._length, 0) if found is None else found
+                long_row = recorded.get(row)
+                if long_row is not None:
+                    start, end = long_row
+                    walker.jump(end)
+                    terminator = self._tail_terminator(walker, start, end) if row >= first else 0
+                else:
+                    start = walker.pos
+                    found = walker.advance()
+                    end, terminator = (self._length, 0) if found is None else found
                 if row >= first:
                     out.append(RowRange(start, end - terminator, end))
                 row += 1
         except _OverBudget:
             pass
         return out
+
+    def _recorded_between(self, low: int, high: int) -> dict[int, tuple[int, int]]:
+        """Return `{row: (start, end)}` of the recorded long rows in `[low, high)`; the caller holds the lock."""
+        lo = bisect_left(self._long_rows, low)
+        hi = bisect_left(self._long_rows, high)
+        return {self._long_rows[i]: (self._long_starts[i], self._long_ends[i]) for i in range(lo, hi)}
+
+    def _tail_terminator(self, walker: _Walker, start: int, end: int) -> int:
+        """Return the terminator length of the row `[start, end)` from a tail read charged to the walker."""
+        size = min(TAIL_BYTES, end - start)
+        if size == 0:
+            return 0
+        walker.charge(size)
+        tail = self._source.read(end - size, size)
+        if len(tail) != size:
+            raise SourceChanged("short read of a long row tail")
+        return 2 if tail.endswith(b"\r\n") else 1 if tail.endswith((b"\n", b"\r")) else 0
 
     # -- scan thread --------------------------------------------------------------------------
     def _run(self) -> None:
@@ -220,6 +278,7 @@ class LineIndex:
             self._record_error(error)
         except Exception as error:
             self._record_error(error)
+            self._notify()
             raise
         self._notify()
 
@@ -235,18 +294,26 @@ class LineIndex:
             block = self._source.read(pos, self._scan_block, cache=False)
             if not block:
                 raise SourceChanged("unexpected empty read during the scan")
-            entries: list[int] = []
-            self._scan_bytes(block, pos, pos + len(block) >= length, state, entries)
+            self._scan_bytes(block, pos, pos + len(block) >= length, state)
             pos += len(block)
-            self._publish(state.count, entries, complete=False)
+            self._publish(state.count, state.entries, state.longs, complete=False)
+            state.entries, state.longs = [], []
             self._notify()
             time.sleep(self._yield_seconds)
         if pos >= length and not self._cancelled.is_set():
-            self._publish(state.count, [], complete=True)
+            last = [(state.count - 1, state.prev, length)] if length - state.prev > self._threshold else []
+            self._publish(state.count, [], last, complete=True)
 
-    def _publish(self, count: int, entries: list[int], *, complete: bool) -> None:
+    def _publish(self, count: int, entries: list[int], longs: list[_LongRow], *, complete: bool) -> None:
         with self._lock:
             self._starts.extend(entries)
+            room = max(self._long_cap - len(self._long_rows), 0)
+            for row, start, end in longs[:room]:
+                self._long_rows.append(row)
+                self._long_starts.append(start)
+                self._long_ends.append(end)
+            if len(longs) > room:
+                self._long_overflow = True
             self._count = count
             self._complete = complete
 
@@ -257,42 +324,47 @@ class LineIndex:
             with contextlib.suppress(Exception):
                 callback()
 
-    def _scan_bytes(self, block: bytes, base: int, final: bool, state: _ScanState, entries: list[int]) -> None:
-        count, prev = state.count, state.prev
+    def _scan_bytes(self, block: bytes, base: int, final: bool, state: _ScanState) -> None:
         begin = 0
         if state.carry:
             state.carry = False
             begin = 1 if block.startswith(b"\n") else 0
-            count, prev = self._boundary(base + begin, count, entries)
+            self._boundary(base + begin, state)
         if block.find(b"\r", begin) == -1:
-            count, prev = self._scan_lf(block, base, begin, count, prev, entries)
+            self._scan_lf(block, base, begin, state)
         else:
-            count, prev = self._scan_mixed(block, base, begin, final, state, count, prev, entries)
-        state.count, state.prev = count, prev
+            self._scan_mixed(block, base, begin, final, state)
 
-    def _boundary(self, nxt: int, count: int, entries: list[int]) -> tuple[int, int]:
-        """Register the start `nxt` of row `count`; return the new `(count, prev)`."""
-        if count % self._stride == 0:
-            entries.append(nxt)
-        return count + 1, nxt
+    def _boundary(self, nxt: int, state: _ScanState) -> None:
+        """Register the start `nxt` of row `state.count`, ending the row that began at `state.prev`."""
+        if nxt - state.prev > self._threshold:
+            state.longs.append((state.count - 1, state.prev, nxt))
+        if state.count % self._stride == 0:
+            state.entries.append(nxt)
+        state.count += 1
+        state.prev = nxt
 
-    def _scan_lf(self, block: bytes, base: int, begin: int, count: int, prev: int, entries: list[int]) -> tuple[int, int]:
-        stride = self._stride
+    def _scan_lf(self, block: bytes, base: int, begin: int, state: _ScanState) -> None:
+        """Fast path for a block without CR: locals only, one threshold comparison per row."""
+        stride, threshold = self._stride, self._threshold
+        entries, longs = state.entries, state.longs
+        count, prev = state.count, state.prev
         find = block.find
         i = find(b"\n", begin)
         while i != -1:
-            prev = base + i + 1
+            nxt = base + i + 1
+            if nxt - prev > threshold:
+                longs.append((count - 1, prev, nxt))
             if count % stride == 0:
-                entries.append(prev)
+                entries.append(nxt)
             count += 1
+            prev = nxt
             i = find(b"\n", i + 1)
-        return count, prev
+        state.count, state.prev = count, prev
 
-    def _scan_mixed(self, block: bytes, base: int, begin: int, final: bool, state: _ScanState, count: int, prev: int, entries: list[int]) -> tuple[int, int]:
+    def _scan_mixed(self, block: bytes, base: int, begin: int, final: bool, state: _ScanState) -> None:
         for match in _TERMINATOR.finditer(block, begin):
             if match.end() == len(block) and not final and match.group() == b"\r":
                 state.carry = True  # a CR at the block edge may be the first half of a CRLF
                 break
-            prev = base + match.end()
-            count, _ = self._boundary(prev, count, entries)
-        return count, prev
+            self._boundary(base + match.end(), state)
