@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from rich.cells import cell_len
+from rich.cells import cached_cell_len, cell_len
 
 from nova_editor.core.text_width import (
     advance_disp,
@@ -64,3 +64,12 @@ def test_safe_cut_holds_back_partial_sequences() -> None:
 @given(text=texts)
 def test_utf8_len_is_the_surrogateescape_length(text: str) -> None:
     assert utf8_len(text) == len(text.encode("utf-8", "surrogateescape"))
+
+
+def test_advance_disp_does_not_retain_large_pieces_in_the_rich_cache() -> None:
+    cached_cell_len.cache_clear()
+    for seed in "abcdef":
+        piece = "é" * 65_535 + seed
+        assert advance_disp(piece, 0) == len(piece)
+        assert advance_disp("\t" + piece, 0) == 4 + len(piece)
+    assert cached_cell_len.cache_info().currsize <= 2

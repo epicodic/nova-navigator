@@ -5,7 +5,7 @@ Tab stops follow `textual.expand_tabs` semantics without importing Textual; widt
 
 from __future__ import annotations
 
-from rich.cells import cached_cell_len as cell_len
+from rich.cells import cell_len
 
 TAB_WIDTH = 4
 SURROGATE_ESCAPE = "surrogateescape"
