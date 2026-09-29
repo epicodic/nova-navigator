@@ -584,7 +584,7 @@ NovaTextArea {
         *,
         language: str | None = None,
         theme: str = "css",
-        soft_wrap: bool = True,
+        soft_wrap: bool = False,
         tab_behavior: Literal["focus", "indent"] = "focus",
         read_only: bool = False,
         show_cursor: bool = True,
@@ -606,7 +606,7 @@ NovaTextArea {
             text: The initial text to load into the NovaTextArea.
             language: The language to use.
             theme: The theme to use.
-            soft_wrap: Enable soft wrapping.
+            soft_wrap: Enable soft wrapping (default False).
             tab_behavior: If 'focus', pressing tab will switch focus. If 'indent', pressing tab will insert a tab.
             read_only: Enable read-only mode. This prevents edits using the keyboard.
             show_cursor: Show the cursor in read only mode (no effect otherwise).
@@ -734,7 +734,7 @@ NovaTextArea {
             text: The initial text to load into the NovaTextArea.
             language: The language to use.
             theme: The theme to use.
-            soft_wrap: Enable soft wrapping.
+            soft_wrap: Enable soft wrapping (default False).
             tab_behavior: If 'focus', pressing tab will switch focus. If 'indent', pressing tab will insert a tab.
             read_only: Enable read-only mode. This prevents edits using the keyboard.
             show_cursor: Show the cursor in read only mode (no effect otherwise).
