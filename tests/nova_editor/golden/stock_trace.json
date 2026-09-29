@@ -1,0 +1,706 @@
+{
+  "False": [
+    {
+      "key": "down",
+      "sel": [
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          0
+        ]
+      ],
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "rows": [
+        "short line                                                                                                                                                                                               ",
+        "    tabbed  line with \u65e5\u672c\u8a9e and \u00e9 combining                                                                                                                                                             ",
+        "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word  ",
+        "                                                                                                                                                                                                         ",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx                                                   ",
+        "last line                                                                                                                                                                                                "
+      ]
+    },
+    {
+      "key": "down",
+      "sel": [
+        [
+          2,
+          0
+        ],
+        [
+          2,
+          0
+        ]
+      ],
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "rows": [
+        "short line                                                                                                                                                                                               ",
+        "    tabbed  line with \u65e5\u672c\u8a9e and \u00e9 combining                                                                                                                                                             ",
+        "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word  ",
+        "                                                                                                                                                                                                         ",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx                                                   ",
+        "last line                                                                                                                                                                                                "
+      ]
+    },
+    {
+      "key": "end",
+      "sel": [
+        [
+          2,
+          200
+        ],
+        [
+          2,
+          200
+        ]
+      ],
+      "scroll": [
+        167.0,
+        0.0
+      ],
+      "rows": [
+        "                                                                                                                                                                                                         ",
+        "                                                                                                                                                                                                         ",
+        "rd word word word word word word                                                                                                                                                                         ",
+        "                                                                                                                                                                                                         ",
+        "                                                                                                                                                                                                         ",
+        "                                                                                                                                                                                                         "
+      ]
+    },
+    {
+      "key": "home",
+      "sel": [
+        [
+          2,
+          0
+        ],
+        [
+          2,
+          0
+        ]
+      ],
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "rows": [
+        "short line                                                                                                                                                                                               ",
+        "    tabbed  line with \u65e5\u672c\u8a9e and \u00e9 combining                                                                                                                                                             ",
+        "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word  ",
+        "                                                                                                                                                                                                         ",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx                                                   ",
+        "last line                                                                                                                                                                                                "
+      ]
+    },
+    {
+      "key": "right",
+      "sel": [
+        [
+          2,
+          1
+        ],
+        [
+          2,
+          1
+        ]
+      ],
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "rows": [
+        "short line                                                                                                                                                                                               ",
+        "    tabbed  line with \u65e5\u672c\u8a9e and \u00e9 combining                                                                                                                                                             ",
+        "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word  ",
+        "                                                                                                                                                                                                         ",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx                                                   ",
+        "last line                                                                                                                                                                                                "
+      ]
+    },
+    {
+      "key": "right",
+      "sel": [
+        [
+          2,
+          2
+        ],
+        [
+          2,
+          2
+        ]
+      ],
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "rows": [
+        "short line                                                                                                                                                                                               ",
+        "    tabbed  line with \u65e5\u672c\u8a9e and \u00e9 combining                                                                                                                                                             ",
+        "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word  ",
+        "                                                                                                                                                                                                         ",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx                                                   ",
+        "last line                                                                                                                                                                                                "
+      ]
+    },
+    {
+      "key": "pagedown",
+      "sel": [
+        [
+          5,
+          2
+        ],
+        [
+          5,
+          2
+        ]
+      ],
+      "scroll": [
+        0.0,
+        1
+      ],
+      "rows": [
+        "    tabbed  line with \u65e5\u672c\u8a9e and \u00e9 combining                                                                                                                                                             ",
+        "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word  ",
+        "                                                                                                                                                                                                         ",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx                                                   ",
+        "last line                                                                                                                                                                                                ",
+        "                                    "
+      ]
+    },
+    {
+      "key": "up",
+      "sel": [
+        [
+          4,
+          2
+        ],
+        [
+          4,
+          2
+        ]
+      ],
+      "scroll": [
+        0.0,
+        1
+      ],
+      "rows": [
+        "    tabbed  line with \u65e5\u672c\u8a9e and \u00e9 combining                                                                                                                                                             ",
+        "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word  ",
+        "                                                                                                                                                                                                         ",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx                                                   ",
+        "last line                                                                                                                                                                                                ",
+        "                                    "
+      ]
+    },
+    {
+      "key": "up",
+      "sel": [
+        [
+          3,
+          0
+        ],
+        [
+          3,
+          0
+        ]
+      ],
+      "scroll": [
+        0.0,
+        1
+      ],
+      "rows": [
+        "    tabbed  line with \u65e5\u672c\u8a9e and \u00e9 combining                                                                                                                                                             ",
+        "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word  ",
+        "                                                                                                                                                                                                         ",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx                                                   ",
+        "last line                                                                                                                                                                                                ",
+        "                                    "
+      ]
+    },
+    {
+      "key": "ctrl+right",
+      "sel": [
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ]
+      ],
+      "scroll": [
+        0.0,
+        1
+      ],
+      "rows": [
+        "    tabbed  line with \u65e5\u672c\u8a9e and \u00e9 combining                                                                                                                                                             ",
+        "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word  ",
+        "                                                                                                                                                                                                         ",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx                                                   ",
+        "last line                                                                                                                                                                                                ",
+        "                                    "
+      ]
+    },
+    {
+      "key": "ctrl+left",
+      "sel": [
+        [
+          3,
+          0
+        ],
+        [
+          3,
+          0
+        ]
+      ],
+      "scroll": [
+        0.0,
+        1
+      ],
+      "rows": [
+        "    tabbed  line with \u65e5\u672c\u8a9e and \u00e9 combining                                                                                                                                                             ",
+        "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word  ",
+        "                                                                                                                                                                                                         ",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx                                                   ",
+        "last line                                                                                                                                                                                                ",
+        "                                    "
+      ]
+    },
+    {
+      "key": "pageup",
+      "sel": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "scroll": [
+        0.0,
+        0
+      ],
+      "rows": [
+        "short line                                                                                                                                                                                               ",
+        "    tabbed  line with \u65e5\u672c\u8a9e and \u00e9 combining                                                                                                                                                             ",
+        "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word  ",
+        "                                                                                                                                                                                                         ",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx                                                   ",
+        "last line                                                                                                                                                                                                "
+      ]
+    },
+    {
+      "key": "shift+right",
+      "sel": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          1
+        ]
+      ],
+      "scroll": [
+        0.0,
+        0
+      ],
+      "rows": [
+        "short line                                                                                                                                                                                               ",
+        "    tabbed  line with \u65e5\u672c\u8a9e and \u00e9 combining                                                                                                                                                             ",
+        "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word  ",
+        "                                                                                                                                                                                                         ",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx                                                   ",
+        "last line                                                                                                                                                                                                "
+      ]
+    },
+    {
+      "key": "shift+down",
+      "sel": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ]
+      ],
+      "scroll": [
+        0.0,
+        0
+      ],
+      "rows": [
+        "short line                                                                                                                                                                                               ",
+        "    tabbed  line with \u65e5\u672c\u8a9e and \u00e9 combining                                                                                                                                                             ",
+        "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word  ",
+        "                                                                                                                                                                                                         ",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx                                                   ",
+        "last line                                                                                                                                                                                                "
+      ]
+    }
+  ],
+  "True": [
+    {
+      "key": "down",
+      "sel": [
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          0
+        ]
+      ],
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "rows": [
+        "short line                        ",
+        "    tabbed  line with \u65e5\u672c\u8a9e and  ",
+        "\u00e9 combining                       ",
+        "word word word word word word     ",
+        "word word word word word word     ",
+        "word word word word word word     "
+      ]
+    },
+    {
+      "key": "down",
+      "sel": [
+        [
+          1,
+          26
+        ],
+        [
+          1,
+          26
+        ]
+      ],
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "rows": [
+        "short line                        ",
+        "    tabbed  line with \u65e5\u672c\u8a9e and  ",
+        "\u00e9 combining                       ",
+        "word word word word word word     ",
+        "word word word word word word     ",
+        "word word word word word word     "
+      ]
+    },
+    {
+      "key": "end",
+      "sel": [
+        [
+          1,
+          37
+        ],
+        [
+          1,
+          37
+        ]
+      ],
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "rows": [
+        "short line                        ",
+        "    tabbed  line with \u65e5\u672c\u8a9e and  ",
+        "\u00e9 combining                       ",
+        "word word word word word word     ",
+        "word word word word word word     ",
+        "word word word word word word     "
+      ]
+    },
+    {
+      "key": "home",
+      "sel": [
+        [
+          1,
+          26
+        ],
+        [
+          1,
+          26
+        ]
+      ],
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "rows": [
+        "short line                        ",
+        "    tabbed  line with \u65e5\u672c\u8a9e and  ",
+        "\u00e9 combining                       ",
+        "word word word word word word     ",
+        "word word word word word word     ",
+        "word word word word word word     "
+      ]
+    },
+    {
+      "key": "right",
+      "sel": [
+        [
+          1,
+          27
+        ],
+        [
+          1,
+          27
+        ]
+      ],
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "rows": [
+        "short line                        ",
+        "    tabbed  line with \u65e5\u672c\u8a9e and  ",
+        "\u00e9 combining                       ",
+        "word word word word word word     ",
+        "word word word word word word     ",
+        "word word word word word word     "
+      ]
+    },
+    {
+      "key": "right",
+      "sel": [
+        [
+          1,
+          28
+        ],
+        [
+          1,
+          28
+        ]
+      ],
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "rows": [
+        "short line                        ",
+        "    tabbed  line with \u65e5\u672c\u8a9e and  ",
+        "\u00e9 combining                       ",
+        "word word word word word word     ",
+        "word word word word word word     ",
+        "word word word word word word     "
+      ]
+    },
+    {
+      "key": "pagedown",
+      "sel": [
+        [
+          2,
+          152
+        ],
+        [
+          2,
+          152
+        ]
+      ],
+      "scroll": [
+        0.0,
+        6.0
+      ],
+      "rows": [
+        "word word word word word word     ",
+        "word word word word word word     ",
+        "word word word word word word     ",
+        "word word word word               ",
+        "                                  ",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx "
+      ]
+    },
+    {
+      "key": "up",
+      "sel": [
+        [
+          2,
+          122
+        ],
+        [
+          2,
+          122
+        ]
+      ],
+      "scroll": [
+        0.0,
+        6.0
+      ],
+      "rows": [
+        "word word word word word word     ",
+        "word word word word word word     ",
+        "word word word word word word     ",
+        "word word word word               ",
+        "                                  ",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx "
+      ]
+    },
+    {
+      "key": "up",
+      "sel": [
+        [
+          2,
+          92
+        ],
+        [
+          2,
+          92
+        ]
+      ],
+      "scroll": [
+        0.0,
+        6.0
+      ],
+      "rows": [
+        "word word word word word word     ",
+        "word word word word word word     ",
+        "word word word word word word     ",
+        "word word word word               ",
+        "                                  ",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx "
+      ]
+    },
+    {
+      "key": "ctrl+right",
+      "sel": [
+        [
+          2,
+          94
+        ],
+        [
+          2,
+          94
+        ]
+      ],
+      "scroll": [
+        0.0,
+        6.0
+      ],
+      "rows": [
+        "word word word word word word     ",
+        "word word word word word word     ",
+        "word word word word word word     ",
+        "word word word word               ",
+        "                                  ",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx "
+      ]
+    },
+    {
+      "key": "ctrl+left",
+      "sel": [
+        [
+          2,
+          90
+        ],
+        [
+          2,
+          90
+        ]
+      ],
+      "scroll": [
+        0.0,
+        6.0
+      ],
+      "rows": [
+        "word word word word word word     ",
+        "word word word word word word     ",
+        "word word word word word word     ",
+        "word word word word               ",
+        "                                  ",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx "
+      ]
+    },
+    {
+      "key": "pageup",
+      "sel": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "rows": [
+        "short line                        ",
+        "    tabbed  line with \u65e5\u672c\u8a9e and  ",
+        "\u00e9 combining                       ",
+        "word word word word word word     ",
+        "word word word word word word     ",
+        "word word word word word word     "
+      ]
+    },
+    {
+      "key": "shift+right",
+      "sel": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          1
+        ]
+      ],
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "rows": [
+        "short line                        ",
+        "    tabbed  line with \u65e5\u672c\u8a9e and  ",
+        "\u00e9 combining                       ",
+        "word word word word word word     ",
+        "word word word word word word     ",
+        "word word word word word word     "
+      ]
+    },
+    {
+      "key": "shift+down",
+      "sel": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ]
+      ],
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "rows": [
+        "short line                        ",
+        "    tabbed  line with \u65e5\u672c\u8a9e and  ",
+        "\u00e9 combining                       ",
+        "word word word word word word     ",
+        "word word word word word word     ",
+        "word word word word word word     "
+      ]
+    }
+  ]
+}
