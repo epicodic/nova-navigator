@@ -169,38 +169,25 @@ def oracle_row_text(data: bytes, row_index: int, _terminator_regex: bytes = rb"\
 
 
 def oracle_display_column(text: str, column: int, tab_width: int = 4) -> int:
-    """Return display column width accounting for tabs and wide characters.
+    """Return the display column of a character column, accounting for tabs and wide characters.
 
     Args:
-        text: row text
-        column: byte column (0-indexed) within the row
+        text: row text (lone surrogates from surrogateescape count as one cell)
+        column: character column (0-indexed) within the row; values beyond the text count the whole text
         tab_width: tab stop width in cells
 
     Returns:
-        Display column width in cells from the start of the row to the given column.
+        Display column in cells at which the character with index `column` starts.
 
     The calculation:
-    - Iterates character by character
-    - For tabs: advance to next multiple of tab_width
+    - Iterates the first `column` characters
+    - For tabs: advance to the next multiple of tab_width
     - For other chars: use rich.cells.cell_len for display width
     """
-    if column < 0 or not text:
-        return 0
-
     display_col = 0
-    byte_pos = 0
-
-    for char in text:
-        if byte_pos >= column:
-            break
-
+    for char in text[: max(0, column)]:
         if char == "\t":
-            # Tab: advance to next tab stop
             display_col += tab_width - (display_col % tab_width)
         else:
-            # Regular character: use rich.cells.cell_len for width
             display_col += cell_len(char)
-
-        byte_pos += len(char.encode("utf-8"))
-
     return display_col

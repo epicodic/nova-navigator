@@ -187,43 +187,33 @@ class TestOracleDisplayColumn:
     def test_oracle_display_column_with_tabs(self) -> None:
         """Test display column with tab characters."""
         text = "\thello"
-        # Tab width 4: first tab advances from column 0 to column 4
-        width = oracle_display_column(text, 0)
-        assert width == 0
-
-        # After tab character (1 byte) at position 1
-        # Should be at display column 4 (next tab stop)
-        # But we need to count to column 1 (byte position after tab)
-        width = oracle_display_column(text, 1)
-        assert width == 4
+        assert oracle_display_column(text, 0) == 0
+        assert oracle_display_column(text, 1) == 4
+        assert oracle_display_column(text, 2) == 5
+        assert oracle_display_column("ab\tc", 3) == 4
 
     def test_oracle_display_column_wide_characters(self) -> None:
-        """Test display column with wide characters (CJK)."""
+        """Test that the column is a character column: each CJK character is two cells."""
         text = "日本"
-        # Each CJK character is typically 2 cells wide
-        # But we're measuring by byte column within the character
-
-        # The first character "日" is 3 bytes in UTF-8
-        # Byte column 0 gives display column 0
-        width = oracle_display_column(text, 0)
-        assert width == 0
-
-        # We can't really test byte column 3 since that's beyond first char
-        # but the function should count the full character width
+        assert [oracle_display_column(text, column) for column in range(4)] == [0, 2, 4, 4]
 
     def test_oracle_display_column_combining_marks(self) -> None:
-        """Test display column with combining marks."""
-        text = "é"  # e with combining acute accent
-        # The combining mark is part of the character but display width should be 1
-        width = oracle_display_column(text, 0)
-        assert width == 0  # At column 0, we haven't moved yet
+        """Test that a combining mark is one character of zero width."""
+        text = "éx"
+        assert [oracle_display_column(text, column) for column in range(4)] == [0, 1, 1, 2]
 
     def test_oracle_display_column_emoji(self) -> None:
-        """Test display column with emoji."""
-        text = "😀"  # Grinning face emoji
-        # Emoji are typically 2 cells wide
-        width = oracle_display_column(text, 0)
-        assert width == 0  # At column 0
+        """Test display column with emoji (two cells, one character)."""
+        assert [oracle_display_column("😀a", column) for column in range(3)] == [0, 2, 3]
+
+    def test_oracle_display_column_lone_surrogate(self) -> None:
+        """Test that a surrogateescape character does not raise and takes one cell."""
+        text = b"a\xffb".decode("utf-8", "surrogateescape")
+        assert [oracle_display_column(text, column) for column in range(4)] == [0, 1, 2, 3]
+
+    def test_oracle_display_column_negative(self) -> None:
+        """Test that a negative column is the start of the row."""
+        assert oracle_display_column("abc", -1) == 0
 
 
 class TestOracleReconstruction:
