@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
 import re
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, cast
 
 from rich.console import RenderableType
 from rich.segment import Segment
@@ -22,6 +23,8 @@ from textual.expand_tabs import expand_text_tabs_from_widths
 from textual.screen import Screen
 from textual.style import Style as ContentStyle
 
+from nova_editor.core import ByteSource
+from nova_editor.core import SourceChanged as CoreSourceChanged
 from nova_editor.document._document import (
     Document,
     DocumentBase,
@@ -33,11 +36,15 @@ from nova_editor.document._document import (
 from nova_editor.document._document_navigator import DocumentNavigator
 from nova_editor.document._edit import Edit
 from nova_editor.document._history import EditHistory
+from nova_editor.document._lazy_config import LazyConfig
+from nova_editor.document._lazy_document import LazyDocument, RowUnavailable
+from nova_editor.document._lazy_wrapped_document import LazyWrappedDocument
 from nova_editor.document._syntax_aware_document import (
     SyntaxAwareDocument,
     SyntaxAwareDocumentError,
 )
 from nova_editor.document._wrapped_document import WrappedDocument
+from nova_editor.widget._lazy_window import WindowText, section_window, window_text
 from nova_editor.widget._text_area_theme import TextAreaTheme
 
 if TYPE_CHECKING:
@@ -50,9 +57,46 @@ from textual.geometry import Offset, Region, Size, Spacing, clamp
 from textual.reactive import Reactive, reactive
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
+from textual.timer import Timer
 
 _WORD_WINDOW = 8192
 """Characters scanned on each side of the cursor by the word locators."""
+
+DEFAULT_HIGHLIGHT_LIMIT = 1_048_576
+"""Bytes of a lazily opened file up to which syntax highlighting is attempted (used from ACT3 task 14 on)."""
+
+_DEFAULT_INDENT_WIDTH = 4
+"""Default of `NovaTextArea.indent_width`; `open()` gives it to the long-row indexes of the lazy document."""
+
+_PREFIX_CHARS = 1024
+"""Characters of a medium or long row that `get_line` returns for a lazy document."""
+
+_ESTIMATE_INTERVAL = 0.25
+"""Seconds between size re-estimates while an index of a lazy document grows."""
+
+_PLACEHOLDER_CELL = "\u2591"
+"""Fills the part of a window that the scan has not reached yet."""
+
+
+_GuardedMethod = TypeVar("_GuardedMethod", bound=Callable[..., Any])
+
+
+def _guard_source(default: object) -> Callable[[_GuardedMethod], _GuardedMethod]:
+    """Make a cursor entry point survive `SourceChanged` of a lazy document: the widget fails (see `_fail_source`) and `default` is returned."""
+
+    def decorate(method: _GuardedMethod) -> _GuardedMethod:
+        @functools.wraps(method)
+        def wrapper(self: NovaTextArea, *args: Any, **kwargs: Any) -> Any:
+            try:
+                return method(self, *args, **kwargs)
+            except CoreSourceChanged as error:
+                self._fail_source(str(error))
+                return default
+
+        return cast("_GuardedMethod", wrapper)
+
+    return decorate
+
 
 _OPENING_BRACKETS = {"{": "}", "[": "]", "(": ")"}
 _CLOSING_BRACKETS = {v: k for k, v in _OPENING_BRACKETS.items()}
@@ -496,7 +540,7 @@ NovaTextArea {
     line_number_start: Reactive[int] = reactive(1, init=False)
     """The line number the first line should be."""
 
-    indent_width: Reactive[int] = reactive(4, init=False)
+    indent_width: Reactive[int] = reactive(_DEFAULT_INDENT_WIDTH, init=False)
     """The width of tabs or the multiple of spaces to align to on pressing the `tab` key.
 
     If the document currently open contains tabs that are currently visible on screen,
@@ -580,6 +624,19 @@ NovaTextArea {
         def control(self) -> NovaTextArea:
             return self.text_area
 
+    @dataclass
+    class SourceChanged(Message):
+        """Posted once when the file behind a lazily opened document changed or could not be read; the view stays blank."""
+
+        reason: str
+        """What the source reported."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
     def __init__(
         self,
         text: str = "",
@@ -601,6 +658,7 @@ NovaTextArea {
         compact: bool = False,
         highlight_cursor_line: bool = True,
         placeholder: str | Content = "",
+        _prebuilt_document: LazyDocument | None = None,
     ) -> None:
         """Construct a new `NovaTextArea`.
 
@@ -623,6 +681,7 @@ NovaTextArea {
             compact: Enable compact style (without borders).
             highlight_cursor_line: Highlight the line under the cursor.
             placeholder: Text to display when there is not content.
+            _prebuilt_document: A lazy document built by `open()`; skips `Document(text)`.
         """
         super().__init__(name=name, id=id, classes=classes, disabled=disabled)
 
@@ -664,10 +723,22 @@ NovaTextArea {
         self._highlight_query: Query | None = None
         """The query that's currently being used for highlighting."""
 
-        self.document: DocumentBase = Document(text)
+        self._lazy: LazyDocument | None = _prebuilt_document
+        """The lazy document of a widget created by `open()`, else None."""
+
+        self._source_failed = False
+        """True after `SourceChanged` or after `close()`: a lazy view renders blank rows."""
+
+        self._lazy_closed = False
+        self._estimate_timer: Timer | None = None
+        self._estimating = False
+        self._requested_language: str | None = None
+        self._highlight_limit = DEFAULT_HIGHLIGHT_LIMIT
+
+        self.document: DocumentBase = _prebuilt_document if _prebuilt_document is not None else Document(text)
         """The document this widget is currently editing."""
 
-        self.wrapped_document: WrappedDocument = WrappedDocument(self.document)
+        self.wrapped_document: WrappedDocument = LazyWrappedDocument(_prebuilt_document, tab_width=_DEFAULT_INDENT_WIDTH) if _prebuilt_document is not None else WrappedDocument(self.document)
         """The wrapped view of the document."""
 
         self.navigator: DocumentNavigator = DocumentNavigator(self.wrapped_document)
@@ -678,7 +749,7 @@ NovaTextArea {
         """The virtual offset of the cursor (not screen-space offset)."""
 
         self.set_reactive(NovaTextArea.soft_wrap, soft_wrap)
-        self.set_reactive(NovaTextArea.read_only, read_only)
+        self.set_reactive(NovaTextArea.read_only, read_only or _prebuilt_document is not None)
         self.set_reactive(NovaTextArea.show_cursor, show_cursor)
         self.set_reactive(NovaTextArea.show_line_numbers, show_line_numbers)
         self.set_reactive(NovaTextArea.line_number_start, line_number_start)
@@ -703,6 +774,119 @@ NovaTextArea {
             self.tooltip = tooltip
 
         self.compact = compact
+
+    @classmethod
+    def open(
+        cls,
+        source: Path | str | ByteSource,
+        *,
+        language: str | None = None,
+        soft_wrap: bool = False,
+        config: LazyConfig | None = None,
+        highlight_limit: int = DEFAULT_HIGHLIGHT_LIMIT,
+        **kwargs: Any,
+    ) -> NovaTextArea:
+        """Open a file lazily: a read-only widget whose rows are decoded on demand and whose long rows are only shown through windows.
+
+        The widget owns the source: `close()` (also called on unmount) cancels the scans and closes it.
+        The tab width of the long-row indexes is the default `indent_width` (`LazyConfig.tab_width` is replaced by it); changing
+        `indent_width` later does not change how long rows are measured.
+
+        Args:
+            source: A path or a `ByteSource`.
+            language: Accepted for the later highlighting support; ignored for now.
+            soft_wrap: Start with soft wrapping (default False).
+            config: Thresholds of the lazy document.
+            highlight_limit: Largest source (bytes) that is highlighted; recorded, used by the highlighting support.
+            **kwargs: Passed to the constructor (theme, show_line_numbers, ...).
+
+        Returns:
+            The widget, ready to be mounted.
+        """
+        lazy_config = dataclasses.replace(config or LazyConfig(), tab_width=_DEFAULT_INDENT_WIDTH)
+        if isinstance(source, str | Path):
+            document = LazyDocument.from_path(source, lazy_config)
+        else:
+            document = LazyDocument(source, lazy_config)
+        try:
+            area = cls(soft_wrap=soft_wrap, _prebuilt_document=document, **kwargs)
+        except BaseException:
+            document.close()
+            raise
+        area._requested_language = language
+        area._highlight_limit = highlight_limit
+        return area
+
+    @property
+    def is_lazy(self) -> bool:
+        """True when the widget shows a lazily opened, read-only document (`open()`)."""
+        return self._lazy is not None
+
+    @property
+    def is_estimating(self) -> bool:
+        """True while the size re-estimate timer runs, i.e. while an index of a lazy document is still growing."""
+        return self._estimating
+
+    def close(self) -> None:
+        """Cancel and join every scan of a lazy document, then close its source; idempotent, a no-op for stock documents."""
+        lazy = self._lazy
+        if lazy is None or self._lazy_closed:
+            return
+        self._lazy_closed = True
+        self._estimating = False
+        timer = self._estimate_timer
+        if timer is not None:
+            timer.stop()
+        self._line_cache.clear()
+        lazy.close()
+
+    def _on_unmount(self) -> None:
+        self.close()
+
+    def _fail_source(self, reason: str) -> None:
+        """Enter the failed state (blank rows) and post `SourceChanged` once."""
+        if self._source_failed:
+            return
+        self._source_failed = True
+        self._line_cache.clear()
+        # set_sender: while the screen renders, it is the active pump, and a message whose sender is the parent does not bubble to it.
+        self.post_message(self.SourceChanged(reason, self).set_sender(self))
+        self.refresh()
+
+    def _ensure_estimating(self) -> None:
+        """Resume the size re-estimate timer when an index of a lazy document grows again (a long row was reached)."""
+        lazy = self._lazy
+        timer = self._estimate_timer
+        if lazy is None or timer is None or self._estimating or self._lazy_closed or self._source_failed:
+            return
+        if lazy.is_growing():
+            self._estimating = True
+            timer.resume()
+
+    def _estimate_tick(self) -> None:
+        """Re-estimate the virtual size while an index grows; pause the timer after the refresh that follows the last progress."""
+        lazy = self._lazy
+        if lazy is None or self._lazy_closed or self._source_failed:
+            self._estimating = False
+            if self._estimate_timer is not None:
+                self._estimate_timer.pause()
+            return
+        growing = lazy.is_growing()
+        wrapped = self.wrapped_document
+        try:
+            if isinstance(wrapped, LazyWrappedDocument):
+                wrapped.refresh_estimates()
+            self._line_cache.clear()
+            self._refresh_size()
+        except CoreSourceChanged as error:
+            self._fail_source(str(error))
+        except (RowUnavailable, IndexError):
+            pass
+        self.refresh()
+        if not growing:
+            self._estimating = False
+            if self._estimate_timer is not None:
+                self._estimate_timer.pause()
 
     @classmethod
     def code_editor(
@@ -855,6 +1039,7 @@ NovaTextArea {
         else:
             self._pause_blink(visible=False)
 
+    @_guard_source(None)
     def _watch_selection(self, previous_selection: Selection, selection: Selection) -> None:
         """When the cursor moves, scroll it into view."""
         # Find the visual offset of the cursor in the document
@@ -894,6 +1079,10 @@ NovaTextArea {
         else:
             self._pause_blink(visible=self.has_focus)
 
+    def validate_read_only(self, read_only: bool) -> bool:
+        """A lazy document cannot be edited: read-only stays on."""
+        return read_only or self._lazy is not None
+
     def _watch_read_only(self, read_only: bool) -> None:
         self.set_class(read_only, "-read-only")
         self._set_theme(self._theme.name)
@@ -912,7 +1101,10 @@ NovaTextArea {
         Returns:
             The `Location` of the matching bracket, or `None` if it's not found.
             If the character is not available for bracket matching, `None` is returned.
+            Always `None` for a lazily opened document.
         """
+        if self._lazy is not None:
+            return None  # a search would decode arbitrarily many rows
         match_location = None
         bracket_stack: list[str] = []
         if bracket in _OPENING_BRACKETS:
@@ -951,6 +1143,8 @@ NovaTextArea {
 
     def _watch_language(self, language: str | None) -> None:
         """When the language is updated, update the type of document."""
+        if self._lazy is not None:
+            return  # highlighting of lazy documents is added separately
         self._set_document(self.document.text, language)
 
     def _watch_show_line_numbers(self) -> None:
@@ -1108,6 +1302,12 @@ NovaTextArea {
                 If None, the document will be treated as plain text.
         """
         self._highlight_query = None
+        if self._lazy is not None:
+            self.wrapped_document = LazyWrappedDocument(self._lazy, tab_width=self.indent_width)
+            self.navigator = DocumentNavigator(self.wrapped_document)
+            self._build_highlight_map()
+            self._rewrap_and_refresh_virtual_size()
+            return
         if TREE_SITTER and language:
             if language in self._languages:
                 # User-registered languages take priority.
@@ -1184,6 +1384,9 @@ NovaTextArea {
         Args:
             text: The text to load into the NovaTextArea.
         """
+        if self._lazy is not None:
+            msg = "a lazily opened document is read-only; load_text is not available"
+            raise RuntimeError(msg)
         self.history.clear()
         self._set_document(text, self.language)
         self.post_message(self.Changed(self).set_sender(self))
@@ -1264,6 +1467,8 @@ NovaTextArea {
             width, height = self.document.get_size(self.indent_width)
             self.virtual_size = Size(width + self.gutter_width + 1, height)
         self._refresh_scrollbars()
+        if self._lazy is not None:
+            self._ensure_estimating()
 
     @property
     def _draw_cursor(self) -> bool:
@@ -1291,6 +1496,10 @@ NovaTextArea {
         Returns:
             A `rich.Text` object containing the requested line.
         """
+        lazy = self._lazy
+        if lazy is not None and lazy.row_class(line_index) != "short":
+            # Medium and long rows are never returned whole: a bounded prefix (the renderer uses windows).
+            return Text(lazy.column_slice(line_index, 0, _PREFIX_CHARS), end="", no_wrap=True)
         line_string = self.document.get_line(line_index)
         return Text(line_string, end="", no_wrap=True)
 
@@ -1309,7 +1518,7 @@ NovaTextArea {
         Returns:
             A rendered line.
         """
-        if self.placeholder and not self.text:
+        if self.placeholder and self._lazy is None and not self.text:
             placeholder_lines = Content.from_text(self.placeholder).wrap(self.content_size.width)
             if y < len(placeholder_lines):
                 style = self.get_visual_style("text-area--placeholder")
@@ -1342,9 +1551,94 @@ NovaTextArea {
         )
         if (cached_line := self._line_cache.get(cache_key)) is not None:
             return cached_line
-        line = self._render_line(y)
+        line = self._render_line_guarded(y)
         self._line_cache[cache_key] = line
         return line
+
+    def _blank_strip(self) -> Strip:
+        theme = self._theme
+        base_style = theme.base_style if theme and theme.base_style is not None else self.rich_style
+        return Strip.blank(self.size.width, base_style)
+
+    def _render_line_guarded(self, y: int) -> Strip:
+        """Render a line; a lazy document renders blank rows when it is closed, failed, or its rows are not resolvable yet."""
+        if self._lazy is None:
+            return self._render_line(y)
+        if self._lazy_closed or self._source_failed:
+            return self._blank_strip()
+        try:
+            return self._render_line(y)
+        except CoreSourceChanged as error:
+            self._fail_source(str(error))
+        except (RowUnavailable, IndexError):
+            pass
+        return self._blank_strip()
+
+    def _render_window(self, lazy: LazyDocument, wrapped: LazyWrappedDocument, line_index: int, section_offset: int) -> Strip:
+        """Render one medium or long row from a window: the visible columns plus a screen of margin (no wrap) or one section (wrap)."""
+        theme = self._theme
+        base_style = theme.base_style if theme and theme.base_style is not None else self.rich_style
+        gutter_width = self.gutter_width
+        visible = max(1, self.scrollable_content_region.size.width - gutter_width)
+        tab_width = self.indent_width
+        scroll_x, _ = self.scroll_offset
+        window: WindowText
+        if self.soft_wrap:
+            window = section_window(lazy, wrapped, line_index, section_offset, tab_width)
+            crop_start = window.phantom_cells
+        else:
+            window = window_text(lazy, line_index, scroll_x, visible, visible, tab_width)
+            crop_start = window.phantom_cells + scroll_x - window.start_disp
+
+        # The phantom cells keep the tab phase; every column is shifted by the window start.
+        line = Text(" " * window.phantom_cells + window.text, end="", no_wrap=True)
+        line.tab_size = tab_width
+        if window.at_row_end:
+            line.set_length(len(line) + 1)  # space at end for cursor
+        shift = window.phantom_cells - window.start_column
+
+        selection = self.selection
+        start, end = selection
+        cursor_row, cursor_column = end
+        selection_top, selection_bottom = sorted(selection)
+        selection_top_row, selection_top_column = selection_top
+        selection_bottom_row, selection_bottom_column = selection_bottom
+
+        has_cursor = self._has_cursor
+        highlight_cursor_line = self.highlight_cursor_line and has_cursor
+        cursor_line_style = theme.cursor_line_style if (theme and highlight_cursor_line) else None
+        if has_cursor and cursor_line_style and cursor_row == line_index:
+            line.stylize(cursor_line_style)
+
+        selection_style = theme.selection_style if theme else None
+        if start != end and selection_top_row <= line_index <= selection_bottom_row and selection_style:
+            first = selection_top_column if line_index == selection_top_row else 0
+            last = selection_bottom_column + shift if line_index == selection_bottom_row else len(line)
+            line.stylize(selection_style, max(0, first + shift), max(0, last))
+
+        if cursor_row == line_index and self._draw_cursor:
+            cursor_style = theme.cursor_style if theme else None
+            index = cursor_column + shift
+            if cursor_style and index >= window.phantom_cells:
+                line.stylize(cursor_style, index, index + 1)
+
+        line.expand_tabs(tab_width)
+        text_strip = Strip(line.render(self.app.console), cell_length=line.cell_len)
+        text_strip = text_strip.crop(crop_start, crop_start + visible)
+        missing = visible - text_strip.cell_length
+        if (window.truncated or window.missing) and missing > 0:
+            placeholder = Strip([Segment(_PLACEHOLDER_CELL * missing, Style(dim=True))], cell_length=missing)
+            text_strip = Strip.join([text_strip, placeholder])
+        line_style = cursor_line_style if (cursor_row == line_index and self.highlight_cursor_line) else (theme.base_style if theme else None)
+        text_strip = text_strip.extend_cell_length(visible, line_style)
+
+        if self.show_line_numbers:
+            gutter_style = theme.cursor_line_gutter_style if (cursor_row == line_index and highlight_cursor_line) else theme.gutter_style
+            gutter_content = str(line_index + self.line_number_start) if section_offset == 0 else ""
+            gutter = Strip([Segment(f"{gutter_content:>{gutter_width - 2}}  ", gutter_style)], cell_length=gutter_width)
+            text_strip = Strip.join([gutter, text_strip])
+        self._ensure_estimating()
+        return text_strip.apply_style(base_style)
 
     def _render_line(self, y: int) -> Strip:
         """Render a single line of the NovaTextArea. Called by Textual.
@@ -1380,6 +1674,10 @@ NovaTextArea {
             return Strip.blank(self.size.width, base_style)
 
         line_index, section_offset = line_info
+
+        lazy = self._lazy
+        if lazy is not None and isinstance(wrapped_document, LazyWrappedDocument) and lazy.row_class(line_index) != "short":
+            return self._render_window(lazy, wrapped_document, line_index, section_offset)
 
         line = self.get_line(line_index)
         line_character_count = len(line)
@@ -1555,7 +1853,9 @@ NovaTextArea {
 
     @property
     def text(self) -> str:
-        """The entire text content of the document."""
+        """The entire text content of the document (always `""` for a lazily opened document)."""
+        if self._lazy is not None:
+            return ""
         return self.document.text
 
     @text.setter
@@ -1820,6 +2120,10 @@ NovaTextArea {
             self._toggle_cursor_blink_visible,
             pause=not (self.cursor_blink and self.has_focus),
         )
+        lazy = self._lazy
+        if lazy is not None and not self._lazy_closed:
+            self._estimating = lazy.is_growing()
+            self._estimate_timer = self.set_interval(_ESTIMATE_INTERVAL, self._estimate_tick, pause=not self._estimating)
 
     def _toggle_cursor_blink_visible(self) -> None:
         """Toggle visibility of the cursor for the purposes of 'cursor blink'."""
@@ -1933,6 +2237,7 @@ NovaTextArea {
         return row, column
 
     # --- Cursor/selection utilities
+    @_guard_source(Offset(0, 0))
     def scroll_cursor_visible(self, center: bool = False, animate: bool = False) -> Offset:
         """Scroll the `NovaTextArea` such that the cursor is visible on screen.
 
@@ -1957,6 +2262,7 @@ NovaTextArea {
         )
         return scroll_offset
 
+    @_guard_source(None)
     def move_cursor(
         self,
         location: Location,
@@ -1990,6 +2296,7 @@ NovaTextArea {
 
         self.history.checkpoint()
 
+    @_guard_source(None)
     def move_cursor_relative(
         self,
         rows: int = 0,
@@ -2015,6 +2322,7 @@ NovaTextArea {
         target = clamp_visitable((current_row + rows, current_column + columns))
         self.move_cursor(target, select, center, record_width)
 
+    @_guard_source(None)
     def select_line(self, index: int) -> None:
         """Select all the text in the specified line.
 
@@ -2036,6 +2344,7 @@ NovaTextArea {
         cursor_row, _ = self.cursor_location
         self.select_line(cursor_row)
 
+    @_guard_source(None)
     def select_all(self) -> None:
         """Select all of the text in the `NovaTextArea`."""
         last_line = self.document.line_count - 1
@@ -2112,6 +2421,7 @@ NovaTextArea {
         return self.cursor_at_last_line and self.cursor_at_end_of_line
 
     # ------ Cursor movement actions
+    @_guard_source(None)
     def action_cursor_left(self, select: bool = False) -> None:
         """Move the cursor one location to the left.
 
@@ -2137,6 +2447,7 @@ NovaTextArea {
         """
         return self.navigator.get_location_left(self.cursor_location)
 
+    @_guard_source(None)
     def action_cursor_right(self, select: bool = False) -> None:
         """Move the cursor one location to the right.
 
@@ -2164,6 +2475,7 @@ NovaTextArea {
         """
         return self.navigator.get_location_right(self.cursor_location)
 
+    @_guard_source(None)
     def action_cursor_down(self, select: bool = False) -> None:
         """Move the cursor down one cell.
 
@@ -2184,6 +2496,7 @@ NovaTextArea {
         """
         return self.navigator.get_location_below(self.cursor_location)
 
+    @_guard_source(None)
     def action_cursor_up(self, select: bool = False) -> None:
         """Move the cursor up one cell.
 
@@ -2204,6 +2517,7 @@ NovaTextArea {
         """
         return self.navigator.get_location_above(self.cursor_location)
 
+    @_guard_source(None)
     def action_cursor_line_end(self, select: bool = False) -> None:
         """Move the cursor to the end of the line."""
         if not self._has_cursor:
@@ -2220,6 +2534,7 @@ NovaTextArea {
         """
         return self.navigator.get_location_end(self.cursor_location)
 
+    @_guard_source(None)
     def action_cursor_line_start(self, select: bool = False) -> None:
         """Move the cursor to the start of the line."""
         if not self._has_cursor:
@@ -2241,6 +2556,7 @@ NovaTextArea {
         """
         return self.navigator.get_location_home(self.cursor_location, smart_home=smart_home)
 
+    @_guard_source(None)
     def action_cursor_word_left(self, select: bool = False) -> None:
         """Move the cursor left by a single word, skipping trailing whitespace.
 
@@ -2278,6 +2594,7 @@ NovaTextArea {
         cursor_column = window_start + matches[-1].start() if matches else window_start
         return cursor_row, cursor_column
 
+    @_guard_source(None)
     def action_cursor_word_right(self, select: bool = False) -> None:
         """Move the cursor right by a single word, skipping leading whitespace."""
         if not self.show_cursor:
@@ -2317,6 +2634,7 @@ NovaTextArea {
 
         return cursor_row, cursor_column
 
+    @_guard_source(None)
     def action_cursor_page_up(self) -> None:
         """Move the cursor and scroll up one page."""
         if not self.show_cursor:
@@ -2331,6 +2649,7 @@ NovaTextArea {
         self.scroll_relative(y=-height, animate=False)
         self.move_cursor(target)
 
+    @_guard_source(None)
     def action_cursor_page_down(self) -> None:
         """Move the cursor and scroll down one page."""
         if not self.show_cursor:

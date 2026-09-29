@@ -121,6 +121,11 @@ class LazyDocument(DocumentBase):
         return cls(PreadSource(path), config, autostart=autostart)
 
     # -- lifecycle ----------------------------------------------------------------------------
+    @property
+    def tab_width(self) -> int:
+        """The tab width the long-row indexes use (`LazyConfig.tab_width`); the widget sets it from its `indent_width` at `open`."""
+        return self._config.tab_width
+
     def start_scan(self) -> None:
         """Start the background line scan; a second call does nothing."""
         with self._lock:
@@ -158,6 +163,17 @@ class LazyDocument(DocumentBase):
         self._line_index.subscribe(callback)
         for index in existing:
             index.subscribe(callback)
+
+    def is_growing(self) -> bool:
+        """Whether the line scan or a long-row scan is still running, i.e. sizes and estimates can still change."""
+        with self._lock:
+            if self._closed:
+                return False
+            indexes = list(self._long.values())
+        snap = self._line_index.snapshot()
+        if not snap.complete and snap.error is None:
+            return True
+        return any(index.running for index in indexes)
 
     def snapshot(self) -> LineSnapshot:
         """Return the consistent state of the line scan."""

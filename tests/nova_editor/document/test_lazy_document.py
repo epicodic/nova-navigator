@@ -350,3 +350,17 @@ def test_close_during_line_scan(tmp_path: Path) -> None:
     doc.close()
     doc.close()
     assert doc.snapshot().complete is False
+
+
+def test_is_growing_until_every_scan_finished_and_false_after_close(tmp_path: Path) -> None:
+    doc = LazyDocument(PreadSource(make_mixed(tmp_path / "m.txt", long_chars=6000)), LazyConfig(**LOWERED_OPTIONS), autostart=False)
+    assert doc.is_growing()
+    doc.start_scan()
+    assert doc.wait_indexed(10)
+    doc.long_index(12).join(10)
+    deadline = time.monotonic() + 10
+    while doc.is_growing() and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert not doc.is_growing()
+    doc.close()
+    assert not doc.is_growing()

@@ -123,6 +123,17 @@ class LongLineIndex:
         if terminal:
             call_subscriber(callback)
 
+    @property
+    def running(self) -> bool:
+        """Whether the scan can still make progress: not complete, not failed, not cancelled (also true just before `start`)."""
+        with self._cond:
+            if self._complete or self._error is not None:
+                return False
+        if self._cancelled.is_set():
+            return False
+        thread = self._thread
+        return thread is None or thread.is_alive()
+
     def frontier(self) -> Frontier:
         """Return a consistent snapshot of the scan progress."""
         with self._cond:
