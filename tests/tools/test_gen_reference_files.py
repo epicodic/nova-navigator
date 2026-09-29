@@ -48,6 +48,7 @@ def test_normal_structure(tmp_path: Path) -> None:
     assert any(ch in text for ch in gen._WIDE)
     assert any(ord(ch) > 0xFFFF for ch in text)
     assert any(ch in text for ch in gen._ACCENTED)
+    assert any("̀" <= ch <= "ͯ" for ch in text)
 
 
 def test_longline_structure(tmp_path: Path) -> None:
@@ -77,6 +78,15 @@ def test_refuses_overwrite(tmp_path: Path) -> None:
         gen.generate("normal", 100, 1, out)
     gen.generate("normal", 200, 1, out, force=True)
     assert out.stat().st_size == 200
+
+
+def test_combining_constants_are_decomposed() -> None:
+    """Verify that every entry in _COMBINING is decomposed (length 2, second char is combining mark)."""
+    for entry in gen._COMBINING:
+        assert len(entry) == 2, f"Expected length 2, got {len(entry)} for {entry!r}"
+        combining_char = entry[1]
+        combining_code = ord(combining_char)
+        assert 0x0300 <= combining_code <= 0x036F, f"Second character must be a combining mark (U+0300..U+036F), got U+{combining_code:04X} for {entry!r}"
 
 
 def test_cli_all(tmp_path: Path) -> None:
