@@ -10,7 +10,11 @@ This document describes the architecture and design of the `nova_editor` package
 
 The package is separate from `nova_navigator` and can be used independently.
 
-**Status:** The core layer exists and is tested; the widget currently uses a vendored copy of Textual 8.2.8's `TextArea` (renamed to `NovaTextArea`) with no modifications to core behavior.
+**Status:** The core layer is tested and performs background scanning of large files.
+The widget is a vendored copy of Textual 8.2.8's `TextArea` (renamed `NovaTextArea`) with significant modifications to add lazy document support, long-row handling, and windowed rendering.
+The lazy document layer (`LazyDocument`, `LazyWrappedDocument`) uses the core indexes to stream file content on demand; capability methods never wait for a scan and return `None` / empty results beyond the scanned frontier.
+The widget layer supports eager opening of files up to 1 MiB and lazy opening above that threshold via the `open()` class method; `nova_edit` chooses automatically unless `--lazy` is passed.
+Two-path mode is under development: small files use stock `Document`, large files use `LazyDocument`, and both are backed by the same in-memory `ByteSource` (convergence planned for ACT4).
 
 ---
 
@@ -137,24 +141,266 @@ Making the top-level exports lazy is a possible later change outside this activi
 
 ### 2. **Document Layer** (`nova_editor/document/`)
 
-The document code consumed by the widget.
-It is currently the untouched vendored Textual 8.2.8 document code and does not use `nova_editor.core`.
-Integration with the core indexes is planned for ACT3.
+Lazy read-only documents built over the core indexes; used only when a file is opened via `NovaTextArea.open()`.
+The layer also includes stock document support (vendored from Textual 8.2.8) for small files opened with `text=`.
+
+**Lazy classes:**
+- `LazyDocument` — read-only document backed by `ByteSource` and `LineIndex`; decodes rows on demand with capability methods that never wait.
+- `LazyWrappedDocument` — wrapping layer over `LazyDocument` for soft-wrap and grid-wrap modes; manages wrap-offset indexes.
+- `LazyConfig` — tunable thresholds and cache sizes with defaults.
+
+**Row classes (by content byte length):**
+- Short: 0 to `word_wrap_limit` (default 64 KiB); stock wrapping, fully decoded.
+- Medium: 64 KiB to `long_row_threshold` (default 1 MiB); grid wrapping above `word_wrap_limit`, fully decoded for wrapping.
+- Long: above 1 MiB; never decoded as a whole; windowed rendering and byte-anchored cursor.
+
+**Capability methods (on DocumentBase; lazy documents override):**
+- `is_long(row)` — return whether the row must never be decoded as a whole.
+- `line_length(row)` — return the character count, or `None` if not yet known.
+- `row_byte_length(row)` — return the UTF-8 byte length of the row content.
+- `column_slice(row, start, stop)` — return characters [start, stop), at most 8192 characters for lazy documents.
+- `has_char_at(row, column)` — return whether the row has a character at column.
+- `display_column(row, column, tab_width)` — return the display column of character column, or `None` when unknown.
+- `column_at_display(row, x, tab_width)` — return the character column covering display column x, or `None` when unknown.
+- `byte_offset(row, column)` — return the byte offset from document start, or `None` when unknown.
+
+**Cursor state machine (`_cursor_anchor.CursorMachine`):**
+The cursor on a long row has three states: `RESOLVED` (exact column known), `PROVISIONAL` (byte position is exact, column is an estimate), `PENDING` (waits for the scan to reach the cursor byte).
+The machine accepts `Op` (operations like `LEFT`, `RIGHT`, `GOTO_COLUMN`, etc.) and returns a `Verdict` (`DONE` or `PENDING`).
+When the index of a long row is created, its starting position is `PROVISIONAL` (byte 0, estimated column 0).
+A RESOLVED cursor is retained if the operation stays within the known frontier; otherwise it becomes PROVISIONAL.
+A PENDING cursor rejects new operations until the scan reaches the cursor byte (only `jump_to_byte` retargets).
 
 ### 3. **Widget Layer** (`nova_editor/widget/`)
 
-Textual widget implementation containing:
-- **`NovaTextArea`** — the main editor widget (vendored from Textual 8.2.8, renamed from `TextArea`)
-- **`_text_area_theme.py`** — theme support for syntax highlighting
+Textual widget and lazy rendering support.
 
-The widget currently behaves exactly like Textual's stock `TextArea`; all public APIs are preserved.
+**Core module:**
+- `NovaTextArea` — the main editor widget (vendored from Textual 8.2.8, renamed from `TextArea`).
+  Supports both eager mode (stock `Document`, fully loaded) and lazy mode (`LazyDocument`, streamed).
+  In lazy mode: rows are decoded on-demand; long rows use windowed rendering; cursor on long rows goes through the state machine.
+
+**Helper modules:**
+- `_text_area_theme.py` — theme support for syntax highlighting.
+- `_lazy_window.py` — windowed rendering for medium and long rows; decodes and classifies a visible window without decoding more than 8192 characters.
+- `_long_row_cursor.py` — cursor state machine integration and provisional layout for long rows.
+
+**Public API (`NovaTextArea`):**
+- `open(source, language, soft_wrap, config, highlight_limit, **kwargs)` — open a file lazily; returns the widget ready to mount.
+- `is_lazy` — read-only boolean; true when the widget uses a lazy document.
+- `text` (property) — full file text in eager mode; raises `WholeLineAccess` on lazy documents (by design).
+- `read_only` — forced true for lazy documents.
+- `document` — a `DocumentBase` (stock `Document` or `LazyDocument`).
+- `cursor_state` (read-only) — the `CursorState` of a long-row cursor; `None` for stock documents.
+- `cursor_byte_offset` (read-only) — the absolute byte offset of the cursor; `None` for stock documents.
+- `column_exact` (read-only) — true when the cursor column is exact (RESOLVED state); false for PROVISIONAL/PENDING.
+- `cursor_location` — the row and column of the cursor; estimate for PROVISIONAL.
+- `pending_progress` — fraction in [0, 1) of a deferred cursor jump; `None` when nothing is pending.
+- `line_count` (read-only) — lower bound on the total lines; exact when indexing is complete.
+- `line_count_exact` (read-only) — true when the line count is final.
+- `indexing_complete` (read-only) — true when the line scan is complete.
+- `goto_line(line_num)` — go to a line; deferred and returns a `Verdict` if the line is not yet indexed.
+- `goto_byte(byte_offset)` — go to an absolute byte offset; deferred and returns a `Verdict` if the byte is beyond the scanned frontier.
+- `cancel_pending()` — cancel a deferred jump; action bound to Escape in lazy mode.
+- `toggle_wrap()` — toggle soft-wrap mode; action bound to F4 in lazy mode.
+- `close()` — close the underlying source and background scans (called on widget unmount).
+
+**Message classes (posted by the widget):**
+- `IndexProgress(count, complete)` — posted at most 10 times per second while the line scan grows; once at completion.
+- `IndexingComplete` — posted once when the line scan finishes.
+- `SourceChanged(reason)` — posted once if the file behind a lazy document changed or could not be read; the view stays blank.
+- `JumpProgress(fraction)` — posted when a deferred cursor jump starts or advances.
+- `JumpCompleted(row, column)` — posted when a goto has moved the cursor; `column` is an estimate while PROVISIONAL.
+- `JumpRejected(reason)` — posted when a goto target is out of range.
+
+**Thresholds (defaults, tunable via `LazyConfig`):**
+- `word_wrap_limit = 65536` — rows above this use grid wrap instead of word wrap.
+- `long_row_threshold = 1048576` — rows above this are never decoded as a whole; use windowed rendering.
+- `highlight_limit = 1048576` (in `open()`) — files larger than this are not syntax highlighted (separate from lazy threshold).
 
 ### 4. **Application Layer** (`nova_editor/app.py`)
 
 Standalone Textual app (`NovaEditApp`) providing:
-- File loading/saving via `Ctrl+S` and `Ctrl+Q`
-- Footer showing file path and keyboard shortcuts
-- Entry point `main()` for the `nova_edit` CLI command
+- Automatic eager/lazy choice based on file size: files up to `EAGER_LIMIT` (1 MiB) are opened eagerly; larger files lazily.
+- File loading/saving via `Ctrl+S` and `Ctrl+Q`.
+- F4 to toggle soft-wrap mode.
+- Ctrl+G to open the goto bar for line or byte offset navigation (`@N` syntax for byte offsets).
+- Escape to cancel a pending jump (lazy mode only).
+- Footer showing file path and keyboard shortcuts.
+- Entry point `main()` for the `nova_edit` CLI command (supports `--lazy` flag to force lazy mode).
+- Timing hook support via `NOVA_EDIT_TIMING_FILE` environment variable (writes `FIRST_CONTENT <ns>` when content first renders).
+
+**GotoBar:** Inline input field; accepts `N` (line number) or `@N` (byte offset); Escape closes it, Enter navigates.
+
+**TimedNovaTextArea:** Wrapper that logs the first content render time for benchmarking.
+
+---
+
+## Two-Path Model
+
+A document can be opened in either eager or lazy mode:
+
+**Eager mode (small files):**
+Files up to `EAGER_LIMIT` (1 MiB) are opened with `text=` parameter; `NovaTextArea` creates a stock `Document` and loads all bytes into memory immediately.
+This mode supports all text editor features (undo/redo, full-text search, etc.).
+
+**Lazy mode (large files):**
+Files larger than 1 MiB are opened via `NovaTextArea.open(path)`, which creates a `LazyDocument` backed by `ByteSource` and `LineIndex`.
+Rows are decoded on demand; long rows are never decoded as a whole.
+This mode is read-only by design.
+
+**Convergence (planned for ACT4):**
+A `ByteSource` over in-memory byte buffers allows both documents to share the same immutable source.
+Small files will be backfilled into memory after initial display, then switched to stock `Document` to gain edit support.
+Long rows will remain lazy and windowed even in this mode.
+
+---
+
+## Wrap Semantics
+
+Wrapping is layer-dependent and triggered by row size:
+
+**Short rows (0 to 64 KiB):**
+Stock word-wrap (Textual's `compute_wrap_offsets`); fast because the row is decoded once.
+Estimate: 0.22 ms at 4 KiB, 0.90 ms at 16 KiB, 3.55 ms at 64 KiB.
+
+**Medium rows (64 KiB to 1 MiB):**
+Grid wrap: soft-wrap is disabled, the row is fully decoded for grid layout, and wrapping is done via windowed rendering.
+The window starts at the visible display column and never decodes more than 8192 characters.
+Estimate: 15.4 ms to compute wrap offsets of a 256 KiB row at width 113.
+
+**Long rows (above 1 MiB):**
+Always windowed; grid wrap by default, but wrap toggle still works to switch between no-wrap and grid-wrap display.
+No full-row decode is ever done; the window is the decoded region.
+Estimate: 2.4 ms to render the window without wrapping, 6.2 ms with wrapping (at 256 KiB rows), 21.5 ms at 1 MiB rows.
+
+**Word-wrap limit (64 KiB):**
+Above this threshold, soft-wrap uses grid wrapping (each wrap line has a fixed width) instead of word wrapping (wraps at word boundaries).
+This avoids the cost of full-row scans for width calculation on every page down.
+
+**Wrap toggle (F4 in nova_edit):**
+Switches between no-wrap and grid-wrap modes.
+For long rows on a lazy document, this is a state change only; the window is re-rendered.
+On a stock document, the underlying `WrappedDocument` is recalculated.
+
+---
+
+## Cursor State Machine (Long Rows)
+
+A cursor on a long row goes through three states:
+
+**RESOLVED:**
+The byte position and column are both exact.
+The cursor can move freely within the scanned frontier.
+
+**PROVISIONAL:**
+The byte position is exact (from a byte-anchored jump), but the column is an estimate.
+This state is entered after a jump to a location (via `goto_byte` or when waiting for a deferred jump completes).
+The cursor cannot move until the column is recalculated (via a request to `display_column`).
+
+**PENDING:**
+The cursor awaits the scan to reach the byte position.
+This state is entered when a jump target lies beyond the scanned frontier.
+The widget shows `JumpProgress` messages and allows `Escape` to cancel.
+Once the scan reaches the byte, the machine transitions to PROVISIONAL.
+
+**State transitions:**
+- `RESOLVED` + operation within frontier → `RESOLVED`
+- `RESOLVED` + operation beyond frontier → `PENDING`
+- `PROVISIONAL` + column request → `RESOLVED` (if possible) or stay `PROVISIONAL` (if beyond frontier)
+- `PENDING` + scan reaches cursor → `PROVISIONAL`
+- Any state + `jump_to_byte` → `PROVISIONAL` (retargets the pending jump)
+
+---
+
+## Thread Model
+
+Background scanning runs in a separate thread managed by `LineIndex` and `LongLineIndex`.
+
+**Foreground gate (`nova_editor/core/foreground.py`):**
+A `Foreground` instance records when the UI is busy (via `touch()`).
+The scan thread calls `pause_seconds()` between work pieces: if the UI has been active within the last 50 ms, the scan sleeps 1 ms before the next piece.
+This hands the GIL to the UI without waiting for the 5 ms scheduler interval, keeping down-key latency under 2.3 ms even during indexing.
+
+**Scan thread lifecycle:**
+- Append-only updates: scans publish `(line_count, complete)` snapshots under one lock per index.
+- Callbacks run on the scan thread outside all locks.
+- Shutdown: `cancel()` and `join()` the scan, then `close()` the source.
+
+**Coalesced messages:**
+Scan-completion callbacks use `call_from_thread()` to post updates to the Textual event loop.
+Multiple pending callbacks are coalesced into a single `IndexProgress` message (posted at most 10 times per second).
+
+---
+
+## Performance Thresholds (Measured)
+
+All measurements are on the developer's machine (i5-14600K) with the harness `uv run python -m tools.measure_view ...`.
+
+**Syntax highlighting limit (1 MiB):**
+Files above this size are not highlighted when opened lazily, to keep first-screen latency low.
+First screen render: 97.6 ms at 64 KiB, 221 ms at 256 KiB, 790 ms at 1 MiB, 3.1 s at 4 MiB, 13.4 s at 16 MiB.
+
+**Word-wrap limit (64 KiB):**
+Above this threshold, soft-wrap uses grid wrapping instead of word wrapping.
+Word wrap of one row at width 113: 0.22 ms at 4 KiB, 0.90 ms at 16 KiB, 3.55 ms at 64 KiB, 15.4 ms at 256 KiB, 61.6 ms at 1 MiB.
+
+**Long-row threshold (1 MiB):**
+Rows above this are never decoded as a whole; use windowed rendering.
+Whole-row decode render: 5.7 ms at 256 KiB, 21.4 ms at 1 MiB, 74 ms at 4 MiB.
+Windowed render (up to 8192 characters): 2.4 ms at 256 KiB, 6.2 ms at 1 MiB, 21.5 ms at 4 MiB.
+
+**Eager limit (1 MiB):**
+Files above this are opened lazily; below are opened eagerly.
+First screen latency comparison (lazy vs eager): 18 vs 34 ms at 64 KiB, 45 vs 36 ms at 256 KiB, 139 vs 37 ms at 1 MiB, 680 vs 44 ms at 4 MiB.
+
+**Checkpoint spacing:**
+Long-line indexes use checkpoints spaced at most 65,536 characters apart.
+Fallback minimum: 8,192 characters (for very small synthetic tests).
+
+**Page up/down latency (during indexing, 5 GB file):**
+GIL contention between scan and UI threads was the bottleneck.
+Fixes: ASCII/non-ASCII run splitting in `text_width._cells()` to minimize per-character width lookups; `Foreground` gate to let the UI yield the scan between work pieces.
+Result: down-key median 2.3 ms, page down/page up median 15 ms, max 33 ms (during active scanning on a 5 GB file).
+
+---
+
+## Testing
+
+Tests are located under `tests/nova_editor/`:
+
+**Core layer tests:**
+- `core/test_byte_source.py` — PreadSource and SourceChanged.
+- `core/test_foreground.py` — Foreground gate pause behavior.
+- `core/test_row_at_offset.py` — LineIndex.row_at_offset and scanned_bytes.
+- `core/test_text_width.py` — Display-width helpers.
+
+**Document layer tests:**
+- `document/test_lazy_document.py` — LazyDocument capability methods and RowUnavailable.
+- `document/test_lazy_wrapped_document.py` — LazyWrappedDocument wrap offset indexes.
+- `document/test_cursor_anchor.py` — CursorMachine state transitions.
+- `document/test_long_row_anchor.py` — LongLineIndex checkpoints and non-blocking queries.
+- `document/test_capabilities.py` — DocumentBase capability methods (stock and lazy).
+- `document/test_navigator_capabilities.py` — DocumentNavigator on lazy documents.
+- `document/test_navigator_long_rows.py` — DocumentNavigator wrapping logic for long rows.
+
+**Widget layer tests:**
+- `test_lazy_widget.py` — LazyDocument rendering and cursor state.
+- `test_lazy_cursor.py` — Cursor machine integration; state transitions and message posting.
+- `test_jump.py` — Goto line/byte on lazy documents; deferred jumps and cancellation.
+- `test_highlight_limit.py` — Syntax highlighting disabled for large files.
+- `test_app_lazy.py` — NovaEditApp lazy opening and timing hooks.
+- `test_widget_capabilities.py` — Widget capability methods (lazy and stock).
+- `test_bindings.py` — Keybindings (F4 wrap, Ctrl+G goto, Escape cancel).
+
+**Helpers and benchmarks:**
+- `helpers_view.py` — Synthetic file builder and oracle for correctness testing.
+- `test_helpers_view.py` — Oracle tests (never use reference files).
+- `tools/test_measure_view.py` — Smoke test for the benchmark harness.
+
+**Measurement harness (`uv run python -m tools.measure_view`):**
+Subcommands: `first-screen`, `memory`, `latency`, `jump`, `oracle`, `calllog`, `sweep-yield`, `thresholds`, `summarise`.
+See `src/tools/measure_view.py` for usage.
 
 ---
 
@@ -260,8 +506,9 @@ See `UPSTREAM.md` for detailed upgrade instructions.
 
 ## Future Work
 
-- **Lazy loading:** Stream file content into buffers as needed
-- **Long lines:** Handle lines longer than the viewport
-- **Integration:** Embed in `nova_navigator` as an editor dialog
-- **Performance:** Profile and optimize for very large files (>1GB)
-- **Syntax highlighting:** Full tree-sitter support
+- **Edit support:** Restore undo/redo and text editing for large files via the two-path model (ACT4).
+- **Search:** Add find/replace that works on lazy documents (search only the decoded portions or the original file).
+- **Selection:** Multi-line and multi-region selection on lazy documents.
+- **Integration:** Embed in `nova_navigator` as an editor dialog for large file viewing and light editing.
+- **Syntax highlighting on long rows:** Currently disabled for files >1 MiB; tree-sitter queries could be windowed.
+- **Goto optimizations:** Cache line scan progress in the file so re-opening a file starts with the last-known positions.
