@@ -3,6 +3,8 @@ from __future__ import annotations
 import dataclasses
 import functools
 import re
+import threading
+import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -25,6 +27,7 @@ from textual.style import Style as ContentStyle
 
 from nova_editor.core import ByteSource
 from nova_editor.core import SourceChanged as CoreSourceChanged
+from nova_editor.core.text_width import utf8_len
 from nova_editor.document._cursor_anchor import CursorMachine, CursorState, Op, Verdict
 from nova_editor.document._document import (
     Document,
@@ -75,6 +78,31 @@ _PREFIX_CHARS = 1024
 
 _ESTIMATE_INTERVAL = 0.25
 """Seconds between size re-estimates while an index of a lazy document grows."""
+
+_MESSAGE_INTERVAL = 0.1
+"""Seconds between two `IndexProgress` (and two `JumpProgress`) messages: at most 10 per second."""
+
+_PROGRESS_BELOW_ONE = 0.999999
+"""Progress of a pending jump stays below 1: 1 means done."""
+
+
+def _column_of_byte(text: str, relative: int) -> int:
+    """Return the column of the character that holds byte `relative` of `text` (the length of `text` when it lies beyond)."""
+    total = 0
+    for column, char in enumerate(text):
+        total += utf8_len(char)
+        if total > relative:
+            return column
+    return len(text)
+
+
+@dataclass
+class _Jump:
+    """A goto request that waits for the scan: a 0-based `row` or an absolute `byte` offset."""
+
+    row: int | None = None
+    byte: int | None = None
+
 
 _PLACEHOLDER_CELL = "\u2591"
 """Fills the part of a window that the scan has not reached yet."""
@@ -268,6 +296,8 @@ NovaTextArea {
     | `text-area--placeholder` | Target the placeholder text. |
     """
     BINDINGS: ClassVar[list] = [
+        # Cancel a pending jump (active only while one is pending, see `check_action`)
+        Binding("escape", "cancel_pending", show=False),
         # Cursor movement
         Binding(
             "up",
@@ -655,6 +685,60 @@ NovaTextArea {
         def control(self) -> NovaTextArea:
             return self.text_area
 
+    @dataclass
+    class IndexProgress(Message):
+        """Posted (at most 10 times per second) while the line scan of a lazy document grows, and once when it completes."""
+
+        count: int
+        """Rows found so far: a lower bound until `complete`."""
+        complete: bool
+        """Whether the line scan is complete, i.e. `count` is exact."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
+    class IndexingComplete(Message):
+        """Posted once when the line scan of a lazy document completed."""
+
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
+    class JumpCompleted(Message):
+        """Posted when a goto (or a deferred jump) has moved the cursor; `column` is only an estimate while the cursor is provisional."""
+
+        row: int
+        """The row of the cursor (0-based)."""
+        column: int
+        """The column of the cursor."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
+    class JumpRejected(Message):
+        """Posted when a goto target is out of range; the cursor is unchanged."""
+
+        reason: str
+        """Why the request was rejected."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
     def __init__(
         self,
         text: str = "",
@@ -754,6 +838,14 @@ NovaTextArea {
         """True after `SourceChanged` or after `close()`: a lazy view renders blank rows."""
 
         self._lazy_closed = False
+        self._jump: _Jump | None = None
+        """The active goto request that waits for the scan (at most one), else None."""
+        self._progress_lock = threading.Lock()
+        self._progress_outstanding = False
+        """True while a coalesced `_on_index_progress` call is queued for the UI thread (guarded by `_progress_lock`)."""
+        self._last_index_message = 0.0
+        self._last_jump_message = 0.0
+        self._indexing_announced = False
         self._estimate_timer: Timer | None = None
         self._estimating = False
         self._requested_language: str | None = None
@@ -858,6 +950,7 @@ NovaTextArea {
             return
         self._lazy_closed = True
         self._estimating = False
+        self._jump = None
         timer = self._estimate_timer
         if timer is not None:
             timer.stop()
@@ -951,7 +1044,13 @@ NovaTextArea {
         self.soft_wrap = not self.soft_wrap
 
     def cancel_pending(self) -> None:
-        """Drop a pending jump: the cursor returns to its previous resolved position (no-op unless one is pending)."""
+        """Drop a pending jump (a goto or a deferred cursor operation): the cursor keeps or returns to its resolved position.
+
+        A cancelled jump never completes later. No-op unless one is pending.
+        """
+        if self._jump is not None:
+            self._jump = None
+            self._set_progress(None)
         cursor = self._long_cursor
         machine = None if cursor is None else cursor.machine
         if cursor is None or machine is None or machine.state is not CursorState.PENDING:
@@ -962,6 +1061,225 @@ NovaTextArea {
         self._set_progress(None)
         anchor = machine.anchor
         self.selection = Selection.cursor((anchor.row, anchor.column))
+
+    # --- Goto, deferred jumps, index progress (ACT3 design 8, 9)
+    @property
+    def line_count(self) -> int:
+        """Number of rows: a lower bound while `line_count_exact` is False (the line scan of a lazy document is still running)."""
+        return self.document.line_count
+
+    @property
+    def line_count_exact(self) -> bool:
+        """True when `line_count` is exact: always for stock documents, after the line scan completed for lazy ones."""
+        lazy = self._lazy
+        return lazy is None or lazy.snapshot().complete
+
+    @property
+    def indexing_complete(self) -> bool:
+        """True when nothing is left to scan for the line count (always True for stock documents)."""
+        return self.line_count_exact
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Make `escape` (`cancel_pending`) active only while a jump is pending, so it never shadows another use of the key."""
+        if action == "cancel_pending":
+            return self._has_pending()
+        return super().check_action(action, parameters)
+
+    def action_cancel_pending(self) -> None:
+        """Cancel the pending jump (bound to escape)."""
+        self.cancel_pending()
+
+    def _cursor_unresolved(self) -> bool:
+        """Whether the cursor of a long row is provisional or pending (waits for the scan to resolve it)."""
+        cursor = self._long_cursor
+        machine = None if cursor is None else cursor.machine
+        return machine is not None and machine.state is not CursorState.RESOLVED
+
+    def _has_pending(self) -> bool:
+        """Whether a goto or a deferred cursor operation waits for the scan."""
+        if self._jump is not None:
+            return True
+        cursor = self._long_cursor
+        machine = None if cursor is None else cursor.machine
+        return machine is not None and machine.state is CursorState.PENDING
+
+    def goto_line(self, line: int) -> None:
+        """Move the cursor to the start of a line (1-based).
+
+        A line the scan has already passed is reached at once. Otherwise the jump stays pending (`pending_progress` grows, `JumpProgress`
+        is posted) and completes when the scan gets there. A line above the final line count, or below 1, is rejected. Posts
+        `JumpCompleted` or `JumpRejected`; a new request cancels the pending one.
+        """
+        self._start_jump(_Jump(row=line - 1) if line >= 1 else None, f"line {line} is not a line number (lines start at 1)")
+
+    def goto_byte(self, offset: int) -> None:
+        """Move the cursor to a byte offset of the document.
+
+        An offset inside a multi-byte character lands on that character. Beyond the scanned part the jump stays pending; inside a long
+        row the cursor becomes provisional (no wrap) or the jump stays pending (wrap). An offset below 0 or at or above the length is
+        rejected. Posts `JumpCompleted` or `JumpRejected`; a new request cancels the pending one.
+        """
+        self._start_jump(_Jump(byte=offset) if offset >= 0 else None, f"byte offset {offset} is negative")
+
+    def _start_jump(self, jump: _Jump | None, reason: str) -> None:
+        """Cancel the pending request, then run `jump` (or reject the request when `jump` is None)."""
+        self.cancel_pending()
+        if jump is None:
+            self._reject(reason)
+            return
+        self._jump = jump
+        self._run_jump(notify=True)
+
+    def _reject(self, reason: str) -> None:
+        self.post_message(self.JumpRejected(reason, self).set_sender(self))
+
+    def _run_jump(self, *, notify: bool) -> None:
+        """Try the active request: finish it (moved or rejected) or keep it pending with a progress fraction."""
+        jump = self._jump
+        if jump is None or self._lazy_closed:
+            return
+        try:
+            progress = self._drive_stock(jump) if self._lazy is None else self._drive_lazy(jump)
+        except CoreSourceChanged as error:
+            self._fail_source(str(error))
+            self._reject(str(error))
+            progress = None
+        except (RowUnavailable, IndexError):
+            self._reject("the target row cannot be resolved")
+            progress = None
+        if progress is None:
+            self._jump = None
+            self._set_progress(None)
+        else:
+            self._set_progress(progress, notify=notify)
+
+    def _complete_jump(self) -> None:
+        row, column = self.cursor_location
+        self.post_message(self.JumpCompleted(row, column, self).set_sender(self))
+
+    def _drive_stock(self, jump: _Jump) -> float | None:
+        """Goto on an ordinary document: everything is known, so the request is answered at once."""
+        document = self.document
+        if jump.row is not None:
+            if jump.row >= document.line_count:
+                self._reject(f"line {jump.row + 1} is beyond the last line ({document.line_count})")
+                return None
+            self.move_cursor((jump.row, 0))
+            self._complete_jump()
+            return None
+        offset = jump.byte or 0
+        newline = len(document.newline.encode())
+        start = 0
+        for row in range(document.line_count):
+            text = document.get_line(row)
+            size = utf8_len(text)
+            if offset <= start + size:
+                self.move_cursor((row, _column_of_byte(text, offset - start)))
+                self._complete_jump()
+                return None
+            start += size + newline
+        self._reject(f"byte offset {offset} is beyond the end of the document")
+        return None
+
+    def _drive_lazy(self, jump: _Jump) -> float | None:
+        lazy = self._lazy
+        assert lazy is not None
+        snap = lazy.snapshot()
+        if snap.error is not None:
+            raise snap.error
+        if jump.row is not None:
+            return self._drive_line(jump.row, snap.count, complete=snap.complete)
+        return self._drive_byte(lazy, jump.byte or 0, snap.scanned_bytes, complete=snap.complete)
+
+    def _drive_line(self, row: int, count: int, *, complete: bool) -> float | None:
+        if row < count - 1 or complete:
+            if row >= count:
+                self._reject(f"line {row + 1} is beyond the last line ({count})")
+                return None
+            self.move_cursor((row, 0))
+            self._complete_jump()
+            return None
+        return min(count / (row + 1), _PROGRESS_BELOW_ONE)
+
+    def _drive_byte(self, lazy: LazyDocument, offset: int, scanned: int, *, complete: bool) -> float | None:
+        if offset >= lazy.length:
+            self._reject(f"byte offset {offset} is beyond the end of the file ({lazy.length} bytes)")
+            return None
+        if offset == 0:
+            self.move_cursor((0, 0))
+            self._complete_jump()
+            return None
+        if offset >= scanned and not complete:
+            return min(scanned / offset, _PROGRESS_BELOW_ONE)
+        found = lazy.row_at_offset(offset)
+        if found is None:
+            self._reject(f"byte offset {offset} cannot be resolved")
+            return None
+        row, span = found
+        relative = min(offset - span.start, span.content_end - span.start)
+        if lazy.is_long(row):
+            return self._drive_long_row_byte(lazy, row, relative)
+        column = _column_of_byte(lazy.get_line(row), relative)
+        self.move_cursor((row, column))
+        self._complete_jump()
+        return None
+
+    def _drive_long_row_byte(self, lazy: LazyDocument, row: int, relative: int) -> float | None:
+        """Goto a byte of a long row: exact when scanned, PROVISIONAL without wrap, pending with wrap (design 8.1)."""
+        index = lazy.anchor_index(row)
+        relative = index.align(relative)
+        if self.soft_wrap and index.exact_column(relative) is None:
+            return min(index.frontier_byte() / max(relative, 1), _PROGRESS_BELOW_ONE)
+        self.move_cursor((row, 0))
+        machine = self._track_cursor()
+        if machine is not None:
+            machine.jump_to_byte(relative)
+            anchor = machine.anchor
+            self.selection = Selection.cursor((anchor.row, anchor.column))
+            self.record_cursor_width()
+        self._complete_jump()
+        return None
+
+    def _index_callback(self) -> None:
+        """Scan thread: announce progress to the UI thread. Publishes only; at most one call is outstanding (coalescing).
+
+        `post_message` is thread-safe and never waits for the UI thread, so a scan cannot deadlock with `close()` joining it.
+        """
+        with self._progress_lock:
+            if self._progress_outstanding or self._lazy_closed:
+                return
+            self._progress_outstanding = True
+        try:
+            posted = self.post_message(events.Callback(self._on_index_progress))
+        except RuntimeError:  # the app is closing, or there is no app any more
+            posted = False
+        if not posted:
+            with self._progress_lock:
+                self._progress_outstanding = False
+
+    def _on_index_progress(self) -> None:
+        """UI thread: react to scan progress (line count, cursor reconcile, pending jump, messages at most 10 per second)."""
+        with self._progress_lock:
+            self._progress_outstanding = False
+        lazy = self._lazy
+        if lazy is None or self._lazy_closed or self._source_failed:
+            return
+        if not self._estimating or self._cursor_unresolved() or self._jump is not None:
+            self._estimate_tick()  # a scan that ended between two ticks still gets its final size estimate; a waiting cursor needs a fresh one
+        self._reconcile_cursor()
+        self._line_cache.clear()  # rows painted from a lagging scan (placeholders) are rebuilt
+        self.refresh()
+        self._run_jump(notify=time.monotonic() - self._last_jump_message >= _MESSAGE_INTERVAL)
+        snap = lazy.snapshot()
+        now = time.monotonic()
+        if snap.error is None and snap.complete and not self._indexing_announced:
+            self._indexing_announced = True
+            self._last_index_message = now
+            self.post_message(self.IndexProgress(snap.count, True, self).set_sender(self))
+            self.post_message(self.IndexingComplete(self).set_sender(self))
+        elif not snap.complete and now - self._last_index_message >= _MESSAGE_INTERVAL:
+            self._last_index_message = now
+            self.post_message(self.IndexProgress(snap.count, False, self).set_sender(self))
 
     def _track_cursor(self) -> CursorMachine | None:
         """Return the cursor machine of the current long row (created on entering the row); `None` off long rows."""
@@ -978,11 +1296,12 @@ NovaTextArea {
         cursor.drop()
         return None
 
-    def _set_progress(self, fraction: float | None) -> None:
-        """Publish the progress of a pending jump (`None` clears it) and repaint at once."""
+    def _set_progress(self, fraction: float | None, *, notify: bool = True) -> None:
+        """Publish the progress of a pending jump (`None` clears it) and repaint at once; `notify=False` withholds the message."""
         changed = fraction != self.pending_progress
         self.pending_progress = fraction
-        if fraction is not None and changed:
+        if fraction is not None and changed and notify:
+            self._last_jump_message = time.monotonic()
             self.post_message(self.JumpProgress(fraction, self).set_sender(self))
         self.refresh()
 
@@ -1858,6 +2177,7 @@ NovaTextArea {
         _, cursor_y = self._cursor_offset
         cache_key = (
             self.size,
+            self.scrollable_content_region.width,  # a lazy row is windowed to it, and it lags `size` during the first layout
             scroll_x,
             absolute_y,
             (selection if selection.contains_line(absolute_y) or self.soft_wrap else selection.end[0] == absolute_y),
@@ -2449,6 +2769,8 @@ NovaTextArea {
         if lazy is not None and not self._lazy_closed:
             self._estimating = lazy.is_growing()
             self._estimate_timer = self.set_interval(_ESTIMATE_INTERVAL, self._estimate_tick, pause=not self._estimating)
+            lazy.subscribe(self._index_callback)
+            self._index_callback()  # the scan may have advanced (or ended) before the subscription: announce the current state once
 
     def _toggle_cursor_blink_visible(self) -> None:
         """Toggle visibility of the cursor for the purposes of 'cursor blink'."""

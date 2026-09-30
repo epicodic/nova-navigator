@@ -55,6 +55,10 @@ class LongRowAnchorIndex:
             boundary = following
         return boundary
 
+    def align(self, byte_rel: int) -> int:
+        """Return the start of the character that holds `byte_rel` (`byte_rel` itself on a boundary), clamped to the row."""
+        return self._floor(byte_rel)
+
     def exact_column(self, byte_rel: int) -> int | None:
         """Return the exact column of a byte offset (of its character when it is not on a boundary), or `None` beyond the frontier."""
         frontier = self._index.frontier()
