@@ -7,13 +7,13 @@ import threading
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from nova_editor.core.line_index import LineIndex, RowRange
+from nova_editor.core.line_index import DEFAULT_LONG_LINE_THRESHOLD, DEFAULT_STRIDE, LineIndex, RowRange
 
 from .helpers import ATOMS, CountingSource, MemorySource, reference_row_at_offset
 
 
-def _built(data: bytes, **kwargs: int) -> LineIndex:
-    index = LineIndex(MemorySource(data), **kwargs)
+def _built(data: bytes, stride: int = DEFAULT_STRIDE, long_line_threshold: int = DEFAULT_LONG_LINE_THRESHOLD) -> LineIndex:
+    index = LineIndex(MemorySource(data), stride=stride, long_line_threshold=long_line_threshold)
     index.start()
     assert index.join(10)
     return index
