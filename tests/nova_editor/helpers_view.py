@@ -315,3 +315,39 @@ class GateSource:
 
     def close(self) -> None:
         self._inner.close()
+
+
+class TrickleSource(GateSource):
+    """`GateSource` for a partly scanned long row: the long-row scan gets `budget` reads of at most `block` bytes, then it is held back.
+
+    The line scan is never held. `release()` lets the long-row scan run to the end at full speed.
+    """
+
+    def __init__(self, path: Path, budget: int = 2, block: int = 512) -> None:
+        super().__init__(path)
+        self._block = block
+        self._budget: int | None = budget
+        self._reads = 0
+        self._lock = threading.Lock()
+        self.gate.clear()
+        self.blocked = threading.Event()
+        """Set when a long-row scan read is held back: the frontier is provably behind."""
+
+    def release(self) -> None:
+        """Let the long-row scan run to the end at full speed."""
+        with self._lock:
+            self._budget = None
+        self.gate.set()
+
+    def read(self, offset: int, size: int, *, cache: bool = True) -> bytes:
+        if not cache and threading.current_thread().name == "long-line-scan":
+            with self._lock:
+                armed = self._budget is not None
+                hold = armed and self._reads >= (self._budget or 0)
+                self._reads += 1
+            if armed:
+                size = min(size, self._block)
+            if hold:
+                self.blocked.set()
+                assert self.gate.wait(30)
+        return self._inner.read(offset, size, cache=cache)
