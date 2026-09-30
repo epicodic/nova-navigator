@@ -410,3 +410,74 @@ def test_medium_rows_are_measured_within_the_budget(tmp_path: Path, monkeypatch:
         assert wrapped.row_of_y(wrapped.y_of_row(row))[0] == row
     call("y_of_row", 1400)
     call("row_of_y", expected_y(700))
+
+
+# -- row cap and byte cap of one measuring call ---------------------------------------------------
+_CAP_ROWS = 600
+_CAP_WIDTH = 40
+
+
+def _events_since(doc: LazyDocument, start: int, method: str) -> list[int]:
+    """Decoded character counts of the `method` calls recorded after event index `start`."""
+    return [event.decoded_chars for event in doc.call_log.events[start:] if event.method == method]
+
+
+def test_one_call_measures_at_most_the_row_cap_of_medium_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A wrap-mode file of many medium rows: one call measures at most `MEASURE_MAX_ROWS` of them and later ticks converge."""
+    from nova_editor.document import _lazy_wrapped_document as module
+
+    monkeypatch.setattr(module, "MEASURE_MAX_BYTES", 1 << 30)
+    lengths = [200 + (i * 13) % 300 for i in range(_CAP_ROWS)]
+    path = tmp_path / "medium_rows.txt"
+    path.write_bytes(b"".join(b"x" * n + b"\n" for n in lengths))
+    doc, wrapped = build(path, _CAP_WIDTH)
+    assert all(doc.row_class(row) == "medium" for row in range(_CAP_ROWS))
+    assert module.MEASURE_MAX_ROWS < BLOCK_ROWS * 3, "the file must hold more medium rows than the cap in the measured blocks"
+
+    def expected_y(row: int) -> int:
+        return sum(-(-n // _CAP_WIDTH) for n in lengths[:row])
+
+    measured_per_call: list[int] = []
+    for _tick in range(100):
+        for action in (lambda: wrapped.y_of_row(_CAP_ROWS - 1), lambda: wrapped.row_of_y(expected_y(_CAP_ROWS // 2)), lambda: wrapped.height):
+            start = len(doc.call_log.events)
+            action()
+            measured_per_call.append(len(_events_since(doc, start, "row_display_width")))
+        if not wrapped.pending_refinement:
+            break
+        wrapped.refresh_estimates()
+    assert not wrapped.pending_refinement
+    assert max(measured_per_call) == module.MEASURE_MAX_ROWS, "the cap is reached (the test exercises it) and never exceeded"
+    assert sum(1 for count in measured_per_call if count) > 1, "the measurement is spread over several ticks"
+    for row in (0, 37, 300, _CAP_ROWS - 1):
+        assert wrapped.y_of_row(row) == expected_y(row)
+
+
+def test_one_call_decodes_at_most_the_byte_budget_of_short_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Short rows are bounded by the byte budget only: with a small budget one call decodes at most that many bytes; ticks converge."""
+    from nova_editor.document import _lazy_wrapped_document as module
+
+    budget = 1000
+    monkeypatch.setattr(module, "MEASURE_MAX_BYTES", budget)
+    lengths = [60 + (i * 7) % 60 for i in range(_CAP_ROWS * 2)]
+    path = tmp_path / "short_rows.txt"
+    path.write_bytes(b"".join(b"y" * n + b"\n" for n in lengths))
+    doc, wrapped = build(path, _CAP_WIDTH)
+    assert all(doc.row_class(row) == "short" for row in range(len(lengths)))
+
+    stock = WrappedDocument(Document("\n".join("y" * n for n in lengths)), _CAP_WIDTH, TAB)
+
+    decoded_per_call: list[int] = []
+    for _tick in range(400):
+        for action in (lambda: wrapped.y_of_row(len(lengths) - 1), lambda: wrapped.height):
+            start = len(doc.call_log.events)
+            action()
+            decoded_per_call.append(sum(_events_since(doc, start, "get_line")))
+        if not wrapped.pending_refinement:
+            break
+        wrapped.refresh_estimates()
+    assert not wrapped.pending_refinement
+    assert max(decoded_per_call) <= budget
+    assert max(decoded_per_call) > 0
+    for row in (0, 100, 700, len(lengths) - 2):
+        assert wrapped.y_of_row(row + 1) - wrapped.y_of_row(row) == len(stock.get_offsets(row)) + 1
