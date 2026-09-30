@@ -40,3 +40,11 @@ def test_new_bindings_do_not_collide() -> None:
     app_keys = keys(NovaEditApp.BINDINGS)
     assert app_keys.count("f4") == 1
     assert app_keys.count("ctrl+g") == 1
+
+
+def test_app_bindings_name_existing_actions() -> None:
+    """Every binding action dispatches to an ``action_<name>`` method (no ``action_`` prefix in the binding)."""
+    for b in NovaEditApp.BINDINGS:
+        action = b[1]
+        assert not action.startswith("action_"), action
+        assert hasattr(NovaEditApp, f"action_{action}"), action

@@ -22,12 +22,11 @@ async def test_large_file_opens_lazy_and_read_only(tmp_path: Path, monkeypatch: 
         assert app.editor is not None
         assert app.editor.is_lazy
         assert app.editor.read_only
-        # Call action directly since key bindings may not work in test
-        app.action_toggle_wrap()
+        await pilot.press("f4")
         await pilot.pause()
         assert app.editor.soft_wrap is True
         # Test goto bar visibility
-        app.action_show_goto()
+        await pilot.press("ctrl+g")
         await pilot.pause()
         assert app.goto_bar is not None
         assert app.goto_bar.display is True
@@ -79,15 +78,14 @@ async def test_f4_toggles_wrap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         # Initial wrap state is False
         initial_wrap = app.editor.soft_wrap
 
-        # Call action directly
-        app.action_toggle_wrap()
+        await pilot.press("f4")
         await pilot.pause()
 
         # Wrap state should be toggled
         assert app.editor.soft_wrap != initial_wrap
 
-        # Call action again to toggle back
-        app.action_toggle_wrap()
+        # Press again to toggle back
+        await pilot.press("f4")
         await pilot.pause()
 
         # Should be back to initial state
@@ -107,12 +105,33 @@ async def test_ctrl_g_shows_goto_bar(tmp_path: Path, monkeypatch: pytest.MonkeyP
         # GotoBar should be hidden initially
         initial_visible = app.goto_bar.display
 
-        # Call action to show
-        app.action_show_goto()
+        await pilot.press("ctrl+g")
         await pilot.pause()
 
-        # GotoBar should now be visible (toggled)
-        assert app.goto_bar.display != initial_visible
+        # GotoBar should now be visible and focused
+        assert initial_visible is False
+        assert app.goto_bar.display is True
+        assert app.focused is app.goto_bar
+
+
+@pytest.mark.asyncio
+async def test_escape_closes_goto_bar_and_refocuses_editor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Escape hides the GotoBar and returns the focus to the editor."""
+    monkeypatch.setattr(app_module, "EAGER_LIMIT", 50)
+    path = make_mixed(tmp_path / "m.txt")
+    app = NovaEditApp(file_path=path)
+    async with app.run_test(size=(80, 20)) as pilot:
+        await pilot.pause()
+        assert app.goto_bar is not None
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+        assert app.goto_bar.display is True
+        await pilot.press("4", "escape")
+        await pilot.pause()
+        assert app.goto_bar.display is False
+        assert app.focused is app.editor
+        assert app.editor is not None
+        assert app.editor.cursor_location[0] == 0
 
 
 @pytest.mark.asyncio
@@ -143,13 +162,13 @@ async def test_goto_byte_navigation(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         await pilot.pause()
         assert app.editor is not None
 
-        # Go to byte offset 10
-        app.editor.goto_byte(10)
-        await pilot.pause()
+        assert app.editor.cursor_location == (0, 0)
+        await pilot.press("ctrl+g")
+        await pilot.press("@", "1", "0", "enter")
+        await pilot.pause(delay=0.2)
 
-        # Cursor should have moved (exact position depends on content)
-        # Just verify the command was accepted
-        assert app.editor is not None
+        # make_mixed starts with ASCII text, so byte 10 of line 0 is column 10
+        assert app.editor.cursor_location == (0, 10)
 
 
 @pytest.mark.asyncio
@@ -163,14 +182,12 @@ async def test_ctrl_s_on_lazy_notifies_read_only(tmp_path: Path, monkeypatch: py
         assert app.editor is not None
         assert app.editor.is_lazy
 
-        # Call action save
-        app.action_save()
+        before = path.read_bytes()
+        await pilot.press("ctrl+s")
         await pilot.pause()
 
-        # File should not have changed (no write)
-        content_after = path.read_bytes()
-        # Just verify the file still exists
-        assert len(content_after) > 0
+        assert path.read_bytes() == before
+        assert any("Read-only" in n.message for n in app._notifications)
 
 
 @pytest.mark.asyncio
@@ -189,10 +206,8 @@ async def test_timing_hook_writes_file(tmp_path: Path, monkeypatch: pytest.Monke
         # Wait a bit for rendering to happen
         await pilot.pause(delay=0.5)
 
-    # Timing file should have been created with content
-    if timing_file.exists():
-        content = timing_file.read_text()
-        assert "FIRST_CONTENT" in content
+    assert timing_file.exists()
+    assert timing_file.read_text().startswith("FIRST_CONTENT ")
 
 
 @pytest.mark.asyncio

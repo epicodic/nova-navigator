@@ -101,3 +101,28 @@ async def test_app_quit_action() -> None:
         # The quit action calls app.exit(), which should end the test
         await app.action_quit()
         # If we get here without error, quit worked
+
+
+@pytest.mark.asyncio
+async def test_ctrl_s_key_saves_eager_file(tmp_path: Path) -> None:
+    """Pressing ctrl+s writes the eager document to disk."""
+    path = tmp_path / "e.txt"
+    path.write_text("initial")
+    app = NovaEditApp(file_path=path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+    assert path.read_text() == "xinitial"
+
+
+@pytest.mark.asyncio
+async def test_ctrl_q_key_quits() -> None:
+    """Pressing ctrl+q exits the app."""
+    app = NovaEditApp(file_path=None)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+q")
+        await pilot.pause()
+        assert app._exit
