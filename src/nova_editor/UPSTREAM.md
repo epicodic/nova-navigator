@@ -137,7 +137,7 @@ The following modules are native to `nova_editor` (not copies of upstream Textua
 These imports remain (unavoidable; part of Textual's public vendoring API):
 
 ```
-textual._cells (cell_len) — used by multiple document/navigator classes for text width calculation
+textual._cells (cell_len, cell_width_to_column_index) — only the untouched vendored _wrapped_document.py; the other document classes use rich.cells.cell_len
 textual._wrap (compute_wrap_offsets) — used by WrappedDocument and LazyWrappedDocument
 textual._tree_sitter (TREE_SITTER, get_language) — used by SyntaxAwareDocument
 ```

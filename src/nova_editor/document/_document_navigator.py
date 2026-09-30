@@ -3,7 +3,7 @@ from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
 from typing import Any, Protocol, runtime_checkable
 
-from textual._cells import cell_len
+from rich.cells import cell_len
 from textual.geometry import Offset, clamp
 
 from nova_editor.document._document import Location
