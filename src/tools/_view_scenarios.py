@@ -115,6 +115,16 @@ def _place(area: ProbeTextArea, op: str, steps: int, far_byte: int | None) -> No
     area.move_cursor(targets.get(op, (0, 0)))
 
 
+async def _place_settled(area: ProbeTextArea, op: str, steps: int, far_byte: int | None) -> None:
+    """`_place`, then wait until a jump that stayed pending is over (wrap mode: the far column is reachable only once the scan got there).
+
+    Without the wait a step of a far op that changes nothing would be timed until the scan reached the far column and the pending jump moved the cursor,
+    which measures the scan and not the key.
+    """
+    _place(area, op, steps, far_byte)
+    await wait_until(lambda: area.pending_progress is None, _JUMP_TIMEOUT)
+
+
 async def _pilot_step(pilot: Pilot[None], area: ProbeTextArea, op: str, target_x: int) -> float | None:
     if op == "farjump":
         return None
@@ -130,7 +140,7 @@ async def _pilot_step(pilot: Pilot[None], area: ProbeTextArea, op: str, target_x
 async def _direct_step(app: ProbeApp, area: ProbeTextArea, op: str, i: int, base_x: int, far_byte: int | None, steps: int) -> Timing:
     """Issue one direct-injection step of `op` and wait for its render."""
     if op in _REPOSITION_OPS:
-        _place(area, op, steps, far_byte)
+        await _place_settled(area, op, steps, far_byte)
         await settle()
     if op == "farjump":
         area.goto_byte(0)
@@ -167,7 +177,7 @@ async def measure_ops(
     started_busy = scan_busy(area)
     scan_done_at: int | None = None
     if place_first:
-        _place(area, op, steps, far_byte)
+        await _place_settled(area, op, steps, far_byte)
         await settle(0.2)
     base_x = area.scroll_offset.x
     for i in range(steps):
@@ -197,13 +207,13 @@ async def measure_ops(
     if with_pilot and op != "farjump":
         await settle(0.2)
         if place_first:
-            _place(area, op, steps, far_byte)
+            await _place_settled(area, op, steps, far_byte)
             await settle(0.2)
         base_x = area.scroll_offset.x
         for i in range(steps):
             busy = scan_busy(area)
             if op in _REPOSITION_OPS:
-                _place(area, op, steps, far_byte)
+                await _place_settled(area, op, steps, far_byte)
                 await settle()
             pilot_ms = await _pilot_step(pilot, area, op, base_x + _HSCROLL_STEP * (2 * i + 1))
             rows.append(base_row(spec, case=case, state=state, op=op, phase="pilot", step=i, pilot_ms=pilot_ms, busy_at_step=busy, far_byte=far_byte, **extra))
