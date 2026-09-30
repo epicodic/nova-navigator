@@ -462,6 +462,26 @@ class LazyDocument(DocumentBase):
             return total
         return len(self._text(row))
 
+    def row_display_width(self, row: int, tab_width: int = 4) -> int:
+        """Display width of a short or medium row; decodes an uncached row once without adding it to the text cache (measuring only).
+
+        Raises:
+            WholeLineAccess: The row is long.
+        """
+        row = self._norm(row)
+        with self._lock:
+            cached = self._texts.get(row)
+        if cached is not None:
+            return advance_disp(cached, 0, tab_width)
+        found = self._range(row)
+        if found.content_end - found.start > self._config.long_row_threshold:
+            self.call_log.refuse("row_display_width", row)
+            msg = f"row_display_width on long row {row}"
+            raise WholeLineAccess(msg)
+        text = self._source.read(found.start, found.content_end - found.start, cache=False).decode("utf-8", SURROGATE_ESCAPE)
+        self.call_log.record("row_display_width", row, len(text))
+        return advance_disp(text, 0, tab_width)
+
     def column_slice(self, row: int, start: int, stop: int) -> str:
         start = max(0, start)
         if not self.is_long(row):

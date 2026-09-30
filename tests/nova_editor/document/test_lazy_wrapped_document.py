@@ -350,3 +350,63 @@ def _synthetic(tmp_path: Path, rows: int) -> tuple[LazyDocument, LazyWrappedDocu
     path = tmp_path / "synthetic.txt"
     path.write_text("\n".join(lines) + "\n")
     return build(path, 20)
+
+
+# -- bounded measurement of medium rows (REQ-3) --------------------------------------------------
+_MEDIUM_ROWS = 1500
+_MEASURE_BYTES = 48 * 1024
+
+
+def _medium_file(path: Path) -> tuple[Path, list[int]]:
+    """A file of ASCII rows of 1000 to 1999 bytes (medium under the lowered config); returns it with the row lengths."""
+    lengths = [1000 + (i * 37) % 1000 for i in range(_MEDIUM_ROWS)]
+    path.write_bytes(b"".join(b"x" * n + b"\n" for n in lengths))
+    return path, lengths
+
+
+def test_medium_rows_are_measured_within_the_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One UI call reads and decodes at most the byte budget, however many medium rows a block holds; the estimate converges."""
+    from nova_editor.document import _lazy_wrapped_document as module
+    from tests.nova_editor.document.test_lazy_document import CountingSource
+
+    monkeypatch.setattr(module, "MEASURE_MAX_BYTES", _MEASURE_BYTES)
+    path, lengths = _medium_file(tmp_path / "medium.txt")
+    config = LazyConfig(stride=4, index_long_line_threshold=64, long_row_threshold=2048, word_wrap_limit=128, checkpoint_chars=64)
+    source = CountingSource(path)
+    doc = LazyDocument(source, config)
+    _OPEN.append(doc)
+    wait(doc)
+    width = 40
+    wrapped = LazyWrappedDocument(doc, width, TAB)
+    assert doc.row_class(0) == "medium"
+
+    def expected_y(row: int) -> int:
+        return sum(-(-n // width) for n in lengths[:row])
+
+    def call(action: str, argument: int = 0) -> None:
+        source.owner_reads.clear()
+        events = len(doc.call_log.events)
+        if action == "row_of_y":
+            wrapped.row_of_y(argument)
+        elif action == "y_of_row":
+            wrapped.y_of_row(argument)
+        else:
+            assert wrapped.height > 0
+        decoded = sum(event.decoded_chars for event in doc.call_log.events[events:])
+        assert decoded <= _MEASURE_BYTES, (action, argument, decoded)
+        assert sum(source.owner_reads) <= _MEASURE_BYTES + 4 * 65_536, (action, argument, sum(source.owner_reads))
+
+    call("height")
+    for _tick in range(400):
+        call("y_of_row", 100)
+        call("row_of_y", expected_y(100) + 3)
+        call("height")
+        if not wrapped.pending_refinement:
+            break
+        wrapped.refresh_estimates()
+    assert not wrapped.pending_refinement
+    for row in (0, 37, 99, 100, 101, 130):
+        assert wrapped.y_of_row(row) == expected_y(row)
+        assert wrapped.row_of_y(wrapped.y_of_row(row))[0] == row
+    call("y_of_row", 1400)
+    call("row_of_y", expected_y(700))

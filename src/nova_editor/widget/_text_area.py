@@ -980,9 +980,16 @@ NovaTextArea {
         timer = self._estimate_timer
         if lazy is None or timer is None or self._estimating or self._lazy_closed or self._source_failed:
             return
-        if lazy.is_growing():
+        if self._needs_estimates(lazy):
             self._estimating = True
             timer.resume()
+
+    def _needs_estimates(self, lazy: LazyDocument) -> bool:
+        """Whether sizes can still change: an index is growing, or the wrapped estimate still holds rows that a spent budget left estimated."""
+        if lazy.is_growing():
+            return True
+        wrapped = self.wrapped_document
+        return isinstance(wrapped, LazyWrappedDocument) and wrapped.pending_refinement
 
     def _estimate_tick(self) -> None:
         """Re-estimate the virtual size while an index grows; pause the timer after the refresh that follows the last progress."""
@@ -992,7 +999,7 @@ NovaTextArea {
             if self._estimate_timer is not None:
                 self._estimate_timer.pause()
             return
-        growing = lazy.is_growing()
+        growing = self._needs_estimates(lazy)
         wrapped = self.wrapped_document
         try:
             if isinstance(wrapped, LazyWrappedDocument):
@@ -2828,7 +2835,7 @@ NovaTextArea {
         )
         lazy = self._lazy
         if lazy is not None and not self._lazy_closed:
-            self._estimating = lazy.is_growing()
+            self._estimating = self._needs_estimates(lazy)
             self._estimate_timer = self.set_interval(_ESTIMATE_INTERVAL, self._estimate_tick, pause=not self._estimating)
             lazy.subscribe(self._index_callback)
             self._index_callback()  # the scan may have advanced (or ended) before the subscription: announce the current state once
