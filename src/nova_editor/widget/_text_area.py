@@ -55,6 +55,7 @@ from nova_editor.widget._text_area_theme import TextAreaTheme
 if TYPE_CHECKING:
     from tree_sitter import Language, Query
 
+import textual
 from textual import events, log
 from textual.binding import Binding
 from textual.events import Message, MouseEvent
@@ -68,7 +69,7 @@ _WORD_WINDOW = 8192
 """Characters scanned on each side of the cursor by the word locators."""
 
 DEFAULT_HIGHLIGHT_LIMIT = 1_048_576
-"""Bytes of a lazily opened file up to which syntax highlighting is attempted (used from ACT3 task 14 on)."""
+"""Bytes of a lazily opened file up to which syntax highlighting is attempted."""
 
 _DEFAULT_INDENT_WIDTH = 4
 """Default of `NovaTextArea.indent_width`; `open()` gives it to the long-row indexes of the lazy document."""
@@ -130,7 +131,8 @@ def _guard_source(default: object) -> Callable[[_GuardedMethod], _GuardedMethod]
 
 _OPENING_BRACKETS = {"{": "}", "[": "]", "(": ")"}
 _CLOSING_BRACKETS = {v: k for k, v in _OPENING_BRACKETS.items()}
-_TREE_SITTER_PATH = Path(__file__).parent / "../../tree-sitter/"
+_TREE_SITTER_PATH = Path(textual.__file__).parent / "tree-sitter"
+"""The highlight queries ship with the installed textual package (they are not vendored)."""
 _HIGHLIGHTS_PATH = _TREE_SITTER_PATH / "highlights/"
 
 StartColumn = int
@@ -910,10 +912,10 @@ NovaTextArea {
 
         Args:
             source: A path or a `ByteSource`.
-            language: Accepted for the later highlighting support; ignored for now.
+            language: Language to highlight; used only when the source is at most `highlight_limit` bytes, ignored above it.
             soft_wrap: Start with soft wrapping (default False).
             config: Thresholds of the lazy document.
-            highlight_limit: Largest source (bytes) that is highlighted; recorded, used by the highlighting support.
+            highlight_limit: Largest source (bytes) that is highlighted; above it no parser is created and the text stays plain.
             **kwargs: Passed to the constructor (theme, show_line_numbers, ...).
 
         Returns:
@@ -931,6 +933,11 @@ NovaTextArea {
             raise
         area._requested_language = language
         area._highlight_limit = highlight_limit
+        try:
+            area._enable_lazy_highlighting(language, highlight_limit)
+        except BaseException:
+            document.close()
+            raise
         return area
 
     @property
@@ -1784,7 +1791,7 @@ NovaTextArea {
     def _watch_language(self, language: str | None) -> None:
         """When the language is updated, update the type of document."""
         if self._lazy is not None:
-            return  # highlighting of lazy documents is added separately
+            return  # a lazy document is highlighted only through `open(language=...)`
         self._set_document(self.document.text, language)
 
     def _watch_show_line_numbers(self) -> None:
@@ -1932,6 +1939,69 @@ NovaTextArea {
         if name == self.language:
             self._set_document(self.text, name)
 
+    def _resolve_language(self, language: str) -> tuple[Language, str]:
+        """Return the tree-sitter language and highlight query for a language name.
+
+        Args:
+            language: The name of a user-registered or built-in language.
+
+        Returns:
+            The tree-sitter language and its highlight query.
+
+        Raises:
+            LanguageDoesNotExist: If neither a built-in nor a user-registered language has that name.
+        """
+        if language in self._languages:
+            # User-registered languages take priority.
+            highlight_query = self._languages[language].highlight_query
+            document_language = self._languages[language].language
+            if document_language is None:
+                document_language = get_language(language)
+        else:
+            # No user-registered language, so attempt to use a built-in language.
+            highlight_query = self._get_builtin_highlight_query(language)
+            document_language = get_language(language)
+
+        # No built-in language, and no user-registered language: use plain text and warn.
+        if document_language is None:
+            raise LanguageDoesNotExist(
+                f"tree-sitter is available, but no built-in or user-registered language called {language!r}.\n"
+                f"Ensure the language is installed (e.g. `pip install tree-sitter-ruby`)\n"
+                f"Falling back to plain text."
+            )
+        return document_language, highlight_query
+
+    def _enable_lazy_highlighting(self, language: str | None, highlight_limit: int) -> None:
+        """Parse a small lazy document once for highlighting; above the limit no parser is created.
+
+        Args:
+            language: The requested language, or None for plain text.
+            highlight_limit: Largest source (bytes) that is highlighted.
+        """
+        lazy = self._lazy
+        if lazy is None or not language:
+            return
+        if lazy.length > highlight_limit:
+            log.debug(f"Source of {lazy.length} bytes exceeds the highlight limit of {highlight_limit}; language {language!r} ignored.")
+            return
+        if not TREE_SITTER:
+            log.warning("tree-sitter not available in this environment. Parsing disabled.")
+            return
+        document_language, highlight_query = self._resolve_language(language)
+        try:
+            syntax = SyntaxAwareDocument(lazy.read_all(highlight_limit), document_language)
+        except SyntaxAwareDocumentError:
+            log.warning(f"Parser not found for language {document_language!r}. Parsing disabled.")
+            return
+        lazy.attach_syntax(syntax)
+        self._highlight_query = syntax.prepare_query(highlight_query)
+        self._build_highlight_map()
+
+    @property
+    def highlight_active(self) -> bool:
+        """True when syntax highlighting is in effect (a parser and highlight query exist)."""
+        return self._highlight_query is not None
+
     def _set_document(self, text: str, language: str | None) -> None:
         """Construct and return an appropriate document.
 
@@ -1949,24 +2019,7 @@ NovaTextArea {
             self._rewrap_and_refresh_virtual_size()
             return
         if TREE_SITTER and language:
-            if language in self._languages:
-                # User-registered languages take priority.
-                highlight_query = self._languages[language].highlight_query
-                document_language = self._languages[language].language
-                if document_language is None:
-                    document_language = get_language(language)
-            else:
-                # No user-registered language, so attempt to use a built-in language.
-                highlight_query = self._get_builtin_highlight_query(language)
-                document_language = get_language(language)
-
-            # No built-in language, and no user-registered language: use plain text and warn.
-            if document_language is None:
-                raise LanguageDoesNotExist(
-                    f"tree-sitter is available, but no built-in or user-registered language called {language!r}.\n"
-                    f"Ensure the language is installed (e.g. `pip install tree-sitter-ruby`)\n"
-                    f"Falling back to plain text."
-                )
+            document_language, highlight_query = self._resolve_language(language)
             document: DocumentBase
             try:
                 document = SyntaxAwareDocument(text, document_language)
