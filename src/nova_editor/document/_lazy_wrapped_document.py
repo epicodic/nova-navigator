@@ -27,9 +27,16 @@ BLOCK_ROWS = 64
 """Rows per measured block of the vertical estimate."""
 ANCHOR_WINDOW = 8
 """Blocks around the anchor that are measured contiguously (a few screens); farther targets re-anchor."""
+MEASURE_MAX_ROWS = 128
+"""The most medium or long rows one call (`height`, `y_of_row`, `row_of_y`) measures exactly; the others get a provisional estimate.
+
+Short rows are bounded by the byte budget only: they are small, and the contiguous window around the anchor stays exact.
+"""
+MEASURE_MAX_BYTES = 4 * 1024 * 1024
+"""The most row bytes one call decodes to measure rows (the core read budget); the other rows get a provisional estimate."""
 _MAX_PASSES = 8
 _SHORT_CACHE_ROWS = 1024
-_DISP_CACHE_ROWS = 256
+_DISP_CACHE_ROWS = 4096
 
 
 class _ShortRow(NamedTuple):
@@ -42,9 +49,9 @@ class _ShortRow(NamedTuple):
 class _Block:
     """Measured heights of the rows of one block."""
 
-    __slots__ = ("cum", "extra", "provisional", "rows", "total")
+    __slots__ = ("cum", "extra", "limited", "provisional", "rows", "total")
 
-    def __init__(self, heights: list[int], *, provisional: bool) -> None:
+    def __init__(self, heights: list[int], *, provisional: bool, limited: bool = False) -> None:
         self.cum: list[int] = []
         total = 0
         for height in heights:
@@ -54,6 +61,8 @@ class _Block:
         self.rows = len(heights)
         self.extra = total - len(heights)
         self.provisional = provisional
+        self.limited = limited
+        """True when some row got an estimate because the per-call budget was spent (a later tick finishes it)."""
 
 
 class GridOffsets(list[int]):
@@ -165,6 +174,8 @@ class LazyWrappedDocument(WrappedDocument):
         self._count_seen = -1
         self._anchor = 0
         self._min_height = 0
+        self._rows_left = MEASURE_MAX_ROWS
+        self._bytes_left = MEASURE_MAX_BYTES
         super().__init__(document, width, tab_width)
         self._offset_to_line_info = _LineInfo(self)
 
@@ -243,8 +254,7 @@ class LazyWrappedDocument(WrappedDocument):
             return total, True
         cached = self._disp_cache.get(row)
         if cached is None:
-            length = doc.line_length(row)
-            cached = doc.display_column(row, length if length is not None else 0, self._tab_width) or 0
+            cached = doc.row_display_width(row, self._tab_width)
             self._disp_cache[row] = cached
             while len(self._disp_cache) > _DISP_CACHE_ROWS:
                 self._disp_cache.popitem(last=False)
@@ -429,26 +439,58 @@ class LazyWrappedDocument(WrappedDocument):
         return max(column, start)
 
     # -- vertical estimate --------------------------------------------------------------------
-    def _row_height(self, row: int) -> tuple[int, bool]:
-        """Return `(sections, provisional)` of a row for the block measurement."""
+    def _begin_call(self) -> None:
+        """Start the measuring budget of one public call."""
+        self._rows_left = MEASURE_MAX_ROWS
+        self._bytes_left = MEASURE_MAX_BYTES
+
+    def _afford(self, size: int, *, heavy: bool) -> bool:
+        """Charge one row of `size` bytes against the budget of the current call (a `heavy` row also against the row cap); false when it does not fit."""
+        if (heavy and self._rows_left <= 0) or size > self._bytes_left:
+            return False
+        if heavy:
+            self._rows_left -= 1
+        self._bytes_left -= size
+        return True
+
+    def _mean_height(self) -> int:
+        """Height of an unmeasured short row: the running mean of the measured rows."""
+        return 1 + round(self._total_extra / self._total_rows) if self._total_rows else 1
+
+    @property
+    def pending_refinement(self) -> bool:
+        """True while a measured block holds estimates only because a call ran out of budget (ticks finish them)."""
+        return any(blk.limited for blk in self._blocks.values())
+
+    def _row_height(self, row: int) -> tuple[int, bool, bool]:
+        """Return `(sections, provisional, limited)` of a row for the block measurement; an uncached row costs budget."""
+        doc = self._lazy
         try:
-            if self._is_short(row):
-                return len(self._short_row(row).offsets) + 1, False
-            count, exact = self._grid_sections(row)
+            kind = doc.row_class(row)
+            size = doc.row_byte_length(row)
+            if kind == "short":
+                if row in self._short_rows or self._afford(size, heavy=False):
+                    return len(self._short_row(row).offsets) + 1, False, False
+                return self._mean_height(), True, True
+            if row in self._disp_cache or self._afford(size if kind == "medium" else 0, heavy=True):
+                count, exact = self._grid_sections(row)
+                return count, not exact, False
         except RowUnavailable:
-            return 1, True
-        return count, not exact
+            return 1, True, False
+        return max(1, -(-size // self._width)), True, True
 
     def _measure(self, block: int) -> _Block:
         count = self._lazy.line_count
         first = block * BLOCK_ROWS
         heights: list[int] = []
         provisional = False
+        limited = False
         for row in range(first, min(first + BLOCK_ROWS, count)):
-            height, unsure = self._row_height(row)
+            height, unsure, spent = self._row_height(row)
             heights.append(height)
             provisional = provisional or unsure
-        measured = _Block(heights, provisional=provisional)
+            limited = limited or spent
+        measured = _Block(heights, provisional=provisional, limited=limited)
         if block not in self._blocks:
             insort(self._keys, block)
         self._blocks[block] = measured
@@ -523,7 +565,8 @@ class LazyWrappedDocument(WrappedDocument):
         self._sync()
 
     def _prepare(self) -> None:
-        """Measure the first block once so the estimate has a mean; refresh the prefix sums."""
+        """Start the budget of a call, measure the first block once so the estimate has a mean; refresh the prefix sums."""
+        self._begin_call()
         self._sync()
         if not self._blocks and self._lazy.line_count:
             self._measure(0)
@@ -579,11 +622,13 @@ class LazyWrappedDocument(WrappedDocument):
         self._min_height = max(self._min_height, y + 1)
 
     def refresh_estimates(self) -> None:
-        """Forget the blocks measured from unfinished long-row scans (call when a scan progressed) and the cached row data."""
+        """Forget the provisional blocks (unfinished long-row scans or a spent budget; call when a scan progressed or on a tick).
+
+        The measured widths of medium rows stay cached (a row of the file never changes), so each tick finishes more rows.
+        """
         stale = [b for b, blk in self._blocks.items() if blk.provisional]
         for block in stale:
             del self._blocks[block]
             self._keys.remove(block)
         if stale:
             self._dirty = True
-        self._disp_cache.clear()
