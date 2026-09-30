@@ -220,7 +220,7 @@ class DocumentBase(ABC):
 
     def has_char_at(self, row: int, column: int) -> bool:
         """Return whether the row has a character at `column`."""
-        return column < len(self.get_line(row))
+        return 0 <= column < len(self.get_line(row))
 
     def display_column(self, row: int, column: int, tab_width: int = 4) -> int | None:
         """Return the display column of character column `column`, or None when unknown."""
@@ -233,7 +233,7 @@ class DocumentBase(ABC):
 
     def byte_offset(self, row: int, column: int) -> int | None:
         """Return the byte offset from the start of the document of a location, or None when unknown."""
-        newline = len(self.newline) if hasattr(self, "newline") else 1
+        newline = len(self.newline)
         before = sum(len(self.get_line(r).encode("utf-8", "surrogateescape")) + newline for r in range(row))
         return before + len(self.get_line(row)[:column].encode("utf-8", "surrogateescape"))
 

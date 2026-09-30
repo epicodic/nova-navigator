@@ -28,3 +28,12 @@ def test_stock_document_capabilities() -> None:
     # Column 1 in row 1 ("x"): x(1 byte) = 1 byte after row start
     # Total: 13 + 1 = 14 bytes
     assert doc.byte_offset(1, 1) == len("héllo\tworld".encode()) + 1 + 1
+
+
+def test_has_char_at_rejects_a_negative_column() -> None:
+    assert Document("abc").has_char_at(0, -1) is False
+
+
+def test_byte_offset_counts_the_document_newline_width() -> None:
+    doc = Document("ab\r\ncd")
+    assert doc.byte_offset(1, 1) == len("ab") + 2 + 1
