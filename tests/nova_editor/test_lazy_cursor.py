@@ -619,3 +619,17 @@ async def test_a_new_jump_between_the_resolving_paint_and_the_replay_drops_the_o
         area.goto_line(2)
         await pilot.pause(0.1)
         assert performed == []
+
+
+@pytest.mark.asyncio
+async def test_cursor_actions_after_close_do_not_raise(tmp_path: Path) -> None:
+    rig = _Rig(_mixed(tmp_path))
+    area = rig.area
+    async with rig.run() as pilot:
+        await rig.enter(pilot, _LONG_ROW)
+        await pilot.press("end")
+        area.close()
+        rig.source.release()
+        for action in (area.action_cursor_down, area.action_cursor_up, area.action_cursor_line_end, area.action_cursor_left, area.action_cursor_right):
+            action()
+        area.move_cursor((0, 0))

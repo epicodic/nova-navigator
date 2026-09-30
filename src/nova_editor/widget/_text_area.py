@@ -110,7 +110,10 @@ _GuardedMethod = TypeVar("_GuardedMethod", bound=Callable[..., Any])
 
 
 def _guard_source(default: object) -> Callable[[_GuardedMethod], _GuardedMethod]:
-    """Make a cursor entry point survive `SourceChanged` of a lazy document: the widget fails (see `_fail_source`) and `default` is returned."""
+    """Make a cursor entry point survive `SourceChanged` of a lazy document: the widget fails (see `_fail_source`) and `default` is returned.
+
+    A `RowUnavailable` after `close()` (the document is closed) is a no-op that returns `default`; with an open document it still propagates.
+    """
 
     def decorate(method: _GuardedMethod) -> _GuardedMethod:
         @functools.wraps(method)
@@ -120,6 +123,10 @@ def _guard_source(default: object) -> Callable[[_GuardedMethod], _GuardedMethod]
             except CoreSourceChanged as error:
                 self._fail_source(str(error))
                 return default
+            except RowUnavailable:
+                if self._lazy_closed:
+                    return default
+                raise
 
         return cast("_GuardedMethod", wrapper)
 
