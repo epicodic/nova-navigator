@@ -20,8 +20,8 @@ from nova_editor.widget._lazy_window import WindowText
 _MAX_SPAN_FACTOR = 16
 """A layout is kept only while the cursor lies within this many bytes per visible cell of the left edge."""
 
-_PROGRESS_LIMIT = 0.999999
-"""Progress of a pending jump stays below 1: 1 means resolved."""
+PROGRESS_BELOW_ONE = 0.999999
+"""Progress of a pending jump stays below 1: 1 means resolved (or done)."""
 
 
 @dataclass(frozen=True)
@@ -109,7 +109,7 @@ class LongRowCursor:
             return 0.0
         if target <= 0:
             return 0.0
-        return min(max(index.frontier_byte() / target, 0.0), _PROGRESS_LIMIT)
+        return min(max(index.frontier_byte() / target, 0.0), PROGRESS_BELOW_ONE)
 
     def _text_between(self, left: int, cursor: int) -> str:
         """Return the characters between two byte offsets (`left` on a character boundary)."""

@@ -1,4 +1,4 @@
-"""Lets background scans give way to the user interface.
+"""Let background scans give way to the user interface.
 
 A scan thread and the UI thread share the GIL. A thread that waits for it gets it only after the running thread released it or
 after the 5 ms switch interval, so a UI step that does a few blocking calls (reads, the event loop's select) while a scan is
@@ -11,14 +11,30 @@ from __future__ import annotations
 import time
 
 DEFAULT_HOLD_SECONDS = 0.05
+"""How long the UI counts as busy after a `touch()`.
+
+Longer than a key repeat interval (about 30 ms) so that holding a key keeps the scans paused, and short enough that the scans
+resume about a frame after the user stops.
+"""
+
 DEFAULT_PAUSE_SECONDS = 0.001
+"""How long a scan sleeps per piece of work while the UI is busy.
+
+One millisecond is enough for the UI thread to take the GIL without the 5 ms switch-interval wait, and costs a scan only a
+small fraction of its throughput.
+"""
 
 
 class Foreground:
-    """Records the last time the UI was busy; the scans read it through `pause_seconds()` (thread-safe: one float store and load)."""
+    """Record the last time the UI was busy; the scans read it through `pause_seconds()` (thread-safe: one float store and load)."""
 
     def __init__(self, hold: float = DEFAULT_HOLD_SECONDS, pause: float = DEFAULT_PAUSE_SECONDS) -> None:
-        """Create the gate: the UI counts as busy for `hold` seconds after a `touch()`, and a scan then sleeps `pause` seconds per piece."""
+        """Create the gate.
+
+        Args:
+            hold: Seconds the UI counts as busy after a `touch()`.
+            pause: Seconds a scan sleeps per piece of work while the UI is busy.
+        """
         self._hold = hold
         self._pause = pause
         self._last = float("-inf")

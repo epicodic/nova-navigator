@@ -49,7 +49,7 @@ from nova_editor.document._syntax_aware_document import (
 )
 from nova_editor.document._wrapped_document import WrappedDocument
 from nova_editor.widget._lazy_window import WindowText, section_window, window_text
-from nova_editor.widget._long_row_cursor import LongRowCursor
+from nova_editor.widget._long_row_cursor import PROGRESS_BELOW_ONE, LongRowCursor
 from nova_editor.widget._text_area_theme import TextAreaTheme
 
 if TYPE_CHECKING:
@@ -82,10 +82,6 @@ _ESTIMATE_INTERVAL = 0.25
 
 _MESSAGE_INTERVAL = 0.1
 """Seconds between two `IndexProgress` (and two `JumpProgress`) messages: at most 10 per second."""
-
-_PROGRESS_BELOW_ONE = 0.999999
-"""Progress of a pending jump stays below 1: 1 means done."""
-
 
 def _column_of_byte(text: str, relative: int) -> int:
     """Return the column of the character that holds byte `relative` of `text` (the length of `text` when it lies beyond)."""
@@ -1206,7 +1202,7 @@ NovaTextArea {
             self.move_cursor((row, 0))
             self._complete_jump()
             return None
-        return min(count / (row + 1), _PROGRESS_BELOW_ONE)
+        return min(count / (row + 1), PROGRESS_BELOW_ONE)
 
     def _drive_byte(self, lazy: LazyDocument, offset: int, scanned: int, *, complete: bool) -> float | None:
         if offset >= lazy.length:
@@ -1217,7 +1213,7 @@ NovaTextArea {
             self._complete_jump()
             return None
         if offset >= scanned and not complete:
-            return min(scanned / offset, _PROGRESS_BELOW_ONE)
+            return min(scanned / offset, PROGRESS_BELOW_ONE)
         found = lazy.row_at_offset(offset)
         if found is None:
             self._reject(f"byte offset {offset} cannot be resolved")
@@ -1236,7 +1232,7 @@ NovaTextArea {
         index = lazy.anchor_index(row)
         relative = index.align(relative)
         if self.soft_wrap and index.exact_column(relative) is None:
-            return min(index.frontier_byte() / max(relative, 1), _PROGRESS_BELOW_ONE)
+            return min(index.frontier_byte() / max(relative, 1), PROGRESS_BELOW_ONE)
         self.move_cursor((row, 0))
         machine = self._track_cursor()
         if machine is not None:
