@@ -833,6 +833,9 @@ NovaTextArea {
         self._suppress_scroll = False
         """True while `_reconcile_cursor` sets the exact location: `_watch_selection` does not scroll the cursor into view."""
 
+        self._replay_generation = 0
+        """Bumped whenever a pending jump or deferred operation is cancelled or replaced; a replay scheduled earlier is then skipped."""
+
         self._source_failed = False
         """True after `SourceChanged` or after `close()`: a lazy view renders blank rows."""
 
@@ -1034,11 +1037,11 @@ NovaTextArea {
     def _schedule_replay(self, replay: tuple[Op, bool] | None) -> None:
         """Replay a deferred cursor operation after the next paint, so the resolving frame and the operation are separate frames."""
         if replay is not None:
-            self.call_after_refresh(self._replay_open, replay[0], replay[1])
+            self.call_after_refresh(self._replay_open, replay[0], replay[1], self._replay_generation)
 
-    def _replay_open(self, op: Op, select: bool) -> None:
-        """Replay a deferred operation unless the widget was closed or failed in the meantime."""
-        if not self._lazy_closed and not self._source_failed:
+    def _replay_open(self, op: Op, select: bool, generation: int) -> None:
+        """Replay a deferred operation unless it was cancelled or replaced, or the widget was closed or failed, in the meantime."""
+        if generation == self._replay_generation and not self._lazy_closed and not self._source_failed:
             self._replay(op, select=select)
 
     # --- Provisional byte-anchored cursor on long rows (ACT3 design 7)
@@ -1094,8 +1097,9 @@ NovaTextArea {
 
         A deferred operation leaves the cursor where it is (provisional); a wrap-mode jump returns it to its previous resolved position.
 
-        A cancelled jump never completes later. No-op unless one is pending.
+        A cancelled jump never completes later, and neither does a replay that was scheduled but has not run yet. No-op unless one is pending.
         """
+        self._replay_generation += 1
         if self._jump is not None:
             self._jump = None
             self._set_progress(None)

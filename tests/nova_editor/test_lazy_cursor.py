@@ -13,7 +13,7 @@ from textual.pilot import Pilot
 from textual.strip import Strip
 
 from nova_editor.core import ByteSource
-from nova_editor.document._cursor_anchor import CursorState
+from nova_editor.document._cursor_anchor import CursorState, Op
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.document._lazy_document import MAX_WINDOW_CHARS, LazyDocument
 from nova_editor.widget import NovaTextArea
@@ -578,3 +578,44 @@ async def test_scan_completion_is_one_pass_and_the_replay_follows_the_resolving_
     assert call.count("_refresh_size") <= 1, call
     assert replay > end, "the deferred operation must not run inside the resolving callback"
     assert "render_line" in log[end:replay], "the resolving paint comes before the replay"
+
+
+def _spy_replay(area: NovaTextArea, monkeypatch: pytest.MonkeyPatch, performed: list[Op]) -> None:
+    """Record the deferred operations that the widget replays instead of performing them."""
+
+    def record(op: Op, *, select: bool) -> None:
+        assert select in (True, False)
+        performed.append(op)
+
+    monkeypatch.setattr(area, "_replay", record)
+
+
+@pytest.mark.asyncio
+async def test_cancel_between_the_resolving_paint_and_the_replay_drops_the_operation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    rig = _Rig(_mixed(tmp_path))
+    area = rig.area
+    performed: list[Op] = []
+    async with rig.run() as pilot:
+        await pilot.pause()
+        _spy_replay(area, monkeypatch, performed)
+        area._schedule_replay((Op.DOWN, False))
+        area.cancel_pending()
+        await pilot.pause(0.1)
+        assert performed == []
+        area._schedule_replay((Op.UP, False))
+        await pilot.pause(0.1)
+        assert performed == [Op.UP]
+
+
+@pytest.mark.asyncio
+async def test_a_new_jump_between_the_resolving_paint_and_the_replay_drops_the_operation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    rig = _Rig(_mixed(tmp_path))
+    area = rig.area
+    performed: list[Op] = []
+    async with rig.run() as pilot:
+        await pilot.pause()
+        _spy_replay(area, monkeypatch, performed)
+        area._schedule_replay((Op.DOWN, False))
+        area.goto_line(2)
+        await pilot.pause(0.1)
+        assert performed == []
