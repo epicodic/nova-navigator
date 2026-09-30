@@ -188,6 +188,11 @@ class LazyWrappedDocument(WrappedDocument):
         self._min_height = 0
 
     @property
+    def wrap_width(self) -> int:
+        """The wrap width in cells; 0 when wrapping is off."""
+        return self._width
+
+    @property
     def wrapped(self) -> bool:
         """True when wrapping is enabled and at least one row is estimated to occupy several lines."""
         return self._width > 0 and self.height > self._lazy.line_count
@@ -313,6 +318,17 @@ class LazyWrappedDocument(WrappedDocument):
             return None
         covering = self._lazy.column_at_display(row, target - 1, self._tab_width)
         return None if covering is None else covering + 1
+
+    def section_x(self, row: int, column: int) -> tuple[int, int]:
+        """Return `(section, x)` of `column`: its section and its display column relative to the section start.
+
+        Beyond the scanned frontier of a long row both values are estimates (one cell per unscanned character); never waits.
+        """
+        if not self._width:
+            return 0, self._display(row, column)
+        section = self.section_index(row, column)
+        start = self.section_start(row, section) if section else 0
+        return section, self._display(row, column) - (self._display(row, start) if start else 0)
 
     def is_last_section(self, row: int, column: int) -> bool:
         """Return whether `column` lies in the last section; false while a long row may still continue."""

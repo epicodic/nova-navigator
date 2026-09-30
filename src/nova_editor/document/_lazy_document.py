@@ -18,6 +18,7 @@ from nova_editor.core import ByteSource, LineIndex, LineSnapshot, LongLineIndex,
 from nova_editor.core.text_width import SURROGATE_ESCAPE, advance_disp, locate_cover, utf8_len
 from nova_editor.document._document import DocumentBase, EditResult, Location, Newline
 from nova_editor.document._lazy_config import LazyConfig
+from nova_editor.document._long_row_anchor import LongRowAnchorIndex
 
 if TYPE_CHECKING:
     from tree_sitter import Node, Query
@@ -254,6 +255,10 @@ class LazyDocument(DocumentBase):
         for old in overflow:
             old.join()
         return index
+
+    def anchor_index(self, row: int) -> LongRowAnchorIndex:
+        """Return the `AnchorIndex` adapter of a long row (starting its scan when needed); never waits."""
+        return LongRowAnchorIndex(self.long_index(row))
 
     def _text(self, row: int) -> str:
         """Decode a short or medium row (LRU cached); a long row raises `WholeLineAccess`."""
