@@ -101,6 +101,8 @@ class LazyDocument(DocumentBase):
         self._source = source
         self._lock = threading.RLock()
         self._closed = False
+        self._close_done = threading.Event()
+        self._reapers: list[threading.Thread] = []
         self._started = False
         self.foreground = Foreground()
         """Touched by the widget on key and mouse events; the scans of this document give way to the UI while it is."""
@@ -148,7 +150,11 @@ class LazyDocument(DocumentBase):
         return self._line_index.join(timeout)
 
     def close(self) -> None:
-        """Cancel and join every scan, then close the source; a second call does nothing."""
+        """Cancel every scan on the calling thread, then join them and close the source on a daemon "lazy-closer" thread; idempotent.
+
+        The caller (the UI thread) never waits: a join, or `PreadSource.close` waiting for an in-flight read, runs on the closer.
+        The order is cancel, join, close the source. `wait_closed` waits for the closer (tests, shutdown code).
+        """
         with self._lock:
             if self._closed:
                 return
@@ -156,13 +162,29 @@ class LazyDocument(DocumentBase):
             indexes = [*self._long.values(), *self._retired]
             self._long.clear()
             self._retired.clear()
+            reapers = list(self._reapers)
         self._line_index.cancel()
         for index in indexes:
             index.cancel()
-        for index in indexes:
-            index.join()
-        self._line_index.join()
-        self._source.close()
+        threading.Thread(target=self._finish_close, args=(indexes, reapers), name="lazy-closer", daemon=True).start()
+
+    def _finish_close(self, indexes: list[LongLineIndex], reapers: list[threading.Thread]) -> None:
+        """Closer thread: join the cancelled scans, then close the source."""
+        try:
+            for index in indexes:
+                index.join()
+            for reaper in reapers:
+                reaper.join()
+            self._line_index.join()
+        finally:
+            try:
+                self._source.close()
+            finally:
+                self._close_done.set()
+
+    def wait_closed(self, timeout: float) -> bool:
+        """Wait until `close` has joined every scan and closed the source; return whether that happened within `timeout` seconds."""
+        return self._close_done.wait(timeout)
 
     def subscribe(self, callback: Callable[[], None]) -> None:
         """Call `callback` (on a scan thread) on progress of the line index and of every long index, including later ones."""
@@ -281,9 +303,19 @@ class LazyDocument(DocumentBase):
         for callback in subscribers:
             index.subscribe(callback)
         index.start()
-        for old in overflow:
-            old.join()
+        if overflow:
+            reaper = threading.Thread(target=self._join_all, args=(overflow,), name="lazy-reaper", daemon=True)
+            with self._lock:
+                self._reapers = [t for t in self._reapers if t.is_alive()]
+                self._reapers.append(reaper)
+            reaper.start()
         return index
+
+    @staticmethod
+    def _join_all(indexes: list[LongLineIndex]) -> None:
+        """Reaper thread: join scans that were cancelled when they fell out of the retired list."""
+        for index in indexes:
+            index.join()
 
     def anchor_index(self, row: int) -> LongRowAnchorIndex:
         """Return the `AnchorIndex` adapter of a long row (starting its scan when needed); never waits."""

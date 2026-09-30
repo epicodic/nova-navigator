@@ -160,6 +160,7 @@ async def test_unmount_with_running_scan_does_not_raise(tmp_path: Path) -> None:
     async with HostApp(area).run_test() as pilot:
         await wait_until(pilot, lambda: gated_source(area).reads > 1)
         assert not _doc(area).snapshot().complete
+    assert _doc(area).wait_closed(10.0)
     assert not _scan_threads()
 
 
@@ -169,6 +170,7 @@ async def test_callbacks_after_unmount_are_harmless(tmp_path: Path) -> None:
     async with HostApp(area).run_test() as pilot:
         await wait_until(pilot, lambda: gated_source(area).reads > 1)
     area._index_callback()  # a late scan callback reaches a closed widget
+    assert _doc(area).wait_closed(10.0)
     assert not _scan_threads()
 
 

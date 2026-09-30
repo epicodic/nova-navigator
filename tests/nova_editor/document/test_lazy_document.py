@@ -338,6 +338,7 @@ def test_close_is_idempotent_with_running_scans(tmp_path: Path) -> None:
     assert index.frontier().complete is False
     doc.close()
     doc.close()
+    assert doc.wait_closed(10.0)
     assert index.frontier().complete is False
     with pytest.raises(ValueError, match="closed"):
         source.read(0, 1)
@@ -427,3 +428,53 @@ def test_close_before_start_then_start_scan_is_noop(tmp_path: Path) -> None:
     doc.close()
     doc.start_scan()
     assert _scan_threads() == []
+
+
+class _SlowCloseSource(CountingSource):
+    """`CountingSource` whose `close` waits for a release, like `PreadSource.close` waiting for an in-flight read."""
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
+        self.release = threading.Event()
+        self.closes = 0
+
+    def close(self) -> None:
+        assert self.release.wait(30)
+        self.closes += 1
+        super().close()
+
+
+def test_close_does_not_wait_for_the_source_and_wait_closed_does(tmp_path: Path) -> None:
+    source = _SlowCloseSource(make_mixed(tmp_path / "m.txt", long_chars=6000))
+    doc = LazyDocument(source, _config())
+    assert doc.wait_indexed(10.0)
+    started = time.perf_counter()
+    doc.close()
+    doc.close()
+    assert time.perf_counter() - started < 1.0
+    assert not doc.wait_closed(0.05)
+    assert source.closes == 0
+    source.release.set()
+    assert doc.wait_closed(10.0)
+    assert source.closes == 1
+    doc.close()
+    assert doc.wait_closed(0.0)
+    assert source.closes == 1
+
+
+def test_retired_scans_are_joined_off_the_caller_thread(tmp_path: Path) -> None:
+    from tests.nova_editor.helpers_view import GateSource
+
+    path = tmp_path / "many.txt"
+    path.write_bytes(b"".join(b"y" * 700 + b"\n" for _ in range(80)))
+    source = GateSource(path)
+    doc = LazyDocument(source, _config(max_long_indexes=1))
+    assert doc.wait_indexed(10.0)
+    source.gate.clear()  # every long scan blocks in its first read
+    started = time.perf_counter()
+    for row in range(80):
+        doc.long_index(row)
+    assert time.perf_counter() - started < 5.0
+    source.gate.set()
+    doc.close()
+    assert doc.wait_closed(20.0)

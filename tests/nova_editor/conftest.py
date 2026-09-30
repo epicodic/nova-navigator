@@ -8,7 +8,7 @@ from collections.abc import Iterator
 
 import pytest
 
-_SCAN_THREADS = ("line-index-scan", "long-line-scan")
+_SCAN_THREADS = ("line-index-scan", "long-line-scan", "lazy-closer", "lazy-reaper")
 _JOIN_SECONDS = 10.0
 
 
