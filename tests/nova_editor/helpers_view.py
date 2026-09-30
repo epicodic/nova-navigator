@@ -7,6 +7,7 @@ This module provides:
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import NamedTuple
 
@@ -14,6 +15,7 @@ from rich.cells import cell_len
 from textual.app import App, ComposeResult
 from textual.widget import Widget
 
+from nova_editor.core import PreadSource
 from nova_editor.document._lazy_document import LazyDocument
 from nova_editor.document._lazy_wrapped_document import LazyWrappedDocument
 from nova_editor.widget import NovaTextArea
@@ -293,3 +295,23 @@ def row_strip_text(area: NovaTextArea, row: int, width: int | None = None, secti
     y = lazy_wrapped(area).y_of_row(row) + section - area.scroll_offset.y
     strip = area.render_line(y).crop(area.gutter_width, area.gutter_width + (width or (area.scrollable_content_region.width - area.gutter_width)))
     return strip.text
+
+
+class GateSource:
+    """`ByteSource` whose scan reads (`cache=False`) block while the gate is closed."""
+
+    def __init__(self, path: Path) -> None:
+        self._inner = PreadSource(path)
+        self.gate = threading.Event()
+        self.gate.set()
+
+    def length(self) -> int:
+        return self._inner.length()
+
+    def read(self, offset: int, size: int, *, cache: bool = True) -> bytes:
+        if not cache:
+            assert self.gate.wait(30)
+        return self._inner.read(offset, size, cache=cache)
+
+    def close(self) -> None:
+        self._inner.close()
