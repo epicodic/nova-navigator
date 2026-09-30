@@ -44,8 +44,14 @@ def test_latency_records_direct_and_pilot_columns_and_the_idle_floor(mixed_file:
     assert main(["latency", "--file", str(mixed_file), "--wrap", "on", "--state", "indexing", "--op", "down", "--steps", "5", "--out", str(out)]) == 0
     rows = _rows(out)
     steps = [row for row in rows if row["op"] == "down"]
-    assert len(steps) == 5
-    assert all(row["latency_ms"] is not None and row["pilot_ms"] is not None for row in steps)
+    direct = [row for row in steps if row["phase"] == "direct"]
+    pilot = [row for row in steps if row["phase"] == "pilot"]
+    assert len(direct) == 5
+    assert len(pilot) == 5
+    assert all(row["latency_ms"] is not None and isinstance(row["scan_running"], bool) and "scan_done_at_step" in row for row in direct)
+    assert all(row["pilot_ms"] is not None for row in pilot)
+    phases = [row["phase"] for row in rows]
+    assert phases == ["direct"] * 5 + ["pilot"] * (len(phases) - 5)  # the direct burst comes first, every Pilot row after it
     assert any(row["op"] == "f24" and row["pilot_ms"] > 0 for row in rows)
 
 
@@ -112,6 +118,7 @@ def test_sweep_yield_records_scan_completion(mixed_file: Path, tmp_path: Path) -
     assert main(["sweep-yield", "--file", str(mixed_file), "--values", "0.001", "--steps", "3", "--runs", "1", "--out", str(out)]) == 0
     rows = _rows(out)
     assert {row["op"] for row in rows} == {"pagedown", "pageup", "scan"}
+    assert all(row["phase"] == "direct" for row in rows if row["op"] != "scan")
     scan = next(row for row in rows if row["op"] == "scan")
     assert scan["scan_complete_s"] > 0
     assert scan["yield_seconds"] == 0.001
@@ -174,3 +181,20 @@ def test_summarise_groups_by_case_file_wrap_state_and_op(tmp_path: Path, capsys:
     assert "| a | on | indexed | down | - | latency_ms | 1 | 7.00 |" in text
     assert "pilot_ms" in text
     assert "rss_anon_mib_max" in text
+
+
+def test_summarise_counts_direct_steps_issued_during_a_scan(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    out = tmp_path / "rows.jsonl"
+    base = {"case": "latency", "file": "a", "wrap": "off", "state": "indexing", "op": "pagedown"}
+    rows = [
+        {**base, "phase": "direct", "latency_ms": 5, "scan_running": True},
+        {**base, "phase": "direct", "latency_ms": 6, "scan_running": True},
+        {**base, "phase": "direct", "latency_ms": 7, "scan_running": False},
+        {**base, "phase": "pilot", "pilot_ms": 3000},
+    ]
+    out.write_text("\n".join(json.dumps(row) for row in rows))
+    assert main(["summarise", str(out)]) == 0
+    text = capsys.readouterr().out
+    assert "n scan_running" in text
+    assert "| a | off | indexing | pagedown | - | latency_ms | 3 | 6.00 | 7.00 | 7.00 | 0 | 2 |" in text
+    assert "| a | off | indexing | pagedown | - | pilot_ms | 1 | 3000.00 | 3000.00 | 3000.00 | 1 | - |" in text
