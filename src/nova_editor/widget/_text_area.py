@@ -83,6 +83,7 @@ _ESTIMATE_INTERVAL = 0.25
 _MESSAGE_INTERVAL = 0.1
 """Seconds between two `IndexProgress` (and two `JumpProgress`) messages: at most 10 per second."""
 
+
 def _column_of_byte(text: str, relative: int) -> int:
     """Return the column of the character that holds byte `relative` of `text` (the length of `text` when it lies beyond)."""
     total = 0
@@ -1047,7 +1048,9 @@ NovaTextArea {
         self.soft_wrap = not self.soft_wrap
 
     def cancel_pending(self) -> None:
-        """Drop a pending jump (a goto or a deferred cursor operation): a deferred operation leaves the cursor where it is (provisional), a wrap-mode jump returns it to its previous resolved position.
+        """Drop a pending jump (a goto or a deferred cursor operation).
+
+        A deferred operation leaves the cursor where it is (provisional); a wrap-mode jump returns it to its previous resolved position.
 
         A cancelled jump never completes later. No-op unless one is pending.
         """
@@ -1342,7 +1345,8 @@ NovaTextArea {
 
         Left, right and word moves work on the byte anchor (a word move is a fixed step of `WORD_STEP_CHARS` characters while the
         cursor is not resolved). Up, down and page moves from a PROVISIONAL cursor become PENDING and are replayed when the scan
-        resolves the cursor; while PENDING every movement is ignored (Escape or `cancel_pending()` drops the deferred operation and keeps the cursor where it is; a wrap-mode jump returns to the previous position).
+        resolves the cursor; while PENDING every movement is ignored (Escape or `cancel_pending()` drops the deferred operation and keeps
+        the cursor where it is; a wrap-mode jump returns to the previous position).
         """
         cursor = self._long_cursor
         machine = self._track_cursor()
