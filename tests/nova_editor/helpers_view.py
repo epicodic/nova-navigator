@@ -8,11 +8,14 @@ This module provides:
 from __future__ import annotations
 
 import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
 from rich.cells import cell_len
 from textual.app import App, ComposeResult
+from textual.pilot import Pilot
 from textual.widget import Widget
 
 from nova_editor.core import PreadSource
@@ -281,6 +284,25 @@ class HostApp(App[None]):
 
     def on_nova_text_area_source_changed(self, message: NovaTextArea.SourceChanged) -> None:
         self.source_changed.append(message.reason)
+
+
+async def wait_until(pilot: Pilot[None], condition: Callable[[], bool], limit: float = 10.0) -> None:
+    """Let the app run until `condition()` holds; fail after `limit` seconds."""
+    deadline = time.monotonic() + limit
+    while not condition():
+        assert time.monotonic() < deadline, "condition not reached"
+        await pilot.pause(0.02)
+
+
+async def await_first_layout(pilot: Pilot[None], area: NovaTextArea, limit: float = 10.0) -> None:
+    """Wait until the widget has its first layout: a non-empty region and a first row that renders non-blank."""
+
+    def laid_out() -> bool:
+        if area.region.width <= 0 or area.region.height <= 0 or area.scrollable_content_region.width <= 0:
+            return False
+        return bool("".join(segment.text for segment in area.render_line(0)).strip())
+
+    await wait_until(pilot, laid_out, limit)
 
 
 def lazy_wrapped(area: NovaTextArea) -> LazyWrappedDocument:

@@ -18,6 +18,7 @@ from nova_editor.widget import NovaTextArea
 from tests.nova_editor.helpers_view import (
     LOWERED_OPTIONS,
     HostApp,
+    await_first_layout,
     lazy_wrapped,
     make_mixed,
     oracle_display_column,
@@ -50,8 +51,11 @@ async def _settle(pilot: Pilot[None], area: NovaTextArea, row: int) -> LazyDocum
     assert isinstance(doc, LazyDocument)
     assert doc.wait_indexed(10)
     area.scroll_to(y=lazy_wrapped(area).y_of_row(row), animate=False)
-    await pilot.pause()  # rendering the row starts its long index
+    await await_first_layout(pilot, area)
+    await _until(pilot, lambda: row_strip_text(area, row, 1).strip() != "")  # rendering the row starts its long index and the estimate timer
     wait_frontier(doc, row)
+    # A scan that finishes before the widget resumed its estimate timer leaves the size stale: apply the final estimate explicitly.
+    area._estimate_tick()
     await _until(pilot, lambda: not area.is_estimating)
     return doc
 
@@ -97,7 +101,7 @@ async def test_open_lazy_file_renders_first_rows_read_only(tmp_path: Path) -> No
     area = NovaTextArea.open(path, config=_config())
     app = HostApp(area)
     async with app.run_test(size=(60, 12)) as pilot:
-        await pilot.pause()
+        await await_first_layout(pilot, area)
         assert area.is_lazy
         assert area.read_only
         first = "".join(seg.text for seg in area.render_line(0))
@@ -160,19 +164,21 @@ async def test_wrap_mode_renders_a_long_row_section_like_the_grid_oracle(tmp_pat
     data = path.read_bytes()
     area = NovaTextArea.open(path, soft_wrap=True, config=_config())
     async with HostApp(area).run_test(size=(40, 10)) as pilot:
-        await pilot.pause()
+        await await_first_layout(pilot, area)
         doc = area.document
         assert isinstance(doc, LazyDocument)
         await _settle(pilot, area, _LONG_ROW)
         grid = area.wrap_width
         view = area.scrollable_content_region.width
         sections = lazy_wrapped(area).row_sections(_LONG_ROW)
+        last_y = lazy_wrapped(area).y_of_row(_LONG_ROW) + sections - 1
+        await _until(pilot, lambda: area.virtual_size.height > last_y)  # the final size estimate is applied: scrolling is not clamped
         for section in (0, 1, 2, sections // 2, sections - 1):
             area.scroll_to(y=lazy_wrapped(area).y_of_row(_LONG_ROW) + section, animate=False)
             await pilot.pause()
             y = lazy_wrapped(area).y_of_row(_LONG_ROW) + section - area.scroll_offset.y
             strip = area.render_line(y).crop(0, view).text
-            assert strip == oracle_section(data, _LONG_ROW, section, grid, view), section
+            assert strip == oracle_section(data, _LONG_ROW, section, grid, view)
 
 
 @pytest.mark.asyncio
