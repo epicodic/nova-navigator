@@ -180,6 +180,15 @@ class LazyDocument(DocumentBase):
         """Return the consistent state of the line scan."""
         return self._line_index.snapshot()
 
+    @property
+    def length(self) -> int:
+        """Length of the source in bytes."""
+        return self._source.length()
+
+    def row_at_offset(self, offset: int) -> tuple[int, RowRange] | None:
+        """Return `(row, range)` of the row that holds byte `offset` (see `LineIndex.row_at_offset`), or `None` when it is not known yet."""
+        return self._line_index.row_at_offset(offset)
+
     # -- row bookkeeping ----------------------------------------------------------------------
     def _norm(self, row: int) -> int:
         return row + self.line_count if row < 0 else row

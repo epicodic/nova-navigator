@@ -9,16 +9,19 @@ from __future__ import annotations
 
 import threading
 import time
+import weakref
 from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
 from rich.cells import cell_len
 from textual.app import App, ComposeResult
+from textual.message import Message
 from textual.pilot import Pilot
 from textual.widget import Widget
 
 from nova_editor.core import PreadSource
+from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.document._lazy_document import LazyDocument
 from nova_editor.document._lazy_wrapped_document import LazyWrappedDocument
 from nova_editor.widget import NovaTextArea
@@ -278,12 +281,33 @@ class HostApp(App[None]):
         super().__init__()
         self._widget = widget
         self.source_changed: list[str] = []
+        self.messages: list[Message] = []
+        """Index and jump messages of the widget, in arrival order."""
 
     def compose(self) -> ComposeResult:
         yield self._widget
 
     def on_nova_text_area_source_changed(self, message: NovaTextArea.SourceChanged) -> None:
         self.source_changed.append(message.reason)
+
+    def on_nova_text_area_index_progress(self, message: NovaTextArea.IndexProgress) -> None:
+        self.messages.append(message)
+
+    def on_nova_text_area_indexing_complete(self, message: NovaTextArea.IndexingComplete) -> None:
+        self.messages.append(message)
+
+    def on_nova_text_area_jump_progress(self, message: NovaTextArea.JumpProgress) -> None:
+        self.messages.append(message)
+
+    def on_nova_text_area_jump_completed(self, message: NovaTextArea.JumpCompleted) -> None:
+        self.messages.append(message)
+
+    def on_nova_text_area_jump_rejected(self, message: NovaTextArea.JumpRejected) -> None:
+        self.messages.append(message)
+
+    def names(self) -> list[str]:
+        """Return the class names of the recorded jump and index messages, in arrival order."""
+        return [type(message).__name__ for message in self.messages]
 
 
 async def wait_until(pilot: Pilot[None], condition: Callable[[], bool], limit: float = 10.0) -> None:
@@ -294,13 +318,17 @@ async def wait_until(pilot: Pilot[None], condition: Callable[[], bool], limit: f
         await pilot.pause(0.02)
 
 
+MIN_TEXT_CELLS = 5
+"""Fewest cells of text a settled first layout shows."""
+
+
 async def await_first_layout(pilot: Pilot[None], area: NovaTextArea, limit: float = 10.0) -> None:
-    """Wait until the widget has its first layout: a non-empty region and a first row that renders non-blank."""
+    """Wait until the widget has its first layout: a non-empty region and a first row that renders more than a single character."""
 
     def laid_out() -> bool:
-        if area.region.width <= 0 or area.region.height <= 0 or area.scrollable_content_region.width <= 0:
+        if area.region.width <= 0 or area.region.height <= 0 or area.scrollable_content_region.width - area.gutter_width < MIN_TEXT_CELLS:
             return False
-        return bool("".join(segment.text for segment in area.render_line(0)).strip())
+        return len("".join(segment.text for segment in area.render_line(0)).strip()) >= MIN_TEXT_CELLS  # a transient first paint shows a single character
 
     await wait_until(pilot, laid_out, limit)
 
@@ -373,3 +401,74 @@ class TrickleSource(GateSource):
                 self.blocked.set()
                 assert self.gate.wait(30)
         return self._inner.read(offset, size, cache=cache)
+
+
+class GatedLineSource:
+    """`ByteSource` for a line scan that spans many blocks: scan reads are short (`block` bytes) and can be slowed or held back.
+
+    Scan reads (`cache=False` on the `line-index-scan` thread) return at most `block` bytes and sleep `delay` seconds first.
+    Once the scan reached byte `threshold`, the next scan read blocks until `release()`. Other reads are never held back.
+    """
+
+    def __init__(self, path: Path, *, threshold: int | None = None, block: int = 256, delay: float = 0.0) -> None:
+        self._inner = PreadSource(path)
+        self._threshold = threshold
+        self._block = block
+        self._delay = delay
+        self.gate = threading.Event()
+        if threshold is None:
+            self.gate.set()
+        self.blocked = threading.Event()
+        """Set when a scan read is held back: the frontier is provably behind."""
+        self.reads = 0
+
+    def release(self) -> None:
+        """Let the line scan run to the end at full speed."""
+        self._threshold = None
+        self._delay = 0.0
+        self.gate.set()
+
+    def length(self) -> int:
+        return self._inner.length()
+
+    def read(self, offset: int, size: int, *, cache: bool = True) -> bytes:
+        if not cache and threading.current_thread().name == "line-index-scan":
+            self.reads += 1
+            threshold = self._threshold
+            if threshold is not None and offset >= threshold:
+                self.blocked.set()
+                assert self.gate.wait(30)
+            if self._delay:
+                time.sleep(self._delay)
+            size = min(size, self._block)
+        return self._inner.read(offset, size, cache=cache)
+
+    def close(self) -> None:
+        self._inner.close()
+
+
+_GATES: weakref.WeakKeyDictionary[NovaTextArea, GatedLineSource] = weakref.WeakKeyDictionary()
+
+
+def open_with_gated_line_scan(tmp_path: Path, rows: int = 3000, *, threshold: int | None = 2048, delay: float = 0.0, config: LazyConfig | None = None) -> tuple[NovaTextArea, Path]:
+    """Open a file of `rows` short rows ("row N") whose line scan is held back at byte `threshold` until `release_line_scan(area)`.
+
+    Returns:
+        The widget (not mounted yet) and the file path. With `threshold=None` the scan is never held back (use `delay` to slow it).
+    """
+    path = tmp_path / "rows.txt"
+    path.write_bytes("".join(f"row {i}\n" for i in range(rows)).encode())
+    source = GatedLineSource(path, threshold=threshold, delay=delay)
+    area = NovaTextArea.open(source, config=config or LazyConfig(**LOWERED_OPTIONS))
+    _GATES[area] = source
+    return area, path
+
+
+def gated_source(area: NovaTextArea) -> GatedLineSource:
+    """Return the gated source behind a widget opened by `open_with_gated_line_scan`."""
+    return _GATES[area]
+
+
+def release_line_scan(area: NovaTextArea) -> None:
+    """Let the held-back line scan of `area` run to the end."""
+    _GATES[area].release()
