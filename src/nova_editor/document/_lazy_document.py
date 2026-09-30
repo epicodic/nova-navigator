@@ -136,9 +136,9 @@ class LazyDocument(DocumentBase):
         return self._config.tab_width
 
     def start_scan(self) -> None:
-        """Start the background line scan; a second call does nothing."""
+        """Start the background line scan; a second call, or a call after `close`, does nothing."""
         with self._lock:
-            if self._started:
+            if self._started or self._closed:
                 return
             self._started = True
         self._line_index.start()
@@ -238,15 +238,25 @@ class LazyDocument(DocumentBase):
         return self.row_class(row) == "long"
 
     def long_index(self, row: int) -> LongLineIndex:
-        """Return the long index of `row`, creating it (with autostart) on first use; the least recently used one is cancelled."""
+        """Return the long index of `row`, creating it (with autostart) on first use; the least recently used one is cancelled.
+
+        Raises:
+            RowUnavailable: The document is closed (no scan is ever started on a closed source).
+        """
         row = self._norm(row)
         with self._lock:
+            if self._closed:
+                msg = "document is closed"
+                raise RowUnavailable(msg)
             index = self._long.get(row)
             if index is not None:
                 self._long.move_to_end(row)
                 return index
         found = self._range(row)
         with self._lock:
+            if self._closed:
+                msg = "document is closed"
+                raise RowUnavailable(msg)
             index = self._long.get(row)
             if index is not None:
                 return index

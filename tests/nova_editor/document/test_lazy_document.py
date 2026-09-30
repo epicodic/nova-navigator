@@ -399,3 +399,31 @@ def test_scan_block_limits_every_scan_read(tmp_path: Path) -> None:
     assert spy.scan_sizes
     assert max(spy.scan_sizes) <= 128
     doc.close()
+
+
+def _scan_threads() -> list[threading.Thread]:
+    return [t for t in threading.enumerate() if t.name in ("line-index-scan", "long-line-scan") and t.is_alive()]
+
+
+def test_closed_document_starts_no_scan(tmp_path: Path) -> None:
+    """After close, start_scan does nothing and long_index refuses with RowUnavailable; no scan thread appears."""
+    path = make_mixed(tmp_path / "m.txt")
+    doc = LazyDocument.from_path(path, _config(), autostart=False)
+    row = 0
+    doc.start_scan()
+    assert doc.wait_indexed(10.0)
+    row = _long_row(doc)
+    doc.close()
+    doc.start_scan()
+    with pytest.raises(RowUnavailable):
+        doc.long_index(row)
+    assert _scan_threads() == []
+
+
+def test_close_before_start_then_start_scan_is_noop(tmp_path: Path) -> None:
+    """A document closed before it ever started does not start its scan afterwards."""
+    path = make_mixed(tmp_path / "m.txt")
+    doc = LazyDocument.from_path(path, _config(), autostart=False)
+    doc.close()
+    doc.start_scan()
+    assert _scan_threads() == []
