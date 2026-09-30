@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from tests.nova_editor.helpers_view import make_mixed
+from tools._view_app import LOWERED
 from tools._view_procmem import median, percentile
 from tools.measure_view import main
 
@@ -49,6 +50,8 @@ def test_latency_records_direct_and_pilot_columns_and_the_idle_floor(mixed_file:
     assert len(direct) == 5
     assert len(pilot) == 5
     assert all(row["latency_ms"] is not None and isinstance(row["scan_running"], bool) and "scan_done_at_step" in row for row in direct)
+    assert all(isinstance(row["scan_completed_during_step"], bool) and row["busy_at_step"] == row["scan_running"] for row in direct)
+    assert all(not row["scan_completed_during_step"] or row["scan_running"] for row in direct)
     assert all(row["pilot_ms"] is not None for row in pilot)
     phases = [row["phase"] for row in rows]
     assert phases == ["direct"] * 5 + ["pilot"] * (len(phases) - 5)  # the direct burst comes first, every Pilot row after it
@@ -187,8 +190,8 @@ def test_summarise_counts_direct_steps_issued_during_a_scan(tmp_path: Path, caps
     out = tmp_path / "rows.jsonl"
     base = {"case": "latency", "file": "a", "wrap": "off", "state": "indexing", "op": "pagedown"}
     rows = [
-        {**base, "phase": "direct", "latency_ms": 5, "scan_running": True},
-        {**base, "phase": "direct", "latency_ms": 6, "scan_running": True},
+        {**base, "phase": "direct", "latency_ms": 5, "scan_running": True, "scan_completed_during_step": False},
+        {**base, "phase": "direct", "latency_ms": 6, "scan_running": True, "scan_completed_during_step": True},
         {**base, "phase": "direct", "latency_ms": 7, "scan_running": False},
         {**base, "phase": "pilot", "pilot_ms": 3000},
     ]
@@ -196,5 +199,52 @@ def test_summarise_counts_direct_steps_issued_during_a_scan(tmp_path: Path, caps
     assert main(["summarise", str(out)]) == 0
     text = capsys.readouterr().out
     assert "n scan_running" in text
-    assert "| a | off | indexing | pagedown | - | latency_ms | 3 | 6.00 | 7.00 | 7.00 | 0 | 2 |" in text
-    assert "| a | off | indexing | pagedown | - | pilot_ms | 1 | 3000.00 | 3000.00 | 3000.00 | 1 | - |" in text
+    assert "n completing" in text
+    assert "p95 is the nearest-rank value of the n samples" in text
+    assert "| a | off | indexing | pagedown | - | latency_ms | 3 | 6.00 | 7.00 | 7.00 | 0 | 2 | 1 |" in text
+    assert "| a | off | indexing | pagedown | - | pilot_ms | 1 | 3000.00 | 3000.00 | 3000.00 | 1 | - | - |" in text
+
+
+def test_summarise_reports_failed_and_unverified_first_screen_runs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    out = tmp_path / "rows.jsonl"
+    base = {"case": "first-screen", "file": "a", "wrap": "off", "state": "cold", "op": "first_screen"}
+    rows = [
+        {**base, "first_screen_ms": 40.0, "cold_verified": True},
+        {**base, "first_screen_ms": 50.0, "cold_verified": False},
+        {**base, "first_screen_ms": None, "cold_verified": True, "status": "timeout"},
+    ]
+    out.write_text("\n".join(json.dumps(row) for row in rows))
+    assert main(["summarise", str(out)]) == 0
+    text = capsys.readouterr().out
+    assert "first-screen runs: 3, failed: 1, cold_verified=false: 1" in text
+
+
+def test_probing_the_view_creates_no_index(mixed_file: Path) -> None:
+    from tools._view_app import _view_state, lazy_document, open_probe, scan_busy
+
+    area = open_probe(mixed_file, wrap=False, config=LOWERED)
+    document = lazy_document(area)
+    assert document is not None
+    document.wait_indexed(10.0)
+    row = next(r for r in range(document.line_count) if document.is_long(r))
+    area.move_cursor((row, 3), record_width=False)
+    before = list(document._long)
+    scan_busy(area)
+    _view_state(area)
+    assert list(document._long) == before
+    area.close()
+
+
+def test_first_screen_closes_the_pty_when_the_window_size_cannot_be_set(mixed_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    from tools import measure_view
+
+    def fail(*_args: object) -> None:
+        raise OSError("ioctl")
+
+    before = len(os.listdir("/proc/self/fd"))
+    monkeypatch.setattr(measure_view.fcntl, "ioctl", fail)
+    with pytest.raises(OSError, match="ioctl"):
+        measure_view.first_screen_once(mixed_file, cold=False, timeout=1.0)
+    assert len(os.listdir("/proc/self/fd")) == before

@@ -122,10 +122,15 @@ def first_screen_once(path: Path, *, cold: bool, timeout: float, baseline: int =
     with tempfile.TemporaryDirectory() as directory:
         timing_file = Path(directory) / "timing.txt"
         master, slave = pty.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", *TERMINAL_SIZE, 0, 0))
-        env = {**os.environ, "NOVA_EDIT_TIMING_FILE": str(timing_file), "TERM": "xterm-256color", "COLUMNS": str(TERMINAL_SIZE[1]), "LINES": str(TERMINAL_SIZE[0])}
-        t0 = time.perf_counter_ns()
-        proc = subprocess.Popen([sys.executable, "-m", "nova_editor.app", "--lazy", str(path)], stdin=slave, stdout=slave, stderr=slave, env=env, start_new_session=True, close_fds=True)
+        try:
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", *TERMINAL_SIZE, 0, 0))
+            env = {**os.environ, "NOVA_EDIT_TIMING_FILE": str(timing_file), "TERM": "xterm-256color", "COLUMNS": str(TERMINAL_SIZE[1]), "LINES": str(TERMINAL_SIZE[0])}
+            t0 = time.perf_counter_ns()
+            proc = subprocess.Popen([sys.executable, "-m", "nova_editor.app", "--lazy", str(path)], stdin=slave, stdout=slave, stderr=slave, env=env, start_new_session=True, close_fds=True)
+        except BaseException:
+            os.close(slave)
+            os.close(master)
+            raise
         os.close(slave)
         first: int | None = None
         rchar: int | None = None

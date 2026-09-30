@@ -1027,6 +1027,17 @@ NovaTextArea {
         machine = self._track_cursor()
         return CursorState.RESOLVED if machine is None else machine.state
 
+    def peek_cursor_state(self) -> tuple[CursorState, int | None]:
+        """Return `(state, byte offset within its row of the anchor)` of the current cursor machine without creating or advancing anything.
+
+        Unlike `cursor_state` it never starts a scan: a cursor that has not been tracked yet reports `(RESOLVED, None)`. For probes and benchmarks.
+        """
+        cursor = self._long_cursor
+        machine = None if cursor is None else cursor.machine
+        if machine is None:
+            return CursorState.RESOLVED, None
+        return machine.state, machine.anchor.byte_rel
+
     @property
     def column_exact(self) -> bool:
         """True when the column of `cursor_location` is exact (it is only an estimate while the cursor is PROVISIONAL)."""
