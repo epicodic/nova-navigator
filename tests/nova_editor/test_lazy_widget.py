@@ -415,3 +415,23 @@ async def test_navigation_across_wrapped_medium_row(tmp_path: Path) -> None:
         await pilot.press("up")
         assert area.cursor_location[0] == _MEDIUM_ROW
         assert lazy_wrapped(area).location_to_offset(area.cursor_location).y == lazy_wrapped(area).y_of_row(_MEDIUM_ROW) + sections - 2
+
+
+@pytest.mark.asyncio
+async def test_key_and_mouse_events_make_the_scans_give_way_to_the_ui(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = make_mixed(tmp_path / "m.txt")
+    area = NovaTextArea.open(path, config=_config())
+    app = HostApp(area)
+    async with app.run_test(size=(60, 12)) as pilot:
+        await await_first_layout(pilot, area)
+        doc = area.document
+        assert isinstance(doc, LazyDocument)
+        touches: list[float] = []
+        real = doc.foreground.touch
+        monkeypatch.setattr(doc.foreground, "touch", lambda: (touches.append(time.monotonic()), real())[1])
+        await pilot.pause(0.2)
+        assert not touches  # painting and scan progress alone do not count as interaction
+        await pilot.press("down")
+        assert len(touches) == 1
+        await pilot.hover(area, offset=(2, 1))
+        assert len(touches) >= 2

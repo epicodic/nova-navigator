@@ -2726,6 +2726,14 @@ NovaTextArea {
         self.post_message(self.Changed(self))
         self.update_suggestion()
 
+    async def on_event(self, event: events.Event) -> None:
+        """Tell the scans that the user is interacting (they give way to the UI thread, see `Foreground`), then handle the event."""
+        if isinstance(event, events.Key | events.MouseEvent):
+            lazy = self._lazy
+            if lazy is not None:
+                lazy.foreground.touch()
+        await super().on_event(event)
+
     async def _on_key(self, event: events.Key) -> None:
         """Handle key presses which correspond to document inserts."""
         self._restart_blink()

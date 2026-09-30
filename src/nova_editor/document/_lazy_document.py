@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Literal, NamedTuple, overload
 from textual.geometry import Size
 
 from nova_editor.core import ByteSource, LineIndex, LineSnapshot, LongLineIndex, PreadSource, RowRange
+from nova_editor.core.foreground import Foreground
 from nova_editor.core.text_width import SURROGATE_ESCAPE, advance_disp, locate_cover, utf8_len
 from nova_editor.document._document import DocumentBase, EditResult, Location, Newline
 from nova_editor.document._lazy_config import LazyConfig
@@ -101,11 +102,14 @@ class LazyDocument(DocumentBase):
         self._lock = threading.RLock()
         self._closed = False
         self._started = False
+        self.foreground = Foreground()
+        """Touched by the widget on key and mouse events; the scans of this document give way to the UI while it is."""
         self._line_index = LineIndex(
             source,
             stride=self._config.stride,
             long_line_threshold=self._config.index_long_line_threshold,
             yield_seconds=self._config.yield_seconds,
+            foreground=self.foreground,
             scan_block=self._config.scan_block,
         )
         self._ranges: OrderedDict[int, RowRange] = OrderedDict()
@@ -253,6 +257,7 @@ class LazyDocument(DocumentBase):
                 tab_width=self._config.tab_width,
                 checkpoint_chars=index_step(self._config),
                 yield_seconds=self._config.yield_seconds,
+                foreground=self.foreground,
                 scan_block=self._config.scan_block,
                 autostart=False,
             )
