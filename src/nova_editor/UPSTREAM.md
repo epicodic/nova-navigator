@@ -84,7 +84,7 @@ ACT3 also extended the core, which stays Textual-free:
 - Instance attributes `_lazy` and `_long_cursor`.
 
 **Edited upstream members:**
-- Construction and documents: `__init__`, `code_editor`, `_set_document`, `_resolve_language` (factored out of `_set_document`), `_watch_language`, `load_text`, `text`, `validate_read_only`.
+- Construction and documents: `__init__`, `code_editor`, `_set_document`, `_resolve_language` (factored out of `_set_document`), `_watch_language`, `load_text`, `text`.
 - Selection and cursor: `_watch_selection`, `select_line`, `select_all`, `clamp_visitable`, `cursor_at_end_of_line`, `scroll_cursor_visible`, `move_cursor`, `move_cursor_relative`, `_recompute_cursor_offset`, `find_matching_bracket` (returns `None` for a lazy document).
 - Cursor actions: `action_cursor_left`, `action_cursor_right`, `action_cursor_up`, `action_cursor_down`, `action_cursor_line_start`, `action_cursor_line_end`, `action_cursor_word_left`, `action_cursor_word_right`, `action_cursor_page_up`, `action_cursor_page_down`.
 - Word and column helpers: `get_cursor_word_left_location`, `get_cursor_word_right_location`, `get_column_width`, `cell_width_to_column_index`, `action_delete_word_right` (edited only to avoid a whole-row read).
