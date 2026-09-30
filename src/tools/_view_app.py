@@ -162,7 +162,12 @@ def send_key(app: App[None], key: str) -> None:
 
 
 def _view_state(area: NovaTextArea) -> tuple[object, ...]:
-    return (area.cursor_location, tuple(area.scroll_offset))
+    """The observable position: cursor location and scroll offset, and the exact byte while the column of a provisional cursor is only an estimate.
+
+    A step of a provisional cursor changes the byte and the drawn cursor cell, but not `cursor_location`.
+    """
+    byte = None if area.column_exact else area.cursor_byte_offset
+    return (area.cursor_location, tuple(area.scroll_offset), byte)
 
 
 @dataclasses.dataclass(frozen=True)
