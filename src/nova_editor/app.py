@@ -70,10 +70,20 @@ def parse_goto(text: str) -> GotoTarget | None:
 
 
 class GotoBar(Input):
-    """Input field for goto line/byte navigation."""
+    """Input field for goto line/byte navigation. Escape closes it."""
+
+    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [("escape", "close", "Close")]
 
     def __init__(self) -> None:
         super().__init__(id="goto_bar", placeholder="Line or @byte")
+
+    def action_close(self) -> None:
+        """Hide the bar, clear it and give the focus back to the editor."""
+        self.display = False
+        self.value = ""
+        editors = self.app.query(NovaTextArea)
+        if editors:
+            editors.first().focus()
 
 
 class TimedNovaTextArea(NovaTextArea):
@@ -213,10 +223,10 @@ class NovaEditApp(App[None]):
     """A minimal text editor application using NovaTextArea."""
 
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
-        ("ctrl+s", "action_save", "Save"),
-        ("ctrl+q", "action_quit", "Quit"),
-        ("f4", "action_toggle_wrap", "Toggle wrap"),
-        ("ctrl+g", "action_show_goto", "Show goto"),
+        ("ctrl+s", "save", "Save"),
+        ("ctrl+q", "quit", "Quit"),
+        ("f4", "toggle_wrap", "Toggle wrap"),
+        ("ctrl+g", "show_goto", "Show goto"),
     ]
 
     CSS: ClassVar[str] = """
