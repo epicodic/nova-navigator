@@ -16,10 +16,15 @@ def test_a_scan_is_not_paused_before_the_first_touch() -> None:
 
 
 def test_a_touch_pauses_the_scans_until_the_hold_time_is_over() -> None:
-    gate = Foreground(hold=0.05, pause=0.25)
+    gate = Foreground(hold=60, pause=0.25)
     gate.touch()
     assert gate.pause_seconds() == 0.25
-    time.sleep(0.08)
+
+
+def test_the_pause_ends_after_the_hold_time() -> None:
+    gate = Foreground(hold=0.05, pause=0.25)
+    gate.touch()
+    time.sleep(0.3)
     assert gate.pause_seconds() == 0.0
 
 

@@ -56,7 +56,7 @@ The following modules are native to `nova_editor` (not copies of upstream Textua
 - `_PREFIX_CHARS = 1024` — characters returned by `get_line()` for lazy documents.
 - `_ESTIMATE_INTERVAL = 0.25` — seconds between size re-estimates while indexes grow.
 - `_MESSAGE_INTERVAL = 0.1` — seconds between `IndexProgress` messages (max 10 per second).
-- `_PROGRESS_BELOW_ONE = 0.999999` — pending jump progress clamped below 1.
+- `PROGRESS_BELOW_ONE = 0.999999` — pending jump progress clamped below 1 (defined in `widget/_long_row_cursor.py`, imported here).
 
 **Soft-wrap default changed:**
 - Old: `soft_wrap: bool = True`.
