@@ -10,6 +10,7 @@ import pytest
 from rich.cells import cell_len
 
 from nova_editor.core import PreadSource
+from nova_editor.core.line_index import DEFAULT_SCAN_BLOCK
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.document._lazy_document import MAX_WINDOW_CHARS, LazyDocument, RowUnavailable, WholeLineAccess
 from tests.nova_editor.helpers_view import LOWERED_OPTIONS, make_mixed, oracle_row_ranges, oracle_row_text
@@ -364,3 +365,37 @@ def test_is_growing_until_every_scan_finished_and_false_after_close(tmp_path: Pa
     assert not doc.is_growing()
     doc.close()
     assert not doc.is_growing()
+
+
+class _SizeSpy:
+    """`ByteSource` that records the size of every scan read (`cache=False`)."""
+
+    def __init__(self, path: Path) -> None:
+        self._inner = PreadSource(path)
+        self.scan_sizes: list[int] = []
+
+    def length(self) -> int:
+        return self._inner.length()
+
+    def read(self, offset: int, size: int, *, cache: bool = True) -> bytes:
+        if not cache:
+            self.scan_sizes.append(size)
+        return self._inner.read(offset, size, cache=cache)
+
+    def close(self) -> None:
+        self._inner.close()
+
+
+def test_scan_block_defaults_to_the_core_default() -> None:
+    assert LazyConfig().scan_block == DEFAULT_SCAN_BLOCK
+
+
+def test_scan_block_limits_every_scan_read(tmp_path: Path) -> None:
+    path = make_mixed(tmp_path / "m.txt", long_chars=4000)
+    spy = _SizeSpy(path)
+    doc = LazyDocument(spy, LazyConfig(**LOWERED_OPTIONS, scan_block=128))
+    assert doc.wait_indexed(10.0)
+    assert doc.long_index(_long_row(doc)).join(10.0)
+    assert spy.scan_sizes
+    assert max(spy.scan_sizes) <= 128
+    doc.close()

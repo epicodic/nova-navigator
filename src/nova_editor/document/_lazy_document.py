@@ -106,6 +106,7 @@ class LazyDocument(DocumentBase):
             stride=self._config.stride,
             long_line_threshold=self._config.index_long_line_threshold,
             yield_seconds=self._config.yield_seconds,
+            scan_block=self._config.scan_block,
         )
         self._ranges: OrderedDict[int, RowRange] = OrderedDict()
         self._texts: OrderedDict[int, str] = OrderedDict()
@@ -252,6 +253,7 @@ class LazyDocument(DocumentBase):
                 tab_width=self._config.tab_width,
                 checkpoint_chars=index_step(self._config),
                 yield_seconds=self._config.yield_seconds,
+                scan_block=self._config.scan_block,
                 autostart=False,
             )
             self._long[row] = index
