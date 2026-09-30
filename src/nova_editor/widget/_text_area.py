@@ -831,7 +831,7 @@ NovaTextArea {
         """Cursor machine and provisional layout of the current long row (lazy documents only)."""
 
         self._suppress_scroll = False
-        """True while `_reconcile_cursor` sets the exact location: the cursor is not scrolled into view."""
+        """True while `_reconcile_cursor` sets the exact location: `_watch_selection` does not scroll the cursor into view."""
 
         self._source_failed = False
         """True after `SourceChanged` or after `close()`: a lazy view renders blank rows."""
@@ -1016,11 +1016,11 @@ NovaTextArea {
     def _reestimate(self, lazy: LazyDocument) -> bool:
         """Drop the provisional estimates and refresh the virtual size (no paint); return whether sizes can still change.
 
-        While the cursor is provisional or pending the size refresh must not scroll to its estimated column.
+        `_refresh_size` only updates the virtual size and the scroll bars; it does not scroll the cursor into view, so a provisional or
+        pending cursor keeps its screen position.
         """
         growing = self._needs_estimates(lazy)
         wrapped = self.wrapped_document
-        self._suppress_scroll = self._cursor_unresolved()
         try:
             if isinstance(wrapped, LazyWrappedDocument):
                 wrapped.refresh_estimates()
@@ -1029,8 +1029,6 @@ NovaTextArea {
             self._fail_source(str(error))
         except (RowUnavailable, IndexError):
             pass
-        finally:
-            self._suppress_scroll = False
         return growing
 
     def _schedule_replay(self, replay: tuple[Op, bool] | None) -> None:
