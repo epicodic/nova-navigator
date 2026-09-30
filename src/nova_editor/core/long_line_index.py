@@ -15,6 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from nova_editor.core.byte_source import ByteSource, SourceChanged
+from nova_editor.core.foreground import Foreground
 from nova_editor.core.line_index import DEFAULT_SCAN_BLOCK, call_subscriber
 from nova_editor.core.text_width import (
     MAX_SEQUENCE,
@@ -60,6 +61,7 @@ class LongLineIndex:
         checkpoint_chars: int = CHECKPOINT_CHARS,
         scan_block: int = DEFAULT_SCAN_BLOCK,
         yield_seconds: float = 0.0,
+        foreground: Foreground | None = None,
         autostart: bool = True,
     ) -> None:
         """Create the index; the background scan starts immediately unless `autostart` is false."""
@@ -73,6 +75,7 @@ class LongLineIndex:
         self._step = checkpoint_chars
         self._scan_block = scan_block
         self._yield_seconds = yield_seconds
+        self._foreground = foreground
         self._cond = threading.Condition()  # guards everything below it
         self._cp_chars = array("Q", [0])
         self._cp_disp = array("Q", [0])
@@ -213,12 +216,20 @@ class LongLineIndex:
             new_chars.append(chars)
             new_disp.append(disp)
             new_byte.append(rel)
+            self._give_way()
         with self._cond:
             self._cp_chars.extend(new_chars)
             self._cp_disp.extend(new_disp)
             self._cp_byte.extend(new_byte)
             self._cond.notify_all()
         return chars, disp, rel
+
+    def _give_way(self) -> None:
+        """Sleep briefly while the UI is busy, so that it gets the GIL (see `Foreground`)."""
+        foreground = self._foreground
+        pause = 0.0 if foreground is None else foreground.pause_seconds()
+        if pause > 0:
+            time.sleep(pause)
 
     def _notify(self) -> None:
         with self._cond:

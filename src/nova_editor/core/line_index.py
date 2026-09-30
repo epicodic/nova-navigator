@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from types import TracebackType
 
 from nova_editor.core.byte_source import ByteSource, SourceChanged
+from nova_editor.core.foreground import Foreground
 
 DEFAULT_STRIDE = 64
 DEFAULT_LONG_LINE_THRESHOLD = 16 * 1024
@@ -158,6 +159,7 @@ class LineIndex:
         scan_block: int = DEFAULT_SCAN_BLOCK,
         walk_window: int = DEFAULT_WALK_WINDOW,
         yield_seconds: float = 0.0,
+        foreground: Foreground | None = None,
     ) -> None:
         if min(stride, long_line_threshold, read_budget, max_lines_per_call, scan_block, walk_window) <= 0:
             raise ValueError("stride, long_line_threshold, read_budget, max_lines_per_call, scan_block and walk_window must be positive")
@@ -175,6 +177,7 @@ class LineIndex:
         # end. Larger fills would over-read at every jump over a recorded row and break the byte bound (design 5.4).
         self._fill_size = min(walk_window, long_line_threshold + TAIL_BYTES)
         self._yield_seconds = yield_seconds
+        self._foreground = foreground
         self._lock = threading.Lock()
         self._starts = array("Q", [0])
         self._long_rows = array("Q")  # row numbers of recorded long rows, ascending
@@ -397,6 +400,9 @@ class LineIndex:
             state.entries, state.longs = [], []
             self._notify()
             time.sleep(self._yield_seconds)
+            pause = 0.0 if self._foreground is None else self._foreground.pause_seconds()
+            if pause > 0:
+                time.sleep(pause)  # the UI is busy: hand it the GIL (see `Foreground`)
         if pos >= length and not self._cancelled.is_set():
             last = [(state.count - 1, state.prev, length)] if length - state.prev > self._threshold else []
             self._publish(state.count, [], last, length, complete=True)
