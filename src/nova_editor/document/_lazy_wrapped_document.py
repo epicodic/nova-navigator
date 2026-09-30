@@ -13,8 +13,8 @@ from collections import OrderedDict
 from collections.abc import Iterator
 from typing import NamedTuple, SupportsIndex, overload
 
+from rich.cells import cell_len
 from rich.text import Text
-from textual._cells import cell_len
 from textual._wrap import compute_wrap_offsets
 from textual.expand_tabs import expand_tabs_inline, get_tab_widths
 from textual.geometry import Offset, clamp

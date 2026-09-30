@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Literal, NamedTuple, get_args, overload
 if TYPE_CHECKING:
     from tree_sitter import Node, Query
 
-from textual._cells import cell_len
+from rich.cells import cell_len
 from textual.geometry import Size
 
 from nova_editor.core.text_width import advance_disp, locate_cover
