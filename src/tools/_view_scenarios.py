@@ -21,6 +21,7 @@ from tools._view_app import (
     SIZE,
     ProbeApp,
     ProbeTextArea,
+    Timing,
     build_config,
     emit,
     first_row_is_long,
@@ -126,6 +127,22 @@ async def _pilot_step(pilot: Pilot[None], area: ProbeTextArea, op: str, target_x
     return (time.perf_counter() - started) * 1000
 
 
+async def _direct_step(app: ProbeApp, area: ProbeTextArea, op: str, i: int, base_x: int, far_byte: int | None, steps: int) -> Timing:
+    """Issue one direct-injection step of `op` and wait for its render."""
+    if op in _REPOSITION_OPS:
+        _place(area, op, steps, far_byte)
+        await settle()
+    if op == "farjump":
+        area.goto_byte(0)
+        await settle()
+        target = _byte_target(area, far_byte if far_byte is not None else FAR)
+        return await timed(area, lambda target=target: area.goto_byte(target), limit=_JUMP_TIMEOUT, require_change=False)
+    if op == "hscroll":
+        x = base_x + _HSCROLL_STEP * (2 * i + 1)
+        return await timed(area, lambda x=x: area.scroll_to(x=x, animate=False), limit=_KEY_TIMEOUT)
+    return await timed(area, lambda: send_key(app, op), limit=_KEY_TIMEOUT)
+
+
 async def measure_ops(
     pilot: Pilot[None],
     app: ProbeApp,
@@ -140,7 +157,11 @@ async def measure_ops(
     place_first: bool = True,
     **extra: object,
 ) -> list[Row]:
-    """Time `steps` presses of `op`: direct injection (`latency_ms`, `handler_ms`) and, with `with_pilot`, the Pilot method (`pilot_ms`)."""
+    """Time `steps` presses of `op` in two phases.
+
+    Phase `direct`: all steps back to back by direct injection (`latency_ms`, `handler_ms`, `scan_running`), each waiting only for its own render, so
+    that a running scan is not over before the burst is. Phase `pilot` (with `with_pilot`): the Pilot method (`pilot_ms`), slow while a scan runs.
+    """
     far_byte = _far_byte(area, int(spec.get("far", FAR)))
     rows: list[Row] = []
     started_busy = scan_busy(area)
@@ -153,45 +174,40 @@ async def measure_ops(
         busy = scan_busy(area)
         if started_busy and not busy and scan_done_at is None:
             scan_done_at = i
-        if op in _REPOSITION_OPS:
-            _place(area, op, steps, far_byte)
-            await settle()
-        if op == "farjump":
-            area.goto_byte(0)
-            await settle()
-            target = _byte_target(area, far_byte if far_byte is not None else FAR)
-            timing = await timed(area, lambda target=target: area.goto_byte(target), limit=_JUMP_TIMEOUT, require_change=False)
-        elif op == "hscroll":
-            x = base_x + _HSCROLL_STEP * (2 * i + 1)
-            timing = await timed(area, lambda x=x: area.scroll_to(x=x, animate=False), limit=_KEY_TIMEOUT)
-        else:
-            timing = await timed(area, lambda: send_key(app, op), limit=_KEY_TIMEOUT)
-        await settle()
-        pilot_ms: float | None = None
-        if with_pilot:
-            if op in _REPOSITION_OPS:
-                _place(area, op, steps, far_byte)
-                await settle()
-            pilot_ms = await _pilot_step(pilot, area, op, base_x + _HSCROLL_STEP * (2 * i + 2))
-            await settle()
+        timing = await _direct_step(app, area, op, i, base_x, far_byte, steps)
         rows.append(
             base_row(
                 spec,
                 case=case,
                 state=state,
                 op=op,
+                phase="direct",
                 step=i,
                 latency_ms=timing.latency_ms,
                 handler_ms=timing.handler_ms,
-                pilot_ms=pilot_ms,
                 changed=timing.changed,
                 busy_at_step=busy,
+                scan_running=busy,
                 far_byte=far_byte,
                 **extra,
             )
         )
     for row in rows:
         row["scan_done_at_step"] = scan_done_at
+    if with_pilot and op != "farjump":
+        await settle(0.2)
+        if place_first:
+            _place(area, op, steps, far_byte)
+            await settle(0.2)
+        base_x = area.scroll_offset.x
+        for i in range(steps):
+            busy = scan_busy(area)
+            if op in _REPOSITION_OPS:
+                _place(area, op, steps, far_byte)
+                await settle()
+            pilot_ms = await _pilot_step(pilot, area, op, base_x + _HSCROLL_STEP * (2 * i + 1))
+            rows.append(base_row(spec, case=case, state=state, op=op, phase="pilot", step=i, pilot_ms=pilot_ms, busy_at_step=busy, far_byte=far_byte, **extra))
+            await settle()
     return rows
 
 
@@ -214,7 +230,7 @@ async def _idle_floor(pilot: Pilot[None], area: ProbeTextArea, spec: Spec, state
         started = time.perf_counter()
         await pilot.press(_FLOOR_KEY)
         await pilot.pause()
-        rows.append(base_row(spec, case="latency", state=state, op=_FLOOR_KEY, step=i, pilot_ms=(time.perf_counter() - started) * 1000, busy_at_step=busy))
+        rows.append(base_row(spec, case="latency", state=state, op=_FLOOR_KEY, phase="pilot", step=i, pilot_ms=(time.perf_counter() - started) * 1000, busy_at_step=busy))
         await settle()
     return rows
 
@@ -224,7 +240,10 @@ def _write_profile(path: Path, run: int, profile: cProfile.Profile, rows: list[R
     buffer = io.StringIO()
     pstats.Stats(profile, stream=buffer).sort_stats("cumulative").print_stats(_PROFILE_TOP)
     lines = [f"== run {run}: cProfile top {_PROFILE_TOP} by cumulative time (event loop thread only) ==", buffer.getvalue(), "per-step timings (ms):"]
-    lines.extend(f"step={row['step']} op={row['op']} latency_ms={row['latency_ms']} handler_ms={row['handler_ms']} pilot_ms={row['pilot_ms']} busy={row['busy_at_step']}" for row in rows)
+    lines.extend(
+        f"phase={row.get('phase')} step={row['step']} op={row['op']} latency_ms={row.get('latency_ms')} handler_ms={row.get('handler_ms')} pilot_ms={row.get('pilot_ms')} busy={row['busy_at_step']}"
+        for row in rows
+    )
     with path.open("a", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
 
