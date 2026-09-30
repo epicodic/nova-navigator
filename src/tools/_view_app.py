@@ -128,17 +128,9 @@ def lazy_document(area: NovaTextArea) -> LazyDocument | None:
 
 
 def scan_busy(area: NovaTextArea) -> bool:
-    """Whether the line scan, or the scan of the long row under the cursor, is still running."""
+    """Whether the line scan or any long-row scan of the document is running; it creates nothing and changes no cache order."""
     document = lazy_document(area)
-    if document is None:
-        return False
-    if not document.snapshot().complete:
-        return True
-    try:
-        row = min(area.cursor_location[0], document.line_count - 1)
-        return document.is_long(row) and document.long_index(row).running
-    except (RowUnavailable, IndexError):
-        return False
+    return document is not None and document.is_growing()
 
 
 def first_row_is_long(area: NovaTextArea) -> bool:
@@ -162,12 +154,11 @@ def send_key(app: App[None], key: str) -> None:
 
 
 def _view_state(area: NovaTextArea) -> tuple[object, ...]:
-    """The observable position: cursor location and scroll offset, and the exact byte while the column of a provisional cursor is only an estimate.
+    """The observable position: cursor location, scroll offset, and the state and byte of the cursor machine (read without side effects).
 
     A step of a provisional cursor changes the byte and the drawn cursor cell, but not `cursor_location`.
     """
-    byte = None if area.column_exact else area.cursor_byte_offset
-    return (area.cursor_location, tuple(area.scroll_offset), byte)
+    return (area.cursor_location, tuple(area.scroll_offset), *area.peek_cursor_state())
 
 
 @dataclasses.dataclass(frozen=True)

@@ -169,7 +169,7 @@ async def measure_ops(
 ) -> list[Row]:
     """Time `steps` presses of `op` in two phases.
 
-    Phase `direct`: all steps back to back by direct injection (`latency_ms`, `handler_ms`, `scan_running`), each waiting only for its own render, so
+    Phase `direct`: all steps back to back by direct injection (`latency_ms`, `handler_ms`, `scan_running` before the step, `scan_completed_during_step`), each waiting only for its own render, so
     that a running scan is not over before the burst is. Phase `pilot` (with `with_pilot`): the Pilot method (`pilot_ms`), slow while a scan runs.
     """
     far_byte = _far_byte(area, int(spec.get("far", FAR)))
@@ -182,9 +182,10 @@ async def measure_ops(
     base_x = area.scroll_offset.x
     for i in range(steps):
         busy = scan_busy(area)
-        if started_busy and not busy and scan_done_at is None:
-            scan_done_at = i
         timing = await _direct_step(app, area, op, i, base_x, far_byte, steps)
+        completed = busy and not scan_busy(area)
+        if started_busy and scan_done_at is None and not scan_busy(area):
+            scan_done_at = i
         rows.append(
             base_row(
                 spec,
@@ -198,6 +199,7 @@ async def measure_ops(
                 changed=timing.changed,
                 busy_at_step=busy,
                 scan_running=busy,
+                scan_completed_during_step=completed,
                 far_byte=far_byte,
                 **extra,
             )

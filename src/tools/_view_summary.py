@@ -51,11 +51,14 @@ def _format(value: float) -> str:
 def summarise_rows(rows: Sequence[dict[str, Any]], source: str) -> str:
     """Return markdown tables for `rows`: one table per `case`, one line per file, wrap, state, op, variant and metric.
 
-    Columns: n, median, p95, max, the count over 50 ms (`_ms` metrics only) and `n scan_running` (`latency_ms` rows that carry `scan_running`: the steps issued during a scan).
+    Columns: n, median, p95, max, the count over 50 ms (`_ms` metrics only),
+    `n scan_running` (`latency_ms` rows that carry `scan_running`: the steps issued during a scan) and `n completing` (steps during which the scan completed).
+    A first-screen table also states the runs, the failed runs (no `first_screen_ms`) and the runs labelled `cold_verified=false`.
     The source name is printed under each table as `[name]`.
     """
     groups: dict[str, dict[tuple[str, ...], dict[str, list[float]]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     scanning: dict[str, dict[tuple[str, ...], int]] = defaultdict(lambda: defaultdict(int))
+    completing: dict[str, dict[tuple[str, ...], int]] = defaultdict(lambda: defaultdict(int))
     for row in rows:
         key = tuple(str(row.get(name, "-")) for name in GROUP_KEYS[1:])
         for metric in METRIC_KEYS:
@@ -64,16 +67,27 @@ def summarise_rows(rows: Sequence[dict[str, Any]], source: str) -> str:
                 groups[str(row.get("case", "-"))][key][metric].append(value)
                 if metric == "latency_ms" and row.get("scan_running") is True:
                     scanning[str(row.get("case", "-"))][key] += 1
+                if metric == "latency_ms" and row.get("scan_completed_during_step") is True:
+                    completing[str(row.get("case", "-"))][key] += 1
     with_flag: dict[str, set[tuple[str, ...]]] = defaultdict(set)
     for row in rows:
         if isinstance(row.get("scan_running"), bool) and _number(row.get("latency_ms")) is not None:
             with_flag[str(row.get("case", "-"))].add(tuple(str(row.get(name, "-")) for name in GROUP_KEYS[1:]))
     lines: list[str] = []
-    for case, by_key in groups.items():
+    first_screen = [row for row in rows if row.get("case") == "first-screen"]
+    for case in dict.fromkeys([*groups, *(["first-screen"] if first_screen else [])]):
+        by_key = groups.get(case, {})
         lines.append(f"### {case}")
         lines.append("")
-        lines.append("| file | wrap | state | op | variant | metric | n | median | p95 | max | count over 50 ms | n scan_running |")
-        lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
+        if case == "first-screen":
+            failed = sum(1 for row in first_screen if _number(row.get("first_screen_ms")) is None)
+            unverified = sum(1 for row in first_screen if row.get("cold_verified") is False)
+            lines.append(f"first-screen runs: {len(first_screen)}, failed: {failed}, cold_verified=false: {unverified} (failed runs are not in the table)")
+            lines.append("")
+        lines.append("p95 is the nearest-rank value of the n samples of the row (column n); with n of at most 20 it equals the max.")
+        lines.append("")
+        lines.append("| file | wrap | state | op | variant | metric | n | median | p95 | max | count over 50 ms | n scan_running | n completing |")
+        lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
         for key, metrics in by_key.items():
             for metric in METRIC_KEYS:
                 values = metrics.get(metric)
@@ -81,7 +95,8 @@ def summarise_rows(rows: Sequence[dict[str, Any]], source: str) -> str:
                     continue
                 over = str(sum(1 for v in values if v > SLOW_MS)) if metric.endswith("_ms") else "-"
                 running = str(scanning[case][key]) if metric == "latency_ms" and key in with_flag[case] else "-"
-                cells = [*key, metric, str(len(values)), _format(median(values)), _format(percentile(values, 0.95)), _format(max(values)), over, running]
+                done = str(completing[case][key]) if metric == "latency_ms" and key in with_flag[case] else "-"
+                cells = [*key, metric, str(len(values)), _format(median(values)), _format(percentile(values, 0.95)), _format(max(values)), over, running, done]
                 lines.append("| " + " | ".join(cells) + " |")
         lines.append("")
         lines.append(f"[{source}]")
