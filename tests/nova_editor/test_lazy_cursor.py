@@ -192,18 +192,38 @@ async def test_up_from_provisional_repaints_progress_immediately(tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_cancel_pending_returns_to_the_previous_position(tmp_path: Path) -> None:
+async def test_cancel_of_a_deferred_op_keeps_the_provisional_end(tmp_path: Path) -> None:
     rig = _Rig(_mixed(tmp_path))
     area = rig.area
     async with rig.run() as pilot:
         await rig.enter(pilot, _LONG_ROW)
         await pilot.press("right", "right", "end", "down")
         assert area.cursor_state is _PENDING
+        end = oracle_row_ranges(rig.data)[_LONG_ROW].content_end
+        area.cancel_pending()
+        await pilot.pause()
+        assert area.pending_progress is None
+        assert area.cursor_state is _PROVISIONAL
+        assert area.cursor_byte_offset == end
+        assert area.cursor_location[0] == _LONG_ROW
+        rig.source.release()
+        await _until(pilot, lambda: area.cursor_state is _RESOLVED)
+        assert area.cursor_location == (_LONG_ROW, len(oracle_row_text(rig.data, _LONG_ROW)))
+
+
+@pytest.mark.asyncio
+async def test_cancel_of_a_wrap_jump_restores_the_previous_position(tmp_path: Path) -> None:
+    rig = _Rig(_mixed(tmp_path), budget=0, wrap=True)
+    area = rig.area
+    async with rig.run() as pilot:
+        await rig.enter(pilot, _LONG_ROW)
+        await pilot.press("end")
+        assert area.cursor_state is _PENDING
         area.cancel_pending()
         await pilot.pause()
         assert area.pending_progress is None
         assert area.cursor_state is _RESOLVED
-        assert area.cursor_location == (_LONG_ROW, 2)
+        assert area.cursor_location == (_LONG_ROW, 0)
 
 
 @pytest.mark.asyncio

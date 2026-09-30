@@ -8,6 +8,8 @@ Choices where the design leaves room:
 * ``WORD_LEFT`` / ``WORD_RIGHT`` move by a fixed ``WORD_STEP_CHARS`` characters: the machine has no text, so the
   widget refines word moves itself while the row is resolved.
 * While ``PENDING`` every ``apply`` is ``IGNORED`` (the first deferred operation wins); ``jump_to_byte`` retargets.
+* ``cancel`` of a deferred operation (or of the wrap-mode wait on the current byte) returns to ``PROVISIONAL`` at the current
+  anchor, because the operation never moved the cursor; only a pending jump to another byte restores the previous resolved anchor.
 * The estimate column is monotone in the byte position across moves and clamped to ``estimate_length()`` when the
   index also implements :class:`EstimateLengthIndex`.
 """
@@ -200,11 +202,18 @@ class CursorMachine:
         return True
 
     def cancel(self) -> None:
-        """Drop a pending jump and return to the previous resolved anchor (no-op unless PENDING)."""
+        """Drop what is pending (no-op unless PENDING).
+
+        A deferred operation, or a wrap-mode wait on the current byte, never moved the cursor: it returns to PROVISIONAL at the
+        current anchor (an earlier End stays). Only a pending jump whose target was never applied restores the previous resolved anchor.
+        """
         if self._state is not CursorState.PENDING:
             return
-        self._anchor = self._previous_resolved
-        self._state = CursorState.RESOLVED
+        if self._pending_op is not None or self._target is None or self._target == self._anchor.byte_rel:
+            self._state = CursorState.PROVISIONAL
+        else:
+            self._anchor = self._previous_resolved
+            self._state = CursorState.RESOLVED
         self._pending_op = None
         self._target = None
 

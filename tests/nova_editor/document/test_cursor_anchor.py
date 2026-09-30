@@ -310,16 +310,34 @@ def test_pending_keeps_first_deferred_op() -> None:
     assert machine.take_pending_op() is Op.PAGE_DOWN
 
 
-def test_pending_from_provisional_op_cancel_restores_previous_resolved() -> None:
+def test_cancel_of_a_deferred_op_stays_provisional_at_the_current_anchor() -> None:
     row = FakeRow("a" * 1000)
     row.frontier = 20
     machine = CursorMachine(0, row, anchor_byte=7)
     machine.jump_to_byte(900)
+    provisional = machine.anchor
     machine.apply(Op.DOWN)
+    assert machine.state is CursorState.PENDING
     machine.cancel()
-    assert machine.state is CursorState.RESOLVED
-    assert machine.anchor.byte_rel == 7
+    assert machine.state is CursorState.PROVISIONAL
+    assert machine.anchor == provisional
+    assert machine.anchor.byte_rel == 900
     assert machine.take_pending_op() is None
+    row.frontier = 1000
+    assert machine.on_frontier() is True
+    assert machine.anchor.byte_rel == 900
+
+
+def test_cancel_of_set_wrap_pending_stays_provisional() -> None:
+    row = FakeRow("a" * 1000)
+    row.frontier = 20
+    machine = CursorMachine(0, row, anchor_byte=7)
+    machine.jump_to_byte(900)
+    machine.set_wrap(True)
+    assert machine.state is CursorState.PENDING
+    machine.cancel()
+    assert machine.state is CursorState.PROVISIONAL
+    assert machine.anchor.byte_rel == 900
 
 
 def test_pending_jump_retargets() -> None:

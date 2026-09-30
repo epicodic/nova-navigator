@@ -1051,7 +1051,7 @@ NovaTextArea {
         self.soft_wrap = not self.soft_wrap
 
     def cancel_pending(self) -> None:
-        """Drop a pending jump (a goto or a deferred cursor operation): the cursor keeps or returns to its resolved position.
+        """Drop a pending jump (a goto or a deferred cursor operation): a deferred operation leaves the cursor where it is (provisional), a wrap-mode jump returns it to its previous resolved position.
 
         A cancelled jump never completes later. No-op unless one is pending.
         """
@@ -1346,7 +1346,7 @@ NovaTextArea {
 
         Left, right and word moves work on the byte anchor (a word move is a fixed step of `WORD_STEP_CHARS` characters while the
         cursor is not resolved). Up, down and page moves from a PROVISIONAL cursor become PENDING and are replayed when the scan
-        resolves the cursor; while PENDING every movement is ignored (Escape or `cancel_pending()` returns to the previous position).
+        resolves the cursor; while PENDING every movement is ignored (Escape or `cancel_pending()` drops the deferred operation and keeps the cursor where it is; a wrap-mode jump returns to the previous position).
         """
         cursor = self._long_cursor
         machine = self._track_cursor()
