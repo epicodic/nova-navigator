@@ -999,23 +999,49 @@ NovaTextArea {
             if self._estimate_timer is not None:
                 self._estimate_timer.pause()
             return
+        growing = self._reestimate(lazy)
+        replay = self._reconcile_cursor()
+        self._line_cache.clear()
+        self.refresh()
+        self._schedule_replay(replay)
+        self._settle_timer(growing)
+
+    def _settle_timer(self, growing: bool) -> None:
+        """Pause the estimate timer once nothing can change any more."""
+        if not growing:
+            self._estimating = False
+            if self._estimate_timer is not None:
+                self._estimate_timer.pause()
+
+    def _reestimate(self, lazy: LazyDocument) -> bool:
+        """Drop the provisional estimates and refresh the virtual size (no paint); return whether sizes can still change.
+
+        While the cursor is provisional or pending the size refresh must not scroll to its estimated column.
+        """
         growing = self._needs_estimates(lazy)
         wrapped = self.wrapped_document
+        self._suppress_scroll = self._cursor_unresolved()
         try:
             if isinstance(wrapped, LazyWrappedDocument):
                 wrapped.refresh_estimates()
-            self._line_cache.clear()
             self._refresh_size()
         except CoreSourceChanged as error:
             self._fail_source(str(error))
         except (RowUnavailable, IndexError):
             pass
-        self._reconcile_cursor()
-        self.refresh()
-        if not growing:
-            self._estimating = False
-            if self._estimate_timer is not None:
-                self._estimate_timer.pause()
+        finally:
+            self._suppress_scroll = False
+        return growing
+
+    def _schedule_replay(self, replay: tuple[Op, bool] | None) -> None:
+        """Replay a deferred cursor operation after the next paint, so the resolving frame and the operation are separate frames."""
+        if replay is not None:
+            self.call_after_refresh(self._replay_open, replay[0], replay[1])
+
+    def _replay_open(self, op: Op, select: bool) -> None:
+        """Replay a deferred operation unless the widget was closed or failed in the meantime."""
+        if not self._lazy_closed and not self._source_failed:
+            self._replay(op, select=select)
 
     # --- Provisional byte-anchored cursor on long rows (ACT3 design 7)
     @property
@@ -1288,11 +1314,14 @@ NovaTextArea {
         lazy = self._lazy
         if lazy is None or self._lazy_closed or self._source_failed:
             return
+        growing = True
         if not self._estimating or self._cursor_unresolved() or self._jump is not None:
-            self._estimate_tick()  # a scan that ended between two ticks still gets its final size estimate; a waiting cursor needs a fresh one
-        self._reconcile_cursor()
-        self._line_cache.clear()  # rows painted from a lagging scan (placeholders) are rebuilt
+            growing = self._reestimate(lazy)  # a scan that ended between two ticks still gets its final size estimate; a waiting cursor needs a fresh one
+        replay = self._reconcile_cursor()
+        self._line_cache.clear()  # rows painted from a lagging scan (placeholders) are rebuilt; once per callback
         self.refresh()
+        self._schedule_replay(replay)
+        self._settle_timer(growing)
         self._run_jump(notify=time.monotonic() - self._last_jump_message >= _MESSAGE_INTERVAL)
         snap = lazy.snapshot()
         now = time.monotonic()
@@ -1420,8 +1449,10 @@ NovaTextArea {
         self._line_cache.clear()
         self.refresh()
 
-    def _reconcile_cursor(self) -> None:
-        """Resolve the cursor when the scan has reached it (called after every size re-estimate; index callbacks may call it too).
+    def _reconcile_cursor(self) -> tuple[Op, bool] | None:
+        """Resolve the cursor when the scan has reached it; return the deferred operation `(op, select)` to replay, if any.
+
+        The caller clears the line cache, refreshes once and schedules the replay (`_schedule_replay`).
 
         A provisional cursor keeps its screen position: the exact location is set without scrolling the cursor into view and
         `scroll_x` becomes the exact display column of the character at the left edge (design 7.3). A deferred operation is
@@ -1430,7 +1461,7 @@ NovaTextArea {
         cursor = self._long_cursor
         machine = None if cursor is None else cursor.machine
         if cursor is None or machine is None or machine.state is CursorState.RESOLVED or self._lazy_closed or self._source_failed:
-            return
+            return None
         before = machine.anchor.byte_rel
         keep_view = cursor.layout is not None
         try:
@@ -1438,7 +1469,7 @@ NovaTextArea {
             if not resolved:
                 if machine.state is CursorState.PENDING:
                     self._set_progress(cursor.progress())
-                return
+                return None
             anchor = machine.anchor
             exact_x = cursor.exact_left_x(anchor.row, self.indent_width) if keep_view and anchor.byte_rel == before else None
             cursor.layout = None
@@ -1455,12 +1486,10 @@ NovaTextArea {
                 self._recompute_cursor_offset()
         except CoreSourceChanged as error:
             self._fail_source(str(error))
-            return
-        self._line_cache.clear()
+            return None
         self._set_progress(None)
         op = machine.take_pending_op()
-        if op is not None:
-            self._replay(op, select=cursor.pending_select)
+        return None if op is None else (op, cursor.pending_select)
 
     def _replay(self, op: Op, *, select: bool) -> None:
         """Perform an operation that was deferred until the cursor resolved."""

@@ -8,7 +8,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
+from textual.cache import LRUCache
 from textual.pilot import Pilot
+from textual.strip import Strip
 
 from nova_editor.core import ByteSource
 from nova_editor.document._cursor_anchor import CursorState
@@ -529,3 +531,50 @@ async def test_covered_click_moves_the_cursor_and_a_provisional_row_ignores_clic
         await _click_long_row(rig, pilot)
         assert area.cursor_location == location
         assert area.cursor_state is _PROVISIONAL
+
+
+@pytest.mark.asyncio
+async def test_scan_completion_is_one_pass_and_the_replay_follows_the_resolving_paint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The progress callback that resolves a provisional cursor clears the line cache and refreshes once; the deferred op runs after the paint."""
+    rig = _Rig(_mixed(tmp_path))
+    area = rig.area
+    log: list[str] = []
+
+    def spy(name: str, original: Callable[..., object], *, bracket: bool = False) -> Callable[..., object]:
+        def wrapper(*args: object, **kwargs: object) -> object:
+            log.append(name)
+            try:
+                return original(*args, **kwargs)
+            finally:
+                if bracket:
+                    log.append(f"end {name}")
+
+        return wrapper
+
+    async with rig.run() as pilot:
+        await rig.enter(pilot, _LONG_ROW)
+        await pilot.press("end", "up")
+        assert area.cursor_state is _PENDING
+        monkeypatch.setattr(area, "_on_index_progress", spy("progress", area._on_index_progress, bracket=True))
+        for name in ("_replay", "refresh", "render_line", "_reconcile_cursor", "_refresh_size"):
+            monkeypatch.setattr(area, name, spy(name, getattr(area, name)))
+
+        class SpyCache(LRUCache[tuple, Strip]):
+            def clear(self) -> None:
+                log.append("clear")
+                super().clear()
+
+        monkeypatch.setattr(area, "_line_cache", SpyCache(1024))
+        rig.source.release()
+        await _until(pilot, lambda: area.cursor_location[0] == _MEDIUM_ROW)
+        await pilot.pause()
+    replay = log.index("_replay")
+    start = max(i for i in range(replay) if log[i] == "progress")
+    end = log.index("end progress", start)
+    call = log[start:end]
+    assert call.count("clear") == 1, call
+    assert call.count("refresh") == 1, call
+    assert call.count("_reconcile_cursor") == 1, call
+    assert call.count("_refresh_size") <= 1, call
+    assert replay > end, "the deferred operation must not run inside the resolving callback"
+    assert "render_line" in log[end:replay], "the resolving paint comes before the replay"
