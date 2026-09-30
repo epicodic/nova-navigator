@@ -948,7 +948,7 @@ NovaTextArea {
         return self._estimating
 
     def close(self) -> None:
-        """Cancel and join every scan of a lazy document, then close its source; idempotent, a no-op for stock documents."""
+        """Cancel every scan of a lazy document and close its source (joining and closing run on a background thread, see `LazyDocument.close`); idempotent, a no-op for stock documents."""
         lazy = self._lazy
         if lazy is None or self._lazy_closed:
             return

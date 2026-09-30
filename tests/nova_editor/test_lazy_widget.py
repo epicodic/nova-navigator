@@ -249,6 +249,7 @@ async def test_close_is_idempotent_and_unmount_closes_the_source_while_a_scan_ru
     async with HostApp(area).run_test() as pilot:
         await pilot.pause()
         assert doc.is_growing()
+    assert doc.wait_closed(10.0)
     assert spy.closes == 1
     assert not doc.is_growing()
     area.close()
@@ -261,8 +262,11 @@ async def test_close_is_idempotent_and_unmount_closes_the_source_while_a_scan_ru
 async def test_close_before_mount_is_safe(tmp_path: Path) -> None:
     spy = SpySource(make_mixed(tmp_path / "m.txt"))
     area = NovaTextArea.open(_as_source(spy), config=_config())
+    doc = area.document
+    assert isinstance(doc, LazyDocument)
     area.close()
     area.close()
+    assert doc.wait_closed(10.0)
     assert spy.closes == 1
     async with HostApp(area).run_test() as pilot:
         await pilot.pause()
