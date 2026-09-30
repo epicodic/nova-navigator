@@ -23,6 +23,8 @@ from nova_editor.document._long_row_anchor import LongRowAnchorIndex
 if TYPE_CHECKING:
     from tree_sitter import Node, Query
 
+    from nova_editor.document._syntax_aware_document import SyntaxAwareDocument
+
 MAX_WINDOW_CHARS = 8192
 """The most characters any capability call decodes from a long row."""
 MAX_SLICE_ROWS = 128
@@ -111,6 +113,7 @@ class LazyDocument(DocumentBase):
         self._retired: list[LongLineIndex] = []
         self._subscribers: list[Callable[[], None]] = []
         self._newline: Newline | None = None
+        self._syntax: SyntaxAwareDocument | None = None
         self._seen_width = 0
         self.call_log = CallLog()
         if autostart:
@@ -383,16 +386,24 @@ class LazyDocument(DocumentBase):
         msg = "read-only until ACT4"
         raise NotImplementedError(msg)
 
+    def attach_syntax(self, syntax: SyntaxAwareDocument) -> None:
+        """Delegate `prepare_query` and `query_syntax_tree` to `syntax`, a parse of the whole text used for highlighting only (never edited)."""
+        self._syntax = syntax
+
     def query_syntax_tree(
         self,
         query: Query,
         start_point: tuple[int, int] | None = None,
         end_point: tuple[int, int] | None = None,
     ) -> dict[str, list[Node]]:
-        return {}
+        if self._syntax is None:
+            return {}
+        return self._syntax.query_syntax_tree(query, start_point, end_point)
 
     def prepare_query(self, query: str) -> Query | None:
-        return None
+        if self._syntax is None:
+            return None
+        return self._syntax.prepare_query(query)
 
     def get_text_range(self, start: Location, end: Location) -> str:
         """Text between two locations; refuses a range over more than 128 rows or a long-row part over 8192 characters."""
