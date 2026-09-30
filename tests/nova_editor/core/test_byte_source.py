@@ -235,3 +235,33 @@ def test_close_waits_for_an_in_flight_read(tmp_path: Path, monkeypatch: pytest.M
     assert results == [data[10:30]]
     with pytest.raises(ValueError, match="closed source"):
         source.read(0, 1)
+
+
+def test_close_survives_raising_os_close(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "f.bin"
+    path.write_bytes(b"abc")
+    source = PreadSource(path)
+    real_close = os.close
+    calls: list[int] = []
+
+    def failing_close(fd: int) -> None:
+        calls.append(fd)
+        real_close(fd)
+        msg = "boom"
+        raise OSError(msg)
+
+    monkeypatch.setattr(os, "close", failing_close)
+    with pytest.raises(OSError, match="boom"):
+        source.close()
+    # A second close must return at once instead of waiting for `_closed` forever.
+    finished = threading.Event()
+
+    def second_close() -> None:
+        source.close()
+        finished.set()
+
+    thread = threading.Thread(target=second_close, daemon=True)
+    thread.start()
+    assert finished.wait(2.0), "second close() hung after os.close raised"
+    with pytest.raises(ValueError, match="closed"):
+        source.read(0, 1)

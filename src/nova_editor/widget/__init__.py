@@ -6,6 +6,7 @@ will be extended with custom functionality while remaining a drop-in replacement
 """
 
 from nova_editor.widget._text_area import (
+    DEFAULT_HIGHLIGHT_LIMIT,
     LanguageDoesNotExist,
     NovaTextArea,
     TextAreaLanguage,
@@ -13,6 +14,7 @@ from nova_editor.widget._text_area import (
 )
 
 __all__ = [
+    "DEFAULT_HIGHLIGHT_LIMIT",
     "LanguageDoesNotExist",
     "NovaTextArea",
     "TextAreaLanguage",

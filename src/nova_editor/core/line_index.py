@@ -11,12 +11,13 @@ import re
 import threading
 import time
 from array import array
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import TracebackType
 
 from nova_editor.core.byte_source import ByteSource, SourceChanged
+from nova_editor.core.foreground import Foreground
 
 DEFAULT_STRIDE = 64
 DEFAULT_LONG_LINE_THRESHOLD = 16 * 1024
@@ -54,6 +55,7 @@ class LineSnapshot:
     count: int
     complete: bool
     error: BaseException | None
+    scanned_bytes: int = 0  # bytes covered by the scan so far (start of the still-open last row); equals the length once complete
 
 
 class _ContainAndLog:
@@ -157,6 +159,7 @@ class LineIndex:
         scan_block: int = DEFAULT_SCAN_BLOCK,
         walk_window: int = DEFAULT_WALK_WINDOW,
         yield_seconds: float = 0.0,
+        foreground: Foreground | None = None,
     ) -> None:
         if min(stride, long_line_threshold, read_budget, max_lines_per_call, scan_block, walk_window) <= 0:
             raise ValueError("stride, long_line_threshold, read_budget, max_lines_per_call, scan_block and walk_window must be positive")
@@ -174,6 +177,7 @@ class LineIndex:
         # end. Larger fills would over-read at every jump over a recorded row and break the byte bound (design 5.4).
         self._fill_size = min(walk_window, long_line_threshold + TAIL_BYTES)
         self._yield_seconds = yield_seconds
+        self._foreground = foreground
         self._lock = threading.Lock()
         self._starts = array("Q", [0])
         self._long_rows = array("Q")  # row numbers of recorded long rows, ascending
@@ -181,6 +185,7 @@ class LineIndex:
         self._long_ends = array("Q")
         self._long_overflow = False
         self._count = 1
+        self._scanned = 0
         self._complete = False
         self._error: BaseException | None = None
         self._cancelled = threading.Event()
@@ -218,7 +223,7 @@ class LineIndex:
 
     def snapshot(self) -> LineSnapshot:
         with self._lock:
-            return LineSnapshot(self._count, self._complete, self._error)
+            return LineSnapshot(self._count, self._complete, self._error, self._scanned)
 
     def stored_entries(self) -> int:
         with self._lock:
@@ -255,6 +260,52 @@ class LineIndex:
             raise IndexError(row)
         found = self._resolve(row, 1)
         return found[0] if found else None
+
+    def row_at_offset(self, offset: int) -> tuple[int, RowRange] | None:
+        """Return `(row, range)` of the row containing byte `offset`; terminator bytes belong to their row.
+
+        `offset == length` maps to the last row once the scan is complete.
+        Returns `None` when the offset is negative, beyond the length, not indexed yet (`snapshot().scanned_bytes`), or when the
+        walk from the nearest stored entry would exceed `read_budget`.
+
+        Raises `SourceChanged` when the walk's own source reads find that the file changed.
+        """
+        with self._lock:
+            complete, count, scanned = self._complete, self._count, self._scanned
+            if offset < 0 or offset > self._length:
+                return None
+            if offset == self._length and complete:
+                at_end = True
+            elif offset >= scanned:
+                return None
+            else:
+                at_end = False
+                entry = bisect_right(self._starts, offset) - 1
+                row = entry * self._stride
+                pos = self._starts[entry]
+                lo = bisect_left(self._long_starts, pos)
+                hi = bisect_right(self._long_starts, offset)
+                recorded = {self._long_rows[i]: (self._long_starts[i], self._long_ends[i]) for i in range(lo, hi)}
+        if at_end:
+            found = self.row_range(count - 1)
+            return None if found is None else (count - 1, found)
+        walker = _Walker(self._source, self._length, pos, self._read_budget, self._fill_size)
+        try:
+            while True:
+                long_row = recorded.get(row)
+                if long_row is not None:
+                    start, end = long_row
+                    walker.jump(end)
+                    terminator = self._tail_terminator(walker, start, end) if end > offset else 0
+                else:
+                    start = walker.pos
+                    found_end = walker.advance()
+                    end, terminator = (self._length, 0) if found_end is None else found_end
+                if end > offset:
+                    return row, RowRange(start, end - terminator, end)
+                row += 1
+        except _OverBudget:
+            return None
 
     def lines(self, first: int, count: int) -> list[RowRange]:
         """Return up to `min(count, max_lines_per_call)` consecutive known rows from `first`.
@@ -345,15 +396,18 @@ class LineIndex:
                 raise SourceChanged("unexpected empty read during the scan")
             self._scan_bytes(block, pos, pos + len(block) >= length, state)
             pos += len(block)
-            self._publish(state.count, state.entries, state.longs, complete=False)
+            self._publish(state.count, state.entries, state.longs, state.prev, complete=False)
             state.entries, state.longs = [], []
             self._notify()
             time.sleep(self._yield_seconds)
+            pause = 0.0 if self._foreground is None else self._foreground.pause_seconds()
+            if pause > 0:
+                time.sleep(pause)  # the UI is busy: hand it the GIL (see `Foreground`)
         if pos >= length and not self._cancelled.is_set():
             last = [(state.count - 1, state.prev, length)] if length - state.prev > self._threshold else []
-            self._publish(state.count, [], last, complete=True)
+            self._publish(state.count, [], last, length, complete=True)
 
-    def _publish(self, count: int, entries: list[int], longs: list[_LongRow], *, complete: bool) -> None:
+    def _publish(self, count: int, entries: list[int], longs: list[_LongRow], scanned: int, *, complete: bool) -> None:
         with self._lock:
             self._starts.extend(entries)
             room = max(self._long_cap - len(self._long_rows), 0)
@@ -364,6 +418,7 @@ class LineIndex:
             if len(longs) > room:
                 self._long_overflow = True
             self._count = count
+            self._scanned = scanned
             self._complete = complete
 
     def _notify(self) -> None:

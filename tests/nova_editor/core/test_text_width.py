@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from rich.cells import cached_cell_len, cell_len
 
+from nova_editor.core import text_width
 from nova_editor.core.text_width import (
     advance_disp,
     locate_cover,
@@ -73,3 +75,62 @@ def test_advance_disp_does_not_retain_large_pieces_in_the_rich_cache() -> None:
         assert advance_disp(piece, 0) == len(piece)
         assert advance_disp("\t" + piece, 0) == 4 + len(piece)
     assert cached_cell_len.cache_info().currsize <= 2
+
+
+@given(text=st.lists(st.sampled_from([*ALPHABET, "\x00", "\x1f", "\x7f"]), min_size=600, max_size=1500).map("".join), disp=st.integers(0, 9))
+@settings(deadline=None, max_examples=30)
+def test_advance_disp_of_long_mixed_text_matches_the_reference(text: str, disp: int) -> None:
+    assert advance_disp(text, disp, 4) == reference_disp(text, disp, 4)
+
+
+def test_advance_disp_measures_only_the_non_ascii_part_of_a_long_piece(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The per-character width lookup must not run over the ASCII bulk of a 65,536-character piece (GIL hold on the scan thread)."""
+    seen: list[int] = []
+    real = text_width.cell_len
+
+    def spy(text: str) -> int:
+        seen.append(len(text))
+        return real(text)
+
+    monkeypatch.setattr(text_width, "cell_len", spy)
+    piece = ("abcdefghi " * 9 + "é漢") * 700
+    assert advance_disp(piece, 0) == reference_disp(piece, 0, 4)
+    assert max(seen) <= len(piece) // 10
+
+
+def reference_cover(text: str, disp0: int, target: int, tab: int) -> tuple[int, bool]:
+    disp = disp0
+    for index, char in enumerate(text):
+        disp += tab - disp % tab if char == "\t" else cell_len(char)
+        if disp > target:
+            return index, True
+    return len(text), False
+
+
+@given(
+    text=st.lists(st.sampled_from(ALPHABET), min_size=100, max_size=3000).map("".join),
+    disp0=st.integers(0, 9),
+    fraction=st.floats(0, 1.1),
+    tab=st.sampled_from([1, 4, 8]),
+)
+@settings(deadline=None, max_examples=60)
+def test_locate_cover_of_long_text_matches_the_per_character_reference(text: str, disp0: int, fraction: float, tab: int) -> None:
+    target = int(reference_disp(text, disp0, tab) * fraction)
+    index, found = locate_cover(text, disp0, target, tab)
+    expected_index, expected_found = reference_cover(text, disp0, target, tab)
+    assert (found, index if found else len(text)) == (expected_found, expected_index)
+
+
+def test_locate_cover_looks_up_the_width_of_at_most_one_group_of_characters(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A hit deep inside a 1024-character chunk must not fall back to a per-character loop over the whole chunk (UI thread cost per rendered row)."""
+    calls: list[int] = []
+    real = text_width.cell_len
+
+    def spy(text: str) -> int:
+        calls.append(len(text))
+        return real(text)
+
+    monkeypatch.setattr(text_width, "cell_len", spy)
+    text = "é" * 4000
+    assert locate_cover(text, 0, 900) == (900, True)
+    assert sum(1 for size in calls if size == 1) <= text_width._GROUP
