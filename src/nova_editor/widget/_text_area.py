@@ -782,7 +782,7 @@ NovaTextArea {
         def control(self) -> NovaTextArea:
             return self.text_area
 
-    clipboard_cap: int = 1_048_576
+    clipboard_cap: int = 4_194_304
     """Largest selection (in bytes) that is also written to the system clipboard; a larger copy stays inside the editor (ACT4 design 10)."""
 
     @dataclass
