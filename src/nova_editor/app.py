@@ -8,6 +8,7 @@ Supports lazy loading for large files with Ctrl+G goto navigation and F4 wrap to
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import time
 from dataclasses import dataclass
@@ -26,9 +27,6 @@ from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.document._lazy_document import LazyDocument
 from nova_editor.widget import NovaTextArea
 from nova_editor.widget._text_area import TEXT_LIMIT
-
-EAGER_LIMIT = 1_048_576
-"""File size threshold (bytes) above which to open files lazily."""
 
 
 @dataclass
@@ -258,10 +256,9 @@ class NovaEditApp(App[None]):
     }
     """
 
-    def __init__(self, file_path: Path | None = None, lazy: bool = False) -> None:
+    def __init__(self, file_path: Path | None = None) -> None:
         super().__init__()
         self.file_path = file_path
-        self.lazy = lazy
         self.editor: NovaTextArea | None = None
         self.goto_bar: GotoBar | None = None
         self._timing_file: str | None = os.environ.get("NOVA_EDIT_TIMING_FILE")
@@ -271,29 +268,27 @@ class NovaEditApp(App[None]):
         """Compose the UI."""
         yield Header(show_clock=False)
 
-        # Determine if we should open lazily
-        should_open_lazy = self.lazy
-        if not should_open_lazy and self.file_path:
-            try:
-                file_size = self.file_path.stat().st_size
-                should_open_lazy = file_size > EAGER_LIMIT
-            except (OSError, ValueError):
-                pass
-
         # Open the file using TimedNovaTextArea for timing hook support
-        if should_open_lazy and self.file_path:
-            # For lazy files, we need to create the document and widget separately
-            # to pass the timing_file parameter
-            self.editor = TimedNovaTextArea.open(
-                self.file_path,
-                id="editor",
-                soft_wrap=False,
-                timing_file=self._timing_file,
-            )
+        if self.file_path:
+            try:
+                self.editor = TimedNovaTextArea.open(
+                    self.file_path,
+                    id="editor",
+                    soft_wrap=False,
+                    timing_file=self._timing_file,
+                )
+            except OSError as e:
+                self.notify(f"Error loading file: {e}", severity="error")
+                self.editor = TimedNovaTextArea(
+                    id="editor",
+                    text="",
+                    soft_wrap=False,
+                    timing_file=self._timing_file,
+                )
         else:
             self.editor = TimedNovaTextArea(
                 id="editor",
-                text=self._load_file() if self.file_path else "",
+                text="",
                 soft_wrap=False,
                 timing_file=self._timing_file,
             )
@@ -306,18 +301,11 @@ class NovaEditApp(App[None]):
 
         yield EditorFooter(self.file_path)
 
-    def _load_file(self) -> str:
-        """Load file content."""
-        if not self.file_path or not self.file_path.exists():
-            return ""
-        try:
-            return self.file_path.read_text()
-        except (OSError, ValueError) as e:
-            self.notify(f"Error loading file: {e}", severity="error")
-            return ""
-
     def action_save(self) -> None:
-        """Save the current document."""
+        """Save the current document.
+
+        ACT5 replaces this with streaming save.
+        """
         if not self.editor or not self.file_path:
             self.notify("No file loaded", severity="warning")
             return
@@ -327,11 +315,40 @@ class NovaEditApp(App[None]):
             self.notify("Saving large files arrives with ACT5", severity="warning")
             return
 
+        # Write interim save to temp file and os.replace
         try:
             text = self.editor.text
-            self.file_path.write_text(text)
-            self.notify(f"Saved to {self.file_path}")
-        except (OSError, ValueError) as e:
+            text_bytes = text.encode("utf-8", "surrogateescape")
+
+            # Create temp file in the same directory as the target
+            temp_path = self.file_path.with_stem(f"{self.file_path.stem}.tmp")
+            try:
+                # Get original file permissions if it exists
+                original_stat = None
+                if self.file_path.exists():
+                    with contextlib.suppress(OSError):
+                        original_stat = self.file_path.stat()
+
+                # Write to temp file
+                with open(temp_path, "wb") as f:
+                    f.write(text_bytes)
+
+                # Set permissions if original file existed
+                if original_stat is not None:
+                    with contextlib.suppress(OSError):
+                        os.chmod(temp_path, original_stat.st_mode)
+
+                # Replace original with temp
+                os.replace(temp_path, self.file_path)
+
+                self.notify("Interim save (replaced by streaming save in ACT5)", severity="information")
+            except OSError:
+                # Clean up temp file if it was created
+                with contextlib.suppress(OSError):
+                    temp_path.unlink()
+                raise
+
+        except OSError as e:
             self.notify(f"Error saving file: {e}", severity="error")
 
     async def action_quit(self) -> None:
@@ -385,16 +402,6 @@ def main() -> None:
         nargs="?",
         help="File to edit (optional)",
     )
-    parser.add_argument(
-        "--lazy",
-        action="store_true",
-        help="Force lazy loading mode",
-    )
-    parser.add_argument(
-        "--help-extended",
-        action="store_true",
-        help="Show extended help",
-    )
 
     args = parser.parse_args()
 
@@ -402,7 +409,7 @@ def main() -> None:
     if args.file:
         file_path = Path(args.file)
 
-    app = NovaEditApp(file_path=file_path, lazy=args.lazy)
+    app = NovaEditApp(file_path=file_path)
     app.run()
 
 
