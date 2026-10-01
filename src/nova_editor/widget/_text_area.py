@@ -114,6 +114,8 @@ _PLACEHOLDER_CELL = "\u2591"
 """Fills the part of a window that the scan has not reached yet."""
 
 _INVALID_BYTE_TABLE = str.maketrans(dict.fromkeys(range(0xDC80, 0xDD00), 0xFFFD))
+_PAD_SLACK_CELLS = 1024
+"""Cells beyond the region width that a rendered line is still padded to (a strip is never padded to the virtual width of a huge row)."""
 """Translation table that shows an escaped invalid byte (U+DC80 to U+DCFF) as U+FFFD; applied to the strip text only (REQ-13)."""
 
 
@@ -2626,13 +2628,16 @@ NovaTextArea {
             line.expand_tabs(self.indent_width)
 
         base_width = self.scrollable_content_region.size.width if self.soft_wrap else max(virtual_width, self.region.size.width)
+        # Cells beyond the viewport are never shown: next to a huge row the virtual width is hundreds of millions of cells, and padding every
+        # rendered line to it would build a string of spaces that wide per line, so the strip is bounded to the viewport plus `_PAD_SLACK_CELLS`.
+        base_width = min(base_width, self.region.size.width + _PAD_SLACK_CELLS)
         target_width = base_width - self.gutter_width
 
         # Crop the line to show only the visible part (some may be scrolled out of view)
         console = self.app.console
         text_strip = Strip(line.render(console), cell_length=line.cell_len)
         if not self.soft_wrap:
-            text_strip = text_strip.crop(scroll_x, scroll_x + virtual_width)
+            text_strip = text_strip.crop(scroll_x, scroll_x + min(virtual_width, target_width))
 
         # Stylize the line the cursor is currently on.
         if cursor_row == line_index and self.highlight_cursor_line:
