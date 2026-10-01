@@ -96,22 +96,21 @@ def _as_source(spy: SpySource) -> ByteSource:
 
 
 @pytest.mark.asyncio
-async def test_open_lazy_file_renders_first_rows_read_only(tmp_path: Path) -> None:
+async def test_open_lazy_file_renders_first_rows_editable(tmp_path: Path) -> None:
     path = make_mixed(tmp_path / "m.txt")
     area = NovaTextArea.open(path, config=_config())
     app = HostApp(area)
     async with app.run_test(size=(60, 12)) as pilot:
         await await_first_layout(pilot, area)
         assert area.is_lazy
-        assert area.read_only
+        assert not area.read_only
         first = "".join(seg.text for seg in area.render_line(0))
         assert first.startswith(oracle_row_text(path.read_bytes(), 0)[:10])
-        await pilot.press("a")  # typing is ignored while lazy
         assert area.document.get_line(0) == oracle_row_text(path.read_bytes(), 0)
         assert area.text == ""
         with pytest.raises(RuntimeError):
             area.load_text("x")
-        area.read_only = False
+        area.read_only = True
         assert area.read_only
         assert area.find_matching_bracket("(", (0, 0)) is None
 

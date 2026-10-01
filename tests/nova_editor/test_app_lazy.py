@@ -12,8 +12,8 @@ from tests.nova_editor.helpers_view import make_mixed
 
 
 @pytest.mark.asyncio
-async def test_large_file_opens_lazy_and_read_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Test that large files open lazily and are read-only."""
+async def test_large_file_opens_lazy_and_editable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that large files open lazily and are editable."""
     monkeypatch.setattr(app_module, "EAGER_LIMIT", 100)
     path = make_mixed(tmp_path / "m.txt")
     app = NovaEditApp(file_path=path)
@@ -21,7 +21,7 @@ async def test_large_file_opens_lazy_and_read_only(tmp_path: Path, monkeypatch: 
         await pilot.pause()
         assert app.editor is not None
         assert app.editor.is_lazy
-        assert app.editor.read_only
+        assert not app.editor.read_only
         await pilot.press("f4")
         await pilot.pause()
         assert app.editor.soft_wrap is True
@@ -62,7 +62,7 @@ async def test_lazy_flag_forces_lazy_open(tmp_path: Path) -> None:
         await pilot.pause()
         assert app.editor is not None
         assert app.editor.is_lazy
-        assert app.editor.read_only
+        assert not app.editor.read_only
 
 
 @pytest.mark.asyncio
