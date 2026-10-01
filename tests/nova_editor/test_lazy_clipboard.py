@@ -30,6 +30,12 @@ def _rows(count: int) -> str:
     return "\n".join(f"row {n} " + "x" * (n % 7) for n in range(count))
 
 
+def test_clipboard_cap_default_is_4_mib() -> None:
+    """The system clipboard cap is set to 4 MiB (the p95 of measured copy + terminal write time)."""
+    area = NovaTextArea(text="test")
+    assert area.clipboard_cap == 4_194_304
+
+
 @pytest.mark.asyncio
 async def test_multi_row_copy_and_paste_equals_the_reference() -> None:
     text = _rows(40)
@@ -132,7 +138,7 @@ async def test_cut_over_64_kib_uses_the_internal_clipboard_and_warns_above_the_c
     async with HostApp(area).run_test() as pilot:
         await pilot.pause()
         area.selection = Selection((0, 0), (1000, 0))
-        area.clipboard_cap = 1 << 20
+        area.clipboard_cap = 200_000
         area.action_cut()
         assert len(pilot.app.clipboard) == 100_000
         assert not (await _warnings(pilot))
