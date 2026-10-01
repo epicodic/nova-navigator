@@ -11,6 +11,7 @@ import threading
 import time
 import weakref
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import NamedTuple
 
@@ -459,7 +460,7 @@ def open_with_gated_line_scan(tmp_path: Path, rows: int = 3000, *, threshold: in
     path = tmp_path / "rows.txt"
     path.write_bytes("".join(f"row {i}\n" for i in range(rows)).encode())
     source = GatedLineSource(path, threshold=threshold, delay=delay)
-    area = NovaTextArea.open(source, config=config or LazyConfig(**LOWERED_OPTIONS))
+    area = NovaTextArea.open(source, config=replace(config or LazyConfig(**LOWERED_OPTIONS), sync_scan_limit=0))  # a gated scan needs the background thread
     _GATES[area] = source
     return area, path
 

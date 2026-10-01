@@ -92,6 +92,7 @@ class PieceTable:
         self._orig_length = source.length()
         self._tree = PieceTree(self._source_of, fanout)
         first_is_lf = self._orig_length > 0 and source.read(0, 1) == b"\n"
+        self._last_is_cr = self._orig_length > 0 and source.read(self._orig_length - 1, 1) == b"\r"  # read now: the source may be closed at fold time
         self._tail: _Tail | None = _Tail(0, 0, first_is_lf) if self._orig_length > 0 else None
 
     # ----- sources -------------------------------------------------------------------------------------------------------------------
@@ -123,8 +124,7 @@ class PieceTable:
         tail = self._tail
         if tail is not None and snap.complete:
             last = self._orig_length
-            last_is_cr = self._source.read(last - 1, 1) == b"\r"
-            piece = Piece(0, tail.a, last, snap.count - 1 - tail.row0, tail.row0, tail.first_is_lf, last_is_cr)
+            piece = Piece(0, tail.a, last, snap.count - 1 - tail.row0, tail.row0, tail.first_is_lf, self._last_is_cr)
             self._tree.splice(self._tree.length, self._tree.length, Content.from_pieces([piece], 0))
             self._tail = None
         return snap

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Literal, NamedTuple, overload
 
 from textual.geometry import Size
 
-from nova_editor.core import ByteSource, LineIndex, LineSnapshot, LongLineIndex, PreadSource, RowRange
+from nova_editor.core import AddStore, ByteSource, BytesSource, LineIndex, LineSnapshot, LongLineIndex, PieceTable, PreadSource, RowRange
 from nova_editor.core.foreground import Foreground
 from nova_editor.core.text_width import SURROGATE_ESCAPE, advance_disp, locate_cover, utf8_len
 from nova_editor.document._document import DocumentBase, EditResult, Location, Newline
@@ -114,6 +114,7 @@ class LazyDocument(DocumentBase):
             foreground=self.foreground,
             scan_block=self._config.scan_block,
         )
+        self._table = PieceTable(source, self._line_index, AddStore())
         self._ranges: OrderedDict[int, RowRange] = OrderedDict()
         self._texts: OrderedDict[int, str] = OrderedDict()
         self._long: OrderedDict[int, LongLineIndex] = OrderedDict()
@@ -124,12 +125,25 @@ class LazyDocument(DocumentBase):
         self._seen_width = 0
         self.call_log = CallLog()
         if autostart:
-            self.start_scan()
+            if source.length() <= self._config.sync_scan_limit:
+                self._scan_inline()
+            else:
+                self.start_scan()
 
     @classmethod
     def from_path(cls, path: Path | str, config: LazyConfig | None = None, *, autostart: bool = True) -> LazyDocument:
         """Open `path` through a `PreadSource` that the document owns and closes."""
         return cls(PreadSource(path), config, autostart=autostart)
+
+    @classmethod
+    def from_bytes(cls, data: bytes, config: LazyConfig | None = None) -> LazyDocument:
+        """Open `data` held in memory; up to `LazyConfig.sync_scan_limit` bytes the counts are exact immediately."""
+        return cls(BytesSource(data), config)
+
+    @classmethod
+    def from_text(cls, text: str, config: LazyConfig | None = None) -> LazyDocument:
+        """Open `text` encoded as UTF-8 (lone surrogates from `SURROGATE_ESCAPE` round-trip to their original bytes)."""
+        return cls.from_bytes(text.encode("utf-8", SURROGATE_ESCAPE), config)
 
     # -- lifecycle ----------------------------------------------------------------------------
     @property
@@ -144,6 +158,14 @@ class LazyDocument(DocumentBase):
                 return
             self._started = True
         self._line_index.start()
+
+    def _scan_inline(self) -> None:
+        """Run the whole line scan on the calling thread (construction of small documents); the table sees the complete index at once."""
+        with self._lock:
+            if self._started or self._closed:
+                return
+            self._started = True
+        self._line_index.scan_now()
 
     def wait_indexed(self, timeout: float) -> bool:
         """Wait for the line scan to complete (tests and workers only); return whether it completed."""
@@ -201,23 +223,23 @@ class LazyDocument(DocumentBase):
             if self._closed:
                 return False
             indexes = list(self._long.values())
-        snap = self._line_index.snapshot()
+        snap = self._table.snapshot()
         if not snap.complete and snap.error is None:
             return True
         return any(index.running for index in indexes)
 
     def snapshot(self) -> LineSnapshot:
         """Return the consistent state of the line scan."""
-        return self._line_index.snapshot()
+        return self._table.snapshot()
 
     @property
     def length(self) -> int:
         """Length of the source in bytes."""
-        return self._source.length()
+        return self._table.length
 
     def row_at_offset(self, offset: int) -> tuple[int, RowRange] | None:
         """Return `(row, range)` of the row that holds byte `offset` (see `LineIndex.row_at_offset`), or `None` when it is not known yet."""
-        return self._line_index.row_at_offset(offset)
+        return self._table.row_at_offset(offset)
 
     # -- row bookkeeping ----------------------------------------------------------------------
     def _norm(self, row: int) -> int:
@@ -233,9 +255,9 @@ class LazyDocument(DocumentBase):
             if cached is not None:
                 self._ranges.move_to_end(row)
                 return cached
-        found = self._line_index.row_range(row)
+        found = self._table.row_range(row)
         if found is None:
-            snap = self._line_index.snapshot()
+            snap = self._table.snapshot()
             if snap.error is not None:
                 raise snap.error
             if row >= snap.count:
@@ -346,7 +368,7 @@ class LazyDocument(DocumentBase):
     @property
     def line_count(self) -> int:
         """A lower bound while the scan runs (`snapshot().count`)."""
-        return self._line_index.snapshot().count
+        return self._table.snapshot().count
 
     def get_line(self, index: int) -> str:
         text = self._text(index)
@@ -383,12 +405,12 @@ class LazyDocument(DocumentBase):
 
     def read_all(self, limit: int) -> str:
         """Return the whole file decoded, only when the source is at most `limit` bytes; otherwise raise `WholeLineAccess`."""
-        length = self._source.length()
+        length = self._table.length
         if length > limit:
             self.call_log.refuse("read_all", None)
             msg = f"source of {length} bytes exceeds the limit of {limit}"
             raise WholeLineAccess(msg)
-        return self._source.read(0, length).decode("utf-8", SURROGATE_ESCAPE)
+        return self._table.read(0, length).decode("utf-8", SURROGATE_ESCAPE)
 
     @property
     def newline(self) -> Newline:
