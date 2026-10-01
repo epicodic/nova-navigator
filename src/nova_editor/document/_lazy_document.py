@@ -78,6 +78,11 @@ def _decodes_differently(left: bytes, middle: bytes, right: bytes) -> bool:
     return "".join(parts) != (left + middle + right).decode("utf-8", SURROGATE_ESCAPE)
 
 
+def _span_tail_chars(first: _Located, last: _Located) -> int:
+    """Characters after the last break between two locations (`first` not after `last`): the columns tell, so no byte is read."""
+    return last.column - first.column if first.row == last.row else last.column
+
+
 class _Located(NamedTuple):
     """A location resolved to a byte offset: the clamped row and column, the row range and the decoded row (`None` for a long row)."""
 
@@ -577,7 +582,7 @@ class LazyDocument(DocumentBase):
             self._require_open()
             first = self._locate(top)
             last = self._locate(bottom)
-            return self._table.content(first.offset, last.offset)
+            return self._table.content(first.offset, last.offset, _span_tail_chars(first, last))
 
     def content_text(self, content: Content) -> str:
         """The decoded text of `content` (invalid bytes as U+DC80 to U+DCFF); it reads every byte, so ask only for small contents."""
@@ -716,7 +721,7 @@ class LazyDocument(DocumentBase):
         if old_index is not None and not merging and not joins and first.row == last.row and content.breaks == 0:
             plan = self._plan_splice(old_index, first, last, content)
         try:
-            removed = self._table.splice(begin, finish, content)
+            removed = self._table.splice(begin, finish, content, _span_tail_chars(first, last))
         except RowNotIndexed as error:
             msg = f"offset {finish} is not scanned yet"
             raise RowUnavailable(msg) from error

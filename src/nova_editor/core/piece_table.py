@@ -268,8 +268,10 @@ class PieceTable:
             return Content.from_pieces([sub], 0)
         raise ValueError(f"offset {offset} outside 0..{self.length}")
 
-    def content(self, start: int, end: int) -> Content:
+    def content(self, start: int, end: int, tail_chars: int | None = None) -> Content:
         """Return the bytes `[start, end)` as `Content` without reading any data (the pieces may be split at the two boundaries).
+
+        `tail_chars` is the number of characters after the last break of the range when the caller knows it (the data is read to count them otherwise).
 
         Raises:
             ValueError: when the range is invalid or a boundary is between a CR and an LF.
@@ -277,10 +279,12 @@ class PieceTable:
         """
         snap = self._refresh()
         self._prepare(start, end, snap)
-        return self._tree.content(start, end)
+        return self._tree.content(start, end, tail_chars)
 
-    def splice(self, start: int, end: int, content: Content) -> Content:
+    def splice(self, start: int, end: int, content: Content, removed_tail_chars: int | None = None) -> Content:
         """Replace the bytes `[start, end)` by `content` and return the removed bytes as `Content`.
+
+        `removed_tail_chars` is the `tail_chars` of the removed bytes when the caller knows it (the data is read to count them otherwise).
 
         `content` holds pieces of the add store or pieces taken from earlier `content` or `splice` results.
         Nothing changes (except an invisible move of tail bytes into the tree) when an error is raised.
@@ -291,7 +295,7 @@ class PieceTable:
         """
         snap = self._refresh()
         self._prepare(start, end, snap)
-        return self._tree.splice(start, end, content)
+        return self._tree.splice(start, end, content, removed_tail_chars)
 
     def _prepare(self, start: int, end: int, snap: LineSnapshot) -> None:
         """Validate the range and move the tail bytes before `end` into the tree."""
