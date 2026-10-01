@@ -287,6 +287,14 @@ class LongLineIndex:
         thread = self._thread
         return thread is None or thread.is_alive()
 
+    def quiescent(self) -> bool:
+        """Whether the scan thread was started and has returned (completed, failed or cancelled); a started thread still in a read keeps it false.
+
+        An index that is not started yet is not quiescent: a `start` may still follow.
+        """
+        thread = self._thread
+        return thread is not None and not thread.is_alive()
+
     def frontier(self) -> Frontier:
         """Return a consistent snapshot of the scan progress."""
         with self._cond:

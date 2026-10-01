@@ -27,6 +27,12 @@ def long_row(length: int, seed: str = "0123456789") -> str:
     return (seed * (length // len(seed) + 1))[:length]
 
 
+def assert_retired(doc: LazyDocument, index: LongLineIndex) -> None:
+    """The replaced index left the live ones; it is listed for joining only while its scan thread has not returned."""
+    assert index not in doc._long.values()
+    assert index in doc._retired or index.quiescent()
+
+
 def three_rows(middle: str = "") -> str:
     return f"top\n{middle or long_row(700)}\nbottom"
 
@@ -100,7 +106,7 @@ def test_edit_inside_a_long_row_splices_its_index_and_keeps_the_others(monkeypat
     assert after[3] is before[3]
     assert after[2] is not before[2]
     assert not before[2].running
-    assert before[2] in doc._retired
+    assert_retired(doc, before[2])
     assert_same(doc, ref)
     doc.close()
 
@@ -150,7 +156,7 @@ def test_edit_adding_a_newline_retires_the_index_and_indexes_the_result_again(mo
     ref.replace_range((1, 600), (1, 600), "\n")
     assert spy.spliced == 0
     assert 1 not in indexes_of(doc)
-    assert old in doc._retired
+    assert_retired(doc, old)
     assert not old.running
     assert doc.is_long(1)
     assert not doc.is_long(2)  # 500 characters are a medium row
@@ -189,8 +195,8 @@ def test_edit_spanning_rows_retires_the_touched_indexes() -> None:
     assert after.get(0) is held[0]
     assert after.get(2) is held[3]
     assert 1 not in after
-    assert held[1] in doc._retired
-    assert held[2] in doc._retired
+    assert_retired(doc, held[1])
+    assert_retired(doc, held[2])
     assert_same(doc, ref)
     doc.close()
 
@@ -215,7 +221,7 @@ def test_row_shrinking_below_the_long_threshold_drops_its_index() -> None:
     ref.replace_range((1, 0), (1, 100), "")
     assert not doc.is_long(1)
     assert 1 not in indexes_of(doc)
-    assert index in doc._retired
+    assert_retired(doc, index)
     assert_same(doc, ref)
     doc.close()
 
@@ -239,7 +245,7 @@ def test_edit_larger_than_the_sync_limit_rebuilds_the_index(monkeypatch: pytest.
     doc.replace_range((1, 50), (1, 60), long_row(100, "mn"))
     ref.replace_range((1, 50), (1, 60), long_row(100, "mn"))
     assert spy.spliced == 0
-    assert old in doc._retired
+    assert_retired(doc, old)
     assert_same(doc, ref)
     doc.close()
 

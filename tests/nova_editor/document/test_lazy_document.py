@@ -471,3 +471,41 @@ def test_retired_scans_are_joined_off_the_caller_thread(tmp_path: Path) -> None:
     source.gate.set()
     doc.close()
     assert doc.wait_closed(20.0)
+
+
+def _long_file(tmp_path: Path) -> Path:
+    path = tmp_path / "row.txt"
+    path.write_bytes(b"0123456789" * 200)
+    return path
+
+
+def test_replaced_long_indexes_whose_scan_ended_are_not_retained(tmp_path: Path) -> None:
+    doc = _open(_long_file(tmp_path))
+    held: list[object] = []
+    for k in range(10):
+        index = doc.long_index(0)
+        assert index.join(10.0)
+        held.append(index)
+        doc.replace_range((0, 5 + k), (0, 5 + k), "e")
+        assert not doc._retired
+    assert doc.long_index(0) not in held
+    doc.close()
+    assert doc.wait_closed(10.0)
+
+
+def test_a_retired_index_with_a_live_scan_is_kept_and_joined_on_close(tmp_path: Path) -> None:
+    from tests.nova_editor.helpers_view import GateSource
+
+    source = GateSource(_long_file(tmp_path))
+    doc = LazyDocument(source, _config())
+    assert doc.wait_indexed(10.0)
+    source.gate.clear()  # the scan of the long row blocks in its first read
+    old = doc.long_index(0)
+    doc.replace_range((0, 0), (0, 0), "e")  # column 0 needs no scanned prefix
+    assert doc.long_index(0) is not old
+    assert old in doc._retired
+    assert not old.quiescent()
+    source.gate.set()
+    doc.close()
+    assert doc.wait_closed(20.0)
+    assert old.quiescent()

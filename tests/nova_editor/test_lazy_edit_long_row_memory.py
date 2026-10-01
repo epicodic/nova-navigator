@@ -18,6 +18,8 @@ from tests.nova_editor.helpers_view import HostApp, await_first_layout, wait_unt
 ROW_BYTES = 8 << 20
 ALLOC_LIMIT = 4 << 20
 """Peak traced allocation a step may add; a row-wide padded line would be 4 MiB or more per rendered row."""
+RETAINED_LIMIT = 2 << 20
+"""Memory 200 scattered edits may leave allocated; 64 retained indexes would hold about 8 MiB."""
 CONFIG = LazyConfig(stride=4096, index_long_line_threshold=1 << 16, long_row_threshold=1 << 18, scan_block=1 << 16)
 _UNIT = b"0123456789abcdef"
 
@@ -116,3 +118,24 @@ async def test_typing_after_scattered_edits_in_a_huge_row_stays_small(wrap: bool
                 assert widest <= area.region.width + 1024, (key, widest)
         finally:
             tracemalloc.stop()
+
+
+def test_scattered_edits_do_not_retain_replaced_indexes() -> None:
+    """Every edit replaces the long index of the row; the replaced ones (checkpoint arrays and a piece snapshot each) must not pile up."""
+    size = 1 << 20
+    config = LazyConfig(stride=4096, index_long_line_threshold=1 << 16, long_row_threshold=1 << 18, checkpoint_chars=256)
+    doc = LazyDocument.from_text("0123456789abcdef" * (size // 16), config)
+    assert doc.wait_indexed(60)
+    assert doc.long_index(0).join(60)
+    tracemalloc.start()
+    try:
+        before = tracemalloc.get_traced_memory()[0]
+        for k in range(200):
+            column = size - (k + 1) * (size // 202)
+            doc.replace_range((0, column), (0, column), "e")
+            assert doc.long_index(0).join(60)
+        retained = tracemalloc.get_traced_memory()[0] - before
+    finally:
+        tracemalloc.stop()
+    doc.close()
+    assert retained < RETAINED_LIMIT, retained

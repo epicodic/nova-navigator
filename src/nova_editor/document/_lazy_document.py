@@ -389,7 +389,12 @@ class LazyDocument(DocumentBase):
         return index
 
     def _take_overflow(self) -> list[LongLineIndex]:
-        """Remove and return the oldest retired indexes beyond the limit; the caller holds the lock."""
+        """Drop the retired indexes whose scan thread has returned, then remove and return the oldest ones beyond the limit; the caller holds the lock.
+
+        A retired index holds its checkpoint arrays and a snapshot of the pieces of its row, so one that nothing has to join must not stay alive.
+        A scan still in a read stays listed until it returns, so `close` and the reaper can join it.
+        """
+        self._retired = [index for index in self._retired if not index.quiescent()]
         return [self._retired.pop(0) for _ in range(max(0, len(self._retired) - _MAX_RETIRED))]
 
     def _reap(self, overflow: list[LongLineIndex]) -> None:
