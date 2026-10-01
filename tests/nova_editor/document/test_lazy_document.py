@@ -348,7 +348,7 @@ def test_close_during_line_scan(tmp_path: Path) -> None:
     path = make_mixed(tmp_path / "m.txt", long_chars=200_000)
     source = CountingSource(path)
     source.scan_delay = 0.3
-    doc = LazyDocument(source, _config(yield_seconds=0.001))
+    doc = LazyDocument(source, LazyConfig(**LOWERED_OPTIONS, yield_seconds=0.001, sync_scan_limit=0))  # needs the background scan of this small file
     doc.close()
     doc.close()
     assert doc.snapshot().complete is False
