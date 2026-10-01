@@ -14,7 +14,7 @@ Usage (every subcommand appends JSON lines to `--out`, prints one summary line a
 OP is one of down, up, pagedown, pageup, left, right, home, end, ctrl+right, hscroll, farjump.
 
 Methods:
-    first-screen: the parent takes t0 before `Popen([python, -m, nova_editor.app, --lazy, F])` on a 120x30 pty; the app writes
+    first-screen: the parent takes t0 before `Popen([python, -m, nova_editor.app, F])` on a 120x30 pty; the app writes
         `FIRST_CONTENT <perf_counter_ns>` to the file named by `NOVA_EDIT_TIMING_FILE`. `first_before_index_done` is derived from the bytes
         the child had read at that moment (`/proc/<pid>/io` `rchar` below the file size (minus the start-up reads of a tiny file) below the file size means the line scan had not finished reading).
     memory, latency, jump: one child process per run (`python -m tools.measure_view child ...`), a headless `App.run_test` of 120x30.
@@ -116,7 +116,7 @@ def _parse_first_content(path: Path) -> int | None:
 
 
 def first_screen_once(path: Path, *, cold: bool, timeout: float, baseline: int = 0) -> Row:
-    """Start `nova_edit --lazy` on a pty and return the first screen time of one run (one row, `run` not set)."""
+    """Start nova_edit on a pty and return the first screen time of one run (one row, `run` not set)."""
     residency = drop_cache(path) if cold else resident_fraction(path)
     size = path.stat().st_size
     with tempfile.TemporaryDirectory() as directory:
@@ -126,7 +126,7 @@ def first_screen_once(path: Path, *, cold: bool, timeout: float, baseline: int =
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", *TERMINAL_SIZE, 0, 0))
             env = {**os.environ, "NOVA_EDIT_TIMING_FILE": str(timing_file), "TERM": "xterm-256color", "COLUMNS": str(TERMINAL_SIZE[1]), "LINES": str(TERMINAL_SIZE[0])}
             t0 = time.perf_counter_ns()
-            proc = subprocess.Popen([sys.executable, "-m", "nova_editor.app", "--lazy", str(path)], stdin=slave, stdout=slave, stderr=slave, env=env, start_new_session=True, close_fds=True)
+            proc = subprocess.Popen([sys.executable, "-m", "nova_editor.app", str(path)], stdin=slave, stdout=slave, stderr=slave, env=env, start_new_session=True, close_fds=True)
         except BaseException:
             os.close(slave)
             os.close(master)
