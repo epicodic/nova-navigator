@@ -37,6 +37,9 @@ LOWERED_OPTIONS = {
 }
 
 
+_INVALID_BYTE_TABLE = str.maketrans(dict.fromkeys(range(0xDC80, 0xDD00), 0xFFFD))
+
+
 class RowRange(NamedTuple):
     """Byte range and content boundaries for a single row."""
 
@@ -214,7 +217,7 @@ def oracle_cells(text: str, tab_width: int = 4) -> list[str]:
     A zero-width character is appended to the cell of the character before it (dropped at the start of the text).
     """
     cells: list[str] = []
-    for char in text:
+    for char in text.translate(_INVALID_BYTE_TABLE):  # the widget shows an escaped invalid byte as U+FFFD
         if char == "\t":
             cells.extend(" " * (tab_width - len(cells) % tab_width))
             continue

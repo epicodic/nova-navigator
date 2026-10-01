@@ -99,14 +99,14 @@ async def test_small_file_document_delegates_to_the_parser(tmp_path: Path) -> No
     assert query is not None
     assert len(doc.query_syntax_tree(query)["name"]) > 0
     assert lazy.is_lazy
-    assert lazy.read_only
+    assert not lazy.read_only
 
 
 @pytest.mark.asyncio
-async def test_lazy_python_file_above_lowered_limit_opens_renders_and_is_read_only(tmp_path: Path) -> None:
+async def test_lazy_python_file_above_lowered_limit_opens_renders_and_is_editable(tmp_path: Path) -> None:
     lazy = NovaTextArea.open(_write(tmp_path), language="python", highlight_limit=100, config=LazyConfig(**LOWERED_OPTIONS))
     async with HostApp(lazy).run_test() as pilot:
         await await_first_layout(pilot, lazy)
         assert "def f(x)" in "".join(segment.text for segment in lazy.render_line(0))
-        assert lazy.read_only
+        assert not lazy.read_only
         assert not lazy.highlight_active

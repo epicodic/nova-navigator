@@ -105,6 +105,9 @@ class _Jump:
 _PLACEHOLDER_CELL = "\u2591"
 """Fills the part of a window that the scan has not reached yet."""
 
+_INVALID_BYTE_TABLE = str.maketrans(dict.fromkeys(range(0xDC80, 0xDD00), 0xFFFD))
+"""Translation table that shows an escaped invalid byte (U+DC80 to U+DCFF) as U+FFFD; applied to the strip text only (REQ-13)."""
+
 
 _GuardedMethod = TypeVar("_GuardedMethod", bound=Callable[..., Any])
 
@@ -733,6 +736,19 @@ NovaTextArea {
             return self.text_area
 
     @dataclass
+    class EditRefused(Message):
+        """Posted when an edit is refused because a position it needs is not resolved yet (ACT4 design 11.2); nothing changed."""
+
+        reason: str
+        """Why the edit was refused."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
     class JumpRejected(Message):
         """Posted when a goto target is out of range; the cursor is unchanged."""
 
@@ -837,6 +853,9 @@ NovaTextArea {
         self._long_cursor: LongRowCursor | None = LongRowCursor(_prebuilt_document) if _prebuilt_document is not None else None
         """Cursor machine and provisional layout of the current long row (lazy documents only)."""
 
+        self._edit_refused = False
+        """True when the most recent `edit()` was refused (a position was not resolved); the keyboard helpers then report no edit."""
+
         self._suppress_scroll = False
         """True while `_reconcile_cursor` sets the exact location: `_watch_selection` does not scroll the cursor into view."""
 
@@ -874,7 +893,7 @@ NovaTextArea {
         """The virtual offset of the cursor (not screen-space offset)."""
 
         self.set_reactive(NovaTextArea.soft_wrap, soft_wrap)
-        self.set_reactive(NovaTextArea.read_only, read_only or _prebuilt_document is not None)
+        self.set_reactive(NovaTextArea.read_only, read_only)
         self.set_reactive(NovaTextArea.show_cursor, show_cursor)
         self.set_reactive(NovaTextArea.show_line_numbers, show_line_numbers)
         self.set_reactive(NovaTextArea.line_number_start, line_number_start)
@@ -911,7 +930,7 @@ NovaTextArea {
         highlight_limit: int = DEFAULT_HIGHLIGHT_LIMIT,
         **kwargs: Any,
     ) -> NovaTextArea:
-        """Open a file lazily: a read-only widget whose rows are decoded on demand and whose long rows are only shown through windows.
+        """Open a file lazily: an editable widget whose rows are decoded on demand and whose long rows are only shown through windows.
 
         The widget owns the source: `close()` (also called on unmount) cancels the scans and closes it.
         The tab width of the long-row indexes is the default `indent_width` (`LazyConfig.tab_width` is replaced by it); changing
@@ -949,7 +968,7 @@ NovaTextArea {
 
     @property
     def is_lazy(self) -> bool:
-        """True when the widget shows a lazily opened, read-only document (`open()`)."""
+        """True when the widget shows a lazily opened document (`open()`)."""
         return self._lazy is not None
 
     @property
@@ -1778,10 +1797,6 @@ NovaTextArea {
         else:
             self._pause_blink(visible=self.has_focus)
 
-    def validate_read_only(self, read_only: bool) -> bool:
-        """A lazy document cannot be edited: read-only stays on."""
-        return read_only or self._lazy is not None
-
     def _watch_read_only(self, read_only: bool) -> None:
         self.set_class(read_only, "-read-only")
         self._set_theme(self._theme.name)
@@ -2345,7 +2360,7 @@ NovaTextArea {
             crop_start = window.phantom_cells + scroll_x - window.start_disp
 
         # The phantom cells keep the tab phase; every column is shifted by the window start.
-        line = Text(" " * window.phantom_cells + window.text, end="", no_wrap=True)
+        line = Text(" " * window.phantom_cells + window.text.translate(_INVALID_BYTE_TABLE), end="", no_wrap=True)
         line.tab_size = tab_width
         if window.at_row_end:
             line.set_length(len(line) + 1)  # space at end for cursor
@@ -2557,6 +2572,9 @@ NovaTextArea {
         else:
             gutter = []
 
+        if not line.plain.isascii():
+            line.plain = line.plain.translate(_INVALID_BYTE_TABLE)  # same length: spans and wrap offsets stay valid
+
         # TODO: Lets not apply the division each time through render_line.
         #  We should cache sections with the edit counts.
         wrap_offsets = wrapped_document.get_offsets(line_index)
@@ -2650,19 +2668,38 @@ NovaTextArea {
     def edit(self, edit: Edit) -> EditResult:
         """Perform an Edit.
 
+        An edit that needs a position which is not exactly resolved yet (the cursor of a long row is provisional or pending, a column or row is
+        not scanned yet) is refused: the widget rings the bell, shows a warning, posts `EditRefused` and changes nothing.
+
         Args:
             edit: The Edit to perform.
 
         Returns:
             Data relating to the edit that may be useful. The data returned
             may be different depending on the edit performed.
+            A refused edit returns an empty result located at the start of the edit.
         """
+        self._edit_refused = False
+        reason = self._unresolved_reason()
+        old_gutter_width = self.gutter_width
+        result = EditResult(edit.top, "")
+        if reason is None:
+            try:
+                result = edit.do(self)
+            except RowUnavailable as error:
+                reason = str(error)
+            except CoreSourceChanged as error:
+                self._fail_source(str(error))
+                self._edit_refused = True
+                return result
+        if reason is not None:
+            self._refuse_edit(reason)
+            return result
         if self.suggestion.startswith(edit.text):
             self.suggestion = self.suggestion[len(edit.text) :]
         else:
             self.suggestion = ""
-        old_gutter_width = self.gutter_width
-        result = edit.do(self)
+        self._reset_cursor_machine()
         self.history.record(edit)
         new_gutter_width = self.gutter_width
 
@@ -2682,25 +2719,59 @@ NovaTextArea {
         self._refresh_size()
         return result
 
+    def _unresolved_reason(self) -> str | None:
+        """Why no edit can be applied now (the cursor of a long row is provisional or pending), or `None` when positions are exact."""
+        self._track_cursor()
+        if self._cursor_unresolved():
+            return "the cursor position in this long line is not indexed yet"
+        return None
+
+    def _refuse_edit(self, reason: str) -> None:
+        """Tell the user that an edit was refused (bell, warning, `EditRefused`); nothing was changed."""
+        self._edit_refused = True
+        self.app.bell()
+        self.notify(f"Edit refused: {reason}. It works once indexing reaches the position.", severity="warning")
+        self.post_message(self.EditRefused(reason, self))
+
+    def _reset_cursor_machine(self) -> None:
+        """Forget the cursor machine of the long row after an edit, undo or redo: the next selection change starts a resolved one at the new location."""
+        cursor = self._long_cursor
+        if cursor is not None:
+            cursor.drop()
+
     def undo(self) -> None:
-        """Undo the edits since the last checkpoint (the most recent batch of edits)."""
+        """Undo the edits since the last checkpoint (the most recent batch of edits).
+
+        Refused (see `edit`) when a position it needs is not resolved yet; the history is then unchanged.
+        """
+        if (reason := self._unresolved_reason()) is not None:
+            self._refuse_edit(reason)
+            return
         if edits := self.history._pop_undo():
-            self._undo_batch(edits)
+            if not self._undo_batch(edits):
+                self.history._restore_undo(edits)
 
     def action_undo(self) -> None:
         """Undo the edits since the last checkpoint (the most recent batch of edits)."""
         self.undo()
 
     def redo(self) -> None:
-        """Redo the most recently undone batch of edits."""
+        """Redo the most recently undone batch of edits.
+
+        Refused (see `edit`) when a position it needs is not resolved yet; the history is then unchanged.
+        """
+        if (reason := self._unresolved_reason()) is not None:
+            self._refuse_edit(reason)
+            return
         if edits := self.history._pop_redo():
-            self._redo_batch(edits)
+            if not self._redo_batch(edits):
+                self.history._restore_redo(edits)
 
     def action_redo(self) -> None:
         """Redo the most recently undone batch of edits."""
         self.redo()
 
-    def _undo_batch(self, edits: Sequence[Edit]) -> None:
+    def _undo_batch(self, edits: Sequence[Edit]) -> bool:
         """Undo a batch of Edits.
 
         The sequence must be chronologically ordered by edit time.
@@ -2710,21 +2781,31 @@ NovaTextArea {
 
         Args:
             edits: The edits to undo, in the order they were originally performed.
+
+        Returns:
+            False when a position was not resolved: the batch is refused and the document is unchanged.
         """
         if not edits:
-            return
+            return True
 
         old_gutter_width = self.gutter_width
         minimum_top = edits[-1].top
         maximum_old_bottom = (0, 0)
         maximum_new_bottom = (0, 0)
-        for edit in reversed(edits):
-            edit.undo(self)
-            end_location = edit._edit_result.end_location if edit._edit_result else (0, 0)
-            minimum_top = min(minimum_top, edit.top)
-            maximum_old_bottom = max(maximum_old_bottom, end_location)
-            maximum_new_bottom = max(maximum_new_bottom, edit.bottom)
+        done: list[Edit] = []
+        try:
+            for edit in reversed(edits):
+                edit.undo(self)
+                done.append(edit)
+                end_location = edit._edit_result.end_location if edit._edit_result else (0, 0)
+                minimum_top = min(minimum_top, edit.top)
+                maximum_old_bottom = max(maximum_old_bottom, end_location)
+                maximum_new_bottom = max(maximum_new_bottom, edit.bottom)
+        except RowUnavailable as error:
+            self._roll_back(done, minimum_top, str(error))
+            return False
 
+        self._reset_cursor_machine()
         new_gutter_width = self.gutter_width
         if old_gutter_width != new_gutter_width:
             self.wrapped_document.wrap(self.wrap_width, self.indent_width)
@@ -2737,8 +2818,9 @@ NovaTextArea {
         self._build_highlight_map()
         self.post_message(self.Changed(self))
         self.update_suggestion()
+        return True
 
-    def _redo_batch(self, edits: Sequence[Edit]) -> None:
+    def _redo_batch(self, edits: Sequence[Edit]) -> bool:
         """Redo a batch of Edits in order.
 
         The sequence must be chronologically ordered by edit time.
@@ -2750,21 +2832,31 @@ NovaTextArea {
 
         Args:
             edits: The edits to redo.
+
+        Returns:
+            False when a position was not resolved: the batch is refused and the document is unchanged.
         """
         if not edits:
-            return
+            return True
 
         old_gutter_width = self.gutter_width
         minimum_top = edits[0].top
         maximum_old_bottom = (0, 0)
         maximum_new_bottom = (0, 0)
-        for edit in edits:
-            edit.do(self, record_selection=False)
-            end_location = edit._edit_result.end_location if edit._edit_result else (0, 0)
-            minimum_top = min(minimum_top, edit.top)
-            maximum_new_bottom = max(maximum_new_bottom, end_location)
-            maximum_old_bottom = max(maximum_old_bottom, edit.bottom)
+        done: list[Edit] = []
+        try:
+            for edit in edits:
+                edit.do(self, record_selection=False)
+                done.append(edit)
+                end_location = edit._edit_result.end_location if edit._edit_result else (0, 0)
+                minimum_top = min(minimum_top, edit.top)
+                maximum_new_bottom = max(maximum_new_bottom, end_location)
+                maximum_old_bottom = max(maximum_old_bottom, edit.bottom)
+        except RowUnavailable as error:
+            self._roll_back(done, minimum_top, str(error), redo=True)
+            return False
 
+        self._reset_cursor_machine()
         new_gutter_width = self.gutter_width
         if old_gutter_width != new_gutter_width:
             self.wrapped_document.wrap(self.wrap_width, self.indent_width)
@@ -2781,6 +2873,22 @@ NovaTextArea {
         self._build_highlight_map()
         self.post_message(self.Changed(self))
         self.update_suggestion()
+        return True
+
+    def _roll_back(self, done: Sequence[Edit], top: Location, reason: str, *, redo: bool = False) -> None:
+        """Reverse the applied part of a refused undo batch (`redo=True`: of a redo batch) so that the document is unchanged, then report the refusal."""
+        try:
+            for edit in reversed(done):
+                if redo:
+                    edit.undo(self)
+                else:
+                    edit.do(self, record_selection=False)
+        except RowUnavailable as error:
+            self._fail_source(f"an undo or redo could not be rolled back: {error}")
+        self._reset_cursor_machine()
+        self.wrapped_document.wrap_range(top, top, top)
+        self._refresh_size()
+        self._refuse_edit(reason)
 
     async def on_event(self, event: events.Event) -> None:
         """Tell the scans that the user is interacting (they give way to the UI thread, see `Foreground`), then handle the event."""
@@ -2831,9 +2939,8 @@ NovaTextArea {
             The number of cells to the next tab stop from the current cursor column.
         """
         cursor_row, cursor_column = self.cursor_location
-        line_text = self.document[cursor_row]
         indent_width = self.indent_width
-        if not line_text:
+        if self.document.line_length(cursor_row) == 0:
             return indent_width
 
         width_before_cursor = self.get_column_width(cursor_row, cursor_column)
@@ -3570,11 +3677,12 @@ NovaTextArea {
             end: The end location of the text to delete.
 
         Returns:
-            An EditResult or None if no edit was performed (e.g. on read-only mode).
+            An EditResult or None if no edit was performed (e.g. on read-only mode or when the edit was refused).
         """
         if self.read_only:
             return None
-        return self.delete(start, end, maintain_selection_offset=False)
+        result = self.delete(start, end, maintain_selection_offset=False)
+        return None if self._edit_refused else result
 
     def _replace_via_keyboard(
         self,
@@ -3590,11 +3698,12 @@ NovaTextArea {
             end: The end location of the text to replace.
 
         Returns:
-            An EditResult or None if no edit was performed (e.g. on read-only mode).
+            An EditResult or None if no edit was performed (e.g. on read-only mode or when the edit was refused).
         """
         if self.read_only:
             return None
-        return self.replace(insert, start, end, maintain_selection_offset=False)
+        result = self.replace(insert, start, end, maintain_selection_offset=False)
+        return None if self._edit_refused else result
 
     def action_delete_left(self) -> None:
         """Deletes the character to the left of the cursor and updates the cursor location.

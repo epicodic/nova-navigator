@@ -163,6 +163,18 @@ class EditHistory:
             return batch
         return None
 
+    def _restore_undo(self, batch: list[Edit]) -> None:
+        """Put back a batch that `_pop_undo` returned but that was refused (it is again the top of the undo stack)."""
+        if self._redo_stack and self._redo_stack[-1] is batch:
+            self._redo_stack.pop()
+        self._undo_stack.append(batch)
+
+    def _restore_redo(self, batch: list[Edit]) -> None:
+        """Put back a batch that `_pop_redo` returned but that was refused (it is again the top of the redo stack)."""
+        if self._undo_stack and self._undo_stack[-1] is batch:
+            self._undo_stack.pop()
+        self._redo_stack.append(batch)
+
     def clear(self) -> None:
         """Completely clear the history."""
         self._undo_stack.clear()
