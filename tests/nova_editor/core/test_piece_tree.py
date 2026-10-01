@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tracemalloc
+from bisect import bisect_right
 
 import pytest
 from hypothesis import given, settings
@@ -117,6 +118,7 @@ class Harness:
         for k, end in enumerate(ends, start=1):
             assert tree.find_break(k) == end, k
         for offset in range(len(ref) + 1):
+            assert tree.row_of(offset) == bisect_right(ends, offset), offset
             location = tree.find_offset(offset)
             if offset == len(ref):
                 assert location.piece is None

@@ -29,9 +29,15 @@ class OriginalSource:
         return found[0]
 
     def row_start(self, row: int) -> int | None:
-        """Return the start offset of `row`, or `None` when the index does not know it."""
+        """Return the start offset of `row`, or `None` when the index does not know it.
+
+        When the index cannot resolve `row` itself (its end is unscanned or over the read budget), the end of the previous row is used.
+        """
         found = self._index.row_range(row)
-        return None if found is None else found.start
+        if found is not None:
+            return found.start
+        previous = self._index.row_range(row - 1) if 0 < row < self._index.snapshot().count else None
+        return None if previous is None else previous.end
 
     def breaks_between(self, a: int, b: int) -> int:
         return self.row_of(b) - self.row_of(a)

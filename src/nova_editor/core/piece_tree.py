@@ -363,6 +363,39 @@ class PieceTree:
             return None
         return acc.length + row_start - piece.a
 
+    def row_of(self, offset: int) -> int:
+        """Return the row, counted from 0, that contains the byte at `offset` (terminator bytes belong to their row).
+
+        For `offset == length` this is the row after the last break.
+        An offset between a CR and an LF gives the row that the CRLF ends.
+        """
+        if not 0 <= offset <= self.length:
+            raise ValueError(f"offset {offset} outside 0..{self.length}")
+        if offset == self.length:
+            return self.breaks
+        node = self._root
+        acc = EMPTY_AGGREGATE
+        start = 0
+        while isinstance(node, _Inner):
+            for child in node.children:
+                if offset < start + child.agg.length:
+                    node = child
+                    break
+                acc = combine(acc, child.agg)
+                start += child.agg.length
+        for i in range(node.size()):
+            piece = node.piece(i)
+            if offset < start + piece.length:
+                inner = offset - start
+                lead = acc.last_is_cr and piece.first_is_lf
+                if inner == 0:
+                    return acc.breaks - lead
+                left = self._source_of(piece.src).breaks_between(piece.a, piece.a + inner)
+                return acc.breaks + left - lead
+            acc = combine(acc, piece.aggregate)
+            start += piece.length
+        raise AssertionError("aggregate does not match the leaf")
+
     # ----- boundaries ----------------------------------------------------------------------------------------------------------------
 
     def check_boundary(self, offset: int) -> None:
