@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ import pytest
 
 from tests.nova_editor.helpers_view import make_mixed
 from tools._view_app import LOWERED
+from tools._view_edit_latency import GcTimer
 from tools._view_procmem import median, percentile
 from tools.measure_view import main
 
@@ -376,6 +378,24 @@ def test_edit_scatter_builds_the_pieces_before_the_steps(long_file: Path, tmp_pa
     steps = [row for row in rows if row["op"] != "scatter"]
     assert {row["variant"] for row in steps} == {"scatter-25"}
     assert min(row["pieces"] for row in steps) >= build[-1]["pieces"]
+    assert all(row["rss_anon_kb"] > 0 for row in rows)
+    assert all(row["gc_ms"] >= 0 and row["gc_longest_ms"] >= 0 and row["gc_longest_ms"] <= row["gc_ms"] for row in rows)
+
+
+def test_gc_timer_counts_the_collections_since_a_snapshot() -> None:
+    timer = GcTimer()
+    timer.install()
+    try:
+        before = timer.snapshot()
+        assert timer.since(before) == {"gc_ms": 0.0, "gc_longest_ms": 0.0}
+        gc.collect()
+        gc.collect()
+        fields = timer.since(before)
+        assert fields["gc_ms"] > 0
+        assert 0 < fields["gc_longest_ms"] <= fields["gc_ms"]
+    finally:
+        timer.uninstall()
+    assert timer.since(timer.snapshot()) == {"gc_ms": 0.0, "gc_longest_ms": 0.0}
 
 
 def test_segments_logs_the_three_segment_times_beside_every_step(long_file: Path, tmp_path: Path) -> None:
