@@ -838,9 +838,17 @@ class LazyDocument(DocumentBase):
             replacement.start()
         self._reap(overflow)
 
-    def attach_syntax(self, syntax: SyntaxAwareDocument) -> None:
-        """Delegate `prepare_query` and `query_syntax_tree` to `syntax`, a parse of the whole text used for highlighting only (never edited)."""
+    def attach_syntax(self, syntax: SyntaxAwareDocument | None) -> None:
+        """Delegate `prepare_query` and `query_syntax_tree` to `syntax`, a parse of the whole text used for highlighting (`None` detaches it).
+
+        `replace_range` forwards every edit to it.
+        """
         self._syntax = syntax
+
+    @property
+    def has_syntax(self) -> bool:
+        """True when a syntax mirror is attached."""
+        return self._syntax is not None
 
     def query_syntax_tree(
         self,

@@ -8,6 +8,7 @@ import pytest
 
 from nova_editor import app as app_module
 from nova_editor.app import NovaEditApp
+from nova_editor.document._lazy_document import LazyDocument
 from tests.nova_editor.helpers_view import make_mixed
 
 
@@ -20,7 +21,7 @@ async def test_large_file_opens_lazy_and_editable(tmp_path: Path, monkeypatch: p
     async with app.run_test(size=(80, 20)) as pilot:
         await pilot.pause()
         assert app.editor is not None
-        assert app.editor.is_lazy
+        assert isinstance(app.editor.document, LazyDocument)
         assert not app.editor.read_only
         await pilot.press("f4")
         await pilot.pause()
@@ -37,15 +38,16 @@ async def test_large_file_opens_lazy_and_editable(tmp_path: Path, monkeypatch: p
 
 
 @pytest.mark.asyncio
-async def test_small_file_keeps_stock_editable_path(tmp_path: Path) -> None:
-    """Test that small files use stock editable path."""
+async def test_small_file_opens_on_the_lazy_document_and_is_editable(tmp_path: Path) -> None:
+    """Test that small files use the same lazy document (DEC-17) and are editable."""
     path = tmp_path / "s.txt"
     path.write_text("hello")
     app = NovaEditApp(file_path=path)
     async with app.run_test() as pilot:
         await pilot.pause()
         assert app.editor is not None
-        assert not app.editor.is_lazy
+        assert isinstance(app.editor.document, LazyDocument)
+        assert app.editor.text == "hello"
         assert not app.editor.read_only
 
 
@@ -61,7 +63,7 @@ async def test_lazy_flag_forces_lazy_open(tmp_path: Path) -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         assert app.editor is not None
-        assert app.editor.is_lazy
+        assert isinstance(app.editor.document, LazyDocument)
         assert not app.editor.read_only
 
 
@@ -172,22 +174,23 @@ async def test_goto_byte_navigation(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
-async def test_ctrl_s_on_lazy_notifies_read_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Test that Ctrl+S on a lazy widget notifies about read-only."""
+async def test_ctrl_s_above_the_text_limit_refuses_and_keeps_the_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that Ctrl+S on a document above the text limit does not write (`text` is empty there)."""
     monkeypatch.setattr(app_module, "EAGER_LIMIT", 50)
+    monkeypatch.setattr(app_module, "TEXT_LIMIT", 50)
     path = make_mixed(tmp_path / "m.txt")
     app = NovaEditApp(file_path=path)
     async with app.run_test() as pilot:
         await pilot.pause()
         assert app.editor is not None
-        assert app.editor.is_lazy
+        assert isinstance(app.editor.document, LazyDocument)
 
         before = path.read_bytes()
         await pilot.press("ctrl+s")
         await pilot.pause()
 
         assert path.read_bytes() == before
-        assert any("Read-only" in n.message for n in app._notifications)
+        assert any("Saving large files" in n.message for n in app._notifications)
 
 
 @pytest.mark.asyncio

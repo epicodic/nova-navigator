@@ -25,6 +25,7 @@ from nova_editor.core import ByteSource
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.document._lazy_document import LazyDocument
 from nova_editor.widget import NovaTextArea
+from nova_editor.widget._text_area import TEXT_LIMIT
 
 EAGER_LIMIT = 1_048_576
 """File size threshold (bytes) above which to open files lazily."""
@@ -321,9 +322,9 @@ class NovaEditApp(App[None]):
             self.notify("No file loaded", severity="warning")
             return
 
-        # Check if editor is lazy (read-only)
-        if self.editor.is_lazy:
-            self.notify("Read-only: saving arrives with editing", severity="warning")
+        # `text` is "" above TEXT_LIMIT: never write that over the file (streaming save arrives with ACT5)
+        if self.editor.document.length > TEXT_LIMIT:
+            self.notify("Saving large files arrives with ACT5", severity="warning")
             return
 
         try:
