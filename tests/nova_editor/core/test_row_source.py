@@ -78,8 +78,10 @@ def test_short_piece_read_raises_source_changed() -> None:
     table = make_table()
     piece = Piece(0, 0, 40, 0, 0, False, False)  # names more bytes than the original has
     rows = RowSource([piece], table.tree._source_of)
+    got = rows.read(0, 40)
+    assert 0 < len(got) < 40  # a short read is returned as it is
     with pytest.raises(SourceChanged):
-        rows.read(0, 40)
+        rows.read(len(got), 40)  # reading on from the end of the original finds nothing
 
 
 def test_empty_row_source_and_close() -> None:

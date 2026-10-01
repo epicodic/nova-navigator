@@ -27,9 +27,12 @@ from nova_editor.core import (
     PreadSource,
     RowNotIndexed,
     RowRange,
+    SourceChanged,
 )
 from nova_editor.core.foreground import Foreground
 from nova_editor.core.line_index import call_subscriber
+from nova_editor.core.long_line_index import SPLICE_SYNC_BYTES
+from nova_editor.core.long_line_index import Edit as LongEdit
 from nova_editor.core.text_width import SURROGATE_ESCAPE, advance_disp, locate_cover, utf8_len
 from nova_editor.document._document import DocumentBase, EditResult, Location, Newline
 from nova_editor.document._lazy_config import LazyConfig
@@ -49,6 +52,8 @@ _MAX_RETIRED = 64
 _MAX_EVENTS = 10_000
 REPLACED_TEXT_LIMIT = 64 * 1024
 """`EditResult.replaced_text` is filled only when at most this many bytes were removed."""
+RELOCATE_LIMIT = 256 * 1024
+"""The most bytes the end location of an edit that merged UTF-8 characters re-decodes; beyond it an old long index anchors the count, or the end column is approximate."""
 _MERGE_CONTEXT = 3
 _NEWLINE = re.compile(r"\r\n|\r|\n")
 _CRLF = b"\r\n"
@@ -81,26 +86,6 @@ class _Located(NamedTuple):
     offset: int
     found: RowRange
     text: str | None
-
-
-class _TableSource:
-    """`ByteSource` over the current bytes of the document table, for scans of long rows after the table left the original file.
-
-    Every read takes the document lock, so a scan thread never sees the table while an edit changes it.
-    Offsets are document offsets; an index over this source is only valid until an edit at or before its row (the document retires it then).
-    """
-
-    def __init__(self, document: LazyDocument) -> None:
-        self._document = document
-
-    def length(self) -> int:
-        return self._document.length
-
-    def read(self, offset: int, size: int, *, cache: bool = True) -> bytes:
-        return self._document.read_bytes(offset, size, cache=cache)
-
-    def close(self) -> None:
-        """Nothing to release: the document owns the original source."""
 
 
 class CallRecord(NamedTuple):
@@ -173,7 +158,6 @@ class LazyDocument(DocumentBase):
             scan_block=self._config.scan_block,
         )
         self._table = PieceTable(source, self._line_index, AddStore())
-        self._table_source = _TableSource(self)
         self._ranges: OrderedDict[int, RowRange] = OrderedDict()
         self._texts: OrderedDict[int, str] = OrderedDict()
         self._long: OrderedDict[int, LongLineIndex] = OrderedDict()
@@ -354,30 +338,31 @@ class LazyDocument(DocumentBase):
     def long_index(self, row: int) -> LongLineIndex:
         """Return the long index of `row`, creating it (with autostart) on first use; the least recently used one is cancelled.
 
+        A new index scans a `RowSource` of the pieces of the row (a single piece for an unedited row), never the table.
+        An edit inside the row replaces the index by a spliced one, edits above only change its key (design 6.3).
+
         Raises:
             RowUnavailable: The document is closed (no scan is ever started on a closed source).
         """
         row = self._norm(row)
         with self._lock:
-            if self._closed:
-                msg = "document is closed"
-                raise RowUnavailable(msg)
-            index = self._long.get(row)
-            if index is not None:
-                self._long.move_to_end(row)
-                return index
+            self._require_open()
         found = self._range(row)
         with self._lock:
-            if self._closed:
-                msg = "document is closed"
-                raise RowUnavailable(msg)
+            self._require_open()
             index = self._long.get(row)
-            if index is not None:
+            if index is not None and index.end_offset - index.start_offset == found.content_end - found.start:
+                self._long.move_to_end(row)
                 return index
+            if index is not None:  # stale: the key and the row disagree (never expected, kept as a guard)
+                del self._long[row]
+                index.cancel()
+                self._retired.append(index)
+            rows = self._table.row_source(found.start, found.content_end)
             index = LongLineIndex(
-                self._source if self._table.is_identity else self._table_source,
-                found.start,
-                found.content_end,
+                rows,
+                0,
+                rows.length(),
                 tab_width=self._config.tab_width,
                 checkpoint_chars=index_step(self._config),
                 yield_seconds=self._config.yield_seconds,
@@ -391,17 +376,26 @@ class LazyDocument(DocumentBase):
                 _, old = self._long.popitem(last=False)
                 old.cancel()
                 self._retired.append(old)
-            overflow = [self._retired.pop(0) for _ in range(max(0, len(self._retired) - _MAX_RETIRED))]
+            overflow = self._take_overflow()
         for callback in subscribers:
             index.subscribe(callback)
         index.start()
-        if overflow:
-            reaper = threading.Thread(target=self._join_all, args=(overflow,), name="lazy-reaper", daemon=True)
-            with self._lock:
-                self._reapers = [t for t in self._reapers if t.is_alive()]
-                self._reapers.append(reaper)
-            reaper.start()
+        self._reap(overflow)
         return index
+
+    def _take_overflow(self) -> list[LongLineIndex]:
+        """Remove and return the oldest retired indexes beyond the limit; the caller holds the lock."""
+        return [self._retired.pop(0) for _ in range(max(0, len(self._retired) - _MAX_RETIRED))]
+
+    def _reap(self, overflow: list[LongLineIndex]) -> None:
+        """Join cancelled scans that fell out of the retired list on a reaper thread."""
+        if not overflow:
+            return
+        reaper = threading.Thread(target=self._join_all, args=(overflow,), name="lazy-reaper", daemon=True)
+        with self._lock:
+            self._reapers = [t for t in self._reapers if t.is_alive()]
+            self._reapers.append(reaper)
+        reaper.start()
 
     @staticmethod
     def _join_all(indexes: list[LongLineIndex]) -> None:
@@ -643,81 +637,152 @@ class LazyDocument(DocumentBase):
         left = self._table.read(max(begin - _MERGE_CONTEXT, 0), min(begin, _MERGE_CONTEXT))
         right = self._table.read(finish, _MERGE_CONTEXT)
         merging = self._merges(left, content, right)
+        joins = content.length == 0 and left[-1:] == b"\r" and right[:1] == b"\n"  # a CR and an LF became one CRLF: the row structure changed
+        old_index = self._long.get(first.row) if first.text is None else None
+        plan = None
+        if old_index is not None and not merging and not joins and first.row == last.row and content.breaks == 0:
+            plan = self._plan_splice(old_index, first, last, content)
         try:
             removed = self._table.splice(begin, finish, content)
         except RowNotIndexed as error:
             msg = f"offset {finish} is not scanned yet"
             raise RowUnavailable(msg) from error
+        row_delta = content.breaks - (last.row - first.row) - self._crlf_formed(content, left, right)
+        replacement = None
+        if plan is not None:
+            size = first.found.content_end - first.found.start - (finish - begin) + content.length
+            replacement = self._splice_index(old_index, first.found.start, size, plan)
         if merging:
-            relocated = self._relocate(begin + content.length)
-            if relocated is None:
-                self._table.splice(begin, begin + content.length, removed)  # roll back: the end row is long and cannot be re-decoded
-                msg = f"edit merges UTF-8 characters in long row {first.row + content.breaks}"
-                raise RowUnavailable(msg)
-            end_location = relocated
+            end_location = self._relocate(begin + content.length, first, content, old_index)
         elif content.breaks:
             end_location = (first.row + content.breaks, content.tail_chars)
         else:
             end_location = (first.row, first.column + content.tail_chars)
-        joins = content.length == 0 and left[-1:] == b"\r" and right[:1] == b"\n"  # a CR and an LF became one CRLF: the row structure changed
         patch = None
         if not merging and not joins and first.row == last.row and content.breaks == 0 and first.text is not None:
             size = first.found.content_end - first.found.start - (finish - begin) + content.length
             if size <= self._config.long_row_threshold:
                 inserted = self._table.content_bytes(content, 0, content.length).decode("utf-8", SURROGATE_ESCAPE)
                 patch = first.text[: first.column] + inserted + first.text[last.column :]
-        self._after_edit(first.row, patch)
+        self._after_edit(first.row, last.row, row_delta, replacement, patch)
         replaced = ""
         if removed.length <= REPLACED_TEXT_LIMIT:
             replaced = self._table.content_bytes(removed, 0, removed.length).decode("utf-8", SURROGATE_ESCAPE)
         return EditResult(end_location, replaced, removed)
 
-    def _relocate(self, end_offset: int) -> Location | None:
-        """Row and column of `end_offset` after an edit that merged characters: the characters that start before it, found by re-decoding its row.
+    def _crlf_formed(self, content: Content, left: bytes, right: bytes) -> int:
+        """Number of CR and LF pairs that an edit joined at its two junctions into one CRLF terminator (each one removes a row)."""
+        if content.length == 0:
+            return int(left[-1:] == b"\r" and right[:1] == b"\n")
+        head = self._table.content_bytes(content, 0, 1)
+        tail = self._table.content_bytes(content, content.length - 1, content.length)
+        return int(left[-1:] == b"\r" and head == b"\n") + int(tail == b"\r" and right[:1] == b"\n")
 
-        Returns `None` when that row is long or not resolvable.
+    def _plan_splice(self, old: LongLineIndex, first: _Located, last: _Located, content: Content) -> LongEdit | None:
+        """Measure an edit inside one long row for `LongLineIndex.spliced`, before the table changes; `None` when the index is rebuilt instead.
+
+        The measures come from the queries that located the edit.
+        A row that is no longer long afterwards, or an insertion over `SPLICE_SYNC_BYTES` (its width would have to be scanned on this thread), is rebuilt.
+
+        Raises:
+            RowUnavailable: The old index cannot answer for the edited columns (they are not scanned yet).
+        """
+        size = first.found.content_end - first.found.start - (last.offset - first.offset) + content.length
+        if size <= self._config.long_row_threshold or content.length > SPLICE_SYNC_BYTES:
+            return None
+        disp_first = old.try_char_to_disp(first.column)
+        disp_last = old.try_char_to_disp(last.column)
+        if disp_first is None or disp_last is None:
+            msg = f"columns of long row {first.row} are not resolved yet"
+            raise RowUnavailable(msg)
+        text = self._table.content_bytes(content, 0, content.length).decode("utf-8", SURROGATE_ESCAPE)
+        added_disp = advance_disp(text, disp_first, self._config.tab_width) - disp_first
+        return LongEdit(first.offset - first.found.start, last.offset - first.offset, last.column - first.column, disp_last - disp_first, content.length, len(text), added_disp)
+
+    def _splice_index(self, old: LongLineIndex | None, row_start: int, size: int, edit: LongEdit) -> LongLineIndex | None:
+        """Build the index of the edited row from `old` (design 6.2); `None` when that fails, and the row is indexed again from scratch when asked for."""
+        if old is None:
+            return None
+        rows = self._table.row_source(row_start, row_start + size)
+        try:
+            return LongLineIndex.spliced(old, rows, edit, autostart=False)
+        except (ValueError, SourceChanged):
+            return None
+
+    def _relocate(self, end_offset: int, first: _Located, content: Content, old: LongLineIndex | None) -> Location:
+        """Row and column of `end_offset` after an edit that merged characters: the characters that start before it.
+
+        The row is found in the table and its bytes up to `end_offset` are re-decoded when that is at most `RELOCATE_LIMIT` bytes.
+        Otherwise, for a row that starts in the edited row, the old long index of that row gives an exact character boundary shortly before the edit and the
+        decode starts there.
+        When neither is possible (an inserted text over the limit, or a row that the table cannot resolve) the column is approximate: the characters of the
+        inserted text counted on their own, added to the column of the edit.
+        Such a column can be off by the few characters that merged with the neighbours.
         """
         if self._table.read(end_offset - 1, 2) == _CRLF:
             end_offset += 1  # the edit joined a CR and an LF: the location is after the LF
         found = self._table.row_at_offset(end_offset)
+        approximate = (first.row + content.breaks, content.tail_chars if content.breaks else first.column + content.tail_chars)
         if found is None:
-            return None
+            return approximate
         row, span = found
-        if span.content_end - span.start > self._config.long_row_threshold:
-            return None
-        text = self._table.read(span.start, span.content_end - span.start).decode("utf-8", SURROGATE_ESCAPE)
+        anchor, column = span.start, 0
+        if end_offset - anchor > RELOCATE_LIMIT:
+            if old is None or row != first.row or content.breaks:
+                return approximate
+            column = max(first.column - 2 * _MERGE_CONTEXT, 0)
+            relative = old.try_char_to_byte(column)
+            if relative is None or end_offset - (span.start + relative) > RELOCATE_LIMIT:
+                return approximate
+            anchor = span.start + relative
+        text = self._table.read(anchor, end_offset - anchor + _MERGE_CONTEXT + 1).decode("utf-8", SURROGATE_ESCAPE)
         used = 0
-        column = 0
         for char in text:
-            if span.start + used >= end_offset:
+            if anchor + used >= end_offset:
                 break
             used += utf8_len(char)
             column += 1
         return (row, column)
 
-    def _after_edit(self, start_row: int, patch: str | None) -> None:
-        """Clear the caches from the row above the start row, retire the long indexes from the start row on, patch the edited row."""
-        floor = max(start_row - 1, 0)
+    def _after_edit(self, first_row: int, last_row: int, row_delta: int, replacement: LongLineIndex | None, patch: str | None) -> None:
+        """Clear the caches from the row above the start row, re-key and retire the long indexes, patch the edited row (design 6.3).
+
+        Rows below the edit keep their index under the key shifted by `row_delta`, the rows of the edit are retired (an index is cancelled and joined by
+        the reaper) unless `replacement` is the spliced index of the single edited row, and the rows above stay.
+        """
+        floor = max(first_row - 1, 0)
         with self._lock:
             for cache in (self._ranges, self._texts):
                 if cache:
                     for key in [key for key in cache if key >= floor]:
                         del cache[key]
-            for key in [key for key in self._long if key >= start_row]:
-                index = self._long.pop(key)
-                index.cancel()
-                self._retired.append(index)
-            if start_row <= 1:
+            rekeyed: OrderedDict[int, LongLineIndex] = OrderedDict()
+            for key, index in self._long.items():
+                if key < first_row:
+                    rekeyed[key] = index
+                elif key > last_row:
+                    rekeyed[key + row_delta] = index
+                elif key == first_row and replacement is not None:
+                    rekeyed[key] = replacement
+                    index.cancel()
+                    self._retired.append(index)
+                else:
+                    index.cancel()
+                    self._retired.append(index)
+            self._long = rekeyed
+            if first_row <= 1:
                 self._newline = None
             if patch is not None:
-                self._texts[start_row] = patch
+                self._texts[first_row] = patch
                 self._seen_width = max(self._seen_width, advance_disp(patch, 0, self._config.tab_width))
-            overflow = [self._retired.pop(0) for _ in range(max(0, len(self._retired) - _MAX_RETIRED))]
-            if overflow:
-                reaper = threading.Thread(target=self._join_all, args=(overflow,), name="lazy-reaper", daemon=True)
-                self._reapers = [t for t in self._reapers if t.is_alive()]
-                self._reapers.append(reaper)
-                reaper.start()
+            overflow = self._take_overflow()
+            subscribers = list(self._subscribers)
+            closed = self._closed
+        if replacement is not None and not closed:
+            for callback in subscribers:
+                replacement.subscribe(callback)
+            replacement.start()
+        self._reap(overflow)
 
     def attach_syntax(self, syntax: SyntaxAwareDocument) -> None:
         """Delegate `prepare_query` and `query_syntax_tree` to `syntax`, a parse of the whole text used for highlighting only (never edited)."""

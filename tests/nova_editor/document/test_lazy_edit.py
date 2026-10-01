@@ -434,13 +434,7 @@ def run_fuzz(seed: int, config: LazyConfig, steps: int, *, initial: int, insert:
             inserted = random_text(rng, insert) if rng.randint(0, 4) else ""
             trial = RefText(ref.text)
             expected_end = trial.replace_range(start, end, inserted)
-            try:
-                result = doc.replace_range(start, end, inserted)
-            except RowUnavailable:
-                # Only an edit that merges UTF-8 characters inside a long row is refused (until ACT4 Task 8); it must leave the document unchanged.
-                assert config is LONG_ROWS
-                assert_same(doc, ref, rng)
-                continue
+            result = doc.replace_range(start, end, inserted)
             ref.text = trial.text
             assert result.end_location == expected_end, (seed, start, end, inserted)
             assert_same(doc, ref, rng)
