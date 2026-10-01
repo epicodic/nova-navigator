@@ -215,9 +215,23 @@ class LazyWrappedDocument(WrappedDocument):
         raise NotImplementedError(msg)
 
     def wrap_range(self, start: Location, old_end: Location, new_end: Location) -> None:
-        """Not available: lazy documents are read-only."""
-        msg = "read-only until ACT4"
-        raise NotImplementedError(msg)
+        """Forget what an edit at `start` may have changed: drop the row caches and the measured blocks from the block of the start row on.
+
+        Rows shift after an edit, so every cache keyed by row is dropped; the blocks above the start row keep their measurements.
+        `old_end` and `new_end` are not needed because everything below the start is re-measured on demand.
+        """
+        del old_end, new_end
+        self._short_rows.clear()
+        self._disp_cache.clear()
+        first = max(start[0], 0) // BLOCK_ROWS
+        stale = [block for block in self._blocks if block >= first]
+        for block in stale:
+            del self._blocks[block]
+            self._keys.remove(block)
+        self._anchor = min(self._anchor, first)
+        self._min_height = 0
+        self._count_seen = -1
+        self._dirty = True
 
     # -- per-row wrapping ---------------------------------------------------------------------
     def _short_row(self, row: int) -> _ShortRow:

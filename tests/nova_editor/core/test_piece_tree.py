@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tracemalloc
 from bisect import bisect_right
+from typing import cast
 
 import pytest
 from hypothesis import given, settings
@@ -12,8 +13,8 @@ from hypothesis.stateful import RuleBasedStateMachine, initialize, invariant, ru
 
 from nova_editor.core import Content, PieceTree, combine, make_piece
 from nova_editor.core.piece_tree import _Inner
-from nova_editor.core.pieces import EMPTY_AGGREGATE, Aggregate, Piece, aggregate_of_bytes, merge_pieces, tail_chars_of
-from tests.nova_editor.core.reference import ALPHABET, Rng, Sources, break_ends, inside_crlf, tail_chars
+from nova_editor.core.pieces import EMPTY_AGGREGATE, Aggregate, Piece, PieceSource, aggregate_of_bytes, merge_pieces, tail_chars_of
+from tests.nova_editor.core.reference import ALPHABET, FakeSource, Rng, Sources, break_ends, inside_crlf, tail_chars
 
 chunks = st.lists(st.sampled_from(ALPHABET), max_size=8).map(b"".join)
 
@@ -388,3 +389,18 @@ def test_incrementally_built_tree_memory_stays_below_120_bytes_per_piece() -> No
     used = sum(stat.size_diff for stat in after.compare_to(before, "filename"))
     assert tree.piece_count == count
     assert used / count <= 120, used / count
+
+
+def test_tail_chars_reads_only_the_last_row_part_of_a_large_piece() -> None:
+    data = b"head\r\n" + b"x" * 1_000_000 + b"\n" + "é".encode() * 6000 + b"\xe2\x82"
+    source = FakeSource(data)
+    reads: list[int] = []
+
+    class Counting:
+        def read(self, a: int, b: int) -> bytes:
+            reads.append(b - a)
+            return source.read(a, b)
+
+    piece = make_piece(source, 1, 0, len(data))
+    assert tail_chars_of([piece], lambda _src: cast("PieceSource", Counting())) == 6000 + 2
+    assert sum(reads) <= 4 * 4096

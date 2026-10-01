@@ -257,6 +257,17 @@ class PieceTable:
                 break
         return b"".join(parts)
 
+    def byte_content(self, offset: int) -> Content:
+        """Return the single byte at `offset` as `Content` (one piece, no data read); unlike `content` the byte may be half of a CRLF.
+
+        Raises:
+            ValueError: when `offset` is outside the document.
+        """
+        for piece, lo, _ in self.iter_range(offset, offset + 1):
+            sub = make_piece(self._source_of(piece.src), piece.src, piece.a + lo, piece.a + lo + 1)
+            return Content.from_pieces([sub], 0)
+        raise ValueError(f"offset {offset} outside 0..{self.length}")
+
     def content(self, start: int, end: int) -> Content:
         """Return the bytes `[start, end)` as `Content` without reading any data (the pieces may be split at the two boundaries).
 

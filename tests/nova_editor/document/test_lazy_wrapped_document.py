@@ -244,8 +244,6 @@ class TestGridWrap:
             lazy.get_offsets(-1)
         with pytest.raises(NotImplementedError):
             _ = lazy.lines
-        with pytest.raises(NotImplementedError):
-            lazy.wrap_range((0, 0), (0, 0), (0, 0))
 
 
 class TestVerticalEstimate:
@@ -481,3 +479,27 @@ def test_one_call_decodes_at_most_the_byte_budget_of_short_rows(tmp_path: Path, 
     assert max(decoded_per_call) > 0
     for row in (0, 100, 700, len(lengths) - 2):
         assert wrapped.y_of_row(row + 1) - wrapped.y_of_row(row) == len(stock.get_offsets(row)) + 1
+
+
+def test_wrap_range_drops_caches_and_remeasures_below_the_edit() -> None:
+    doc = LazyDocument.from_text("\n".join(f"row {i} " + "word " * (i % 7) for i in range(BLOCK_ROWS * 4)), _config())
+    _OPEN.append(doc)
+    lazy = LazyWrappedDocument(doc, 12, TAB)
+    top_before = lazy.y_of_row(3)
+    lazy.y_of_row(BLOCK_ROWS * 3 + 1)
+    kept = {block: lazy._blocks[block] for block in lazy._blocks if block < 2}
+    assert lazy._short_rows
+    doc.replace_range((BLOCK_ROWS * 2 + 5, 0), (BLOCK_ROWS * 2 + 5, 0), "inserted " * 10 + "\n" + "x\n")
+    lazy.wrap_range((BLOCK_ROWS * 2 + 5, 0), (BLOCK_ROWS * 2 + 5, 0), (BLOCK_ROWS * 2 + 7, 0))
+    assert not lazy._short_rows
+    assert not lazy._disp_cache
+    assert all(block < 2 for block in lazy._blocks)
+    for block, measured in kept.items():
+        assert lazy._blocks[block] is measured
+    assert lazy.y_of_row(3) == top_before
+    last = doc.line_count - 1
+    ys = [lazy.y_of_row(row) for row in range(0, last + 1, 7)]
+    assert ys == sorted(ys)
+    expected = sum(len(lazy.get_offsets(row)) + 1 for row in range(doc.line_count))
+    assert lazy.height >= doc.line_count
+    assert abs(lazy.height - expected) <= expected // 5
