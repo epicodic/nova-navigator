@@ -98,7 +98,7 @@ async def test_small_file_document_delegates_to_the_parser(tmp_path: Path) -> No
     query = doc.prepare_query("(identifier) @name")
     assert query is not None
     assert len(doc.query_syntax_tree(query)["name"]) > 0
-    assert lazy.is_lazy
+    assert doc.has_syntax
     assert not lazy.read_only
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import re
+import stat
 import threading
 import time
 from collections import defaultdict
@@ -25,13 +26,11 @@ from textual.expand_tabs import expand_text_tabs_from_widths
 from textual.screen import Screen
 from textual.style import Style as ContentStyle
 
-from nova_editor.core import ByteSource
+from nova_editor.core import ByteSource, BytesSource, PreadSource
 from nova_editor.core import SourceChanged as CoreSourceChanged
-from nova_editor.core.text_width import utf8_len
+from nova_editor.core.text_width import SURROGATE_ESCAPE, utf8_len
 from nova_editor.document._cursor_anchor import CursorMachine, CursorState, Op, Verdict
 from nova_editor.document._document import (
-    Document,
-    DocumentBase,
     EditResult,
     Location,
     Selection,
@@ -41,13 +40,12 @@ from nova_editor.document._document_navigator import DocumentNavigator
 from nova_editor.document._edit import Edit
 from nova_editor.document._history import EditHistory
 from nova_editor.document._lazy_config import LazyConfig
-from nova_editor.document._lazy_document import LazyDocument, RowUnavailable
+from nova_editor.document._lazy_document import LazyDocument, RowUnavailable, WholeLineAccess
 from nova_editor.document._lazy_wrapped_document import LazyWrappedDocument
 from nova_editor.document._syntax_aware_document import (
     SyntaxAwareDocument,
     SyntaxAwareDocumentError,
 )
-from nova_editor.document._wrapped_document import WrappedDocument
 from nova_editor.widget._lazy_window import WindowText, section_window, window_text
 from nova_editor.widget._long_row_cursor import PROGRESS_BELOW_ONE, LongRowCursor
 from nova_editor.widget._text_area_theme import TextAreaTheme
@@ -70,6 +68,15 @@ _WORD_WINDOW = 8192
 
 DEFAULT_HIGHLIGHT_LIMIT = 1_048_576
 """Bytes of a lazily opened file up to which syntax highlighting is attempted."""
+
+SMALL_FILE_LIMIT = 1_048_576
+"""Files up to this size are read into memory by `open()` and scanned on the calling thread."""
+
+TEXT_LIMIT = 8 * 1024 * 1024
+"""Documents up to this size (bytes) are returned by `NovaTextArea.text`; above it the property is `""`."""
+
+BRACKET_SEARCH_LIMIT = 1_048_576
+"""Documents up to this size (bytes) get bracket matching; above it a search would decode too many rows."""
 
 _DEFAULT_INDENT_WIDTH = 4
 """Default of `NovaTextArea.indent_width`; `open()` gives it to the long-row indexes of the lazy document."""
@@ -192,6 +199,17 @@ class TextAreaLanguage:
 
     highlight_query: str
     """The tree-sitter highlight query to use for syntax highlighting."""
+
+
+def _open_source(path: Path) -> ByteSource:
+    """Return the source of a file: its bytes in memory up to `SMALL_FILE_LIMIT` (the file is not held open), otherwise a `PreadSource`."""
+    try:
+        status = path.stat()
+    except OSError:
+        return PreadSource(path)  # raises the error `open()` has always raised
+    if stat.S_ISREG(status.st_mode) and status.st_size <= SMALL_FILE_LIMIT:
+        return BytesSource(path.read_bytes())
+    return PreadSource(path)
 
 
 class NovaTextArea(ScrollView):
@@ -805,7 +823,7 @@ NovaTextArea {
             compact: Enable compact style (without borders).
             highlight_cursor_line: Highlight the line under the cursor.
             placeholder: Text to display when there is not content.
-            _prebuilt_document: A lazy document built by `open()`; skips `Document(text)`.
+            _prebuilt_document: A lazy document built by `open()`; `text` is then ignored.
         """
         super().__init__(name=name, id=id, classes=classes, disabled=disabled)
 
@@ -847,12 +865,6 @@ NovaTextArea {
         self._highlight_query: Query | None = None
         """The query that's currently being used for highlighting."""
 
-        self._lazy: LazyDocument | None = _prebuilt_document
-        """The lazy document of a widget created by `open()`, else None."""
-
-        self._long_cursor: LongRowCursor | None = LongRowCursor(_prebuilt_document) if _prebuilt_document is not None else None
-        """Cursor machine and provisional layout of the current long row (lazy documents only)."""
-
         self._edit_refused = False
         """True when the most recent `edit()` was refused (a position was not resolved); the keyboard helpers then report no edit."""
 
@@ -877,13 +889,20 @@ NovaTextArea {
         self._estimate_timer: Timer | None = None
         self._estimating = False
         self._requested_language: str | None = None
+        self._applied_language: str | None = None
         self._highlight_limit = DEFAULT_HIGHLIGHT_LIMIT
 
-        self.document: DocumentBase = _prebuilt_document if _prebuilt_document is not None else Document(text)
-        """The document this widget is currently editing."""
+        self.document: LazyDocument = _prebuilt_document if _prebuilt_document is not None else self._text_document(text, _DEFAULT_INDENT_WIDTH)
+        """The document this widget is currently editing: always a lazy document over a piece table (`text=` and small files included)."""
 
-        self.wrapped_document: WrappedDocument = LazyWrappedDocument(_prebuilt_document, tab_width=_DEFAULT_INDENT_WIDTH) if _prebuilt_document is not None else WrappedDocument(self.document)
+        self.wrapped_document: LazyWrappedDocument = LazyWrappedDocument(self.document, tab_width=_DEFAULT_INDENT_WIDTH)
         """The wrapped view of the document."""
+
+        self._long_cursor: LongRowCursor = LongRowCursor(self.document)
+        """Cursor machine and provisional layout of the current long row."""
+
+        self._mounted_scan = False
+        """True once the scan machinery (estimate timer, index subscription) of the widget runs; a replaced document is then wired at once."""
 
         self.navigator: DocumentNavigator = DocumentNavigator(self.wrapped_document)
         """Queried to determine where the cursor should move given a navigation
@@ -902,7 +921,7 @@ NovaTextArea {
 
         self._line_cache: LRUCache[tuple, Strip] = LRUCache(1024)
 
-        self._set_document(text, language)
+        self._finish_document(language, reset_cursor=False)
 
         self.language = language
         self.theme = theme
@@ -930,8 +949,10 @@ NovaTextArea {
         highlight_limit: int = DEFAULT_HIGHLIGHT_LIMIT,
         **kwargs: Any,
     ) -> NovaTextArea:
-        """Open a file lazily: an editable widget whose rows are decoded on demand and whose long rows are only shown through windows.
+        """Open a file: an editable widget whose rows are decoded on demand and whose long rows are only shown through windows.
 
+        A file of up to `SMALL_FILE_LIMIT` (1 MiB) is read into memory (no file stays open) and scanned on the calling thread, so its counts are
+        exact at once; a larger file is read on demand through a `PreadSource` and scanned in the background.
         The widget owns the source: `close()` (also called on unmount) cancels the scans and closes it.
         The tab width of the long-row indexes is the default `indent_width` (`LazyConfig.tab_width` is replaced by it); changing
         `indent_width` later does not change how long rows are measured.
@@ -949,9 +970,8 @@ NovaTextArea {
         """
         lazy_config = dataclasses.replace(config or LazyConfig(), tab_width=_DEFAULT_INDENT_WIDTH)
         if isinstance(source, str | Path):
-            document = LazyDocument.from_path(source, lazy_config)
-        else:
-            document = LazyDocument(source, lazy_config)
+            source = _open_source(Path(source))
+        document = LazyDocument(source, lazy_config)
         try:
             area = cls(soft_wrap=soft_wrap, _prebuilt_document=document, **kwargs)
         except BaseException:
@@ -960,26 +980,22 @@ NovaTextArea {
         area._requested_language = language
         area._highlight_limit = highlight_limit
         try:
-            area._enable_lazy_highlighting(language, highlight_limit)
+            area._attach_highlighting(language, highlight_limit)
+            area._build_highlight_map()
         except BaseException:
             document.close()
             raise
         return area
 
     @property
-    def is_lazy(self) -> bool:
-        """True when the widget shows a lazily opened document (`open()`)."""
-        return self._lazy is not None
-
-    @property
     def is_estimating(self) -> bool:
-        """True while the size re-estimate timer runs, i.e. while an index of a lazy document is still growing."""
+        """True while the size re-estimate timer runs, i.e. while an index is still growing."""
         return self._estimating
 
     def close(self) -> None:
-        """Cancel every scan of a lazy document and close its source (joining and closing run on a background thread, see `LazyDocument.close`); idempotent, a no-op for stock documents."""
-        lazy = self._lazy
-        if lazy is None or self._lazy_closed:
+        """Cancel every scan of the document and close its source (joining and closing run on a background thread, see `LazyDocument.close`); idempotent."""
+        lazy = self.document
+        if self._lazy_closed:
             return
         self._lazy_closed = True
         self._estimating = False
@@ -1005,9 +1021,9 @@ NovaTextArea {
 
     def _ensure_estimating(self) -> None:
         """Resume the size re-estimate timer when an index of a lazy document grows again (a long row was reached)."""
-        lazy = self._lazy
+        lazy = self.document
         timer = self._estimate_timer
-        if lazy is None or timer is None or self._estimating or self._lazy_closed or self._source_failed:
+        if timer is None or self._estimating or self._lazy_closed or self._source_failed:
             return
         if self._needs_estimates(lazy):
             self._estimating = True
@@ -1017,13 +1033,12 @@ NovaTextArea {
         """Whether sizes can still change: an index is growing, or the wrapped estimate still holds rows that a spent budget left estimated."""
         if lazy.is_growing():
             return True
-        wrapped = self.wrapped_document
-        return isinstance(wrapped, LazyWrappedDocument) and wrapped.pending_refinement
+        return self.wrapped_document.pending_refinement
 
     def _estimate_tick(self) -> None:
         """Re-estimate the virtual size while an index grows; pause the timer after the refresh that follows the last progress."""
-        lazy = self._lazy
-        if lazy is None or self._lazy_closed or self._source_failed:
+        lazy = self.document
+        if self._lazy_closed or self._source_failed:
             self._estimating = False
             if self._estimate_timer is not None:
                 self._estimate_timer.pause()
@@ -1049,10 +1064,8 @@ NovaTextArea {
         pending cursor keeps its screen position.
         """
         growing = self._needs_estimates(lazy)
-        wrapped = self.wrapped_document
         try:
-            if isinstance(wrapped, LazyWrappedDocument):
-                wrapped.refresh_estimates()
+            self.wrapped_document.refresh_estimates()
             self._refresh_size()
         except CoreSourceChanged as error:
             self._fail_source(str(error))
@@ -1075,7 +1088,7 @@ NovaTextArea {
     def cursor_state(self) -> CursorState:
         """State of the cursor: RESOLVED (exact column), PROVISIONAL (exact byte, estimated column) or PENDING (a jump waits for the scan).
 
-        Always RESOLVED off long rows and for stock documents.
+        Always RESOLVED off long rows.
         """
         machine = self._track_cursor()
         return CursorState.RESOLVED if machine is None else machine.state
@@ -1085,8 +1098,7 @@ NovaTextArea {
 
         Unlike `cursor_state` it never starts a scan: a cursor that has not been tracked yet reports `(RESOLVED, None)`. For probes and benchmarks.
         """
-        cursor = self._long_cursor
-        machine = None if cursor is None else cursor.machine
+        machine = self._long_cursor.machine
         if machine is None:
             return CursorState.RESOLVED, None
         return machine.state, machine.anchor.byte_rel
@@ -1100,10 +1112,10 @@ NovaTextArea {
     def cursor_byte_offset(self) -> int | None:
         """Byte offset of the cursor from the start of the document; exact in every state (`None` only when unknown)."""
         row, column = self.cursor_location
-        lazy = self._lazy
+        lazy = self.document
         machine = self._track_cursor()
-        if lazy is None or machine is None:
-            return self.document.byte_offset(row, column)
+        if machine is None:
+            return lazy.byte_offset(row, column)
         try:
             start = lazy.byte_offset(row, 0)
             if start is None:
@@ -1130,8 +1142,8 @@ NovaTextArea {
             self._jump = None
             self._set_progress(None)
         cursor = self._long_cursor
-        machine = None if cursor is None else cursor.machine
-        if cursor is None or machine is None or machine.state is not CursorState.PENDING:
+        machine = cursor.machine
+        if machine is None or machine.state is not CursorState.PENDING:
             return
         machine.cancel()
         cursor.layout = None
@@ -1148,13 +1160,12 @@ NovaTextArea {
 
     @property
     def line_count_exact(self) -> bool:
-        """True when `line_count` is exact: always for stock documents, after the line scan completed for lazy ones."""
-        lazy = self._lazy
-        return lazy is None or lazy.snapshot().complete
+        """True when `line_count` is exact: after the line scan completed (at once for a source up to 1 MiB)."""
+        return self.document.snapshot().complete
 
     @property
     def indexing_complete(self) -> bool:
-        """True when nothing is left to scan for the line count (always True for stock documents)."""
+        """True when nothing is left to scan for the line count."""
         return self.line_count_exact
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
@@ -1170,7 +1181,7 @@ NovaTextArea {
     def _cursor_unresolved(self) -> bool:
         """Whether the cursor of a long row is provisional or pending (waits for the scan to resolve it)."""
         cursor = self._long_cursor
-        machine = None if cursor is None else cursor.machine
+        machine = cursor.machine
         return machine is not None and machine.state is not CursorState.RESOLVED
 
     def _has_pending(self) -> bool:
@@ -1178,7 +1189,7 @@ NovaTextArea {
         if self._jump is not None:
             return True
         cursor = self._long_cursor
-        machine = None if cursor is None else cursor.machine
+        machine = cursor.machine
         return machine is not None and machine.state is CursorState.PENDING
 
     def goto_line(self, line: int) -> None:
@@ -1217,7 +1228,7 @@ NovaTextArea {
         if jump is None or self._lazy_closed:
             return
         try:
-            progress = self._drive_stock(jump) if self._lazy is None else self._drive_lazy(jump)
+            progress = self._drive_lazy(jump)
         except CoreSourceChanged as error:
             self._fail_source(str(error))
             self._reject(str(error))
@@ -1235,33 +1246,8 @@ NovaTextArea {
         row, column = self.cursor_location
         self.post_message(self.JumpCompleted(row, column, self).set_sender(self))
 
-    def _drive_stock(self, jump: _Jump) -> float | None:
-        """Goto on an ordinary document: everything is known, so the request is answered at once."""
-        document = self.document
-        if jump.row is not None:
-            if jump.row >= document.line_count:
-                self._reject(f"line {jump.row + 1} is beyond the last line ({document.line_count})")
-                return None
-            self.move_cursor((jump.row, 0))
-            self._complete_jump()
-            return None
-        offset = jump.byte or 0
-        newline = len(document.newline.encode())
-        start = 0
-        for row in range(document.line_count):
-            text = document.get_line(row)
-            size = utf8_len(text)
-            if offset <= start + size:
-                self.move_cursor((row, _column_of_byte(text, offset - start)))
-                self._complete_jump()
-                return None
-            start += size + newline
-        self._reject(f"byte offset {offset} is beyond the end of the document")
-        return None
-
     def _drive_lazy(self, jump: _Jump) -> float | None:
-        lazy = self._lazy
-        assert lazy is not None
+        lazy = self.document
         snap = lazy.snapshot()
         if snap.error is not None:
             raise snap.error
@@ -1339,8 +1325,8 @@ NovaTextArea {
         """UI thread: react to scan progress (line count, cursor reconcile, pending jump, messages at most 10 per second)."""
         with self._progress_lock:
             self._progress_outstanding = False
-        lazy = self._lazy
-        if lazy is None or self._lazy_closed or self._source_failed:
+        lazy = self.document
+        if self._lazy_closed or self._source_failed:
             return
         growing = True
         if not self._estimating or self._cursor_unresolved() or self._jump is not None:
@@ -1365,7 +1351,7 @@ NovaTextArea {
     def _track_cursor(self) -> CursorMachine | None:
         """Return the cursor machine of the current long row (created on entering the row); `None` off long rows."""
         cursor = self._long_cursor
-        if cursor is None or self._lazy_closed or self._source_failed:
+        if self._lazy_closed or self._source_failed:
             return None
         row, column = self.cursor_location
         try:
@@ -1391,14 +1377,14 @@ NovaTextArea {
         if self.navigator.end_is_known(row):
             return True
         wrapped = self.wrapped_document
-        if self.soft_wrap and isinstance(wrapped, LazyWrappedDocument):
+        if self.soft_wrap:
             return wrapped.section_start(row, wrapped.section_index(row, column) + 1) is not None
         return False
 
     def _machine_verdict(self, machine: CursorMachine, op: Op) -> Verdict | None:
         """Ask the machine about `op`; `None` means the ordinary (exact) code path must handle it."""
         cursor = self._long_cursor
-        index = None if cursor is None else cursor.index
+        index = cursor.index
         if index is None:
             return None
         row, column = self.cursor_location
@@ -1425,7 +1411,7 @@ NovaTextArea {
         """
         cursor = self._long_cursor
         machine = self._track_cursor()
-        if cursor is None or machine is None or cursor.index is None:
+        if machine is None or cursor.index is None:
             return False
         if machine.state is CursorState.PENDING:
             return True
@@ -1458,10 +1444,9 @@ NovaTextArea {
             scroll_x: The horizontal scroll before `scroll_cursor_visible` ran.
         """
         cursor = self._long_cursor
-        machine = None if cursor is None else cursor.machine
-        if cursor is None or machine is None or machine.state is CursorState.RESOLVED or self.soft_wrap:
-            if cursor is not None:
-                cursor.layout = None
+        machine = cursor.machine
+        if machine is None or machine.state is CursorState.RESOLVED or self.soft_wrap:
+            cursor.layout = None
             return
         if machine.state is CursorState.PENDING and cursor.layout is None:
             return
@@ -1487,8 +1472,8 @@ NovaTextArea {
         replayed afterwards, a pending jump moves the cursor to its target.
         """
         cursor = self._long_cursor
-        machine = None if cursor is None else cursor.machine
-        if cursor is None or machine is None or machine.state is CursorState.RESOLVED or self._lazy_closed or self._source_failed:
+        machine = cursor.machine
+        if machine is None or machine.state is CursorState.RESOLVED or self._lazy_closed or self._source_failed:
             return None
         before = machine.anchor.byte_rel
         keep_view = cursor.layout is not None
@@ -1534,7 +1519,7 @@ NovaTextArea {
         """Map the cursor by its byte anchor when `soft_wrap` changed: a provisional cursor waits for the scan in wrap mode."""
         cursor = self._long_cursor
         machine = self._track_cursor()
-        if cursor is None or machine is None:
+        if machine is None:
             return
         machine.set_wrap(self.soft_wrap)
         if self.soft_wrap:
@@ -1572,16 +1557,14 @@ NovaTextArea {
 
     def _covered_mouse_target(self, event: MouseEvent) -> Location | None:
         """Return the location under the mouse, `None` when it lies on a long row region that is not scanned or not laid out exactly."""
-        lazy = self._lazy
+        lazy = self.document
         wrapped = self.wrapped_document
         target = self.get_target_document_location(event)
-        if lazy is None or not isinstance(wrapped, LazyWrappedDocument):
-            return target
         row = target[0]
         if not lazy.is_long(row):
             return target
         cursor = self._long_cursor
-        if cursor is not None and not self.soft_wrap and cursor.provisional_layout(row) is not None:
+        if not self.soft_wrap and cursor.provisional_layout(row) is not None:
             return None
         scroll_x, scroll_y = self.scroll_offset
         x = event.x - self.gutter_width + scroll_x - self.gutter.left
@@ -1805,7 +1788,7 @@ NovaTextArea {
         """Recompute the (x, y) coordinate of the cursor in the wrapped document (a provisional cursor row: from its window layout)."""
         self._cursor_offset = self.wrapped_document.location_to_offset(self.cursor_location)
         cursor = self._long_cursor
-        layout = None if cursor is None or self.soft_wrap else cursor.provisional_layout(self.cursor_location[0])
+        layout = None if self.soft_wrap else cursor.provisional_layout(self.cursor_location[0])
         if layout is not None:
             self._cursor_offset = Offset(layout.left_x + layout.cursor_cells, self._cursor_offset.y)
 
@@ -1819,10 +1802,17 @@ NovaTextArea {
         Returns:
             The `Location` of the matching bracket, or `None` if it's not found.
             If the character is not available for bracket matching, `None` is returned.
-            Always `None` for a lazily opened document.
+            Always `None` for a document above `BRACKET_SEARCH_LIMIT` bytes (a search would decode arbitrarily many rows).
         """
-        if self._lazy is not None:
-            return None  # a search would decode arbitrarily many rows
+        if self.document.length > BRACKET_SEARCH_LIMIT:
+            return None
+        try:
+            return self._search_matching_bracket(bracket, search_from)
+        except (WholeLineAccess, RowUnavailable):
+            return None
+
+    def _search_matching_bracket(self, bracket: str, search_from: Location) -> Location | None:
+        """Scan for the bracket that matches `bracket` (rows of a document up to `BRACKET_SEARCH_LIMIT` bytes)."""
         match_location = None
         bracket_stack: list[str] = []
         if bracket in _OPENING_BRACKETS:
@@ -1861,9 +1851,9 @@ NovaTextArea {
 
     def _watch_language(self, language: str | None) -> None:
         """When the language is updated, update the type of document."""
-        if self._lazy is not None:
-            return  # a lazy document is highlighted only through `open(language=...)`
-        self._set_document(self.document.text, language)
+        if language == self._applied_language:
+            return  # the constructor or `open()` already applied it
+        self._finish_document(language, reset_cursor=True)
 
     def _watch_show_line_numbers(self) -> None:
         """The line number gutter contributes to virtual size, so recalculate."""
@@ -2008,7 +1998,7 @@ NovaTextArea {
         # If this is the currently loaded language, reload the document because
         # it could be a different highlight query for the same language.
         if name == self.language:
-            self._set_document(self.text, name)
+            self._finish_document(name, reset_cursor=True)
 
     def _resolve_language(self, language: str) -> tuple[Language, str]:
         """Return the tree-sitter language and highlight query for a language name.
@@ -2042,66 +2032,23 @@ NovaTextArea {
             )
         return document_language, highlight_query
 
-    def _enable_lazy_highlighting(self, language: str | None, highlight_limit: int) -> None:
-        """Parse a small lazy document once for highlighting; above the limit no parser is created.
+    def _attach_highlighting(self, language: str | None, highlight_limit: int) -> None:
+        """Parse the document once for highlighting (a mirror kept in step by the edits); above the limit, or without a language, no parser is created.
 
         Args:
             language: The requested language, or None for plain text.
             highlight_limit: Largest source (bytes) that is highlighted.
         """
-        lazy = self._lazy
-        if lazy is None or not language:
+        lazy = self.document
+        self._applied_language = language
+        self._highlight_query = None
+        lazy.attach_syntax(None)
+        if not language:
             return
         if lazy.length > highlight_limit:
             log.debug(f"Source of {lazy.length} bytes exceeds the highlight limit of {highlight_limit}; language {language!r} ignored.")
             return
         if not TREE_SITTER:
-            log.warning("tree-sitter not available in this environment. Parsing disabled.")
-            return
-        document_language, highlight_query = self._resolve_language(language)
-        try:
-            syntax = SyntaxAwareDocument(lazy.read_all(highlight_limit), document_language)
-        except SyntaxAwareDocumentError:
-            log.warning(f"Parser not found for language {document_language!r}. Parsing disabled.")
-            return
-        lazy.attach_syntax(syntax)
-        self._highlight_query = syntax.prepare_query(highlight_query)
-        self._build_highlight_map()
-
-    @property
-    def highlight_active(self) -> bool:
-        """True when syntax highlighting is in effect (a parser and highlight query exist)."""
-        return self._highlight_query is not None
-
-    def _set_document(self, text: str, language: str | None) -> None:
-        """Construct and return an appropriate document.
-
-        Args:
-            text: The text of the document.
-            language: The name of the language to use. This must correspond to a tree-sitter
-                language available in the current environment (e.g. use `python` for `tree-sitter-python`).
-                If None, the document will be treated as plain text.
-        """
-        self._highlight_query = None
-        if self._lazy is not None:
-            self.wrapped_document = LazyWrappedDocument(self._lazy, tab_width=self.indent_width)
-            self.navigator = DocumentNavigator(self.wrapped_document)
-            self._build_highlight_map()
-            self._rewrap_and_refresh_virtual_size()
-            return
-        if TREE_SITTER and language:
-            document_language, highlight_query = self._resolve_language(language)
-            document: DocumentBase
-            try:
-                document = SyntaxAwareDocument(text, document_language)
-            except SyntaxAwareDocumentError:
-                document = Document(text)
-                log.warning(f"Parser not found for language {document_language!r}. Parsing disabled.")
-            else:
-                self._highlight_query = document.prepare_query(highlight_query)
-        elif language and not TREE_SITTER:
-            # User has supplied a language i.e. `NovaTextArea(language="python")`, but they
-            # don't have tree-sitter available in the environment. We fallback to plain text.
             log.warning(
                 "tree-sitter not available in this environment. Parsing disabled.\n"
                 "You may need to install the `syntax` extras alongside textual.\n"
@@ -2111,17 +2058,80 @@ NovaTextArea {
                 "and its highlight query using NovaTextArea.register_language().\n\n"
                 "Falling back to plain text for now."
             )
-            document = Document(text)
-        else:
-            # tree-sitter is available, but the user has supplied None or "" for the language.
-            # Use a regular plain-text document.
-            document = Document(text)
+            return
+        document_language, highlight_query = self._resolve_language(language)
+        try:
+            syntax = SyntaxAwareDocument(lazy.read_all(highlight_limit), document_language)
+        except SyntaxAwareDocumentError:
+            log.warning(f"Parser not found for language {document_language!r}. Parsing disabled.")
+            return
+        lazy.attach_syntax(syntax)
+        self._highlight_query = syntax.prepare_query(highlight_query)
 
+    @property
+    def highlight_active(self) -> bool:
+        """True when syntax highlighting is in effect (a parser and highlight query exist)."""
+        return self._highlight_query is not None
+
+    def _set_document(self, text: str, language: str | None) -> None:
+        """Replace the document by a new lazy document over `text` (BytesSource, scanned at once) and apply the language.
+
+        Args:
+            text: The text of the document.
+            language: The name of the language to use. This must correspond to a tree-sitter
+                language available in the current environment (e.g. use `python` for `tree-sitter-python`).
+                If None, the document will be treated as plain text.
+        """
+        self._replace_document(self._text_document(text, self.indent_width))
+        self._finish_document(language, reset_cursor=True)
+
+    @staticmethod
+    def _text_document(text: str, indent_width: int) -> LazyDocument:
+        """Build the lazy document of `text`: UTF-8 bytes in memory, scanned on the calling thread whatever the size."""
+        data = text.encode("utf-8", SURROGATE_ESCAPE)
+        config = LazyConfig(tab_width=indent_width)
+        config = dataclasses.replace(config, sync_scan_limit=max(config.sync_scan_limit, len(data)))
+        return LazyDocument(BytesSource(data), config)
+
+    def _replace_document(self, document: LazyDocument) -> None:
+        """Swap in a new document: the old one is closed, every state tied to it is reset and the scan machinery is wired to the new one."""
+        old = self.document
+        self._replay_generation += 1
+        self._jump = None
+        self.pending_progress = None
+        self._edit_refused = False
+        self._source_failed = False
+        self._lazy_closed = False
+        self._indexing_announced = False
+        self._line_cache.clear()
         self.document = document
-        self.wrapped_document = WrappedDocument(document, tab_width=self.indent_width)
+        self.wrapped_document = LazyWrappedDocument(document, tab_width=self.indent_width)
         self.navigator = DocumentNavigator(self.wrapped_document)
+        self._long_cursor = LongRowCursor(document)
+        old.close()
+        if self._mounted_scan:
+            self._wire_scan()
+
+    def _wire_scan(self) -> None:
+        """Start observing the scan of the current document: the estimate timer state and the progress subscription."""
+        lazy = self.document
+        self._estimating = self._needs_estimates(lazy)
+        timer = self._estimate_timer
+        if timer is None:
+            self._estimate_timer = self.set_interval(_ESTIMATE_INTERVAL, self._estimate_tick, pause=not self._estimating)
+        elif self._estimating:
+            timer.resume()
+        else:
+            timer.pause()
+        lazy.subscribe(self._index_callback)
+        self._index_callback()  # the scan may have advanced (or ended) before the subscription: announce the current state once
+
+    def _finish_document(self, language: str | None, *, reset_cursor: bool) -> None:
+        """Apply the language to the current document, rebuild the highlights and the layout (and put the cursor at the start)."""
+        self._attach_highlighting(language, self._highlight_limit)
         self._build_highlight_map()
-        self.move_cursor((0, 0))
+        if reset_cursor:
+            self.move_cursor((0, 0))
         self._rewrap_and_refresh_virtual_size()
 
     @property
@@ -2148,9 +2158,6 @@ NovaTextArea {
         Args:
             text: The text to load into the NovaTextArea.
         """
-        if self._lazy is not None:
-            msg = "a lazily opened document is read-only; load_text is not available"
-            raise RuntimeError(msg)
         self.history.clear()
         self._set_document(text, self.language)
         self.post_message(self.Changed(self).set_sender(self))
@@ -2184,7 +2191,7 @@ NovaTextArea {
     @property
     def is_syntax_aware(self) -> bool:
         """True if the NovaTextArea is currently syntax aware - i.e. it's parsing document content."""
-        return isinstance(self.document, SyntaxAwareDocument)
+        return self.document.has_syntax
 
     def _yield_character_locations(self, start: Location) -> Iterable[tuple[str, Location]]:
         """Yields character locations starting from the given location.
@@ -2232,8 +2239,7 @@ NovaTextArea {
             width, height = self.document.get_size(self.indent_width)
             self.virtual_size = Size(width + self.gutter_width + 1, height)
         self._refresh_scrollbars()
-        if self._lazy is not None:
-            self._ensure_estimating()
+        self._ensure_estimating()
 
     @property
     def _draw_cursor(self) -> bool:
@@ -2261,8 +2267,8 @@ NovaTextArea {
         Returns:
             A `rich.Text` object containing the requested line.
         """
-        lazy = self._lazy
-        if lazy is not None and lazy.row_class(line_index) != "short":
+        lazy = self.document
+        if lazy.row_class(line_index) != "short":
             # Medium and long rows are never returned whole: a bounded prefix (the renderer uses windows).
             return Text(lazy.column_slice(line_index, 0, _PREFIX_CHARS), end="", no_wrap=True)
         line_string = self.document.get_line(line_index)
@@ -2283,7 +2289,7 @@ NovaTextArea {
         Returns:
             A rendered line.
         """
-        if self.placeholder and self._lazy is None and not self.text:
+        if self.placeholder and self.document.length == 0:
             placeholder_lines = Content.from_text(self.placeholder).wrap(self.content_size.width)
             if y < len(placeholder_lines):
                 style = self.get_visual_style("text-area--placeholder")
@@ -2327,9 +2333,7 @@ NovaTextArea {
         return Strip.blank(self.size.width, base_style)
 
     def _render_line_guarded(self, y: int) -> Strip:
-        """Render a line; a lazy document renders blank rows when it is closed, failed, or its rows are not resolvable yet."""
-        if self._lazy is None:
-            return self._render_line(y)
+        """Render a line; blank rows when the document is closed, failed, or its rows are not resolvable yet."""
         if self._lazy_closed or self._source_failed:
             return self._blank_strip()
         try:
@@ -2354,7 +2358,7 @@ NovaTextArea {
             crop_start = window.phantom_cells
         else:
             cursor = self._long_cursor
-            window = None if cursor is None else cursor.window(line_index, scroll_x, visible, self.selection.end[1])
+            window = cursor.window(line_index, scroll_x, visible, self.selection.end[1])
             if window is None:
                 window = window_text(lazy, line_index, scroll_x, visible, visible, tab_width)
             crop_start = window.phantom_cells + scroll_x - window.start_disp
@@ -2444,8 +2448,8 @@ NovaTextArea {
 
         line_index, section_offset = line_info
 
-        lazy = self._lazy
-        if lazy is not None and isinstance(wrapped_document, LazyWrappedDocument) and lazy.row_class(line_index) != "short":
+        lazy = self.document
+        if lazy.row_class(line_index) != "short":
             return self._render_window(lazy, wrapped_document, line_index, section_offset)
 
         line = self.get_line(line_index)
@@ -2625,10 +2629,14 @@ NovaTextArea {
 
     @property
     def text(self) -> str:
-        """The entire text content of the document (always `""` for a lazily opened document)."""
-        if self._lazy is not None:
+        """The entire text content of the document, decoded (U+DC80 to U+DCFF stand for invalid bytes), when the document is at most `TEXT_LIMIT` (8 MiB) bytes; `""` above it.
+
+        Reading it is O(size); callers that only need a window use `get_text_range`.
+        """
+        try:
+            return self.document.read_all(TEXT_LIMIT)
+        except WholeLineAccess:
             return ""
-        return self.document.text
 
     @text.setter
     def text(self, value: str) -> None:
@@ -2893,9 +2901,7 @@ NovaTextArea {
     async def on_event(self, event: events.Event) -> None:
         """Tell the scans that the user is interacting (they give way to the UI thread, see `Foreground`), then handle the event."""
         if isinstance(event, events.Key | events.MouseEvent):
-            lazy = self._lazy
-            if lazy is not None:
-                lazy.foreground.touch()
+            self.document.foreground.touch()
         await super().on_event(event)
 
     async def _on_key(self, event: events.Key) -> None:
@@ -2989,12 +2995,9 @@ NovaTextArea {
             self._toggle_cursor_blink_visible,
             pause=not (self.cursor_blink and self.has_focus),
         )
-        lazy = self._lazy
-        if lazy is not None and not self._lazy_closed:
-            self._estimating = self._needs_estimates(lazy)
-            self._estimate_timer = self.set_interval(_ESTIMATE_INTERVAL, self._estimate_tick, pause=not self._estimating)
-            lazy.subscribe(self._index_callback)
-            self._index_callback()  # the scan may have advanced (or ended) before the subscription: announce the current state once
+        self._mounted_scan = True
+        if not self._lazy_closed:
+            self._wire_scan()
 
     def _toggle_cursor_blink_visible(self) -> None:
         """Toggle visibility of the cursor for the purposes of 'cursor blink'."""
@@ -3774,11 +3777,19 @@ NovaTextArea {
             edit_result = self._delete_via_keyboard(start, end)
 
         if edit_result is not None:
+            if not edit_result.replaced_text and edit_result.removed is not None and edit_result.removed.length > 0:
+                # The removed text is above the 64 KiB the result carries; the clipboard keeps its content (undo restores the text).
+                self.notify("Cut text is too large for the clipboard", severity="warning")
+                return
             self.app.copy_to_clipboard(edit_result.replaced_text)
 
     def action_copy(self) -> None:
-        """Copy selection to clipboard."""
-        selected_text = self.selected_text
+        """Copy selection to clipboard (a selection over more than 128 rows or a long-row part over 8192 characters is refused with a warning)."""
+        try:
+            selected_text = self.selected_text
+        except WholeLineAccess:
+            self.notify("Selection is too large to copy", severity="warning")
+            return
         if selected_text:
             self.app.copy_to_clipboard(selected_text)
         else:
