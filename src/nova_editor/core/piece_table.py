@@ -34,6 +34,7 @@ from nova_editor.core.line_index import DEFAULT_MAX_LINES_PER_CALL, LineIndex, L
 from nova_editor.core.original_source import OriginalSource, RowNotIndexed
 from nova_editor.core.piece_tree import PieceTree
 from nova_editor.core.pieces import Content, Piece, PieceSource, make_piece
+from nova_editor.core.row_source import RowSource
 
 _CRLF = b"\r\n"
 
@@ -219,6 +220,15 @@ class PieceTable:
             last_is_cr = self._source.read(self._orig_length - 1, 1) == b"\r"
             piece = Piece(0, tail.a, self._orig_length, 0, tail.row0, tail.first_is_lf, last_is_cr)
             yield piece, max(start - tree_length, 0), end - tree_length
+
+    def row_source(self, start: int, end: int) -> RowSource:
+        """Return a snapshot `ByteSource` of the document bytes `[start, end)`, with offsets relative to `start`.
+
+        The pieces are captured now; later splices do not change it and other threads may read it (design 6.1).
+        Call it on the table's thread: it resolves the piece sources here.
+        """
+        pieces = [piece._replace(a=piece.a + lo, b=piece.a + hi) for piece, lo, hi in self.iter_range(start, end)]
+        return RowSource(pieces, self._source_of)
 
     # ----- editing -------------------------------------------------------------------------------------------------------------------
 

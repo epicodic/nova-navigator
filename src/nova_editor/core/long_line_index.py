@@ -13,6 +13,7 @@ from array import array
 from bisect import bisect_right
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from nova_editor.core.byte_source import ByteSource, SourceChanged
 from nova_editor.core.foreground import Foreground
@@ -29,6 +30,7 @@ from nova_editor.core.text_width import (
 )
 
 CHECKPOINT_CHARS = 65_536
+SPLICE_SYNC_BYTES = 1 << 20
 _WAIT_SLICE = 0.05
 
 
@@ -39,6 +41,38 @@ class Frontier:
     chars: int
     disp: int
     byte_rel: int
+    complete: bool
+
+
+class Edit(NamedTuple):
+    """One replacement inside a row, as `LongLineIndex.spliced` takes it.
+
+    `x_rel` is the byte offset (relative to the row start) of the replaced range, `removed_*` measure the old text of the range and
+    `added_*` the new text.
+    The display measures are the widths of the text when it starts at the display column of `x_rel`.
+    """
+
+    x_rel: int
+    removed_bytes: int
+    removed_chars: int
+    removed_disp: int
+    added_bytes: int
+    added_chars: int
+    added_disp: int
+
+
+@dataclass(frozen=True)
+class _Gap:
+    """Work the scan thread does first after a splice: scan the inserted text, then attach the shifted old tail.
+
+    The gap starts at the last checkpoint (the exact one at the edit) and ends at byte `end_byte`, where the scan must reach
+    `end_chars` and `end_disp`; `tail` holds the shifted checkpoints behind it and `complete` says whether the old scan had finished.
+    """
+
+    end_byte: int
+    end_chars: int
+    end_disp: int
+    tail: tuple[list[int], list[int], list[int]]
     complete: bool
 
 
@@ -63,10 +97,18 @@ class LongLineIndex:
         yield_seconds: float = 0.0,
         foreground: Foreground | None = None,
         autostart: bool = True,
+        resume: tuple[int, int, int] | None = None,
     ) -> None:
-        """Create the index; the background scan starts immediately unless `autostart` is false."""
+        """Create the index; the background scan starts immediately unless `autostart` is false.
+
+        `resume=(chars, disp, byte_rel)` makes the scan continue from a known state at a character boundary instead of the row start.
+        The row start stays the first checkpoint, so queries before the resume point stay exact but decode from the row start.
+        """
         if checkpoint_chars <= 0 or scan_block <= 0 or tab_width <= 0:
             msg = "checkpoint_chars, scan_block and tab_width must be positive"
+            raise ValueError(msg)
+        if resume is not None and not 0 <= resume[2] <= max(end - start, 0):
+            msg = "resume point outside the row"
             raise ValueError(msg)
         self.start_offset = start
         self.end_offset = end
@@ -80,6 +122,11 @@ class LongLineIndex:
         self._cp_chars = array("Q", [0])
         self._cp_disp = array("Q", [0])
         self._cp_byte = array("Q", [0])
+        if resume is not None and resume[2] > 0:
+            self._cp_chars.append(resume[0])
+            self._cp_disp.append(resume[1])
+            self._cp_byte.append(resume[2])
+        self._gap: _Gap | None = None
         self._complete = end <= start
         self._error: BaseException | None = None
         self._cancelled = threading.Event()
@@ -87,6 +134,109 @@ class LongLineIndex:
         self._thread: threading.Thread | None = None
         if autostart:
             self.start()
+
+    @classmethod
+    def spliced(
+        cls,
+        old: LongLineIndex,
+        new_source: ByteSource,
+        edit: Edit | tuple[int, int, int, int, int, int, int],
+        *,
+        autostart: bool = True,
+        scan_block: int | None = None,
+        sync_bytes: int = SPLICE_SYNC_BYTES,
+    ) -> LongLineIndex:
+        """Build the index of the row after one replacement from the index of the row before it, without rescanning the row (design 6.2).
+
+        `new_source` holds the edited row (start 0, its whole length); `edit` describes the replacement in the old row (see `Edit`) and the new bytes
+        must be `old[:x_rel] + inserted + old[x_rel + removed_bytes:]` with a clean decode at both junctions.
+        Checkpoints up to `x_rel` are kept, those inside the removed range are dropped, those behind it are kept shifted by the deltas, and exact
+        checkpoints are added at `x_rel` and at the end of the inserted text.
+        Inserted text longer than one checkpoint step gets interior checkpoints from a scan of its bytes: on the calling thread for at most
+        `sync_bytes`, otherwise on the scan thread, which attaches the shifted tail when it reaches the end of the inserted text; until then the
+        queries inside and behind the gap return `None`.
+        When the old scan frontier lies before the edit only the prefix is kept and the scan resumes from the old frontier on `new_source`.
+        Tab stops behind the edit keep their old alignment (design 6.4): exact when the display width change is a multiple of the tab width.
+        The result is an ordinary index (same queries, `cancel`, `join`, `subscribe`) with the settings of `old`; `old` is left untouched.
+        Raises `SourceChanged` when reading the old row fails.
+        """
+        edit = Edit(*edit)
+        total = new_source.length()
+        index = cls(
+            new_source,
+            0,
+            total,
+            tab_width=old._tab,
+            checkpoint_chars=old._step,
+            scan_block=old._scan_block if scan_block is None else scan_block,
+            yield_seconds=old._yield_seconds,
+            foreground=old._foreground,
+            autostart=False,
+        )
+        if total > 0:
+            index._adopt(old, edit, sync_bytes)
+        if autostart:
+            index.start()
+        return index
+
+    def _adopt(self, old: LongLineIndex, edit: Edit, sync_bytes: int) -> None:
+        """Take over the checkpoints of `old` around `edit` (see `spliced`); runs before the scan thread starts."""
+        with old._cond:
+            chars, disp, byte = list(old._cp_chars), list(old._cp_disp), list(old._cp_byte)
+            old_complete = old._complete
+        x, e = edit.x_rel, edit.x_rel + edit.removed_bytes
+        far = bisect_right(byte, e)  # first checkpoint behind the removed range
+        tail_chars, tail_disp, tail_byte = chars[far:], disp[far:], byte[far:]
+        frontier = byte[-1]
+        if frontier < x or (frontier == x and not old_complete):
+            self._set_checkpoints(chars, disp, byte)  # only the prefix is known: the scan resumes from the old frontier
+            return
+        keep = bisect_right(byte, x)
+        chars, disp, byte = chars[:keep], disp[:keep], byte[:keep]
+        if byte[-1] < x:  # exact checkpoint at the edit
+            at = old.byte_to_char(x)
+            if at is None:
+                raise ValueError("edit position beyond the scanned part of the old index")
+            chars.append(at)
+            disp.append(old._char_disp(at))
+            byte.append(x)
+        d_chars = edit.added_chars - edit.removed_chars
+        d_disp = edit.added_disp - edit.removed_disp
+        d_byte = edit.added_bytes - edit.removed_bytes
+        tail = ([v + d_chars for v in tail_chars], [v + d_disp for v in tail_disp], [v + d_byte for v in tail_byte])
+        end = (chars[-1] + edit.added_chars, disp[-1] + edit.added_disp, x + edit.added_bytes)
+        self._set_checkpoints(chars, disp, byte)
+        # An old scan that stopped inside or at the end of the removed range has no tail; it continues behind the inserted text.
+        gap = _Gap(end[2], end[0], end[1], tail, old_complete)
+        if edit.added_chars <= self._step:
+            self._extend_exact(end)
+            self._attach(gap)
+        elif edit.added_bytes <= sync_bytes:
+            self._scan_span(x, end[2], chars[-1], disp[-1], polite=False)
+            if not self._attach(gap):
+                raise ValueError("edit does not describe the inserted bytes")
+        else:
+            self._gap = gap
+
+    def _extend_exact(self, point: tuple[int, int, int]) -> None:
+        if point[2] > self._cp_byte[-1]:
+            self._cp_chars.append(point[0])
+            self._cp_disp.append(point[1])
+            self._cp_byte.append(point[2])
+
+    def _set_checkpoints(self, chars: list[int], disp: list[int], byte: list[int]) -> None:
+        with self._cond:
+            self._cp_chars = array("Q", chars)
+            self._cp_disp = array("Q", disp)
+            self._cp_byte = array("Q", byte)
+            self._complete = False
+
+    def _char_disp(self, col: int) -> int:
+        """Exact display column of a character column inside the scanned part."""
+        found = self.try_char_to_disp(col)
+        if found is None:
+            raise ValueError("character column beyond the scanned part")
+        return found
 
     # -- lifecycle ----------------------------------------------------------------------------
     def start(self) -> None:
@@ -177,9 +327,60 @@ class LongLineIndex:
         self._notify()
 
     def _scan(self) -> None:
-        pos = self.start_offset
-        end = self.end_offset
-        chars = disp = rel = 0
+        gap = self._gap
+        if gap is not None:
+            if not self._scan_gap(gap):
+                self._notify()
+                return
+            self._gap = None
+        with self._cond:
+            if self._complete:
+                done = True
+            else:
+                done = False
+                chars, disp, rel = int(self._cp_chars[-1]), int(self._cp_disp[-1]), int(self._cp_byte[-1])
+        if not done and self._scan_span(rel, self.end_offset - self.start_offset, chars, disp, polite=True) is None:
+            return
+        with self._cond:
+            self._complete = True
+            self._cond.notify_all()
+        self._notify()
+
+    def _scan_gap(self, gap: _Gap) -> bool:
+        """Scan the inserted text, then attach the shifted tail; return false when cancelled or when the edit did not match the bytes."""
+        with self._cond:
+            chars, disp, rel = int(self._cp_chars[-1]), int(self._cp_disp[-1]), int(self._cp_byte[-1])
+        if rel < gap.end_byte and self._scan_span(rel, gap.end_byte, chars, disp, polite=True) is None:
+            return False
+        if not self._attach(gap):
+            return False
+        self._notify()
+        return True
+
+    def _attach(self, gap: _Gap) -> bool:
+        """Append the shifted tail checkpoints once the checkpoint at the end of the inserted text is known."""
+        with self._cond:
+            matches = (self._cp_chars[-1], self._cp_disp[-1], self._cp_byte[-1]) == (gap.end_chars, gap.end_disp, gap.end_byte)
+            if not matches:
+                self._error = ValueError("splice edit does not describe the inserted bytes")
+                self._cond.notify_all()
+                return False
+            self._cp_chars.extend(gap.tail[0])
+            self._cp_disp.extend(gap.tail[1])
+            self._cp_byte.extend(gap.tail[2])
+            self._complete = gap.complete
+            self._cond.notify_all()
+            return True
+
+    def _scan_span(self, rel: int, limit: int, chars: int, disp: int, *, polite: bool) -> tuple[int, int, int] | None:
+        """Scan the bytes `[rel, limit)` (relative to the row start) from a known state, publishing checkpoints.
+
+        The limit is a hard end: bytes cut off there are decoded as they are.
+        Returns the totals reached, or `None` when cancelled.
+        `polite` notifies subscribers and yields between blocks (the scan thread); the synchronous splice scan passes false.
+        """
+        pos = self.start_offset + rel
+        end = self.start_offset + limit
         pending = b""
         while pos < end and not self._cancelled.is_set():
             fresh = self._source.read(pos, min(self._scan_block, end - pos), cache=False)
@@ -191,16 +392,13 @@ class LongLineIndex:
             cut = len(data) if pos >= end else safe_cut(data)
             text = data[:cut].decode("utf-8", SURROGATE_ESCAPE)
             pending = data[cut:]
-            chars, disp, rel = self._publish(text, chars, disp, rel)
-            self._notify()
-            time.sleep(self._yield_seconds)
-        if pos >= end and not self._cancelled.is_set():
-            with self._cond:
-                self._complete = True
-                self._cond.notify_all()
-            self._notify()
+            chars, disp, rel = self._publish(text, chars, disp, rel, polite=polite)
+            if polite:
+                self._notify()
+                time.sleep(self._yield_seconds)
+        return (chars, disp, rel) if pos >= end and not self._cancelled.is_set() else None
 
-    def _publish(self, text: str, chars: int, disp: int, rel: int) -> tuple[int, int, int]:
+    def _publish(self, text: str, chars: int, disp: int, rel: int, *, polite: bool = True) -> tuple[int, int, int]:
         """Append one checkpoint per `checkpoint_chars` of `text`; return the new running totals.
 
         The widths and byte lengths are computed before the lock is taken, so queries never wait for them.
@@ -216,7 +414,8 @@ class LongLineIndex:
             new_chars.append(chars)
             new_disp.append(disp)
             new_byte.append(rel)
-            self._give_way()
+            if polite:
+                self._give_way()
         with self._cond:
             self._cp_chars.extend(new_chars)
             self._cp_disp.extend(new_disp)
@@ -406,6 +605,28 @@ class LongLineIndex:
     def estimate_display_width(self) -> int:
         """Display width, available at any time: the scanned prefix scaled by bytes, exact once the scan completed."""
         return self._scaled(self._cp_disp)
+
+    def byte_to_char(self, byte_rel: int) -> int | None:
+        """Exact character column of the byte offset `byte_rel` (relative to the row start): the characters decoded from the bytes before it.
+
+        The checkpoint at or before the offset plus a bounded decode; a negative offset counts as 0 and an offset beyond the row end is clamped.
+        A split multi-byte sequence counts as its separate escaped bytes.
+        Returns `None` when the offset is beyond the scanned frontier and the scan is not complete.
+        Raises `SourceChanged` when the file changed.
+        """
+        byte_rel = max(0, byte_rel)
+        with self._cond:
+            self._raise_error()
+            last = int(self._cp_byte[-1])
+            if byte_rel > last:
+                if not self._complete:
+                    return None
+                byte_rel = last
+            i = bisect_right(self._cp_byte, byte_rel) - 1
+            ch0, b0 = int(self._cp_chars[i]), int(self._cp_byte[i])
+        if byte_rel == b0:
+            return ch0
+        return ch0 + len(self._source.read(self.start_offset + b0, byte_rel - b0).decode("utf-8", SURROGATE_ESCAPE))
 
     def byte_to_char_approx(self, byte_rel: int) -> int:
         """Approximate character column of a byte offset: exact inside the frontier, scaled beyond it.
