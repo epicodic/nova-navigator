@@ -12,7 +12,7 @@ from hypothesis.stateful import RuleBasedStateMachine, initialize, invariant, ru
 from nova_editor.core import Content, PieceTree, combine, make_piece
 from nova_editor.core.piece_tree import _Inner
 from nova_editor.core.pieces import EMPTY_AGGREGATE, Aggregate, Piece, aggregate_of_bytes, merge_pieces, tail_chars_of
-from tests.nova_editor.core.reference import ALPHABET, Sources, break_ends, inside_crlf, tail_chars
+from tests.nova_editor.core.reference import ALPHABET, Rng, Sources, break_ends, inside_crlf, tail_chars
 
 chunks = st.lists(st.sampled_from(ALPHABET), max_size=8).map(b"".join)
 
@@ -126,26 +126,6 @@ class Harness:
                 assert 0 <= location.inner < location.piece.length
         for piece in tree.pieces():
             assert piece.a < piece.b
-
-
-class Rng:
-    """Tiny seeded generator (splitmix64) so the fuzz runs are reproducible without the `random` module."""
-
-    def __init__(self, seed: int) -> None:
-        self.state = seed
-
-    def next(self) -> int:
-        self.state = (self.state + 0x9E3779B97F4A7C15) & 0xFFFFFFFFFFFFFFFF
-        z = self.state
-        z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
-        z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
-        return z ^ (z >> 31)
-
-    def randint(self, low: int, high: int) -> int:
-        return low + self.next() % (high - low + 1)
-
-    def choice[T](self, items: list[T]) -> T:
-        return items[self.next() % len(items)]
 
 
 def random_bytes(rng: Rng, limit: int) -> bytes:
