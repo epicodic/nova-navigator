@@ -9,6 +9,7 @@ from nova_editor.core.line_index import LineIndex, LineSnapshot, RowRange
 from nova_editor.core.long_line_index import Frontier, LongLineIndex
 from nova_editor.core.memory_source import BytesSource
 from nova_editor.core.original_source import OriginalSource, RowNotIndexed
+from nova_editor.core.piece_table import PieceTable
 from nova_editor.core.piece_tree import Location, PieceTree
 from nova_editor.core.pieces import Aggregate, Content, Piece, PieceSource, combine, make_piece, merge_pieces
 
@@ -27,6 +28,7 @@ __all__ = [
     "OriginalSource",
     "Piece",
     "PieceSource",
+    "PieceTable",
     "PieceTree",
     "PreadSource",
     "RowNotIndexed",

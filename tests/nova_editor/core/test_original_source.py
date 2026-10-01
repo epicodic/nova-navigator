@@ -60,3 +60,15 @@ def test_unscanned_offsets_raise_and_unknown_rows_are_none() -> None:
         original.row_of(5)
     assert original.row_start(2) is None
     assert original.read(4, 7) == b"two"
+
+
+def test_row_start_falls_back_to_the_end_of_the_previous_row_over_the_budget() -> None:
+    data = b"short\n" + b"x" * 3000 + b"\nafter\n"
+    source = BytesSource(data)
+    index = LineIndex(source, stride=1, long_line_threshold=64, long_line_cap=0, read_budget=256, scan_block=64)
+    index.scan_now()
+    original = OriginalSource(index, source)
+    assert index.row_range(1) is None
+    assert original.row_start(1) == 6
+    assert original.row_start(2) == 3007
+    assert original.row_start(99) is None
