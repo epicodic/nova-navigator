@@ -435,8 +435,11 @@ class PieceTree:
 
     # ----- editing -------------------------------------------------------------------------------------------------------------------
 
-    def content(self, start: int, end: int) -> Content:
-        """Return the bytes `[start, end)` as `Content` (no bytes are copied); may split pieces at the two boundaries."""
+    def content(self, start: int, end: int, tail_chars: int | None = None) -> Content:
+        """Return the bytes `[start, end)` as `Content` (no bytes are copied); may split pieces at the two boundaries.
+
+        `tail_chars`, when the caller knows it, is the number of characters after the last break of the range; without it the tail is read from the sources.
+        """
         self._check_range(start, end)
         self.check_boundary(start)
         self.check_boundary(end)
@@ -445,10 +448,12 @@ class PieceTree:
         pieces = list(self._walk_count(first, last - first))
         self._try_merge(last)
         self._try_merge(first)
-        return Content.from_pieces(pieces, tail_chars_of(pieces, self._source_of))
+        return Content.from_pieces(pieces, tail_chars_of(pieces, self._source_of) if tail_chars is None else tail_chars)
 
-    def splice(self, start: int, end: int, content: Content) -> Content:
+    def splice(self, start: int, end: int, content: Content, removed_tail_chars: int | None = None) -> Content:
         """Replace the bytes `[start, end)` by `content` and return the removed bytes as `Content`.
+
+        `removed_tail_chars`, when the caller knows it, is the `tail_chars` of the removed bytes; without it the tail is read from the sources.
 
         Contiguous pieces of the same source are merged afterwards.
         Nothing changes when a boundary is rejected.
@@ -475,7 +480,7 @@ class PieceTree:
                 self._insert_piece(pos, piece)
                 pos += 1
         self._try_merge(pos)
-        return Content.from_pieces(removed, tail_chars_of(removed, self._source_of))
+        return Content.from_pieces(removed, tail_chars_of(removed, self._source_of) if removed_tail_chars is None else removed_tail_chars)
 
     def _check_range(self, start: int, end: int) -> None:
         if not 0 <= start <= end <= self.length:
