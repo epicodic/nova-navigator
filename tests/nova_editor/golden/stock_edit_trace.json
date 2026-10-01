@@ -1,0 +1,319 @@
+{
+  "trace": [
+    {
+      "step": "insert at start",
+      "text": ">>> hello world",
+      "selection": [
+        [
+          0,
+          4
+        ],
+        [
+          0,
+          4
+        ]
+      ],
+      "replaced_text": ""
+    },
+    {
+      "step": "cursor move to end",
+      "text": ">>> hello world",
+      "selection": [
+        [
+          0,
+          15
+        ],
+        [
+          0,
+          15
+        ]
+      ],
+      "replaced_text": null
+    },
+    {
+      "step": "insert at cursor",
+      "text": ">>> hello world <<<",
+      "selection": [
+        [
+          0,
+          19
+        ],
+        [
+          0,
+          19
+        ]
+      ],
+      "replaced_text": ""
+    },
+    {
+      "step": "select word via shift+ctrl+right",
+      "text": ">>> hello world <<<",
+      "selection": [
+        [
+          0,
+          19
+        ],
+        [
+          0,
+          19
+        ]
+      ],
+      "replaced_text": null
+    },
+    {
+      "step": "delete selection",
+      "text": ">>> hello world <<<",
+      "selection": [
+        [
+          0,
+          19
+        ],
+        [
+          0,
+          19
+        ]
+      ],
+      "replaced_text": ""
+    },
+    {
+      "step": "type character",
+      "text": ">>> hello world <<<X",
+      "selection": [
+        [
+          0,
+          20
+        ],
+        [
+          0,
+          20
+        ]
+      ],
+      "replaced_text": ""
+    },
+    {
+      "step": "backspace",
+      "text": ">>> hello world <<<",
+      "selection": [
+        [
+          0,
+          19
+        ],
+        [
+          0,
+          19
+        ]
+      ],
+      "replaced_text": null
+    },
+    {
+      "step": "delete right",
+      "text": ">>> hello world <<<",
+      "selection": [
+        [
+          0,
+          19
+        ],
+        [
+          0,
+          19
+        ]
+      ],
+      "replaced_text": null
+    },
+    {
+      "step": "enter newline",
+      "text": ">>> hello world <<<\n",
+      "selection": [
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          0
+        ]
+      ],
+      "replaced_text": ""
+    },
+    {
+      "step": "type on new line",
+      "text": ">>> hello world <<<\nnew",
+      "selection": [
+        [
+          1,
+          3
+        ],
+        [
+          1,
+          3
+        ]
+      ],
+      "replaced_text": ""
+    },
+    {
+      "step": "undo 1",
+      "text": ">>> hello world <<<\n",
+      "selection": [
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          0
+        ]
+      ],
+      "replaced_text": null
+    },
+    {
+      "step": "undo 2",
+      "text": ">>> hello world <<<",
+      "selection": [
+        [
+          0,
+          19
+        ],
+        [
+          0,
+          19
+        ]
+      ],
+      "replaced_text": null
+    },
+    {
+      "step": "undo 3",
+      "text": ">>> hello world <<<X",
+      "selection": [
+        [
+          0,
+          20
+        ],
+        [
+          0,
+          20
+        ]
+      ],
+      "replaced_text": null
+    },
+    {
+      "step": "redo 1",
+      "text": ">>> hello world <<<",
+      "selection": [
+        [
+          0,
+          19
+        ],
+        [
+          0,
+          19
+        ]
+      ],
+      "replaced_text": null
+    },
+    {
+      "step": "redo 2",
+      "text": ">>> hello world <<<\n",
+      "selection": [
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          0
+        ]
+      ],
+      "replaced_text": null
+    },
+    {
+      "step": "select all",
+      "text": ">>> hello world <<<\n",
+      "selection": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ]
+      ],
+      "replaced_text": null
+    },
+    {
+      "step": "copy",
+      "text": ">>> hello world <<<\n",
+      "selection": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ]
+      ],
+      "replaced_text": null
+    },
+    {
+      "step": "cursor to start",
+      "text": ">>> hello world <<<\n",
+      "selection": [
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          0
+        ]
+      ],
+      "replaced_text": null
+    },
+    {
+      "step": "delete line start",
+      "text": ">>> hello world <<<",
+      "selection": [
+        [
+          0,
+          19
+        ],
+        [
+          0,
+          19
+        ]
+      ],
+      "replaced_text": null
+    },
+    {
+      "step": "paste",
+      "text": ">>> hello world <<<>>> hello world <<<\n",
+      "selection": [
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          0
+        ]
+      ],
+      "replaced_text": null
+    },
+    {
+      "step": "select all then cut",
+      "text": "",
+      "selection": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "replaced_text": null
+    }
+  ]
+}
