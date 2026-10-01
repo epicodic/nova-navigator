@@ -12,6 +12,7 @@ from bisect import bisect_right
 from collections.abc import Iterable
 
 from nova_editor.core.byte_source import SourceChanged
+from nova_editor.core.original_source import OriginalSource
 from nova_editor.core.pieces import Piece, PieceSource, SourceOf
 
 
@@ -40,8 +41,8 @@ class RowSource:
     def read(self, offset: int, size: int, *, cache: bool = True) -> bytes:
         """Return `min(size, length - offset)` bytes at the row-relative `offset`, reading across pieces.
 
-        `cache` is accepted for the `ByteSource` protocol; piece sources have no cache control.
-        Raises `SourceChanged` when a piece source returns fewer bytes than the piece names.
+        `cache=False` is passed on to the original file (a scan must not evict the blocks the UI uses); the add store has no cache.
+        A piece source that returns fewer bytes than asked ends the read early; one that returns none raises `SourceChanged` (it lost bytes the piece names).
         """
         if offset < 0 or size < 0:
             raise ValueError("offset and size must not be negative")
@@ -56,11 +57,16 @@ class RowSource:
             base = self._offsets[index]
             take = min(end, base + (b - a)) - position
             lo = a + position - base
-            chunk = source.read(lo, lo + take)
-            if len(chunk) != take:
-                raise SourceChanged(f"short read of a row piece: wanted {take}, got {len(chunk)}")
+            if not cache and isinstance(source, OriginalSource):
+                chunk = source.read(lo, lo + take, cache=False)
+            else:
+                chunk = source.read(lo, lo + take)
+            if not chunk:
+                raise SourceChanged(f"short read of a row piece: wanted {take}, got 0")
             chunks.append(chunk)
-            position += take
+            position += len(chunk)
+            if len(chunk) < take:
+                break  # a short read is returned as it is, like a `ByteSource` does; the caller reads on from there
             index += 1
         return chunks[0] if len(chunks) == 1 else b"".join(chunks)
 

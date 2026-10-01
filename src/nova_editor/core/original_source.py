@@ -42,5 +42,6 @@ class OriginalSource:
     def breaks_between(self, a: int, b: int) -> int:
         return self.row_of(b) - self.row_of(a)
 
-    def read(self, a: int, b: int) -> bytes:
-        return self._source.read(a, max(b - a, 0))
+    def read(self, a: int, b: int, *, cache: bool = True) -> bytes:
+        """Return the bytes `[a, b)`; `cache=False` marks a bulk scan read (see `ByteSource.read`)."""
+        return self._source.read(a, max(b - a, 0), cache=cache)
