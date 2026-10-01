@@ -186,13 +186,6 @@ def test_line_count_is_lower_bound_until_complete(tmp_path: Path) -> None:
     doc.close()
 
 
-def test_replace_range_is_read_only(tmp_path: Path) -> None:
-    doc = _open(make_mixed(tmp_path / "m.txt"))
-    with pytest.raises(NotImplementedError, match="ACT4"):
-        doc.replace_range((0, 0), (0, 0), "x")
-    doc.close()
-
-
 def test_get_text_range_matches_oracle_and_refuses_long_rows(tmp_path: Path) -> None:
     path = make_mixed(tmp_path / "m.txt", long_chars=3000)
     doc = _open(path)

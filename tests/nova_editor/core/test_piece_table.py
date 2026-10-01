@@ -419,3 +419,29 @@ def test_edit_beyond_the_scanned_part_is_rejected_and_changes_nothing() -> None:
         assert harness.table.has_open_tail
     finally:
         harness.stop()
+
+
+def test_add_returns_content_with_counts_and_tail_chars() -> None:
+    source = BytesSource(b"abc\ndef")
+    index = LineIndex(source)
+    index.scan_now()
+    table = PieceTable(source, index, AddStore())
+    content = table.add("x\ny€z".encode())
+    assert (content.length, content.breaks, content.tail_chars) == (7, 1, 3)
+    removed = table.splice(1, 4, content)
+    assert table.read(0, table.length) == "ax\ny€z".encode() + b"def"
+    assert table.content_bytes(removed, 0, removed.length) == b"bc\n"
+    assert table.content_bytes(content, 2, 5) == "y€".encode()[:3]
+    with pytest.raises(ValueError, match="empty"):
+        table.add(b"")
+
+
+def test_add_continues_the_tail_segment_so_typing_stays_one_piece() -> None:
+    source = BytesSource(b"")
+    index = LineIndex(source)
+    index.scan_now()
+    table = PieceTable(source, index, AddStore())
+    for position, char in enumerate(b"hello"):
+        table.splice(position, position, table.add(bytes([char])))
+    assert table.tree.piece_count == 1
+    assert table.read(0, 5) == b"hello"

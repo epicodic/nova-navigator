@@ -33,7 +33,7 @@ from nova_editor.core.byte_source import ByteSource
 from nova_editor.core.line_index import DEFAULT_MAX_LINES_PER_CALL, LineIndex, LineSnapshot, RowRange
 from nova_editor.core.original_source import OriginalSource, RowNotIndexed
 from nova_editor.core.piece_tree import PieceTree
-from nova_editor.core.pieces import Content, Piece, PieceSource
+from nova_editor.core.pieces import Content, Piece, PieceSource, make_piece
 
 _CRLF = b"\r\n"
 
@@ -221,6 +221,31 @@ class PieceTable:
             yield piece, max(start - tree_length, 0), end - tree_length
 
     # ----- editing -------------------------------------------------------------------------------------------------------------------
+
+    def add(self, data: bytes) -> Content:
+        """Append `data` to the add store and return it as `Content` (one piece; typing continues the tail segment, so the piece merges on splice).
+
+        Raises:
+            ValueError: when `data` is empty.
+        """
+        segment, a, b = self._add_store.append(data)
+        piece = make_piece(self._source_of(segment), segment, a, b)
+        cut = max(data.rfind(b"\r"), data.rfind(b"\n"))
+        return Content.from_pieces([piece], len(data[cut + 1 :].decode("utf-8", "surrogateescape")))
+
+    def content_bytes(self, content: Content, start: int, end: int) -> bytes:
+        """Return the bytes `[start, end)` of `content` (offsets relative to the content)."""
+        parts: list[bytes] = []
+        position = 0
+        for piece in content.pieces:
+            lo = max(start - position, 0)
+            hi = min(end - position, piece.length)
+            if lo < hi:
+                parts.append(self._source_of(piece.src).read(piece.a + lo, piece.a + hi))
+            position += piece.length
+            if position >= end:
+                break
+        return b"".join(parts)
 
     def content(self, start: int, end: int) -> Content:
         """Return the bytes `[start, end)` as `Content` without reading any data (the pieces may be split at the two boundaries).
