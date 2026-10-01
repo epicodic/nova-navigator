@@ -31,6 +31,10 @@ class EditResult:
     """The text that was replaced (a lazy document leaves it empty above 64 KiB; use `removed` there)."""
     removed: Content | None = None
     """The removed bytes as piece references (set by `LazyDocument`; `None` for the stock `Document`)."""
+    start_byte: int | None = None
+    """The byte offset where the edit started (set by `LazyDocument`)."""
+    inserted: Content | None = None
+    """The inserted bytes as piece references (set by `LazyDocument`; empty content for a deletion)."""
 
 
 @lru_cache(maxsize=1024)

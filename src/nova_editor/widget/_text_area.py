@@ -757,7 +757,7 @@ NovaTextArea {
         show_cursor: bool = True,
         show_line_numbers: bool = False,
         line_number_start: int = 1,
-        max_checkpoints: int = 50,
+        max_checkpoints: int | None = None,
         name: str | None = None,
         id: str | None = None,
         classes: str | None = None,
@@ -780,7 +780,7 @@ NovaTextArea {
             show_cursor: Show the cursor in read only mode (no effect otherwise).
             show_line_numbers: Show line numbers on the left edge.
             line_number_start: What line number to start on.
-            max_checkpoints: The maximum number of undo history checkpoints to retain.
+            max_checkpoints: The maximum number of undo history checkpoints to retain (`None` keeps all).
             name: The name of the `NovaTextArea` widget.
             id: The ID of the widget, used to refer to it from Textual CSS.
             classes: One or more Textual CSS compatible class names separated by spaces.
@@ -1594,7 +1594,7 @@ NovaTextArea {
         show_cursor: bool = True,
         show_line_numbers: bool = True,
         line_number_start: int = 1,
-        max_checkpoints: int = 50,
+        max_checkpoints: int | None = None,
         name: str | None = None,
         id: str | None = None,
         classes: str | None = None,

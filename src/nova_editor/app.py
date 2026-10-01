@@ -101,7 +101,7 @@ class TimedNovaTextArea(NovaTextArea):
         show_cursor: bool = True,
         show_line_numbers: bool = False,
         line_number_start: int = 1,
-        max_checkpoints: int = 50,
+        max_checkpoints: int | None = None,
         name: str | None = None,
         id: str | None = None,
         classes: str | None = None,

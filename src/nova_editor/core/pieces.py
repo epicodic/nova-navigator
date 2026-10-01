@@ -128,6 +128,9 @@ def merge_pieces(left: Piece, right: Piece) -> Piece | None:
     return Piece(left.src, left.a, right.b, left.breaks + right.breaks - junction, left.row0, left.first_is_lf, right.last_is_cr)
 
 
+_TAIL_WINDOW = 4096
+
+
 def tail_chars_of(pieces: Iterable[Piece], source_of: SourceOf) -> int:
     """Return the number of characters after the last break of the concatenated `pieces`.
 
@@ -136,12 +139,18 @@ def tail_chars_of(pieces: Iterable[Piece], source_of: SourceOf) -> int:
     """
     later: list[bytes] = []
     for piece in reversed(list(pieces)):
-        chunk = source_of(piece.src).read(piece.a, piece.b)
-        cut = max(chunk.rfind(b"\r"), chunk.rfind(b"\n"))
-        if cut >= 0:
-            later.append(chunk[cut + 1 :])
-            break
-        later.append(chunk)
+        source = source_of(piece.src)
+        stop = piece.b
+        while stop > piece.a:
+            # Read backwards in windows so that a piece with a break near its end is not read whole.
+            begin = max(piece.a, stop - _TAIL_WINDOW)
+            chunk = source.read(begin, stop)
+            cut = max(chunk.rfind(b"\r"), chunk.rfind(b"\n"))
+            if cut >= 0:
+                later.append(chunk[cut + 1 :])
+                return len(b"".join(reversed(later)).decode("utf-8", "surrogateescape"))
+            later.append(chunk)
+            stop = begin
     return len(b"".join(reversed(later)).decode("utf-8", "surrogateescape"))
 
 

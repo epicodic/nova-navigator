@@ -563,13 +563,67 @@ class LazyDocument(DocumentBase):
             self._require_open()
             first = self._locate(top)
             last = self._locate(bottom)
+        return self._splice_located(first, last, content)
+
+    def splice_bytes(self, start_byte: int, end_byte: int, content: Content) -> EditResult:
+        """Replace the bytes `[start_byte, end_byte)` by `content` (undo and redo: the offsets are exact, the locations are derived from them).
+
+        Raises:
+            RowUnavailable: The document is closed or a position is not resolved yet.
+            ValueError: The offsets are not ordered or lie beyond the document.
+        """
+        if not 0 <= start_byte <= end_byte:
+            msg = f"invalid byte range {start_byte}..{end_byte}"
+            raise ValueError(msg)
+        with self._lock:
+            self._require_open()
+            if end_byte > self._table.length:
+                msg = f"byte {end_byte} is beyond the document"
+                raise ValueError(msg)
+            # A boundary inside a CRLF (undo of a deletion that joined a CR and an LF) cannot be spliced: take the halves along.
+            if start_byte > 0 and self._table.read(start_byte - 1, 2) == _CRLF:
+                start_byte -= 1
+                head = self._table.byte_content(start_byte)
+                content = Content.from_pieces([*head.pieces, *content.pieces], content.tail_chars)
+            if end_byte > 0 and self._table.read(end_byte - 1, 2) == _CRLF:
+                tail = self._table.byte_content(end_byte)
+                content = Content.from_pieces([*content.pieces, *tail.pieces], 0)
+                end_byte += 1
+            first = self._locate_offset(start_byte)
+            last = first if end_byte == start_byte else self._locate_offset(end_byte)
+        return self._splice_located(first, last, content)
+
+    def _splice_located(self, first: _Located, last: _Located, content: Content) -> EditResult:
+        with self._lock:
+            self._require_open()
             result = self._commit(first, last, content)
             mirror = self._syntax
             inserted = self._table.content_bytes(content, 0, content.length) if mirror is not None else b""
         if mirror is not None:
-            mirror.replace_range(top, bottom, inserted.decode("utf-8", SURROGATE_ESCAPE))
+            mirror.replace_range((first.row, first.column), (last.row, last.column), inserted.decode("utf-8", SURROGATE_ESCAPE))
         self._notify_subscribers()
         return result
+
+    def _locate_offset(self, offset: int) -> _Located:
+        """Resolve a byte offset (on a character boundary) to row and column; the caller holds the lock."""
+        found = self._table.row_at_offset(offset)
+        if found is None:
+            msg = f"byte {offset} is not resolved yet"
+            raise RowUnavailable(msg)
+        row, span = found
+        relative = offset - span.start
+        if offset > span.content_end:
+            msg = f"byte {offset} is inside a line terminator"
+            raise ValueError(msg)
+        if not self.is_long(row):
+            text = self._text(row)
+            column = len(self._table.read(span.start, relative).decode("utf-8", SURROGATE_ESCAPE))
+            return _Located(row, column, span.start + relative, span, text)
+        column = self.long_index(row).byte_to_char(relative)
+        if column is None:
+            msg = f"byte {offset} of long row {row} is not resolved yet"
+            raise RowUnavailable(msg)
+        return _Located(row, column, span.start + relative, span, None)
 
     def _require_open(self) -> None:
         if self._closed:
@@ -668,7 +722,7 @@ class LazyDocument(DocumentBase):
         replaced = ""
         if removed.length <= REPLACED_TEXT_LIMIT:
             replaced = self._table.content_bytes(removed, 0, removed.length).decode("utf-8", SURROGATE_ESCAPE)
-        return EditResult(end_location, replaced, removed)
+        return EditResult(end_location, replaced, removed, begin, content)
 
     def _crlf_formed(self, content: Content, left: bytes, right: bytes) -> int:
         """Number of CR and LF pairs that an edit joined at its two junctions into one CRLF terminator (each one removes a row)."""

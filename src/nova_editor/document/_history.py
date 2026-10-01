@@ -18,12 +18,13 @@ class HistoryException(Exception):
 class EditHistory:
     """Manages batching/checkpointing of Edits into groups that can be undone/redone in the TextArea."""
 
-    max_checkpoints: int
+    max_checkpoints: int | None = None
+    """Maximum number of batches kept in the undo stack; `None` keeps them all."""
 
-    checkpoint_timer: float
+    checkpoint_timer: float = 2.0
     """Maximum number of seconds since last edit until a new batch is created."""
 
-    checkpoint_max_characters: int
+    checkpoint_max_characters: int = 100
     """Maximum number of characters that can appear in a batch before a new batch is formed."""
 
     _last_edit_time: float = field(init=False, default_factory=time.monotonic)
@@ -70,6 +71,9 @@ class EditHistory:
         - The edit involves insertion or deletion of one or more newline characters.
         - An edit which inserts more than a single character (a paste) gets an isolated batch.
 
+        Within a batch, an insertion that starts where the previous insertion ended, and a deletion that touches the previous deletion, are merged
+        into the previous `Edit` so that typing a million characters leaves one record.
+
         Args:
             edit: The edit to record.
         """
@@ -77,14 +81,21 @@ class EditHistory:
         if edit_result is None:
             raise HistoryException("Cannot add an edit to history before it has been performed using `Edit.do`.")
 
-        if edit.text == "" and edit_result.replaced_text == "":
-            return
-
-        is_replacement = bool(edit_result.replaced_text)
+        removed = edit_result.removed
+        if removed is not None and edit.inserted is not None:
+            # Lazy documents: the removed text may be too large to be reported, so the lengths and breaks of the pieces decide.
+            if edit.inserted.length == 0 and removed.length == 0:
+                return
+            is_replacement = removed.length > 0
+            contains_newline = edit.inserted.breaks > 0 or removed.breaks > 0
+        else:
+            if edit.text == "" and edit_result.replaced_text == "":
+                return
+            is_replacement = bool(edit_result.replaced_text)
+            contains_newline = "\n" in edit.text or "\n" in edit_result.replaced_text
         undo_stack = self._undo_stack
         current_time = self._get_time()
         edit_characters = len(edit.text)
-        contains_newline = "\n" in edit.text or "\n" in edit_result.replaced_text
 
         # Determine whether to create a new batch, or add to the latest batch.
         if (
@@ -102,8 +113,10 @@ class EditHistory:
             self._last_edit_time = current_time
             self._force_end_batch = False
         else:
-            # Update the latest batch.
-            undo_stack[-1].append(edit)
+            # Update the latest batch; adjacent typing and adjacent backspace or delete runs extend the previous edit.
+            batch = undo_stack[-1]
+            if not batch[-1].coalesce(edit):
+                batch.append(edit)
             self._character_count += edit_characters
             self._last_edit_time = current_time
 
