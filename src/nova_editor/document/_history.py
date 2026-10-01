@@ -95,7 +95,7 @@ class EditHistory:
             contains_newline = "\n" in edit.text or "\n" in edit_result.replaced_text
         undo_stack = self._undo_stack
         current_time = self._get_time()
-        edit_characters = len(edit.text)
+        edit_characters = edit.characters
 
         # Determine whether to create a new batch, or add to the latest batch.
         if (

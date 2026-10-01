@@ -28,6 +28,7 @@ from textual.style import Style as ContentStyle
 
 from nova_editor.core import ByteSource, BytesSource, PreadSource
 from nova_editor.core import SourceChanged as CoreSourceChanged
+from nova_editor.core.pieces import Content as PieceContent
 from nova_editor.core.text_width import SURROGATE_ESCAPE, utf8_len
 from nova_editor.document._cursor_anchor import CursorMachine, CursorState, Op, Verdict
 from nova_editor.document._document import (
@@ -779,6 +780,22 @@ NovaTextArea {
         def control(self) -> NovaTextArea:
             return self.text_area
 
+    clipboard_cap: int = 1_048_576
+    """Largest selection (in bytes) that is also written to the system clipboard; a larger copy stays inside the editor (ACT4 design 10)."""
+
+    @dataclass
+    class _ClipboardRecord:
+        """The internal clipboard: piece references that stay exact for invalid bytes and cost nothing for huge selections."""
+
+        content: PieceContent
+        """The copied bytes as piece references."""
+        length: int
+        """The number of copied bytes."""
+        system_text: str | None
+        """The text written to the system clipboard (invalid bytes as U+FFFD), or `None` when the copy was above `clipboard_cap`."""
+        app_clipboard: str
+        """The `app.clipboard` right after the copy; a paste uses the internal content only while the application clipboard still holds it."""
+
     def __init__(
         self,
         text: str = "",
@@ -864,6 +881,9 @@ NovaTextArea {
 
         self._highlight_query: Query | None = None
         """The query that's currently being used for highlighting."""
+
+        self._clipboard_record: NovaTextArea._ClipboardRecord | None = None
+        """The internal clipboard of the last copy or cut; it references pieces of the current document only."""
 
         self._edit_refused = False
         """True when the most recent `edit()` was refused (a position was not resolved); the keyboard helpers then report no edit."""
@@ -2099,6 +2119,7 @@ NovaTextArea {
         self._replay_generation += 1
         self._jump = None
         self.pending_progress = None
+        self._clipboard_record = None
         self._edit_refused = False
         self._source_failed = False
         self._lazy_closed = False
@@ -2703,7 +2724,7 @@ NovaTextArea {
         if reason is not None:
             self._refuse_edit(reason)
             return result
-        if self.suggestion.startswith(edit.text):
+        if edit.insert_content is None and self.suggestion.startswith(edit.text):
             self.suggestion = self.suggestion[len(edit.text) :]
         else:
             self.suggestion = ""
@@ -3767,7 +3788,7 @@ NovaTextArea {
         return deletion
 
     def action_cut(self) -> None:
-        """Cut text (remove and copy to clipboard)."""
+        """Cut text (remove and copy to clipboard); see `action_copy` for the clipboards."""
         if self.read_only:
             return
         start, end = self.selection
@@ -3776,28 +3797,61 @@ NovaTextArea {
         else:
             edit_result = self._delete_via_keyboard(start, end)
 
-        if edit_result is not None:
-            if not edit_result.replaced_text and edit_result.removed is not None and edit_result.removed.length > 0:
-                # The removed text is above the 64 KiB the result carries; the clipboard keeps its content (undo restores the text).
-                self.notify("Cut text is too large for the clipboard", severity="warning")
-                return
-            self.app.copy_to_clipboard(edit_result.replaced_text)
+        if edit_result is not None and edit_result.removed is not None:
+            self._store_clipboard(edit_result.removed)
 
     def action_copy(self) -> None:
-        """Copy selection to clipboard (a selection over more than 128 rows or a long-row part over 8192 characters is refused with a warning)."""
-        try:
-            selected_text = self.selected_text
-        except WholeLineAccess:
-            self.notify("Selection is too large to copy", severity="warning")
-            return
-        if selected_text:
-            self.app.copy_to_clipboard(selected_text)
-        else:
+        """Copy selection to clipboard.
+
+        The internal clipboard keeps the bytes as piece references (no size limit, invalid bytes exact).
+        The system clipboard gets the decoded text only up to `clipboard_cap` bytes; above it a warning says so.
+        A selection whose end is not resolved yet is refused like an edit.
+        """
+        start, end = self.selection
+        if start == end:
             raise SkipAction()
+        try:
+            content = self.document.selection_content(start, end)
+        except RowUnavailable as error:
+            self._refuse_edit(str(error))
+            return
+        self._store_clipboard(content)
+
+    def _store_clipboard(self, content: PieceContent) -> None:
+        """Make `content` the internal clipboard and, up to `clipboard_cap` bytes, the system clipboard."""
+        system_text: str | None = None
+        if content.length <= self.clipboard_cap:
+            decoded = self.document.content_text(content)
+            system_text = decoded.translate(_INVALID_BYTE_TABLE)
+            self.app.copy_to_clipboard(system_text)
+        else:
+            self.notify(
+                f"Selection of {content.length:,} bytes is too large for the system clipboard (limit {self.clipboard_cap:,}); it was not updated. Paste inside the editor still works.",
+                severity="warning",
+            )
+        self._clipboard_record = self._ClipboardRecord(content, content.length, system_text, self.app.clipboard)
+
+    def _internal_clipboard(self) -> PieceContent | None:
+        """The internal clipboard content when the application clipboard still holds what the last copy left there, else `None`."""
+        record = self._clipboard_record
+        if record is None:
+            return None
+        clipboard = self.app.clipboard
+        if clipboard == (record.system_text if record.system_text is not None else record.app_clipboard):
+            return record.content
+        return None
 
     def action_paste(self) -> None:
-        """Paste from local clipboard."""
+        """Paste from the clipboard: the internal content (piece references, exact bytes) when the application clipboard is unchanged since the copy, else its text."""
         if self.read_only:
+            return
+        content = self._internal_clipboard()
+        if content is not None:
+            self._restart_blink()
+            result = self.edit(Edit("", *self.selection, maintain_selection_offset=False, insert_content=content))
+            if self._edit_refused:
+                return
+            self.move_cursor(result.end_location)
             return
         clipboard = self.app.clipboard
         if result := self._replace_via_keyboard(clipboard, *self.selection):

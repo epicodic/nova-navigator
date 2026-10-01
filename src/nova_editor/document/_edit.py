@@ -27,6 +27,9 @@ class Edit:
     maintain_selection_offset: bool
     """If True, the selection will maintain its offset to the replacement range."""
 
+    insert_content: Content | None = None
+    """Insert these piece references byte for byte instead of `text` (paste of the internal clipboard; `text` is then empty)."""
+
     _original_selection: Selection | None = field(init=False, default=None)
     """The Selection when the edit was originally performed, to be restored on undo."""
 
@@ -81,7 +84,10 @@ class Edit:
             # Redo: the byte offsets are exact because undo and redo are strictly last in, first out.
             edit_result = document.splice_bytes(self.start_byte, self.start_byte + self.removed.length, self.inserted)
         else:
-            edit_result = document.replace_range(self.top, self.bottom, text)
+            if self.insert_content is not None and isinstance(document, LazyDocument):
+                edit_result = document.splice(self.top, self.bottom, self.insert_content)
+            else:
+                edit_result = document.replace_range(self.top, self.bottom, text)
             if edit_result.removed is not None and edit_result.inserted is not None and edit_result.start_byte is not None:
                 self.start_byte = edit_result.start_byte
                 self.removed = edit_result.removed
@@ -191,6 +197,13 @@ class Edit:
         self._updated_selection = later._updated_selection
         self._edit_result = EditResult(later_result.end_location, "", self.removed, self.start_byte, self.inserted)
         return True
+
+    @property
+    def characters(self) -> int:
+        """The size the history counts for batching: the characters of `text`, or at least two for a content insert (a paste gets its own batch)."""
+        if self.insert_content is not None:
+            return max(2, self.insert_content.length)
+        return len(self.text)
 
     @property
     def top(self) -> Location:
