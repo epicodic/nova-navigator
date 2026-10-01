@@ -1,4 +1,4 @@
-"""Read-only `DocumentBase` over the core indexes: rows are decoded on demand, long rows only through windows (ACT3 design 4.1 to 4.3).
+"""Editable `DocumentBase` over the core piece table: rows are decoded on demand, long rows only through windows (ACT3 design 4.1 to 4.3, ACT4 design 7).
 
 The document layer is the only one that touches `nova_editor.core`. No call waits for a scan: whatever is not scanned yet
 is reported as `None` (or an empty slice) and the caller asks again after a subscriber notification.
@@ -6,6 +6,7 @@ is reported as `None` (or an empty slice) and the caller asks again after a subs
 
 from __future__ import annotations
 
+import re
 import threading
 from collections import OrderedDict
 from collections.abc import Callable
@@ -14,8 +15,21 @@ from typing import TYPE_CHECKING, Literal, NamedTuple, overload
 
 from textual.geometry import Size
 
-from nova_editor.core import AddStore, ByteSource, BytesSource, LineIndex, LineSnapshot, LongLineIndex, PieceTable, PreadSource, RowRange
+from nova_editor.core import (
+    AddStore,
+    ByteSource,
+    BytesSource,
+    Content,
+    LineIndex,
+    LineSnapshot,
+    LongLineIndex,
+    PieceTable,
+    PreadSource,
+    RowNotIndexed,
+    RowRange,
+)
 from nova_editor.core.foreground import Foreground
+from nova_editor.core.line_index import call_subscriber
 from nova_editor.core.text_width import SURROGATE_ESCAPE, advance_disp, locate_cover, utf8_len
 from nova_editor.document._document import DocumentBase, EditResult, Location, Newline
 from nova_editor.document._lazy_config import LazyConfig
@@ -33,6 +47,11 @@ MAX_SLICE_ROWS = 128
 _RANGE_CACHE_ROWS = 4096
 _MAX_RETIRED = 64
 _MAX_EVENTS = 10_000
+REPLACED_TEXT_LIMIT = 64 * 1024
+"""`EditResult.replaced_text` is filled only when at most this many bytes were removed."""
+_MERGE_CONTEXT = 3
+_NEWLINE = re.compile(r"\r\n|\r|\n")
+_CRLF = b"\r\n"
 
 RowClass = Literal["short", "medium", "long"]
 
@@ -43,6 +62,45 @@ class WholeLineAccess(AssertionError):
 
 class RowUnavailable(RuntimeError):
     """The row exists but its byte range is not resolvable yet: the scan has not reached its end, or the read budget was exceeded."""
+
+
+_EMPTY = Content.from_pieces([], 0)
+
+
+def _decodes_differently(left: bytes, middle: bytes, right: bytes) -> bool:
+    """Whether the three byte runs decode to other characters joined than apart (a UTF-8 sequence spans a junction)."""
+    parts = [part.decode("utf-8", SURROGATE_ESCAPE) for part in (left, middle, right)]
+    return "".join(parts) != (left + middle + right).decode("utf-8", SURROGATE_ESCAPE)
+
+
+class _Located(NamedTuple):
+    """A location resolved to a byte offset: the clamped row and column, the row range and the decoded row (`None` for a long row)."""
+
+    row: int
+    column: int
+    offset: int
+    found: RowRange
+    text: str | None
+
+
+class _TableSource:
+    """`ByteSource` over the current bytes of the document table, for scans of long rows after the table left the original file.
+
+    Every read takes the document lock, so a scan thread never sees the table while an edit changes it.
+    Offsets are document offsets; an index over this source is only valid until an edit at or before its row (the document retires it then).
+    """
+
+    def __init__(self, document: LazyDocument) -> None:
+        self._document = document
+
+    def length(self) -> int:
+        return self._document.length
+
+    def read(self, offset: int, size: int, *, cache: bool = True) -> bytes:
+        return self._document.read_bytes(offset, size, cache=cache)
+
+    def close(self) -> None:
+        """Nothing to release: the document owns the original source."""
 
 
 class CallRecord(NamedTuple):
@@ -115,6 +173,7 @@ class LazyDocument(DocumentBase):
             scan_block=self._config.scan_block,
         )
         self._table = PieceTable(source, self._line_index, AddStore())
+        self._table_source = _TableSource(self)
         self._ranges: OrderedDict[int, RowRange] = OrderedDict()
         self._texts: OrderedDict[int, str] = OrderedDict()
         self._long: OrderedDict[int, LongLineIndex] = OrderedDict()
@@ -223,23 +282,33 @@ class LazyDocument(DocumentBase):
             if self._closed:
                 return False
             indexes = list(self._long.values())
-        snap = self._table.snapshot()
+        snap = self.snapshot()
         if not snap.complete and snap.error is None:
             return True
         return any(index.running for index in indexes)
 
     def snapshot(self) -> LineSnapshot:
-        """Return the consistent state of the line scan."""
-        return self._table.snapshot()
+        """Return the consistent state of the line scan (row count and scanned bytes in document coordinates)."""
+        with self._lock:
+            return self._table.snapshot()
 
     @property
     def length(self) -> int:
-        """Length of the source in bytes."""
-        return self._table.length
+        """Length of the document in bytes."""
+        with self._lock:
+            return self._table.length
 
     def row_at_offset(self, offset: int) -> tuple[int, RowRange] | None:
         """Return `(row, range)` of the row that holds byte `offset` (see `LineIndex.row_at_offset`), or `None` when it is not known yet."""
-        return self._table.row_at_offset(offset)
+        with self._lock:
+            return self._table.row_at_offset(offset)
+
+    def read_bytes(self, offset: int, size: int, *, cache: bool = True) -> bytes:
+        """Return up to `size` document bytes from `offset`; an unedited document reads the original source directly."""
+        with self._lock:
+            if self._table.is_identity:
+                return self._source.read(offset, size, cache=cache)
+            return self._table.read(offset, size)
 
     # -- row bookkeeping ----------------------------------------------------------------------
     def _norm(self, row: int) -> int:
@@ -255,9 +324,10 @@ class LazyDocument(DocumentBase):
             if cached is not None:
                 self._ranges.move_to_end(row)
                 return cached
-        found = self._table.row_range(row)
+        with self._lock:
+            found = self._table.row_range(row)
         if found is None:
-            snap = self._table.snapshot()
+            snap = self.snapshot()
             if snap.error is not None:
                 raise snap.error
             if row >= snap.count:
@@ -305,7 +375,7 @@ class LazyDocument(DocumentBase):
             if index is not None:
                 return index
             index = LongLineIndex(
-                self._source,
+                self._source if self._table.is_identity else self._table_source,
                 found.start,
                 found.content_end,
                 tab_width=self._config.tab_width,
@@ -356,7 +426,7 @@ class LazyDocument(DocumentBase):
             self.call_log.refuse("get_line", row)
             msg = f"whole-line access to long row {row}"
             raise WholeLineAccess(msg)
-        text = self._source.read(found.start, found.content_end - found.start).decode("utf-8", SURROGATE_ESCAPE)
+        text = self.read_bytes(found.start, found.content_end - found.start).decode("utf-8", SURROGATE_ESCAPE)
         self._seen_width = max(self._seen_width, advance_disp(text, 0, self._config.tab_width))
         with self._lock:
             self._texts[row] = text
@@ -368,7 +438,7 @@ class LazyDocument(DocumentBase):
     @property
     def line_count(self) -> int:
         """A lower bound while the scan runs (`snapshot().count`)."""
-        return self._table.snapshot().count
+        return self.snapshot().count
 
     def get_line(self, index: int) -> str:
         text = self._text(index)
@@ -405,12 +475,14 @@ class LazyDocument(DocumentBase):
 
     def read_all(self, limit: int) -> str:
         """Return the whole file decoded, only when the source is at most `limit` bytes; otherwise raise `WholeLineAccess`."""
-        length = self._table.length
+        with self._lock:
+            length = self._table.length
+            data = self._table.read(0, length) if length <= limit else b""
         if length > limit:
             self.call_log.refuse("read_all", None)
             msg = f"source of {length} bytes exceeds the limit of {limit}"
             raise WholeLineAccess(msg)
-        return self._table.read(0, length).decode("utf-8", SURROGATE_ESCAPE)
+        return data.decode("utf-8", SURROGATE_ESCAPE)
 
     @property
     def newline(self) -> Newline:
@@ -421,7 +493,7 @@ class LazyDocument(DocumentBase):
             found = self._range(0)
         except (IndexError, RowUnavailable):
             return "\n"
-        terminator = self._source.read(found.content_end, found.end - found.content_end)
+        terminator = self.read_bytes(found.content_end, found.end - found.content_end)
         self._newline = "\r\n" if terminator == b"\r\n" else "\r" if terminator == b"\r" else "\n"
         return self._newline
 
@@ -453,9 +525,199 @@ class LazyDocument(DocumentBase):
         """Grow the reported width to at least `x` cells (the widget calls this for what it rendered)."""
         self._seen_width = max(self._seen_width, x)
 
+    # -- editing ------------------------------------------------------------------------------
     def replace_range(self, start: Location, end: Location, text: str) -> EditResult:
-        msg = "read-only until ACT4"
-        raise NotImplementedError(msg)
+        """Replace the text between two locations (sorted if needed); newlines in `text` become one terminator (ACT4 design 7.3).
+
+        The terminator is the one of the row that contains the start (the document newline when that row has none), changed
+        when it would otherwise merge with a neighbour: after a CR it must not start with LF, before an LF it must not end with CR.
+        `EditResult.replaced_text` is the removed text when it is at most 64 KiB, otherwise `""`; `removed` always holds the removed bytes.
+
+        Raises:
+            RowUnavailable: The document is closed, a row or column is not resolved yet, or the edit would merge UTF-8 characters in a long row.
+            IndexError: The start row is negative.
+        """
+        top, bottom = sorted((start, end))
+        with self._lock:
+            self._require_open()
+            first = self._locate(top)
+            last = self._locate(bottom)
+            if _NEWLINE.search(text):
+                terminator = self._terminator(first, last)
+                text = _NEWLINE.sub(lambda _: terminator, text)
+            data = text.encode("utf-8", SURROGATE_ESCAPE)
+            content = self._table.add(data) if data else _EMPTY
+            result = self._commit(first, last, content)
+            mirror = self._syntax
+        if mirror is not None:
+            mirror.replace_range(top, bottom, text)
+        self._notify_subscribers()
+        return result
+
+    def splice(self, start: Location, end: Location, content: Content) -> EditResult:
+        """Replace the text between two locations by `content`, byte for byte (undo, redo and paste of internal content).
+
+        Nothing is normalised.
+        The end location comes from `Content.breaks` and `Content.tail_chars`, or from a re-decode of the end row when characters merge.
+
+        Raises:
+            RowUnavailable: As for `replace_range`.
+            IndexError: The start row is negative.
+        """
+        top, bottom = sorted((start, end))
+        with self._lock:
+            self._require_open()
+            first = self._locate(top)
+            last = self._locate(bottom)
+            result = self._commit(first, last, content)
+            mirror = self._syntax
+            inserted = self._table.content_bytes(content, 0, content.length) if mirror is not None else b""
+        if mirror is not None:
+            mirror.replace_range(top, bottom, inserted.decode("utf-8", SURROGATE_ESCAPE))
+        self._notify_subscribers()
+        return result
+
+    def _require_open(self) -> None:
+        if self._closed:
+            msg = "document is closed"
+            raise RowUnavailable(msg)
+
+    def _notify_subscribers(self) -> None:
+        with self._lock:
+            subscribers = list(self._subscribers)
+        for callback in subscribers:
+            call_subscriber(callback)
+
+    def _locate(self, location: Location) -> _Located:
+        """Resolve a location to a byte offset; a column beyond the row is clamped, a row beyond the document means its end."""
+        row, column = location
+        if row < 0:
+            raise IndexError(row)
+        column = max(column, 0)
+        count = self.line_count
+        if row >= count:
+            if not self.snapshot().complete:
+                msg = f"row {row} is not resolved yet"
+                raise RowUnavailable(msg)
+            row, column = count - 1, 1 << 62
+        found = self._range(row)
+        if not self.is_long(row):
+            text = self._text(row)
+            column = min(column, len(text))
+            return _Located(row, column, found.start + utf8_len(text[:column]), found, text)
+        index = self.long_index(row)
+        total = index.total_chars
+        if total is not None:
+            column = min(column, total)
+        relative = index.try_char_to_byte(column)
+        if relative is None:
+            msg = f"column {column} of long row {row} is not resolved yet"
+            raise RowUnavailable(msg)
+        return _Located(row, column, found.start + relative, found, None)
+
+    def _terminator(self, first: _Located, last: _Located) -> str:
+        """Return the terminator `T` for newlines inserted over `[first, last)` (ACT4 design 7.3)."""
+        row_terminator = self._table.read(first.found.content_end, first.found.end - first.found.content_end)
+        base = row_terminator.decode("ascii") if row_terminator else self.newline
+        left = self._table.read(first.offset - 1, 1) if first.offset > 0 else b""
+        right = self._table.read(last.offset, 1)
+        for candidate in (base, "\n", "\r\n", "\r"):
+            if left == b"\r" and candidate.startswith("\n"):
+                continue
+            if right == b"\n" and candidate.endswith("\r"):
+                continue
+            return candidate
+        return "\r\n"
+
+    def _merges(self, left: bytes, content: Content, right: bytes) -> bool:
+        """Whether decoding the bytes around the junctions of an edit differs from decoding each side alone (at most 3 bytes per side)."""
+        if content.length <= 2 * _MERGE_CONTEXT:
+            return _decodes_differently(left, self._table.content_bytes(content, 0, content.length), right)
+        head = self._table.content_bytes(content, 0, _MERGE_CONTEXT)
+        tail = self._table.content_bytes(content, content.length - _MERGE_CONTEXT, content.length)
+        return _decodes_differently(left, head, b"") or _decodes_differently(b"", tail, right)
+
+    def _commit(self, first: _Located, last: _Located, content: Content) -> EditResult:
+        """Splice the table and bring caches, long indexes and the newline up to date; the caller holds the lock."""
+        begin, finish = first.offset, last.offset
+        left = self._table.read(max(begin - _MERGE_CONTEXT, 0), min(begin, _MERGE_CONTEXT))
+        right = self._table.read(finish, _MERGE_CONTEXT)
+        merging = self._merges(left, content, right)
+        try:
+            removed = self._table.splice(begin, finish, content)
+        except RowNotIndexed as error:
+            msg = f"offset {finish} is not scanned yet"
+            raise RowUnavailable(msg) from error
+        if merging:
+            relocated = self._relocate(begin + content.length)
+            if relocated is None:
+                self._table.splice(begin, begin + content.length, removed)  # roll back: the end row is long and cannot be re-decoded
+                msg = f"edit merges UTF-8 characters in long row {first.row + content.breaks}"
+                raise RowUnavailable(msg)
+            end_location = relocated
+        elif content.breaks:
+            end_location = (first.row + content.breaks, content.tail_chars)
+        else:
+            end_location = (first.row, first.column + content.tail_chars)
+        joins = content.length == 0 and left[-1:] == b"\r" and right[:1] == b"\n"  # a CR and an LF became one CRLF: the row structure changed
+        patch = None
+        if not merging and not joins and first.row == last.row and content.breaks == 0 and first.text is not None:
+            size = first.found.content_end - first.found.start - (finish - begin) + content.length
+            if size <= self._config.long_row_threshold:
+                inserted = self._table.content_bytes(content, 0, content.length).decode("utf-8", SURROGATE_ESCAPE)
+                patch = first.text[: first.column] + inserted + first.text[last.column :]
+        self._after_edit(first.row, patch)
+        replaced = ""
+        if removed.length <= REPLACED_TEXT_LIMIT:
+            replaced = self._table.content_bytes(removed, 0, removed.length).decode("utf-8", SURROGATE_ESCAPE)
+        return EditResult(end_location, replaced, removed)
+
+    def _relocate(self, end_offset: int) -> Location | None:
+        """Row and column of `end_offset` after an edit that merged characters: the characters that start before it, found by re-decoding its row.
+
+        Returns `None` when that row is long or not resolvable.
+        """
+        if self._table.read(end_offset - 1, 2) == _CRLF:
+            end_offset += 1  # the edit joined a CR and an LF: the location is after the LF
+        found = self._table.row_at_offset(end_offset)
+        if found is None:
+            return None
+        row, span = found
+        if span.content_end - span.start > self._config.long_row_threshold:
+            return None
+        text = self._table.read(span.start, span.content_end - span.start).decode("utf-8", SURROGATE_ESCAPE)
+        used = 0
+        column = 0
+        for char in text:
+            if span.start + used >= end_offset:
+                break
+            used += utf8_len(char)
+            column += 1
+        return (row, column)
+
+    def _after_edit(self, start_row: int, patch: str | None) -> None:
+        """Clear the caches from the row above the start row, retire the long indexes from the start row on, patch the edited row."""
+        floor = max(start_row - 1, 0)
+        with self._lock:
+            for cache in (self._ranges, self._texts):
+                if cache:
+                    for key in [key for key in cache if key >= floor]:
+                        del cache[key]
+            for key in [key for key in self._long if key >= start_row]:
+                index = self._long.pop(key)
+                index.cancel()
+                self._retired.append(index)
+            if start_row <= 1:
+                self._newline = None
+            if patch is not None:
+                self._texts[start_row] = patch
+                self._seen_width = max(self._seen_width, advance_disp(patch, 0, self._config.tab_width))
+            overflow = [self._retired.pop(0) for _ in range(max(0, len(self._retired) - _MAX_RETIRED))]
+            if overflow:
+                reaper = threading.Thread(target=self._join_all, args=(overflow,), name="lazy-reaper", daemon=True)
+                self._reapers = [t for t in self._reapers if t.is_alive()]
+                self._reapers.append(reaper)
+                reaper.start()
 
     def attach_syntax(self, syntax: SyntaxAwareDocument) -> None:
         """Delegate `prepare_query` and `query_syntax_tree` to `syntax`, a parse of the whole text used for highlighting only (never edited)."""
@@ -532,7 +794,7 @@ class LazyDocument(DocumentBase):
             self.call_log.refuse("row_display_width", row)
             msg = f"row_display_width on long row {row}"
             raise WholeLineAccess(msg)
-        text = self._source.read(found.start, found.content_end - found.start, cache=False).decode("utf-8", SURROGATE_ESCAPE)
+        text = self.read_bytes(found.start, found.content_end - found.start, cache=False).decode("utf-8", SURROGATE_ESCAPE)
         self.call_log.record("row_display_width", row, len(text))
         return advance_disp(text, 0, tab_width)
 
