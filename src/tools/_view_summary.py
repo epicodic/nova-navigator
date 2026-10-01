@@ -27,6 +27,20 @@ METRIC_KEYS = (
     "vm_rss_mib_max",
     "rss_file_mib_max",
     "mismatches",
+    "action_ms",
+    "reindexed_ms",
+    "splice_ms",
+    "row_range_ms",
+    "clipboard_ms",
+    "reestimate_ms",
+    "reconcile_ms",
+    "measure_ms",
+    "bytes_per_piece_tracemalloc",
+    "peak_bytes_per_piece_tracemalloc",
+    "bytes_per_piece_rss",
+    "bytes_per_record",
+    "bytes_per_record_tracemalloc",
+    "bytes_per_operation",
 )
 """Numeric fields that `summarise` turns into table rows, in this order."""
 SLOW_MS = 50.0
