@@ -116,15 +116,15 @@ def test_selected_text_refuses_what_get_text_range_refuses() -> None:
 
 
 @pytest.mark.asyncio
-async def test_copy_of_a_refused_selection_warns_instead_of_raising() -> None:
-    area = NovaTextArea(text="\n".join(f"row {n}" for n in range(300)))
+async def test_copy_of_a_selection_over_many_rows_works() -> None:
+    text = "\n".join(f"row {n}" for n in range(300))
+    area = NovaTextArea(text=text)
     async with _Host(area).run_test() as pilot:
         await pilot.pause()
         area.select_all()
         area.action_copy()
         await pilot.pause()
-        assert any("too large" in note.message for note in pilot.app._notifications)
-        assert pilot.app.clipboard == ""
+        assert pilot.app.clipboard == text
 
 
 @pytest.mark.skipif(not text_area_module.TREE_SITTER, reason="tree-sitter is not installed")

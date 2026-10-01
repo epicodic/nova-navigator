@@ -565,6 +565,25 @@ class LazyDocument(DocumentBase):
             last = self._locate(bottom)
         return self._splice_located(first, last, content)
 
+    def selection_content(self, start: Location, end: Location) -> Content:
+        """The bytes between two locations (sorted if needed) as piece references; no data is read (clipboard copy and cut).
+
+        Raises:
+            RowUnavailable: The document is closed or a row or column is not resolved yet.
+            IndexError: A row is negative.
+        """
+        top, bottom = sorted((start, end))
+        with self._lock:
+            self._require_open()
+            first = self._locate(top)
+            last = self._locate(bottom)
+            return self._table.content(first.offset, last.offset)
+
+    def content_text(self, content: Content) -> str:
+        """The decoded text of `content` (invalid bytes as U+DC80 to U+DCFF); it reads every byte, so ask only for small contents."""
+        with self._lock:
+            return self._table.content_bytes(content, 0, content.length).decode("utf-8", SURROGATE_ESCAPE)
+
     def splice_bytes(self, start_byte: int, end_byte: int, content: Content) -> EditResult:
         """Replace the bytes `[start_byte, end_byte)` by `content` (undo and redo: the offsets are exact, the locations are derived from them).
 
