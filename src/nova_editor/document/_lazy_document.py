@@ -730,7 +730,8 @@ class LazyDocument(DocumentBase):
         except RowNotIndexed as error:
             msg = f"offset {finish} is not scanned yet"
             raise RowUnavailable(msg) from error
-        row_delta = content.breaks - (last.row - first.row) - self._crlf_formed(content, left, right)
+        head_joined, tail_joined = self._crlf_formed(content, left, right)
+        row_delta = content.breaks - (last.row - first.row) - head_joined - tail_joined
         replacement = None
         if plan is not None:
             size = first.found.content_end - first.found.start - (finish - begin) + content.length
@@ -738,7 +739,7 @@ class LazyDocument(DocumentBase):
         if merging:
             end_location = self._relocate(begin + content.length, first, content, old_index)
         elif content.breaks:
-            end_location = (first.row + content.breaks, content.tail_chars)
+            end_location = (first.row + content.breaks - head_joined, content.tail_chars)
         else:
             end_location = (first.row, first.column + content.tail_chars)
         patch = None
@@ -753,13 +754,13 @@ class LazyDocument(DocumentBase):
             replaced = self._table.content_bytes(removed, 0, removed.length).decode("utf-8", SURROGATE_ESCAPE)
         return EditResult(end_location, replaced, removed, begin, content)
 
-    def _crlf_formed(self, content: Content, left: bytes, right: bytes) -> int:
-        """Number of CR and LF pairs that an edit joined at its two junctions into one CRLF terminator (each one removes a row)."""
+    def _crlf_formed(self, content: Content, left: bytes, right: bytes) -> tuple[int, int]:
+        """Whether an edit joined a CR and an LF into one CRLF terminator (each one removes a row) at its left and at its right junction."""
         if content.length == 0:
-            return int(left[-1:] == b"\r" and right[:1] == b"\n")
+            return (int(left[-1:] == b"\r" and right[:1] == b"\n"), 0)
         head = self._table.content_bytes(content, 0, 1)
         tail = self._table.content_bytes(content, content.length - 1, content.length)
-        return int(left[-1:] == b"\r" and head == b"\n") + int(tail == b"\r" and right[:1] == b"\n")
+        return (int(left[-1:] == b"\r" and head == b"\n"), int(tail == b"\r" and right[:1] == b"\n"))
 
     def _plan_splice(self, old: LongLineIndex, first: _Located, last: _Located, content: Content) -> LongEdit | None:
         """Measure an edit inside one long row for `LongLineIndex.spliced`, before the table changes; `None` when the index is rebuilt instead.
