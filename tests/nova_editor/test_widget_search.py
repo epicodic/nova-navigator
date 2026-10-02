@@ -18,6 +18,9 @@ from tests.nova_editor.helpers_view import HostApp, wait_until
 
 BODY = "".join(f"row {n} alpha\n" for n in range(40)) + "a needle here\n" + "".join(f"tail {n}\n" for n in range(20)) + "last needle\n"
 KELVIN = chr(0x212A)
+ROUNDS = 40
+CLOCK_STEP = 0.0625
+"""A power of two, so that the fake clock adds up exactly."""
 TERMINALS = (NovaTextArea.SearchFound, NovaTextArea.SearchNotFound, NovaTextArea.SearchCancelled, NovaTextArea.SearchFailed)
 
 
@@ -213,14 +216,24 @@ class Throttle:
     def __init__(self, area: NovaTextArea, monkeypatch: pytest.MonkeyPatch) -> None:
         self._real = area.document.search_plan
         self.tokens = threading.Semaphore(0)
+        self.entered = 0
+        """Calls of `search_plan` started so far (one more than the tokens given while the search waits for the next token)."""
+        self.given = 0
         monkeypatch.setattr(area.document, "search_plan", self.search_plan)
 
     def search_plan(self, offset: int, limit: int) -> SearchPlan:
+        self.entered += 1
         assert self.tokens.acquire(timeout=10)
         return self._real(offset, limit)
 
     def give(self, count: int = 1_000_000) -> None:
+        self.given += count
         self.tokens.release(count)
+
+    async def give_and_wait(self, pilot: Pilot[None], count: int) -> None:
+        """Give `count` tokens and wait until the search used them all and blocks on the next one (its progress report is posted by then)."""
+        self.give(count)
+        await wait_until(pilot, lambda: self.entered >= self.given + 1)
 
 
 @pytest.mark.asyncio
@@ -261,20 +274,18 @@ async def test_progress_is_monotonic_throttled_and_never_after_the_terminal_mess
         throttle = Throttle(area, monkeypatch)
         assert area.search("absent")
         seen = 0
-        for _ in range(40):
-            throttle.give(3)
-            now[0] += 0.05
+        for _ in range(ROUNDS):
+            now[0] += CLOCK_STEP  # before the tokens: the announcements of this round read the new time
+            await throttle.give_and_wait(pilot, 3)
             await pilot.pause()
             for message in host.found[seen:]:
                 stamp(message)
             seen = len(host.found)
         progress = [m for m in host.found if isinstance(m, NovaTextArea.SearchProgress)]
-        assert len(progress) >= 5
-        assert len(progress) <= 21  # 2 fake seconds, at most 10 per second
+        assert len(progress) == ROUNDS // 2  # a message needs 0.1 s of widget time; a round is 0.0625 s
         assert all(later - earlier >= 0.1 - 1e-9 for earlier, later in pairwise(stamps))
         throttle.give()
         await settle(pilot, area)
-        await pilot.pause(0.1)
         assert [type(m) for m in host.found if isinstance(m, TERMINALS)] == [NovaTextArea.SearchNotFound]
         assert isinstance(host.found[-1], NovaTextArea.SearchNotFound)
         done = [m.done for m in progress]
