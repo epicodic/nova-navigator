@@ -6,12 +6,14 @@ import itertools
 import re
 from pathlib import Path
 
+import pytest
 from textual._cells import cell_len, cell_width_to_column_index
 from textual.expand_tabs import expand_tabs_inline
 from textual.geometry import clamp
 
 from nova_editor.document._document import DocumentBase, Selection
 from nova_editor.widget import NovaTextArea, _text_area
+from tests.nova_editor.helpers_view import HostApp, open_with_gated_line_scan, release_line_scan, wait_until
 
 _WORD_PATTERN = re.compile(r"(?<=\W)(?=\w)|(?<=\w)(?=\W)")
 _ALPHABET = ["a", "_", " ", "\t", "-", "\u4e2d", "e\u0301", "\U0001f600"]
@@ -139,3 +141,49 @@ def test_word_locators_stop_at_window_edge() -> None:
     assert widget.get_cursor_word_left_location() == (0, 3 * window - window)
     widget.selection = Selection((0, 0), (0, 0))
     assert widget.get_cursor_word_right_location() == (0, window)
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [(b"a\nb\n", "LF"), (b"a\r\nb\r\n", "CRLF"), (b"a\rb\r", "CR"), (b"", "LF"), (b"a\r\nb\nc\n", "CRLF"), (b"a\nb\r\n", "LF")],
+)
+def test_line_ending_is_the_first_terminator(tmp_path: Path, data: bytes, expected: str) -> None:
+    path = tmp_path / "f.txt"
+    path.write_bytes(data)
+    assert NovaTextArea.open(path).line_ending == expected
+
+
+@pytest.mark.asyncio
+async def test_indexing_progress_rises_to_one(tmp_path: Path) -> None:
+    area, _path = open_with_gated_line_scan(tmp_path)
+    async with HostApp(area).run_test() as pilot:
+        await pilot.pause()
+        assert 0.0 <= area.indexing_progress < 1.0
+        assert not area.indexing_complete
+        release_line_scan(area)
+        await wait_until(pilot, lambda: area.indexing_complete)
+        assert area.indexing_progress == 1.0
+
+
+def test_indexing_progress_of_an_empty_document_is_one(tmp_path: Path) -> None:
+    path = tmp_path / "e.txt"
+    path.write_bytes(b"")
+    assert NovaTextArea.open(path).indexing_progress == 1.0
+
+
+@pytest.mark.asyncio
+async def test_a_minimal_app_embeds_the_widget_and_edits_a_file(tmp_path: Path) -> None:
+    """REQ-17: no `nova_edit` code is involved; the widget is constructed from a path, edited by keys and saved."""
+    path = tmp_path / "embed.txt"
+    path.write_text("one\n")
+    area = NovaTextArea.open(path)
+    async with HostApp(area).run_test() as pilot:
+        await pilot.pause()
+        area.focus()
+        await pilot.press("x")
+        assert area.modified
+        assert (area.line_count, area.line_ending) == (2, "LF")
+        assert area.save()
+        await wait_until(pilot, lambda: not area.saving)
+        await pilot.pause(0.05)
+    assert path.read_bytes() == b"xone\n"

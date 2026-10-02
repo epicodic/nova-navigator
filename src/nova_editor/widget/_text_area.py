@@ -1559,6 +1559,21 @@ NovaTextArea {
         """True when nothing is left to scan for the line count."""
         return self.line_count_exact
 
+    @property
+    def indexing_progress(self) -> float:
+        """Fraction of the document that the line scan has covered, from 0.0 to 1.0 (exactly 1.0 when `indexing_complete` or when the document is empty)."""
+        snapshot = self.document.snapshot()
+        if snapshot.complete:
+            return 1.0
+        length = self.document.length
+        return 1.0 if length <= 0 else min(1.0, snapshot.scanned_bytes / length)
+
+    @property
+    def line_ending(self) -> Literal["LF", "CRLF", "CR"]:
+        """The line terminator that new line breaks use: the one of the first row (`LF` for an empty document); a mixed file shows the style of its first terminator."""
+        newline = self.document.newline
+        return "CRLF" if newline == "\r\n" else "CR" if newline == "\r" else "LF"
+
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Make `escape` (`cancel_pending`) active only while a jump is pending, so it never shadows another use of the key."""
         if action == "cancel_pending":
