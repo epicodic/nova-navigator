@@ -628,10 +628,12 @@ async def _latency_step(session: SaveSession, op: str, index: int) -> Row:
 
         action = jump
     elif op == "vscroll":
-        step = SCROLL_ROWS if index % 2 == 0 else -SCROLL_ROWS
+        offset = area.scroll_offset.y
+        down = offset + SCROLL_ROWS <= area.max_scroll_y and (offset < SCROLL_ROWS or index % 2 == 0)
+        target = offset + SCROLL_ROWS if down else max(0, offset - SCROLL_ROWS)
 
         def scroll() -> None:
-            area.scroll_to(y=max(0, area.scroll_offset.y + step), animate=False)
+            area.scroll_to(y=target, animate=False)
 
         action = scroll
     else:
@@ -640,7 +642,24 @@ async def _latency_step(session: SaveSession, op: str, index: int) -> Row:
             send_key(app, op)
 
         action = press
+    scroll_before = area.scroll_offset.y
     timing = await timed(area, action, limit=STEP_LIMIT, require_change=False, state=edit_state)
+    if op == "vscroll":
+        scroll_after = area.scroll_offset.y
+        noop = scroll_after == scroll_before  # a step that did not scroll waits for the next cursor-blink repaint: never a latency sample
+        return base_row(
+            session.spec,
+            case="save-latency",
+            state=state,
+            op=op,
+            latency_ms=None if noop else timing.latency_ms,
+            handler_ms=timing.handler_ms,
+            changed=timing.changed,
+            scroll_y_before=scroll_before,
+            scroll_y_after=scroll_after,
+            noop=noop,
+            **common,
+        )
     return base_row(session.spec, case="save-latency", state=state, op=op, latency_ms=timing.latency_ms, handler_ms=timing.handler_ms, changed=timing.changed, **common)
 
 
@@ -670,6 +689,7 @@ def _summary_row(session: SaveSession, steps: list[Row]) -> Row:
         op="summary",
         steps_total=len(steps),
         steps_saving=sum(1 for row in steps if row["state"] == "saving"),
+        steps_noop=sum(1 for row in steps if row.get("noop")),
         steps_over_50ms=sum(1 for row in during if row["latency_ms"] > SLOW_STEP_MS),
         longest_step_ms=None if longest is None else longest["latency_ms"],
         longest_step_op=None if longest is None else longest["op"],
