@@ -13,7 +13,7 @@ import threading
 
 _FIRST_SURROGATE = 0xD800
 _LAST_SURROGATE = 0xDFFF
-_ASCII_EXTRA = {"k": "K", "s": "ſ"}
+_ASCII_EXTRA = {"k": "\u212a", "s": "\u017f"}
 """Non-ASCII members of the class of an ASCII letter (Kelvin sign, long s); `test_static_ascii_table_equals_the_full_scan` proves the table."""
 
 
