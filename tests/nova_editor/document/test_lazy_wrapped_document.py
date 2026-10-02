@@ -503,3 +503,27 @@ def test_wrap_range_drops_caches_and_remeasures_below_the_edit() -> None:
     expected = sum(len(lazy.get_offsets(row)) + 1 for row in range(doc.line_count))
     assert lazy.height >= doc.line_count
     assert abs(lazy.height - expected) <= expected // 5
+
+
+def test_edit_at_the_end_does_not_move_the_estimate_of_the_blocks_above() -> None:
+    blocks = 200
+    doc = LazyDocument.from_text("\n".join(f"row {i}" for i in range(BLOCK_ROWS * blocks)), _config())
+    _OPEN.append(doc)
+    lazy = LazyWrappedDocument(doc, 12, TAB)
+    last = doc.line_count - 1
+    lazy.y_of_row(last)
+    middle = blocks // 2
+    top = lazy._y_of_block(middle)
+    assert lazy.row_of_y(top)[0] == middle * BLOCK_ROWS
+    lazy.y_of_row(last)
+    end = (last, len(doc.get_line(last)))
+    for _ in range(3):
+        doc.replace_range(end, end, "word " * 4)
+        lazy.wrap_range(end, end, end)
+        lazy.y_of_row(last)
+        end = (last, len(doc.get_line(last)))
+    assert len(lazy.get_offsets(last)) > 0
+    measured = set(lazy._blocks)
+    assert lazy._y_of_block(middle) == top
+    assert lazy.row_of_y(top)[0] == middle * BLOCK_ROWS
+    assert set(lazy._blocks) - measured <= {middle - 1, middle, middle + 1}
