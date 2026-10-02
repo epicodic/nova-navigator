@@ -105,6 +105,7 @@ def _save_and_rebase(doc: LazyDocument, row: int, *, apply: bool) -> None:
 CALLS: dict[str, Call] = {
     "anchor_index": lambda d, r: d.anchor_index(r),
     "byte_offset": lambda d, r: d.byte_offset(r, 3),
+    "check_source": lambda d, _: d.check_source(),
     "close": lambda d, _: d.close(),
     "column_at_display": lambda d, r: d.column_at_display(r, 5),
     "column_slice": lambda d, r: d.column_slice(r, 1, 6),
@@ -144,6 +145,7 @@ CALLS: dict[str, Call] = {
     "tab_width": lambda d, _: d.tab_width,
     "text": lambda d, _: d.text,
     "wait_closed": lambda d, _: d.wait_closed(0.0),
+    "wait_first_row": lambda d, _: d.wait_first_row(5.0),
     "wait_indexed": lambda d, _: d.wait_indexed(5.0),
     "__getitem__": lambda d, r: (d[r], d[0:2]),
     "begin_save": _gated(lambda d, _: (d.begin_save(), d.end_save())),

@@ -215,9 +215,13 @@ class EditHistory:
         self._branch = batch.branch_before
 
     def clear(self) -> None:
-        """Completely clear the history."""
+        """Completely clear the history; the current text is then the saved state (`modified` is false)."""
         self._undo_stack.clear()
         self._redo_stack.clear()
+        self._revision = 0
+        self._branch = 0
+        self._next_branch = 1
+        self._saved = (0, 0)
         self._last_edit_time = time.monotonic()
         self._force_end_batch = False
         self._previously_replaced = False

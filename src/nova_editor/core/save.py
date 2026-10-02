@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple, Protocol
 
-from nova_editor.core.byte_source import ByteSource, ChangeKind, FileIdentity, PreadSource
+from nova_editor.core.byte_source import ByteSource, ChangeKind, FileIdentity, PreadSource, SourceChanged
 from nova_editor.core.line_index import DEFAULT_LONG_LINE_CAP, DEFAULT_LONG_LINE_THRESHOLD, DEFAULT_STRIDE, LineIndex
 from nova_editor.core.row_scanner import LongRow, RowScanner
 from nova_editor.core.save_layout import SaveLayout
@@ -304,7 +304,12 @@ class SaveJob:
             self._check_cancel()
             want = min(settings.chunk, total - written)
             parts = self._planner.plan(written, want, self._unverified)
-            data = b"".join(part.source.read(part.a, part.b - part.a, cache=False) if part.src == 0 else part.source.read(part.a, part.b - part.a) for part in parts)
+            try:
+                data = b"".join(part.source.read(part.a, part.b - part.a, cache=False) if part.src == 0 else part.source.read(part.a, part.b - part.a) for part in parts)
+            except SourceChanged as error:
+                if error.kind is ChangeKind.TRUNCATED:
+                    raise SaveFailed("write", "the file was truncated; the unchanged parts cannot be read") from error
+                raise SaveFailed("write", f"the file changed while saving: {error}") from error
             if len(data) != want:
                 raise SaveFailed("write", "short read while saving")
             self._write_all(fd, data)

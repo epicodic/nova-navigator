@@ -133,3 +133,26 @@ def test_restore_helpers_put_the_revision_back() -> None:
     history._restore_redo(batch)
     assert history.revision == 0
     doc.close()
+
+
+def test_clear_resets_the_saved_state_to_unmodified() -> None:
+    doc, history = typing_setup()
+    type_char(doc, history)
+    assert history.modified
+    history.clear()
+    assert not history.modified
+    assert history.revision == 0
+    assert history.branch == 0
+    doc.close()
+
+
+def test_clear_forgets_an_earlier_save() -> None:
+    doc, history = typing_setup()
+    type_char(doc, history, "a")
+    history.mark_saved()
+    type_char(doc, history, "b")
+    history.clear()
+    assert not history.modified
+    type_char(doc, history, "c")
+    assert history.modified
+    doc.close()

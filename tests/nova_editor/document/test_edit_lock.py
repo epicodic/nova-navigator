@@ -192,3 +192,35 @@ def test_plan_does_not_hold_the_lock_during_a_read() -> None:
     finally:
         source.release.set()
         _closed(doc)
+
+
+def test_lock_reasons_are_kept_apart() -> None:
+    doc = LazyDocument.from_text("abc", SMALL)
+    try:
+        doc.lock_edits("file changed on disk")
+        doc.lock_edits("saving")
+        with pytest.raises(EditsLocked, match="saving"):
+            doc.replace_range((0, 0), (0, 0), "x")
+        doc.unlock_edits("saving")
+        with pytest.raises(EditsLocked, match="file changed on disk"):
+            doc.replace_range((0, 0), (0, 0), "x")
+        doc.unlock_edits("saving")  # a reason that is not held changes nothing
+        with pytest.raises(EditsLocked, match="file changed on disk"):
+            doc.replace_range((0, 0), (0, 0), "x")
+        doc.unlock_edits("file changed on disk")
+        doc.replace_range((0, 0), (0, 0), "x")
+        assert doc.read_bytes(0, 4) == b"xabc"
+    finally:
+        _closed(doc)
+
+
+def test_unlock_without_a_reason_lifts_every_lock() -> None:
+    doc = LazyDocument.from_text("abc", SMALL)
+    try:
+        doc.lock_edits("file changed on disk")
+        doc.lock_edits("saving")
+        doc.unlock_edits()
+        doc.replace_range((0, 0), (0, 0), "x")
+        assert doc.read_bytes(0, 4) == b"xabc"
+    finally:
+        _closed(doc)

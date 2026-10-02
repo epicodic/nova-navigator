@@ -129,6 +129,18 @@ class PreadSource:
         """Return the identity of the descriptor recorded when the source was opened."""
         return self._identity
 
+    def check(self) -> None:
+        """Run the descriptor check of a read without reading any content.
+
+        Raises:
+            SourceChanged: The size or mtime of the descriptor differs from the recorded ones, or an earlier read failed this source.
+            ValueError: The source is closed.
+        """
+        with self._lock:
+            if self._closing:
+                raise ValueError("check of a closed source")
+        self._check()
+
     def unverified_reader(self) -> ByteSource:
         """Return a reader of the same descriptor that skips the size and mtime check.
 
