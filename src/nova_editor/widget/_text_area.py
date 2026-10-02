@@ -3135,17 +3135,17 @@ NovaTextArea {
             source = None  # the document owns it now
             document.wait_first_row(_FIRST_ROW_WAIT)  # the cursor, the scrollbars and the layout need row 0, which the background scan resolves within milliseconds
             self._replace_document(document)
-        except (OSError, ValueError, CoreSourceChanged) as error:
+        except BaseException as error:
+            if document is not None and self.document is document:  # the swap happened and then something raised (closing the old document, wiring the scan)
+                self._adopt_reloaded(held)
+                raise
             self._discard_reloaded(document, source)
+            if not isinstance(error, OSError | ValueError | CoreSourceChanged):
+                raise
             failure = error if isinstance(error, OSError) else OSError(str(error))
             self.post_message(self.ReloadFailed(failure, path, self).set_sender(self))
             return False
-        except BaseException:
-            self._discard_reloaded(document, source)
-            raise
-        self.history.clear()
-        self._stale_kind = None
-        self._held_identity = held
+        self._adopt_reloaded(held)
         self._finish_document(self._requested_language, reset_cursor=True)
         if row > 0:
             if self.line_count_exact:
@@ -3155,6 +3155,12 @@ NovaTextArea {
         self.post_message(self.Reloaded(self).set_sender(self))
         self.update_suggestion()
         return True
+
+    def _adopt_reloaded(self, held: FileIdentity | None) -> None:
+        """The document of a `reload` is in place: the history, the stale state and the held identity follow it (none of them belongs to the old document)."""
+        self.history.clear()
+        self._stale_kind = None
+        self._held_identity = held
 
     def _discard_reloaded(self, document: LazyDocument | None, source: ByteSource | None) -> None:
         """Close what a failed `reload` opened: the document, or the source that no document owns yet; the document in use is left alone."""
