@@ -249,6 +249,28 @@ class _DocumentPlanner:
         return self._document.plan(offset, limit, unverified)
 
 
+@dataclass(frozen=True)
+class ExternalCheck:
+    """One check for a change of the file behind a widget, split in two: `run` is pure and may run on any thread, the widget applies its result.
+
+    `NovaTextArea.begin_external_check` captures what the check compares (the document, the path and the identity held since the read) and the
+    save epoch; `NovaTextArea.apply_external_check` drops the result when a save began or ended meanwhile.
+    """
+
+    epoch: int
+    """The save epoch of the widget when the check began."""
+    document: LazyDocument
+    path: Path | None
+    held: FileIdentity | None
+
+    def run(self) -> ChangeKind:
+        """Do the `stat` calls (they may block on a network file system) without touching any widget state: what differs, or `UNCHANGED`."""
+        kind = self.document.check_source()
+        if kind is ChangeKind.UNCHANGED and self.path is not None and self.held is not None:
+            kind = check_path(self.path, self.held)
+        return kind
+
+
 _FIRST_ROW_WAIT = 1.0
 """Longest wait of `reload` for the first row of the new document (the scan resolves it within milliseconds)."""
 
@@ -1064,6 +1086,8 @@ NovaTextArea {
         """What changed on disk behind the document (the stale state, edits locked with `STALE_REASON`), or `None`."""
 
         self._save_run: _SaveRun | None = None
+        self._save_epoch = 0
+        """Counts the starts and ends of saves: an external check that began in another epoch compared with a file the save was about to replace."""
         """The running save (at most one), else `None`."""
 
         self._edit_refused = False
@@ -3021,7 +3045,9 @@ NovaTextArea {
 
         The check compares the file with the identity held since it was read (the descriptor of a large file, the `stat` taken around the read of
         a small one) and, for a large file, the descriptor itself. A change puts the view into the stale state and posts `SourceChanged` once;
-        later calls return the same kind without posting again. A widget that is closed or has no file reports `UNCHANGED`.
+        later calls return the same kind without posting again. A widget that is closed or has no file reports `UNCHANGED`, and so does one that
+        saves: the replace of the save would look like a change. A poll that must not block the UI thread uses `begin_external_check` and
+        `apply_external_check` instead.
 
         Returns:
             What differs, or `UNCHANGED`.
@@ -3030,9 +3056,33 @@ NovaTextArea {
             return ChangeKind.UNCHANGED
         if self._stale_kind is not None:
             return self._stale_kind
-        kind = self.document.check_source()
-        if kind is ChangeKind.UNCHANGED and self.file_path is not None and self._held_identity is not None:
-            kind = check_path(self.file_path, self._held_identity)
+        check = self.begin_external_check()
+        if check is None:
+            return ChangeKind.UNCHANGED
+        return self.apply_external_check(check, check.run())
+
+    def begin_external_check(self) -> ExternalCheck | None:
+        """UI thread: capture an external check to run elsewhere (`ExternalCheck.run`); `None` when there is nothing to check.
+
+        That is the case for a closed widget, while a save runs (its own replace would look like a change) and once the view is stale already.
+        """
+        if self._lazy_closed or self._save_run is not None or self._stale_kind is not None:
+            return None
+        return ExternalCheck(self._save_epoch, self.document, self.file_path, self._held_identity)
+
+    def apply_external_check(self, check: ExternalCheck, kind: ChangeKind) -> ChangeKind:
+        """UI thread: apply the result of `check.run()`; a change puts the view into the stale state and posts `SourceChanged`.
+
+        A result is ignored (`UNCHANGED` is returned) when a save began or ended since `begin_external_check`, the widget was closed, or the
+        document was replaced: the file it compared was not the one the widget stands on.
+
+        Returns:
+            The kind that was applied, the stale kind when the view was stale already, or `UNCHANGED`.
+        """
+        if self._stale_kind is not None:
+            return self._stale_kind
+        if self._lazy_closed or self._save_run is not None or check.epoch != self._save_epoch or check.document is not self.document:
+            return ChangeKind.UNCHANGED
         if kind is not ChangeKind.UNCHANGED:
             self._fail_source(f"the file changed on disk ({kind.value})", kind)
         return kind
@@ -3133,6 +3183,7 @@ NovaTextArea {
     def _start_save(self, target: Path, *, unverified: bool) -> None:
         """UI thread: lock the document, collect what the history refers to and start the `nova-save` thread."""
         document = self.document
+        self._save_epoch += 1
         document.begin_save()
         document.lock_edits("saving")
         self.history.checkpoint()
@@ -3210,6 +3261,7 @@ NovaTextArea {
     def _end_save(self, run: _SaveRun) -> None:
         """UI thread: forget the run, lift the save registration and the edit lock."""
         self._save_run = None
+        self._save_epoch += 1
         self.document.end_save()
         self.document.unlock_edits("saving")
 

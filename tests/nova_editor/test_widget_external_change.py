@@ -6,6 +6,7 @@ Hermetic: every file is a temp file of about 2 MiB read through a `PreadSource`;
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -13,8 +14,8 @@ import pytest
 from textual.pilot import Pilot
 
 from nova_editor.core import ChangeKind, PreadSource, SourceChanged
-from nova_editor.core.save import SaveSettings
-from nova_editor.widget import NovaTextArea
+from nova_editor.core.save import SaveIo, SaveSettings
+from nova_editor.widget import ExternalCheck, NovaTextArea
 from nova_editor.widget import _text_area as widget_module
 from tests.nova_editor.helpers_view import await_first_layout, row_strip_text, wait_until
 from tests.nova_editor.save_widget_helpers import Gate, SaveHost, leftovers, text_of, wait_saved
@@ -606,3 +607,88 @@ async def test_reload_closes_the_new_source_when_row_zero_cannot_be_read(tmp_pat
         (source,) = opened
         await wait_until(pilot, lambda: _is_closed(source))  # the document closes its source on a closer thread
         assert len(host.reload_failures) == 1
+
+
+def _run_in_thread(check: ExternalCheck) -> ChangeKind:
+    """Run the pure part of an external check on a thread of its own, as the poll of the app does."""
+    found: list[ChangeKind] = []
+    thread = threading.Thread(target=lambda: found.append(check.run()))
+    thread.start()
+    thread.join(10.0)
+    assert found
+    return found[0]
+
+
+@pytest.mark.asyncio
+async def test_the_pure_check_changes_no_widget_state_and_the_apply_does(tmp_path: Path) -> None:
+    path = _file(tmp_path)
+    area = NovaTextArea.open(path)
+    host = ChangeHost(area)
+    async with host.run_test() as pilot:
+        await _opened(pilot, area)
+        check = area.begin_external_check()
+        assert check is not None
+        _append(path)
+        assert _run_in_thread(check) is ChangeKind.MODIFIED
+        await pilot.pause(0.05)
+        assert host.kinds == []
+        assert area._stale_kind is None  # the thread did not touch the state
+        assert area.apply_external_check(check, ChangeKind.MODIFIED) is ChangeKind.MODIFIED
+        await pilot.pause(0.05)
+        assert host.kinds == [ChangeKind.MODIFIED]
+        assert area.begin_external_check() is None  # stale already: nothing left to find
+
+
+@pytest.mark.asyncio
+async def test_a_check_started_before_a_save_is_ignored_after_it(tmp_path: Path) -> None:
+    path = _file(tmp_path)
+    area = NovaTextArea.open(path)
+    host = ChangeHost(area)
+    async with host.run_test() as pilot:
+        await _opened(pilot, area)
+        area.focus()
+        await pilot.press("x")
+        check = area.begin_external_check()
+        assert check is not None
+        assert area.save() is True
+        await wait_saved(pilot, area)
+        assert path.read_bytes() == EXPECTED
+        kind = _run_in_thread(check)  # its identity predates the replace: it sees the app's own file as replaced
+        assert kind is ChangeKind.REPLACED
+        assert area.apply_external_check(check, kind) is ChangeKind.UNCHANGED
+        await pilot.pause(0.05)
+        assert host.kinds == []
+        assert area._stale_kind is None
+        assert area.check_external_change() is ChangeKind.UNCHANGED
+
+
+@pytest.mark.asyncio
+async def test_a_check_between_the_replace_and_the_finish_reports_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    reached, opened = threading.Event(), threading.Event()
+    real = SaveIo()
+
+    def held_dir_sync(directory: str) -> None:
+        reached.set()  # the replace happened; the UI thread has not finished the save
+        assert opened.wait(10.0)
+        real.fsync_dir(directory)
+
+    monkeypatch.setattr(NovaTextArea, "save_io", SaveIo(fsync_dir=held_dir_sync))
+    path = _file(tmp_path)
+    area = NovaTextArea.open(path)
+    host = ChangeHost(area)
+    async with host.run_test() as pilot:
+        await _opened(pilot, area)
+        area.focus()
+        await pilot.press("x")
+        early = area.begin_external_check()
+        assert early is not None
+        assert area.save() is True
+        assert reached.wait(10.0)
+        assert area.begin_external_check() is None
+        assert area.check_external_change() is ChangeKind.UNCHANGED
+        assert area.apply_external_check(early, ChangeKind.REPLACED) is ChangeKind.UNCHANGED
+        opened.set()
+        await wait_saved(pilot, area)
+        assert host.kinds == []
+        assert [type(message) for message in host.terminals()] == [NovaTextArea.Saved]
+        assert area.check_external_change() is ChangeKind.UNCHANGED
