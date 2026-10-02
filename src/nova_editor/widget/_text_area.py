@@ -3245,15 +3245,28 @@ NovaTextArea {
         """Close with a save running: cancel the job, post its terminal message now and leave the thread to end on its own.
 
         The document registers the thread with its closer, so the source is closed only after the writer returned.
+        A save whose replace already happened is not cancelled: the file holds the new bytes, so the message is `SaveFailed` with `committed` (the
+        widget closes instead of switching to the new file). A replace that happens after this call (the cancel came too late) is not reported.
+        A refused post (the widget is unmounting) is ignored.
         """
         run = self._save_run
         if run is None:
             return
         run.abandoned = True
-        if run.job is not None:
-            run.job.cancel()
+        job = run.job
+        committed = job is not None and job.committed
+        if job is not None:
+            job.cancel()
         self._end_save(run)
-        self.post_message(self.SaveCancelled(self).set_sender(self))
+        if committed:
+            reason = CoreSaveFailed("internal", "the file was written but the widget was closed before it switched to it", committed=True)
+            message: Message = self.SaveFailed(reason, reason.stage, run.target, self, committed=True)
+        else:
+            message = self.SaveCancelled(self)
+        try:
+            self.post_message(message.set_sender(self))
+        except RuntimeError:  # no active app any more
+            return
 
     def refresh_after_rebase(self) -> None:
         """Re-point the widget's holders after the lazy document was rebased onto a saved file, and repaint.

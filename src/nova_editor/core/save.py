@@ -250,12 +250,18 @@ class SaveJob:
         self._io = io if io is not None else SaveIo()
         self._clock = clock
         self._cancelled = threading.Event()
+        self._committed = threading.Event()
         self._layout = SaveLayout()
         self._last_report: float | None = None
 
     def cancel(self) -> None:
         """Ask the job to stop; it raises `SaveCancelled` at the next check unless the replace already happened."""
         self._cancelled.set()
+
+    @property
+    def committed(self) -> bool:
+        """Whether the replace already happened (readable from any thread): from then on a cancel no longer takes effect."""
+        return self._committed.is_set()
 
     def run(self) -> SaveResult:
         """Run the save on the calling thread."""
@@ -289,6 +295,7 @@ class SaveJob:
             self._check_cancel()  # the last cancel point
             self._replace(name, target)
             renamed = True
+            self._committed.set()
             adopted, reader = reader, None  # the finish step owns the descriptor from here on
             with contextlib.suppress(OSError):
                 self._io.fsync_dir(str(target.parent))
