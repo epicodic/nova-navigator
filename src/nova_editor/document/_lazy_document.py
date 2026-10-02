@@ -44,6 +44,7 @@ from nova_editor.core.long_line_index import Edit as LongEdit
 from nova_editor.core.pieces import MAX_GENERATION
 from nova_editor.core.rebase import UNDO_COPY_LIMIT
 from nova_editor.core.save import PlanPart, SaveResult
+from nova_editor.core.search import SearchPlan
 from nova_editor.core.text_width import SURROGATE_ESCAPE, advance_disp, locate_cover, utf8_len
 from nova_editor.document._document import DocumentBase, EditResult, Location, Newline
 from nova_editor.document._lazy_config import LazyConfig
@@ -435,13 +436,35 @@ class LazyDocument(DocumentBase):
         """
         with self._lock:
             self._require_open()
-            end = min(offset + limit, self._table.length)
-            start = min(offset, end)
-            runs = self._table.layout_range(start, end)
-            original: ByteSource = self._source
-            if unverified and isinstance(original, PreadSource):
-                original = original.unverified_reader()
-            return [PlanPart(src, original if src == 0 else _SegmentBytes(self._table.source_of(src)), a, b) for src, a, b in runs]
+            return self._parts(offset, limit, unverified=unverified)
+
+    @property
+    def revision(self) -> int:
+        """Count of committed edits; a search plan of another revision is stale (the rebase after a save does not change it)."""
+        with self._lock:
+            return self._edit_count
+
+    def search_plan(self, offset: int, limit: int) -> SearchPlan:
+        """Return `SearchPlan(revision, length, parts)` for the bytes `[offset, offset + limit)`, parts as `plan(offset, limit, False)`, in one lock hold.
+
+        No row index is consulted, so the call never waits for the line scan.
+
+        Raises:
+            RowUnavailable: The document is closed.
+        """
+        with self._lock:
+            self._require_open()
+            return SearchPlan(self._edit_count, self._table.length, self._parts(offset, limit, unverified=False))
+
+    def _parts(self, offset: int, limit: int, *, unverified: bool) -> list[PlanPart]:
+        """The parts of `[offset, offset + limit)` clamped to the document; the caller holds the lock and has checked that the document is open."""
+        end = min(offset + limit, self._table.length)
+        start = min(offset, end)
+        runs = self._table.layout_range(start, end)
+        original: ByteSource = self._source
+        if unverified and isinstance(original, PreadSource):
+            original = original.unverified_reader()
+        return [PlanPart(src, original if src == 0 else _SegmentBytes(self._table.source_of(src)), a, b) for src, a, b in runs]
 
     def prepare_rebase(self, result: SaveResult, contents: Sequence[Content]) -> RebasePlan:
         """Translate `contents` (every piece reference the undo and redo stacks and the clipboard hold) onto the saved file (design 7.3 and 8).

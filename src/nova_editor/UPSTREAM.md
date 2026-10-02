@@ -13,11 +13,11 @@ This file documents the vendored code from upstream Textual and how to manage up
 ## Vendored Files
 
 The following files are vendored from Textual 8.2.8.
-The Notes column says what differs from upstream, and what ACT3, ACT4 and ACT5 changed on top of the ACT2 state.
+The Notes column says what differs from upstream, and what ACT3, ACT4, ACT5 and ACT6 changed on top of the ACT2 state.
 
 | Vendored Path | Upstream Path | Notes |
 |---|---|---|
-| `widget/_text_area.py` | `src/textual/widgets/_text_area.py` | Class renamed `TextArea` to `NovaTextArea`; imports updated; lazy document support, cursor state machine, long-row handling and new messages added; ACT4 removed the stock `Document` path and added editing on piece tables, refusal and the clipboard; ACT5 added saving, reload, external change detection and the save messages (see below) |
+| `widget/_text_area.py` | `src/textual/widgets/_text_area.py` | Class renamed `TextArea` to `NovaTextArea`; imports updated; lazy document support, cursor state machine, long-row handling and new messages added; ACT4 removed the stock `Document` path and added editing on piece tables, refusal and the clipboard; ACT5 added saving, reload, external change detection and the save messages; ACT6 added the search glue, its messages and the select-all key move (see below) |
 | `widget/_text_area_theme.py` | `src/textual/_text_area_theme.py` | Imports updated to reference `NovaTextArea`; unchanged by ACT3 |
 | `document/_document.py` | `src/textual/document/_document.py` | Capability methods added; `cell_len` now comes from `rich.cells`; `EditResult` gained `removed`, `start_byte` and `inserted` (ACT4); unchanged by ACT5 |
 | `document/_document_navigator.py` | `src/textual/document/_document_navigator.py` | Lazy-document branches added (see below); `cell_len` now comes from `rich.cells` |
@@ -25,7 +25,7 @@ The Notes column says what differs from upstream, and what ACT3, ACT4 and ACT5 c
 | `document/_history.py` | `src/textual/document/_history.py` | Imports updated to use the vendored document package; ACT4 changed the batching defaults, `record` and added restore helpers; ACT5 added revisions, branches and the modified state (see below) |
 | `document/_syntax_aware_document.py` | `src/textual/document/_syntax_aware_document.py` | Imports updated to use the vendored document package; unchanged by ACT3 and ACT4; now only the highlighting mirror of a lazy document |
 | `document/_wrapped_document.py` | `src/textual/document/_wrapped_document.py` | Imports use the vendored document package; unchanged by ACT3 |
-| `document/__init__.py` | `src/textual/document/__init__.py` | Empty at the end of ACT4; ACT5 exports `EditsLocked`, `LazyDocument` and `RowUnavailable` (not upstream's exports) |
+| `document/__init__.py` | `src/textual/document/__init__.py` | Empty at the end of ACT4; ACT5 exports `EditsLocked`, `LazyDocument` and `RowUnavailable` (not upstream's exports); unchanged by ACT6 |
 
 ## New Files (Not Vendored)
 
@@ -46,8 +46,12 @@ The following modules are native to `nova_editor` and are not copies of upstream
 | `core/save.py` | `FileIdentity` and `ChangeKind` re-exports, `check_path`, `SaveSettings`, `SaveIo`, `SaveJob`, `SaveFailed`, `SaveCancelled`, `SaveResult` (ACT5). |
 | `core/save_layout.py` | `SaveLayout`, the runs a save wrote, by source (ACT5). |
 | `core/rebase.py` | `Rebaser`, `RebasePlan` and `UNDO_COPY_LIMIT` (ACT5). |
+| `core/casefold.py` | `fold1`, the static ASCII table and the lazily built table of case variants (ACT6). |
+| `core/search.py` | `compile_matcher`, `Matcher`, `SearchJob`, `SearchSpec`, `SearchSettings`, `SearchPlan`, `SearchPlanner`, `SearchResult`, `SearchProgress` and the errors (ACT6). |
+| `widget/_search_run.py` | `SearchRun`, `SearchOutcome` and `run_search_thread`, the state and thread body of one widget search (ACT6). |
+| `search_bar.py` | `SearchBar` and `SearchStatus`, the inline widgets of the `nova_edit` search (ACT6). |
 | `document/_lazy_config.py` | Tunable thresholds for lazy documents (`LazyConfig` dataclass). |
-| `document/_lazy_document.py` | Editable document over `PieceTable` (read-only in ACT3); ACT5 added the edit lock, `plan`, `prepare_rebase`, `apply_rebase` and the save registration. |
+| `document/_lazy_document.py` | Editable document over `PieceTable` (read-only in ACT3); ACT5 added the edit lock, `plan`, `prepare_rebase`, `apply_rebase` and the save registration; ACT6 added `search_plan` and `revision`. |
 | `document/_lazy_wrapped_document.py` | Wrapping layer for lazy documents with grid wrap and a sparse height estimate. |
 | `document/_cursor_anchor.py` | Cursor state machine for long rows (`RESOLVED`, `PROVISIONAL`, `PENDING`). |
 | `document/_long_row_anchor.py` | Adapter from a long-line index to the cursor machine; ACT5 added `rebind`. |
@@ -76,6 +80,10 @@ ACT5 extended the core, which stays Textual-free:
 - `PieceTable.source_of`.
 - `LongLineIndex.rebased`.
 - `PieceTable.layout_range`, `register_legacy` and `legacy`, and the generation constants and helpers in `pieces.py` (`MAX_GENERATION`, `make_src`, `generation_of`, `segment_of`).
+
+ACT6 extended the core, which stays Textual-free:
+- The modules `casefold` and `search` listed above, exported from `core/__init__.py` (`SearchSpec`, `SearchJob`, `SearchSettings`, `SearchPlan`, `SearchPlanner`, `SearchResult`, `SearchProgress`, `SearchError`, `SearchCancelled`, `SearchStale`).
+- `LazyDocument.search_plan` and `LazyDocument.revision` in the document layer.
 
 ## Nova Editor Changes to Vendored Code
 
@@ -156,6 +164,23 @@ The widget has one document type, `LazyDocument`.
 **New members:** `modified`, `saving`, `save`, `check_external_change`, `reload`, `cancel_save`, `begin_external_check`, `apply_external_check`, `refresh_after_rebase`, and the private `_reachable_edits`, `_reachable_contents`, `_apply_translated`, `_start_save`, `_save_thread`, `_post_save_outcome`, `_on_save_report`, `_announce_save_progress`, `_end_save`, `_finish_save`, `_conclude_save`, `_discard_reloaded`, `_lift_stale` and `_abandon_save`.
 **New attributes:** `file_path`, `_held_identity`, `_stale_kind`, `_save_run` and `_open_config`.
 **Edited members:** `__init__`, `open` (records the path, the held identity and the configuration), `close` (abandons a running save), `_replace_document` and `load_text` (refused during a save), `_fail_source` and `_guard_source` (carry the `ChangeKind` and set the edit lock), `edit`, `_render_line_guarded`, `_reestimate`, `cursor_byte_offset`, `_run_jump`, `_track_cursor`, `_reconcile_cursor` and `_mouse_target` (pass the kind of a `SourceChanged`), and `_store_clipboard` (keeps no record during a save).
+
+### `widget/_text_area.py` (ACT6)
+
+**New imports:** `SearchError`, `SearchJob`, `SearchPlan`, `SearchSettings` and `SearchSpec` from `core/search`, the core `SearchProgress` (aliased `CoreSearchProgress`), and `SearchOutcome`, `SearchRun` and `run_search_thread` from `widget/_search_run.py`.
+**Glue:** the `# --- Search` block holds `search`, `cancel_search`, `searching`, the origin and outcome helpers, and the `nova-search` thread start (registered with `join_on_close`).
+`_DocumentSearchPlanner` adapts the document to the `SearchPlanner` protocol.
+**New messages:** `SearchProgress`, `SearchFound`, `SearchNotFound`, `SearchCancelled` and `SearchFailed`.
+**New class attributes:** `search_settings` and `search_clock`; new attribute `_search_run`.
+**`_Jump.select_to`:** the jump gained `select_to`, `backward` and `wrapped`, and the property `is_search`.
+`_drive_lazy` sends a jump with `select_to` to the new `_drive_search`, which selects the match exactly and posts `SearchFound`, and `_resolve_exact` waits for the long index.
+`_resolve_byte` gained `allow_end` (a match may end at the document length).
+`_drop_jump` posts the `SearchCancelled` of a dropped search placement, and `_abort_jump` posts `SearchFailed` for a search placement.
+**New private types:** the frozen dataclasses `_Pending` (a byte that cannot be placed yet), `_Rejection` (a byte that cannot be placed at all) and `_LongRowTarget` (a byte inside a long row); `_resolve_byte` and `_resolve_exact` return them.
+**New private methods:** `_end_search_placement` (ends a pending search placement with `SearchFailed`; `_fail_source` calls it) and `_after_text_change` (the one hook after every edit, undo, redo and roll back).
+**`check_action`:** `cancel_pending` is also active while a search runs, and `action_cancel_pending` cancels the search first.
+**Cancel hooks:** `_after_text_change` (every edit, undo, redo and roll back) cancels the search with the reason `text changed`; `_replace_document` cancels it with the reason `reloaded`; `close` calls `_abandon_search`.
+**Key binding:** `select_all` is bound to `ctrl+shift+a,f8` instead of upstream's `f7` only (`ctrl+shift+a` is a new key), so that F7 opens the search in `nova_edit`; the binding table in the docstring says the same.
 
 ### `document/_edit.py` (ACT5)
 
@@ -247,7 +272,7 @@ textual._cells (cell_len, cell_width_to_column_index) — used only by the untou
 textual._tree_sitter (TREE_SITTER, get_language) — used by widget/_text_area.py
 ```
 
-ACT4 and ACT5 added and removed none of them: the list is the same four import lines as at the start of the activity (the grep below gives the same lines at the end of ACT4 and of ACT5).
+ACT4, ACT5 and ACT6 added and removed none of them: the list is the same four import lines as at the start of the activity (the grep below gives the same lines at the end of ACT4, ACT5 and ACT6).
 No file imports `textual.widgets._text_area` or a private `textual.document` module.
 `document/_wrapped_document.py` stays vendored and unchanged: the navigator imports `WrappedDocument` for its type, while the widget wraps through `LazyWrappedDocument`.
 

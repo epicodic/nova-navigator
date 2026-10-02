@@ -29,6 +29,16 @@ Usage (every subcommand appends JSON lines to `--out`, prints one summary line a
     uv run python -m tools.measure_view save-cancel --file F [--target T] [--cancel-at 0.5] [--out O]
     uv run python -m tools.measure_view save-fulldisk --file F [--target T] [--no-mount] [--tmpfs-bytes N] [--out O]
 
+  ACT6 (search) subcommands; `--out` defaults to `<results>/<subcommand>-<file stem>[-<wrap>].jsonl`, `--results` to `$RESULTS` or `$REFS/results/act6`; they write nothing else under `$REFS`:
+    uv run python -m tools.measure_view search-5g --file F [--needle N [--escapes]] [--case {sensitive,insensitive}] [--direction {forward,backward}] [--expect E] --runs N [--out O]
+    uv run python -m tools.measure_view search-latency --file F [--needle N [--escapes]] [--case ...] --wrap {off,on,both} [--steps 150] [--max-rounds N] --runs N [--out O]
+    uv run python -m tools.measure_view search-cancel --file F [--needle N [--escapes]] [--cancel-at 0.5] [--case ...] [--out O]
+    uv run python -m tools.measure_view search-edited --file F [--scatter 1000] [--paste-bytes 100000000] [--out O]
+    uv run python -m tools.measure_view search-longline --file F --copy C [--column 100000000] [--wrap {off,on,both}] [--steps 150] [--keep-copy] [--out O]
+    uv run python -m tools.measure_view search-sweep --file F [--needle N [--escapes]] [--chunks 65536,262144,1048576] [--case ...] [--steps 40] [--out O]
+    uv run python -m tools.measure_view search-gen --kind {ascii,nonascii} --size 1GiB [--seed N] --out FILE
+    uv run python -m tools.measure_view search-fold [--runs N] [--out O]
+
 OP is one of down, up, pagedown, pageup, left, right, home, end, ctrl+right, hscroll, farjump.
 
 Methods:
@@ -52,6 +62,18 @@ Methods:
         the save ends with `SaveFailed` stage `internal` (no line index to rebase onto, Task 20 is conditional); the file is written and verified and the row says
         `index_after_rebase: false`. `save-fulldisk` tries a tmpfs mount and otherwise injects `ENOSPC` through `SaveIo` (the row says which: `method`).
     edit-latency, edit-scatter, segments: direct injection of keys (no Pilot), one child per run, `latency_ms` as for `latency`; edits count as a change when the document length changes.
+    search-*: one child per run in a headless app, `RssAnon` sampled every 50 ms by the parent (`<out>.samples.jsonl`); `pre_search`/`search_end` (`pre_matrix`/`matrix_end` for the steps of
+        the 200 MB line) mark the search, and the rows that name that window carry `rss_anon_mib_max` and `rss_anon_mib_delta` (peak minus the last sample before the search). Every row carries
+        the machine facts and `file_kind`: `stand-in` for a file made by `search-gen` (its sidecar `<file>.search-gen.json` names kind and seed), `reference` for any other file. The steps of
+        `search-latency` are the ACT5 steps except the refused typing key (typing is an edit, an edit cancels the search) and count only while the widget is searching; a finished search is
+        started again until `--steps` rounds ran. `search-longline` plants the marker in the COPY `--copy` (never in the reference), searches it against a COLD long index
+        (`index_state` `cold`: the long row is not touched after the open) and again against a WARM one (`warm`), and checks the exact selected text; `pending_ms` is the time from
+        the hand-over of the result to the exact selection. `search-edited`
+        checks offsets against the `ByteModel` of the scripted edits. `--out`, `--copy` and `search-gen --out` equal to a reference file, and any write under `$REFS` outside
+        `results/act6`, are refused. `search-5g`, `search-latency`, `search-sweep` and `search-cancel` take `--needle N` (default `@@no-such-needle@@`, a needle that cannot occur) and
+        `--escapes` (read backslash escapes such as the one for a newline in N); every row of those scenarios records the needle in `needle`.
+        A case-insensitive search for the default needle takes the literal-prefix
+        fast path of `re`; use a needle that starts with a letter that has case variants (for example `Kzq@no-such --case insensitive`) to measure the pattern tier.
 Percentiles in `summarise` use the nearest-rank method.
 Files of at most 1 MiB get lowered thresholds (`--config auto`), so a small synthetic file exercises the medium and long row paths.
 """
@@ -80,17 +102,22 @@ from pathlib import Path
 from typing import Any
 
 from nova_editor.core.save import CHUNK, FSYNC_EVERY
-from tools import _view_edit, _view_edit_core, _view_edit_latency, _view_oracle, _view_save, _view_scenarios, _view_thresholds
+from nova_editor.core.search import CHUNK as SEARCH_CHUNK
+from nova_editor.core.search import PROGRESS_INTERVAL
+from tools import _view_edit, _view_edit_core, _view_edit_latency, _view_oracle, _view_save, _view_scenarios, _view_search, _view_thresholds
 from tools._view_app import versions
 from tools._view_procmem import COLD_RESIDENCY_LIMIT, KIB_PER_MIB, Supervised, drop_cache, kill_group, median, percentile, read_mem, read_rchar, resident_fraction, supervise
 from tools._view_summary import summarise_files
 from tools._view_thresholds import run_thresholds
+from tools.gen_reference_files import parse_size
 
 FAR = 100_000_000
 DEFAULT_REFS = str(Path(tempfile.gettempdir()) / "scratchpad" / "s0001-refs")
 DEFAULT_RESULTS = str(Path(DEFAULT_REFS) / "results" / "act4")
 SAVE_RESULTS = Path("results") / "act5"
 """Where under `$REFS` the save measurements may write."""
+SEARCH_RESULTS = Path("results") / "act6"
+"""Where under `$REFS` the search measurements may write."""
 BYTES_PER_GIB = 1 << 30
 EDIT_TIMEOUT = 1800.0
 SYNTHETIC_ROWS = 3000
@@ -126,6 +153,12 @@ def _scenarios() -> dict[str, Scenario]:
         "save-longline": _view_save.longline_scenario,
         "save-retention": _view_save.retention_scenario,
         "save-records": _view_save.records_scenario,
+        "search-5g": _view_search.search_scenario,
+        "search-latency": _view_search.latency_scenario,
+        "search-cancel": _view_search.cancel_scenario,
+        "search-edited": _view_search.edited_scenario,
+        "search-longline": _view_search.longline_scenario,
+        "search-fold": _view_search.fold_scenario,
     }
 
 
@@ -554,16 +587,27 @@ def _save_results() -> str:
     return str(Path(os.environ.get("REFS") or DEFAULT_REFS) / SAVE_RESULTS)
 
 
-def _guard_write(path: Path, *references: Path) -> Path:
-    """Return the resolved `path`, or exit when writing it would touch a reference file or `$REFS` outside `results/act5`."""
+def _search_results() -> str:
+    return str(Path(os.environ.get("REFS") or DEFAULT_REFS) / SEARCH_RESULTS)
+
+
+def _scope(args: argparse.Namespace) -> tuple[str, Path]:
+    """The default results directory and the directory under `$REFS` that a subcommand may write: the ACT6 ones for `search-*`, else the ACT5 ones."""
+    if str(getattr(args, "command", "")).startswith("search-"):
+        return _search_results(), SEARCH_RESULTS
+    return _save_results(), SAVE_RESULTS
+
+
+def _guard_write(path: Path, *references: Path, allowed: Path = SAVE_RESULTS) -> Path:
+    """Return the resolved `path`, or exit when writing it would touch a reference file or `$REFS` outside `allowed` (`results/act5` for saves, `results/act6` for searches)."""
     resolved = Path(os.path.realpath(path))
     for reference in references:
         if resolved == Path(os.path.realpath(reference)) or (resolved.exists() and reference.exists() and resolved.samefile(reference)):
             msg = f"refusing to write {path}: it is the reference file {reference}"
             raise SystemExit(msg)
     refs = Path(os.path.realpath(os.environ.get("REFS") or DEFAULT_REFS))
-    if resolved.is_relative_to(refs) and not resolved.is_relative_to(refs / SAVE_RESULTS):
-        msg = f"refusing to write {path}: under {refs} only {refs / SAVE_RESULTS} may be written"
+    if resolved.is_relative_to(refs) and not resolved.is_relative_to(refs / allowed):
+        msg = f"refusing to write {path}: under {refs} only {refs / allowed} may be written"
         raise SystemExit(msg)
     return resolved
 
@@ -603,7 +647,11 @@ def _save_spec(args: argparse.Namespace, run: int, case: str, **extra: object) -
     )
 
 
-def _save_one(args: argparse.Namespace, kind: str, spec: dict[str, Any], samples: list[Row]) -> tuple[list[Row], bool]:
+Annotate = Callable[[dict[str, Any], list[Row], Supervised, list[tuple[str, int]]], None]
+"""Hook of `_save_one`: sees the spec, the rows of a run (child, phase and session rows), the supervised child and its `PHASE` marks, and may change the rows."""
+
+
+def _save_one(args: argparse.Namespace, kind: str, spec: dict[str, Any], samples: list[Row], annotate: Annotate | None = None) -> tuple[list[Row], bool]:
     """Run one save child; return its rows plus one `phase` row per mark, the `save-window` row and a `session` row, and whether it ended as expected."""
     path = Path(spec["file"])
     case = str(spec["case"])
@@ -639,6 +687,8 @@ def _save_one(args: argparse.Namespace, kind: str, spec: dict[str, Any], samples
             **_figures(result.maxima()),
         )
     )
+    if annotate is not None:
+        annotate(spec, rows, result, marks)
     ok = done and not any(row.get("ok") is False for row in child_rows)
     return rows, ok
 
@@ -662,8 +712,9 @@ def _save_loop(
     *,
     before: Callable[[dict[str, Any]], None] | None = None,
     after: Callable[[dict[str, Any]], None] | None = None,
+    annotate: Annotate | None = None,
 ) -> int:
-    out = _out_path(args, case, _save_results())
+    out = _out_path(args, case, _scope(args)[0])
     rows: list[Row] = []
     samples: list[Row] = []
     failures = 0
@@ -671,7 +722,7 @@ def _save_loop(
         if before is not None:
             before(spec)
         try:
-            run_rows, ok = _save_one(args, kind, spec, samples)
+            run_rows, ok = _save_one(args, kind, spec, samples, annotate)
         finally:
             if after is not None:
                 after(spec)
@@ -722,8 +773,9 @@ def cmd_save_latency(args: argparse.Namespace) -> int:
 def _copy_of(args: argparse.Namespace) -> Path:
     """Copy `--file` to `--copy` (guarded: never the reference, nothing under `$REFS` outside `results/act5`) and return the copy."""
     reference = Path(args.file)
-    copy = _guard_write(Path(args.copy), reference)
-    _guard_write(_out_path(args, args.command, _save_results()))
+    results, allowed = _scope(args)
+    copy = _guard_write(Path(args.copy), reference, allowed=allowed)
+    _guard_write(_out_path(args, args.command, results), reference, allowed=allowed)
     copy.parent.mkdir(parents=True, exist_ok=True)
     _require_free(copy.parent, args.min_free_gib + reference.stat().st_size / BYTES_PER_GIB)
     shutil.copyfile(reference, copy)
@@ -794,6 +846,128 @@ def cmd_save_fulldisk(args: argparse.Namespace) -> int:
         if mounted:
             subprocess.run(["umount", str(mounted)], capture_output=True, timeout=30, check=False)
             mounted.rmdir()
+
+
+# -- search subcommands (ACT6) ------------------------------------------------------------------------------------------------------
+def _mib(value: float | None) -> str:
+    return "-" if value is None else f"{value:.1f} MiB"
+
+
+def _announce(row: Row) -> None:
+    """Print one line for a search row (the figures a reader of the terminal wants first)."""
+    name = f"{row['case']}: wrap={row['wrap']} run={row['run']}"
+    if row["op"] == "search":
+        print(
+            f"{name} terminal={row['terminal']} {row['search_ms']:.1f} ms, {row.get('throughput_mb_s') or 0:.0f} MB/s, progress messages {row['progress_messages']} "
+            f"({row.get('progress_per_s') or 0:.1f}/s), RssAnon max {_mib(row.get('rss_anon_mib_max'))} delta {_mib(row.get('rss_anon_mib_delta'))} ({row['file_kind']})"
+        )
+    elif row["op"] == "summary":
+        print(
+            f"{name} steps while searching {row['steps_searching']} of {row['steps_total']}, longest {row['longest_step_ms']} ms ({row['longest_step_op']}), "
+            f"throughput {row.get('throughput_mb_s')} MB/s"
+        )
+
+
+def _annotate_search(spec: dict[str, Any], rows: list[Row], result: Supervised, marks: list[tuple[str, int]]) -> None:
+    """Label every row with the machine facts and the file kind, add the `RssAnon` figures of the window each row names, and print the search rows."""
+    _view_search.label_rows(spec, rows)
+    for row in rows:
+        window = row.pop("memory_window", None)
+        if window:
+            row.update(_view_search.search_memory(result, marks, window, int(row.pop("memory_occurrence", 0))))
+        _announce(row)
+
+
+def _search_out(args: argparse.Namespace) -> Path:
+    """The guarded `--out` (default under `$REFS/results/act6`): it is neither the reference file nor anything under `$REFS` outside `results/act6`."""
+    return _guard_write(_out_path(args, args.command, _search_results()), Path(args.file), allowed=SEARCH_RESULTS)
+
+
+def _search_spec(args: argparse.Namespace, run: int, case: str, **extra: object) -> dict[str, Any]:
+    return _spec(
+        args,
+        run,
+        case=case,
+        search_chunk=args.chunk,
+        progress_interval=args.progress_interval,
+        case_sensitive=getattr(args, "case", "sensitive") == "sensitive",
+        **extra,
+    )
+
+
+def _search_specs(args: argparse.Namespace, case: str, **extra: object) -> list[dict[str, Any]]:
+    return [{**_search_spec(args, run, case, **extra), "wrap": wrap} for wrap in _wraps(args) for run in range(1, args.runs + 1)]
+
+
+def _search_loop(args: argparse.Namespace, case: str, kind: str, specs: Sequence[dict[str, Any]], **hooks: Any) -> int:
+    _search_out(args)
+    return _save_loop(args, case, kind, specs, annotate=_annotate_search, **hooks)
+
+
+def _needle(args: argparse.Namespace) -> str:
+    """The `--needle` of a search subcommand, with its backslash escapes read when `--escapes` is given."""
+    return args.needle.encode("latin-1", "backslashreplace").decode("unicode_escape") if args.escapes else args.needle
+
+
+def cmd_search_5g(args: argparse.Namespace) -> int:
+    needle = _needle(args)
+    expect = args.expect or ("not_found" if needle == _view_search.NO_NEEDLE else "any")
+    return _search_loop(args, "search-5g", "search-5g", _search_specs(args, "search-5g", needle=needle, backward=args.direction == "backward", expect=expect))
+
+
+def cmd_search_latency(args: argparse.Namespace) -> int:
+    return _search_loop(args, "search-latency", "search-latency", _search_specs(args, "search-latency", needle=_needle(args), steps=args.steps, max_rounds=args.max_rounds))
+
+
+def cmd_search_sweep(args: argparse.Namespace) -> int:
+    chunks = [int(item) for item in args.chunks.split(",")]
+    specs = [{**spec, "search_chunk": chunk} for chunk in chunks for spec in _search_specs(args, "search-sweep", needle=_needle(args), steps=args.steps, max_rounds=args.max_rounds, idle_search=True)]
+    return _search_loop(args, "search-sweep", "search-latency", specs)
+
+
+def cmd_search_cancel(args: argparse.Namespace) -> int:
+    return _search_loop(args, "search-cancel", "search-cancel", _search_specs(args, "search-cancel", needle=_needle(args), cancel_at=args.cancel_at))
+
+
+def cmd_search_edited(args: argparse.Namespace) -> int:
+    return _search_loop(args, "search-edited", "search-edited", _search_specs(args, "search-edited", scatter=args.scatter, paste_bytes=args.paste_bytes, seed=args.seed))
+
+
+def cmd_search_longline(args: argparse.Namespace) -> int:
+    reference = str(Path(args.file).resolve())
+    copy = Path(args.copy)
+    specs = _search_specs(args, "search-longline", origin=reference, column=args.column, marker=args.marker, steps=args.steps, max_rounds=args.max_rounds)
+
+    def make(spec: dict[str, Any]) -> None:
+        spec["file"] = str(_copy_of(args))
+        spec.update(_view_search.plant_marker(copy, args.column, args.marker))
+
+    def drop(_spec: dict[str, Any]) -> None:
+        if not args.keep_copy:
+            copy.unlink(missing_ok=True)
+
+    return _search_loop(args, "search-longline", "search-longline", specs, before=make, after=drop)
+
+
+def cmd_search_fold(args: argparse.Namespace) -> int:
+    args.file = args.file or "casefold"
+    specs = [_spec(args, run, case="search-fold", file_kind="none") for run in range(1, args.runs + 1)]
+    return _search_loop(args, "search-fold", "search-fold", specs)
+
+
+def cmd_search_gen(args: argparse.Namespace) -> int:
+    out = _guard_write(Path(args.out), allowed=SEARCH_RESULTS)
+    if out.exists() and not _view_search.sidecar_path(out).exists():
+        msg = f"refusing to write {out}: it exists and was not made by search-gen"
+        raise SystemExit(msg)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _require_free(out.parent, args.min_free_gib + args.size / BYTES_PER_GIB)
+    row = _view_search.generate(out, args.kind, args.size, args.seed)
+    print(json.dumps(row))
+    print(
+        f"search-gen: stand-in {args.kind} file {out} of {args.size} bytes (seed {args.seed}, crc32 {row['crc32']:08x}), {row['throughput_mb_s']:.0f} MB/s; marked by {_view_search.sidecar_path(out)}"
+    )
+    return 0
 
 
 # -- in-process checks --------------------------------------------------------------------------------------------------------------
@@ -1041,6 +1215,74 @@ def _add_save_parsers(sub: Any) -> None:
         p.set_defaults(func=func)
 
 
+def _add_search_common(parser: argparse.ArgumentParser, *, wrap: str | None, file_required: bool = True, runs: int = 3, case: bool = True) -> None:
+    _add_edit_common(parser, wrap=wrap, file_required=file_required, runs=runs)
+    parser.add_argument("--chunk", type=int, default=SEARCH_CHUNK, help="bytes of one search unit (SearchSettings.chunk)")
+    parser.add_argument("--progress-interval", type=float, default=PROGRESS_INTERVAL, help="seconds between two progress reports of the search core")
+    parser.add_argument("--min-free-gib", type=float, default=1.0, help="GiB that must be free where a copy or a generated file goes (plus its size)")
+    if case:
+        parser.add_argument("--case", choices=("sensitive", "insensitive"), default="sensitive")
+
+
+def _add_search_needle(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--needle", default=_view_search.NO_NEEDLE, help="default a needle that cannot occur (the generated files contain no @)")
+    parser.add_argument("--escapes", action="store_true", help="read backslash escapes in --needle (\\n, \\r\\n, \\u00e9)")
+
+
+def _add_search_steps(parser: argparse.ArgumentParser, steps: int) -> None:
+    parser.add_argument("--steps", type=int, default=steps, help="rounds of one step per operation (a finished search is started again before the next step)")
+    parser.add_argument("--max-rounds", type=int, default=2000)
+
+
+def _add_search_parsers(sub: Any) -> None:
+    p = sub.add_parser("search-5g", help="a full-circle search: time, throughput, progress messages, RssAnon and the terminal message (a miss unless --needle exists)")
+    _add_search_common(p, wrap="off")
+    _add_search_needle(p)
+    p.add_argument("--direction", choices=("forward", "backward"), default="forward")
+    p.add_argument("--expect", choices=("found", "not_found", "any"), default="", help="the terminal message that counts as ok (default not_found for the default needle, else found or not_found)")
+    p.set_defaults(func=cmd_search_5g)
+    p = sub.add_parser("search-latency", help="the ACT5 latency steps while a miss search runs; steps counted only while the widget is searching")
+    _add_search_common(p, wrap="both")
+    _add_search_needle(p)
+    _add_search_steps(p, 150)
+    p.set_defaults(func=cmd_search_latency)
+    p = sub.add_parser("search-sweep", help="throughput and longest step per search chunk")
+    _add_search_common(p, wrap="off", runs=1)
+    _add_search_needle(p)
+    _add_search_steps(p, 40)
+    p.add_argument("--chunks", default=f"{1 << 16},{1 << 18},{1 << 20}")
+    p.set_defaults(func=cmd_search_sweep)
+    p = sub.add_parser("search-cancel", help="cancel a miss search at --cancel-at of its progress: time from cancel_search() to SearchCancelled")
+    _add_search_common(p, wrap="off", runs=1)
+    _add_search_needle(p)
+    p.add_argument("--cancel-at", type=float, default=0.5)
+    p.set_defaults(func=cmd_search_cancel)
+    p = sub.add_parser("search-edited", help="1,000 scattered edits and a paste of known text; a needle in the paste and one across a piece boundary, offsets checked against ByteModel")
+    _add_search_common(p, wrap="off", runs=1)
+    p.add_argument("--scatter", type=int, default=1000)
+    p.add_argument("--paste-bytes", type=int, default=100_000_000)
+    p.add_argument("--seed", type=int, default=1, help="salt of the planted needles")
+    p.set_defaults(func=cmd_search_edited)
+    p = sub.add_parser("search-longline", help="a marker planted at --column of a COPY of the 200 MB line: exact selection, result-to-selection time, latency steps in both wrap modes")
+    _add_search_common(p, wrap="both", runs=1)
+    _add_search_steps(p, 150)
+    p.add_argument("--copy", required=True, help="where the copy of --file is made and the marker planted (the reference is never opened for writing)")
+    p.add_argument("--keep-copy", action="store_true")
+    p.add_argument("--column", type=int, default=FAR, help="byte offset of the marker")
+    p.add_argument("--marker", default="@@longline-marker@@")
+    p.set_defaults(func=cmd_search_longline)
+    p = sub.add_parser("search-gen", help="write a deterministic stand-in file of --size bytes (ascii, or accented, CJK and emoji items with CRLF lines) to --out")
+    p.add_argument("--kind", choices=("ascii", "nonascii"), required=True)
+    p.add_argument("--size", type=parse_size, default=parse_size("1GiB"), help="for example 1GiB, 1MiB, 4KiB")
+    p.add_argument("--seed", type=int, default=1)
+    p.add_argument("--out", required=True, help="the generated file (refused when it exists and was not made by search-gen)")
+    p.add_argument("--min-free-gib", type=float, default=1.0, help="GiB that must stay free after the file is written")
+    p.set_defaults(func=cmd_search_gen)
+    p = sub.add_parser("search-fold", help="facts of the case folding table: class count, build time of build_variant_table, memory")
+    _add_search_common(p, wrap=None, file_required=False, runs=1, case=False)
+    p.set_defaults(func=cmd_search_fold)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tools.measure_view", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1048,6 +1290,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_checking_parsers(sub)
     _add_edit_parsers(sub)
     _add_save_parsers(sub)
+    _add_search_parsers(sub)
     return parser
 
 

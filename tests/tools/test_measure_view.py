@@ -17,6 +17,7 @@ from tools._view_app import LOWERED
 from tools._view_edit_latency import GcTimer
 from tools._view_procmem import median, percentile
 from tools._view_save import ByteModel, literal, verify_file
+from tools._view_search import SearchEnd, finished_search_seconds
 from tools.measure_view import main
 
 MAX_TEST_FILE_BYTES = 1 << 20
@@ -721,3 +722,273 @@ def test_verify_file_reports_a_differing_window_and_a_differing_length(tmp_path:
         assert verify_file(spec, "short", short, model, [])["mismatches"] >= 1
     finally:
         model.close()
+
+
+# -- search scenarios (ACT6) --------------------------------------------------------------------------------------------------------
+SEARCH_SMALL = ["--progress-interval", "0", "--min-free-gib", "0"]
+SEARCH_FACTS = {"python", "textual", "kernel"}
+MIB = 1 << 20
+MARKER = b"@@longline-marker@@"
+
+
+def _run_search(name: str, path: Path, tmp_path: Path, *extra: str) -> list[dict[str, Any]]:
+    out = tmp_path / f"{name}.jsonl"
+    assert main([name, "--file", str(path), "--out", str(out), "--runs", "1", *extra]) == 0
+    assert main(["summarise", str(out)]) == 0
+    return _rows(out)
+
+
+def _gen(kind: str, path: Path, *extra: str) -> Path:
+    assert main(["search-gen", "--kind", kind, "--size", "1MiB", "--out", str(path), *extra]) == 0
+    return path
+
+
+def test_search_gen_ascii_is_deterministic_pure_and_labelled(tmp_path: Path) -> None:
+    first = _gen("ascii", tmp_path / "a.txt", "--seed", "7").read_bytes()
+    assert len(first) == MIB
+    assert max(first) < 0x80
+    assert b"@" not in first
+    assert first.endswith(b"\n")
+    assert _gen("ascii", tmp_path / "b.txt", "--seed", "7").read_bytes() == first
+    assert _gen("ascii", tmp_path / "c.txt", "--seed", "8").read_bytes() != first
+    sidecar = json.loads(Path(f"{tmp_path / 'a.txt'}.search-gen.json").read_text())
+    assert sidecar["stand_in"] is True
+    assert sidecar["kind"] == "ascii"
+    assert sidecar["seed"] == 7
+    assert sidecar["size"] == MIB
+
+
+def test_search_gen_nonascii_has_accents_cjk_emoji_and_crlf_lines(tmp_path: Path) -> None:
+    data = _gen("nonascii", tmp_path / "n.txt", "--seed", "3").read_bytes()
+    assert len(data) == MIB
+    text = data.decode("utf-8")
+    assert "@" not in text
+    assert any(0xC0 <= ord(char) <= 0xFF for char in text)
+    assert any(0x4E00 <= ord(char) <= 0x9FFF for char in text)
+    assert any(ord(char) >= 0x1F000 for char in text)
+    crlf, lone = data.count(b"\r\n"), data.count(b"\n") - data.count(b"\r\n")
+    assert crlf > 0
+    assert lone > 0
+
+
+def test_search_gen_refuses_a_file_it_did_not_make_and_anything_under_refs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    precious = tmp_path / "precious.txt"
+    precious.write_text("keep me")
+    with pytest.raises(SystemExit):
+        main(["search-gen", "--kind", "ascii", "--size", "4KiB", "--out", str(precious)])
+    assert precious.read_text() == "keep me"
+    refs = tmp_path / "refs"
+    monkeypatch.setenv("REFS", str(refs))
+    with pytest.raises(SystemExit):
+        main(["search-gen", "--kind", "ascii", "--size", "4KiB", "--out", str(refs / "normal-5g.txt")])
+    assert not (refs / "normal-5g.txt").exists()
+    assert main(["search-gen", "--kind", "ascii", "--size", "4KiB", "--out", str(refs / "results" / "act6" / "x.txt")]) == 0
+
+
+def test_search_5g_miss_records_time_throughput_progress_memory_and_the_stand_in_label(tmp_path: Path) -> None:
+    stand_in = _gen("ascii", tmp_path / "gen.txt")
+    rows = _run_search("search-5g", stand_in, tmp_path, "--chunk", "65536", *SEARCH_SMALL)
+    search = next(row for row in rows if row["op"] == "search")
+    assert search["terminal"] == "not_found"
+    assert search["ok"] is True
+    assert search["file_kind"] == "stand-in"
+    assert search["stand_in_kind"] == "ascii"
+    assert search["needle"] == "@@no-such-needle@@"
+    assert search["search_ms"] > 0
+    assert search["action_ms"] == search["search_ms"]
+    assert search["throughput_mb_s"] > 0
+    assert search["doc_length"] == MIB
+    assert isinstance(search["progress_messages"], int)
+    assert "progress_per_s" in search
+    assert isinstance(search["rss_anon_mib_max"], float)
+    assert isinstance(search["rss_anon_mib_baseline"], float)
+    assert search["rss_anon_mib_delta"] == pytest.approx(search["rss_anon_mib_max"] - search["rss_anon_mib_baseline"])
+    assert all(set(row) >= SEARCH_FACTS for row in rows)
+    assert {row["file_kind"] for row in rows} == {"stand-in"}
+    assert Path(f"{tmp_path / 'search-5g.jsonl'}.samples.jsonl").exists()
+
+
+def test_search_5g_with_a_needle_that_exists_records_the_time_to_the_result(mixed_file: Path, tmp_path: Path) -> None:
+    start = mixed_file.read_bytes().find(b"short line 5")
+    rows = _run_search("search-5g", mixed_file, tmp_path, "--needle", "short line 5", "--expect", "found", "--chunk", "64", *SEARCH_SMALL)
+    search = next(row for row in rows if row["op"] == "search")
+    assert (search["terminal"], search["ok"], search["file_kind"]) == ("found", True, "reference")
+    assert search["found_start"] == start
+    assert search["found_end"] == start + len("short line 5")
+    assert search["search_ms"] > 0
+    back = tmp_path / "back"
+    back.mkdir()
+    needle = ["--needle", "SHORT LINE 5", "--case", "insensitive", "--direction", "backward", "--expect", "found"]
+    found = next(row for row in _run_search("search-5g", mixed_file, back, *needle, "--chunk", "64", *SEARCH_SMALL) if row["op"] == "search")
+    assert (found["terminal"], found["found_start"], found["backward"], found["case_sensitive"]) == ("found", start, True, False)
+
+
+def test_search_commands_refuse_an_output_that_is_the_reference_file_or_under_refs(mixed_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    before = _digest(mixed_file)
+    with pytest.raises(SystemExit):
+        main(["search-5g", "--file", str(mixed_file), "--out", str(mixed_file), "--runs", "1"])
+    assert _digest(mixed_file) == before
+    refs = tmp_path / "refs"
+    monkeypatch.setenv("REFS", str(refs))
+    with pytest.raises(SystemExit):
+        main(["search-5g", "--file", str(mixed_file), "--out", str(refs / "results" / "act5" / "x.jsonl"), "--runs", "1"])
+    with pytest.raises(SystemExit):
+        main(["search-longline", "--file", str(mixed_file), "--copy", str(mixed_file), "--out", str(tmp_path / "o.jsonl"), "--min-free-gib", "0"])
+    with pytest.raises(SystemExit):
+        main(["search-longline", "--file", str(mixed_file), "--copy", str(refs / "copy.txt"), "--out", str(tmp_path / "o.jsonl"), "--min-free-gib", "0"])
+    assert _digest(mixed_file) == before
+
+
+def test_search_latency_counts_the_steps_while_a_miss_search_runs_in_both_wrap_modes(mixed_file: Path, tmp_path: Path) -> None:
+    rows = _run_search("search-latency", mixed_file, tmp_path, "--wrap", "both", "--steps", "3", "--chunk", "1", *SEARCH_SMALL)
+    steps = [row for row in rows if row["state"] in ("searching", "idle")]
+    assert {row["wrap"] for row in steps} == {"off", "on"}
+    assert "x-refused" not in {row["op"] for row in steps}
+    assert {"down", "pagedown", "vscroll", "ctrl+end"} <= {row["op"] for row in steps}
+    summaries = [row for row in rows if row["op"] == "summary"]
+    assert {row["wrap"] for row in summaries} == {"off", "on"}
+    for summary in summaries:
+        own = [row for row in steps if row["wrap"] == summary["wrap"]]
+        assert summary["steps_searching"] == sum(1 for row in own if row["state"] == "searching")
+        assert summary["steps_searching"] >= 1
+        assert summary["steps_total"] == len(own)
+        assert summary["rounds"] == 3
+        assert summary["searches_started"] >= 1
+        assert summary["longest_step_ms"] is not None
+        assert summary["latency_ms_p50"] <= summary["latency_ms_p95"] <= summary["latency_ms_max"]
+        assert isinstance(summary["rss_anon_mib_delta"], float)
+        assert set(summary) >= SEARCH_FACTS
+
+
+def test_search_cancel_records_the_time_from_cancel_search_to_the_terminal_message(mixed_file: Path, tmp_path: Path) -> None:
+    rows = _run_search("search-cancel", mixed_file, tmp_path, "--cancel-at", "0.5", "--chunk", "8", *SEARCH_SMALL)
+    search = next(row for row in rows if row["op"] == "search")
+    assert search["terminal"] == "cancelled"
+    assert search["cancel_reason"] == "cancelled"
+    assert search["ok"] is True
+    assert search["cancel_issued"] is True
+    assert search["cancel_progress_fraction"] >= 0.5
+    assert search["cancel_latency_ms"] >= 0
+
+
+def test_search_edited_finds_a_needle_in_the_paste_and_one_across_a_piece_boundary(mixed_file: Path, tmp_path: Path) -> None:
+    rows = _run_search("search-edited", mixed_file, tmp_path, "--scatter", "20", "--paste-bytes", "3000", "--chunk", "256", *SEARCH_SMALL)
+    searches = [row for row in rows if row["op"] == "search"]
+    assert [row["target"] for row in searches] == ["paste", "boundary"]
+    for row in searches:
+        assert (row["terminal"], row["offset_ok"], row["bytes_ok"], row["ok"]) == ("found", True, True, True)
+        assert row["found_start"] == row["expected_start"]
+    edits = [row for row in rows if row["state"] == "edit"]
+    assert {row["op"] for row in edits} >= {"scatter", "paste", "boundary"}
+    assert all(row["case"] == "search-edited" for row in rows if row["op"] != "phase")
+    for row in searches:
+        assert row["rss_anon_mib_baseline"] > 0
+        assert row["rss_anon_mib_max"] >= row["rss_anon_mib_baseline"]
+        assert row["rss_anon_mib_delta"] == row["rss_anon_mib_max"] - row["rss_anon_mib_baseline"]
+        assert row["rss_anon_mib_session_max"] >= row["rss_anon_mib_max"]
+    phases = [row["state"] for row in rows if row["op"] == "phase"]
+    assert "edits" in phases
+    assert phases.count("search_end") == 2
+
+
+def test_search_longline_plants_a_marker_in_a_copy_and_selects_it_exactly(mixed_file: Path, tmp_path: Path) -> None:
+    before = _digest(mixed_file)
+    copy = tmp_path / "copy.txt"
+    extra = ["--copy", str(copy), "--column", "3000", "--wrap", "both", "--steps", "2", "--chunk", "64"]
+    rows = _run_search("search-longline", mixed_file, tmp_path, *extra, *SEARCH_SMALL)
+    assert _digest(mixed_file) == before
+    assert not copy.exists()
+    found = [row for row in rows if row["op"] == "search"]
+    assert {row["wrap"] for row in found} == {"off", "on"}
+    for row in found:
+        assert (row["terminal"], row["start_ok"], row["selected_text"], row["selection_ok"], row["ok"]) == ("found", True, MARKER.decode(), True, True)
+        assert row["result_to_selection_ms"] >= 0
+        assert row["pending_ms"] >= 0
+        assert isinstance(row["jump_progress_samples"], int)
+        assert row["search_ms"] > 0
+        assert row["found_start"] >= 3000
+        assert row["file_kind"] == "reference"
+        assert row["planted"] is True
+    for wrap in ("off", "on"):
+        states = [row["index_state"] for row in found if row["wrap"] == wrap]
+        assert states == ["cold", "warm"]
+        cold = next(row for row in found if row["wrap"] == wrap and row["index_state"] == "cold")
+        assert cold["harness_touched_long_row"] is False
+        assert isinstance(cold["long_scan_running_at_search"], bool)
+        assert cold["state"] == "marker-cold"
+    assert {row["wrap"] for row in rows if row["op"] == "summary"} == {"off", "on"}
+    assert any(row["state"] == "searching" for row in rows)
+
+
+def test_search_longline_keeps_the_copy_on_request(mixed_file: Path, tmp_path: Path) -> None:
+    copy = tmp_path / "copy.txt"
+    extra = ["--copy", str(copy), "--column", "3000", "--wrap", "off", "--steps", "1", "--keep-copy", "--chunk", "64"]
+    _run_search("search-longline", mixed_file, tmp_path, *extra, *SEARCH_SMALL)
+    data = copy.read_bytes()
+    original = mixed_file.read_bytes()
+    assert MARKER in data
+    assert len(data) == len(original)
+    assert data.find(MARKER) >= 3000
+    assert next(i for i in range(len(data)) if data[i] != original[i]) >= 3000
+
+
+def test_search_sweep_reports_throughput_and_the_longest_step_per_chunk(mixed_file: Path, tmp_path: Path) -> None:
+    rows = _run_search("search-sweep", mixed_file, tmp_path, "--chunks", "64,256", "--steps", "2", *SEARCH_SMALL)
+    summaries = [row for row in rows if row["op"] == "summary"]
+    assert [row["search_chunk"] for row in summaries] == [64, 256]
+    assert all(row["throughput_mb_s"] > 0 and "longest_step_ms" in row for row in summaries)
+    assert all(row["case"] == "search-sweep" for row in summaries)
+
+
+MISS_NEEDLE = "Kzq@no-such"
+
+
+def test_search_latency_takes_a_needle_that_runs_the_pattern_tier_and_records_it_in_every_row(mixed_file: Path, tmp_path: Path) -> None:
+    extra = ["--needle", MISS_NEEDLE, "--case", "insensitive", "--wrap", "off", "--steps", "2", "--chunk", "64"]
+    rows = _run_search("search-latency", mixed_file, tmp_path, *extra, *SEARCH_SMALL)
+    assert any(row["state"] == "searching" for row in rows)
+    assert {row["needle"] for row in rows} == {MISS_NEEDLE}
+    summary = next(row for row in rows if row["op"] == "summary")
+    assert summary["case_sensitive"] is False
+
+
+def test_search_sweep_takes_a_needle_and_records_it_in_every_row(mixed_file: Path, tmp_path: Path) -> None:
+    extra = ["--needle", MISS_NEEDLE, "--case", "insensitive", "--chunks", "64,256", "--steps", "1"]
+    rows = _run_search("search-sweep", mixed_file, tmp_path, *extra, *SEARCH_SMALL)
+    assert {row["needle"] for row in rows} == {MISS_NEEDLE}
+    idle = [row for row in rows if row["state"] == "idle" and row["op"] == "search"]
+    assert [row["terminal"] for row in idle] == ["not_found", "not_found"]
+    assert {row["case_sensitive"] for row in idle} == {False}
+
+
+def test_search_cancel_takes_a_needle_and_reads_escapes_on_request(mixed_file: Path, tmp_path: Path) -> None:
+    extra = ["--needle", "Kzq\\u00e9x", "--escapes", "--case", "insensitive", "--cancel-at", "0.5", "--chunk", "8"]
+    rows = _run_search("search-cancel", mixed_file, tmp_path, *extra, *SEARCH_SMALL)
+    search = next(row for row in rows if row["op"] == "search")
+    assert search["terminal"] == "cancelled"
+    assert {row["needle"] for row in rows} == {"Kzqéx"}
+
+
+def test_search_latency_default_needle_is_unchanged_and_recorded(mixed_file: Path, tmp_path: Path) -> None:
+    rows = _run_search("search-latency", mixed_file, tmp_path, "--wrap", "off", "--steps", "1", "--chunk", "64", *SEARCH_SMALL)
+    assert {row["needle"] for row in rows} == {"@@no-such-needle@@"}
+
+
+def test_search_fold_records_the_class_count_build_time_and_memory(tmp_path: Path) -> None:
+    out = tmp_path / "fold.jsonl"
+    assert main(["search-fold", "--runs", "1", "--out", str(out)]) == 0
+    row = next(row for row in _rows(out) if row["op"] == "fold")
+    assert row["class_count"] > 100
+    assert row["entries"] >= row["class_count"]
+    assert row["build_ms"] > 0
+    assert row["table_kib_tracemalloc"] > 0
+    assert isinstance(row["rss_anon_mib_delta"], float)
+    assert set(row) >= SEARCH_FACTS
+    assert main(["summarise", str(out)]) == 0
+
+
+def test_search_durations_pair_each_start_with_its_own_terminal_message() -> None:
+    starts = [0.0, 10.0, 20.0, 30.0]
+    ends = [SearchEnd("found", 1.0, None), SearchEnd("not_found", 12.0, "x"), SearchEnd("cancelled", 21.0, "cancelled"), SearchEnd("not_found", 34.0, "x")]
+    assert finished_search_seconds(starts, ends) == [2.0, 4.0]
+    assert finished_search_seconds(starts[:1], ends) == []

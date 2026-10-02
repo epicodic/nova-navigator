@@ -411,11 +411,21 @@ def settings_of(spec: Spec) -> SaveSettings:
     )
 
 
+def line_scan_complete(area: NovaTextArea) -> bool:
+    """Whether the line scan of the lazy document is complete (creates nothing; a long-row scan is not looked at)."""
+    document = lazy_document(area)
+    return document is not None and document.snapshot().complete
+
+
 @contextlib.asynccontextmanager
-async def open_session(spec: Spec) -> AsyncIterator[SaveSession]:
-    """Open the file of `spec` in a headless app, wait until it is indexed and yield the session; the model reads `spec["origin"]` (default the file)."""
+async def open_session(spec: Spec, app_factory: Callable[[NovaTextArea], SaveApp] = SaveApp, *, wait_long_scans: bool = True) -> AsyncIterator[SaveSession]:
+    """Open the file of `spec` in a headless app, wait until it is indexed and yield the session; the model reads `spec["origin"]` (default the file).
+
+    `app_factory` builds the app that hosts the widget (a subclass of `SaveApp` that records more messages, as the search scenarios do).
+    With `wait_long_scans` false the open waits for the line scan only: it neither waits for a long-row scan nor settles, so a long index the widget started stays as far as it got.
+    """
     _plain, area = _open(spec)
-    app = SaveApp(area)
+    app = app_factory(area)
     ProbeTextArea.save_settings = settings_of(spec)
     ProbeTextArea.save_io = None
     model = ByteModel(Path(spec.get("origin") or spec["file"]))
@@ -423,8 +433,11 @@ async def open_session(spec: Spec) -> AsyncIterator[SaveSession]:
         async with app.run_test(size=SIZE):
             await _first_content(area)
             emit(f"PHASE open {time.perf_counter_ns()}")
-            await wait_until(lambda: not scan_busy(area), float(spec.get("timeout", 900)))
-            await settle(0.2)
+            if wait_long_scans:
+                await wait_until(lambda: not scan_busy(area), float(spec.get("timeout", 900)))
+                await settle(0.2)
+            else:
+                await wait_until(lambda: line_scan_complete(area), float(spec.get("timeout", 900)))
             document = lazy_document(area)
             if document is None:
                 msg = "the file did not open lazily"
@@ -495,14 +508,17 @@ async def delete_block(session: SaveSession, size: int) -> Deleted:
     return Deleted(first_byte, removed)
 
 
-async def paste_block(session: SaveSession, size: int) -> None:
-    """Copy about `size` bytes from an eighth of the document and paste them at three quarters."""
+async def paste_block(session: SaveSession, size: int) -> tuple[int, int] | None:
+    """Copy about `size` bytes from an eighth of the document and paste them at three quarters.
+
+    Returns the byte where the paste went and its length in bytes, or `None` when there was nothing to copy.
+    """
     document, area, model = session.document, session.area, session.model
     size = max(1, min(size, document.length // 4))
     copy_start, copy_start_byte = place_at(document, document.length // 8)
     copy_end, copy_end_byte = place_at(document, document.length // 8 + size, up=True)
     if copy_end_byte <= copy_start_byte:
-        return
+        return None
     clip = model.slice(copy_start_byte, copy_end_byte - copy_start_byte)
     area.selection = Selection(copy_start, copy_end)
     await settle(0.1)
@@ -517,6 +533,7 @@ async def paste_block(session: SaveSession, size: int) -> None:
     model.insert(paste_byte, clip)
     edit_row(session, "paste", elapsed, bytes=copy_end_byte - copy_start_byte)
     await settle_edits(session)
+    return paste_byte, copy_end_byte - copy_start_byte
 
 
 async def scripted_edits(session: SaveSession) -> None:
@@ -605,26 +622,15 @@ async def save_scenario(spec: Spec) -> list[Row]:
 
 
 # -- steps during a save ------------------------------------------------------------------------------------------------------------
-async def _latency_step(session: SaveSession, op: str, index: int) -> Row:
-    area, app, runner = session.area, session.app, session.runner
-    saving = area.saving
-    common = {"phase": runner.current_phase() if saving else "idle", "step": index, "saving": saving}
-    state = "saving" if saving else "idle"
-    if op == "x-refused":
-        app.refused.clear()
-        started = time.perf_counter()
-        send_key(app, "x")
-        refused = True
-        try:
-            async with asyncio.timeout(REFUSE_LIMIT):
-                await app.refused.wait()
-        except TimeoutError:
-            refused = False
-        return base_row(session.spec, case="save-latency", state=state, op=op, latency_ms=(app.refused_at - started) * 1000 if refused else None, handler_ms=None, changed=False, **common)
+async def measure_op(app: SaveApp, area: ProbeTextArea, document: LazyDocument, op: str, index: int) -> Row:
+    """Run one step of the latency rounds (not `x-refused`, which is an edit) and return its measured fields: `latency_ms`, `handler_ms`, `changed`.
+
+    A `vscroll` step also reports `scroll_y_before`, `scroll_y_after` and `noop` (a step that did not scroll is never a latency sample: it waits for the next cursor blink repaint).
+    """
     if op in JUMP_OPS:
 
         def jump() -> None:
-            area.move_cursor(session.document.end if op == "ctrl+end" else (0, 0))
+            area.move_cursor(document.end if op == "ctrl+end" else (0, 0))
 
         action = jump
     elif op == "vscroll":
@@ -646,21 +652,36 @@ async def _latency_step(session: SaveSession, op: str, index: int) -> Row:
     timing = await timed(area, action, limit=STEP_LIMIT, require_change=False, state=edit_state)
     if op == "vscroll":
         scroll_after = area.scroll_offset.y
-        noop = scroll_after == scroll_before  # a step that did not scroll waits for the next cursor-blink repaint: never a latency sample
-        return base_row(
-            session.spec,
-            case="save-latency",
-            state=state,
-            op=op,
-            latency_ms=None if noop else timing.latency_ms,
-            handler_ms=timing.handler_ms,
-            changed=timing.changed,
-            scroll_y_before=scroll_before,
-            scroll_y_after=scroll_after,
-            noop=noop,
-            **common,
-        )
-    return base_row(session.spec, case="save-latency", state=state, op=op, latency_ms=timing.latency_ms, handler_ms=timing.handler_ms, changed=timing.changed, **common)
+        noop = scroll_after == scroll_before
+        return {
+            "latency_ms": None if noop else timing.latency_ms,
+            "handler_ms": timing.handler_ms,
+            "changed": timing.changed,
+            "scroll_y_before": scroll_before,
+            "scroll_y_after": scroll_after,
+            "noop": noop,
+        }
+    return {"latency_ms": timing.latency_ms, "handler_ms": timing.handler_ms, "changed": timing.changed}
+
+
+async def _latency_step(session: SaveSession, op: str, index: int) -> Row:
+    area, app, runner = session.area, session.app, session.runner
+    saving = area.saving
+    common = {"phase": runner.current_phase() if saving else "idle", "step": index, "saving": saving}
+    state = "saving" if saving else "idle"
+    if op == "x-refused":
+        app.refused.clear()
+        started = time.perf_counter()
+        send_key(app, "x")
+        refused = True
+        try:
+            async with asyncio.timeout(REFUSE_LIMIT):
+                await app.refused.wait()
+        except TimeoutError:
+            refused = False
+        return base_row(session.spec, case="save-latency", state=state, op=op, latency_ms=(app.refused_at - started) * 1000 if refused else None, handler_ms=None, changed=False, **common)
+    measured = await measure_op(app, area, session.document, op, index)
+    return base_row(session.spec, case="save-latency", state=state, op=op, **measured, **common)
 
 
 async def latency_rounds(session: SaveSession, steps: int, max_rounds: int) -> list[Row]:

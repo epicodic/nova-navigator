@@ -19,6 +19,7 @@ The widget is editable; undo, redo, cut, copy and paste work on piece references
 Saving streams the document to a temporary file on a worker thread and replaces the target atomically (see "Streaming Save").
 After a save the document stands on the saved file, and undo still works (see "Rebase After a Save").
 A change of the file on disk is detected and never overwritten silently (see "External Changes").
+A literal search runs over the whole document on a worker thread (see "Search").
 
 ---
 
@@ -71,6 +72,10 @@ Queries beyond the scanned frontier return `None` (non-blocking); blocking is op
 
 `foreground` — The `Foreground` gate that lets the scans give way to the UI thread (see "Thread Model").
 Both indexes accept it through a `foreground=` argument.
+
+`casefold` — Simple one-to-one case folding and the table of case variants (see "Search").
+
+`search` — The needle compiler, `Matcher`, `SearchJob` and their types (see "Search").
 
 **I/O strategy (ACT1 measurements):**
 
@@ -177,6 +182,7 @@ The stock `Document` stays only as the base of `SyntaxAwareDocument`, the mirror
 - `LazyDocument` — editable document over a `PieceTable`; decodes rows on demand with capability methods that never wait.
   Its edit methods are `replace_range` (text), `splice` (piece references between locations) and `splice_bytes` (piece references between byte offsets, used by undo and redo).
   `selection_content` returns the bytes of a selection as piece references without reading them.
+  `search_plan(offset, limit)` returns a `SearchPlan` (revision, length and parts) in one lock hold, and `revision` counts the committed edits (see "Search").
 - `LazyWrappedDocument` — wrapping layer over `LazyDocument`; manages grid wrap sections and a sparse vertical size estimate.
 - `LazyConfig` — tunable thresholds and cache sizes with defaults; `sync_scan_limit` (1 MiB) is the largest source scanned on the constructing thread.
 
@@ -222,6 +228,7 @@ Textual widget and lazy rendering support.
 - `_text_area_theme.py` — theme support for syntax highlighting.
 - `_lazy_window.py` — windowed rendering for medium and long rows; decodes at most 8192 characters per window.
 - `_long_row_cursor.py` — cursor machine integration and provisional window layout for long rows.
+- `_search_run.py` — `SearchRun`, the state of one running search, and `run_search_thread`, the body of the `nova-search` thread.
 
 **Public API (`NovaTextArea`):**
 - `open(source, language, soft_wrap, config, highlight_limit, **kwargs)` — open a file; returns the widget ready to mount.
@@ -253,6 +260,11 @@ Textual widget and lazy rendering support.
 - `reload() -> bool` — discard the edits and show the file as it is now (see "Reload").
 - `check_external_change() -> ChangeKind` — synchronous check of the file on disk (see "External Changes").
 - `refresh_after_rebase()` — re-point the cursor holders after a rebase; the widget calls it itself.
+- `search(needle, *, backward=False, case_sensitive=True, wrap=True) -> bool` — start a literal search (see "Search").
+- `cancel_search()` — ask a running search to stop; nothing happens when none runs.
+- `searching` (read-only) — whether a search runs.
+- `search_settings` (class attribute) — `SearchSettings` (chunk, progress interval, tier switch); tests lower it.
+- `select_all` is bound to `ctrl+shift+a` and `f8`; the stock binding was `f7` only, `ctrl+shift+a` is new, and F7 belongs to the search of `nova_edit`.
 
 **Message classes (posted by the widget):**
 - `IndexProgress(count, complete)` — posted at most 10 times per second while the line scan grows, and once at completion.
@@ -266,6 +278,8 @@ Textual widget and lazy rendering support.
 - `Saved(path, length)`, `SaveFailed(error, stage, path)` and `SaveCancelled` — the terminal messages of a save; exactly one is posted per save.
 - `SaveNeedsConfirmation(kind, path)` — posted instead of starting a save that needs consent.
 - `Reloaded` and `ReloadFailed(error, path)` — the outcome of `reload`.
+- `SearchProgress(done, total, phase)` — posted at most 10 times per second while a search runs.
+- `SearchFound(start, end, row, column, wrapped)`, `SearchNotFound(needle)`, `SearchCancelled(reason)` and `SearchFailed(error)` — the terminal messages of a search; exactly one is posted per search.
 
 **Thresholds (defaults, tunable via `LazyConfig`):**
 - `word_wrap_limit = 65536` — rows above this use grid wrap instead of word wrap.
@@ -282,8 +296,9 @@ Standalone Textual app (`NovaEditApp`) providing:
 - `Ctrl+Z`, `Ctrl+Y`, `Ctrl+X`, `Ctrl+C` and `Ctrl+V` are the stock bindings for undo, redo, cut, copy and paste.
 - `Ctrl+Q` quits; during a save it cancels the save and waits at most 2 seconds.
 - `F4` toggles soft wrap.
+- `F7` opens the search bar, `F3` and `Shift+F3` repeat the search forward and backward (see "Search").
 - `Ctrl+G` shows or hides the goto bar for line or byte offset navigation (`@N` syntax for byte offsets).
-- `Escape` closes the goto bar or the path bar while it has the focus, cancels a pending jump in the editor, and cancels a running save.
+- `Escape` closes the goto bar or the path bar while it has the focus, cancels a pending jump in the editor, cancels a running search, and cancels a running save.
 - Footer showing the file path and keyboard shortcuts.
 - Entry point `main()` for the `nova_edit` CLI command.
 - Timing hook via the `NOVA_EDIT_TIMING_FILE` environment variable (writes `FIRST_CONTENT <ns>` when content first renders).
@@ -291,6 +306,8 @@ Standalone Textual app (`NovaEditApp`) providing:
 **GotoBar:** Inline input field that accepts `N` (line number) or `@N` (byte offset); Enter navigates and Escape closes it.
 
 **PathBar, SaveBar and ConfirmBar:** the bars of the save (see "nova_edit Bars and Keys").
+
+**SearchBar and SearchStatus** (`nova_editor/search_bar.py`): the input of the search and its status line (see "Search").
 
 **TimedNovaTextArea:** Wrapper that logs the first content render time for benchmarking.
 
@@ -716,6 +733,10 @@ After `REPLACED` or `DELETED` the held descriptor still names the original inode
 | `F5` | Reload; a modified document shows the confirm bar first |
 | `Escape` | Cancel a running save; the binding is active only while a save runs |
 | `Ctrl+Q` | Quit; during a save it cancels, waits at most 2 seconds and exits |
+| `F7` | Search bar; Enter searches forward, Escape closes it |
+| `F3` | Repeat the search forward, also with the bar closed |
+| `Shift+F3` | Repeat the search backward, also with the bar closed |
+| `Alt+C` | In the search bar: toggle between case-sensitive and ignore case |
 
 `Ctrl+Q` does not ask about unsaved changes.
 
@@ -732,6 +753,203 @@ Only the keys that the question lists are active.
 An `Input` like the goto bar.
 
 All bars are plain widgets, not dialogs, so they have no entry in `src/tools/dialog_tester.py`.
+
+---
+
+## Search
+
+`NovaTextArea.search` finds literal text in the whole document, forward or backward, in the original bytes and in the edited ones.
+It runs on a worker thread with progress and cancellation, and the UI keeps answering while it runs.
+The layers are `core/casefold.py` and `core/search.py` (Textual-free), `LazyDocument.search_plan`, `widget/_search_run.py` with the glue in `_text_area.py`, and `search_bar.py` in the app.
+
+### The Key Move
+
+`F7` opens the search, as in Midnight Commander.
+The stock binding of `select_all` was `f7` only; it is now `ctrl+shift+a,f8`, and `ctrl+shift+a` is a new key.
+`Ctrl+F` stays the stock cursor-right binding.
+
+### Needle Model
+
+The needle is a `str`, encoded as UTF-8 with `surrogateescape`.
+An escaped byte (U+DC80 to U+DCFF) in the needle matches that raw byte, so invalid bytes are searchable (REQ-13).
+A match is a byte range `[start, end)` that starts and ends on a character boundary of the decoding.
+A raw byte such as 0xA9 therefore does not match inside a valid `é`.
+A line break in the needle (`\n`, `\r\n` or `\r`) counts as one character and matches exactly one document terminator.
+`compile_matcher` raises `SearchError` for an empty needle, a lone surrogate outside U+DC80 to U+DCFF, and a needle over the limits (see "Known Limit: Needle Size").
+
+### Case Folding
+
+Case-insensitive search folds each character on its own, one to one (`fold1`).
+`fold1(c)` is `c.casefold()` when that is one character, else `c.lower()` when that is one character, else `c`.
+The variants of a character are every code point with the same `fold1`, so `k` also matches the Kelvin sign and `s` also matches the long s.
+ASCII letters use a static table; any other character builds the full table once, on first use, under a lock.
+A test proves that the static table equals the one derived from the full scan.
+
+### Tiers
+
+The matcher works on one contiguous window of bytes and picks a tier per window.
+
+| Tier | When | How |
+|---|---|---|
+| find | case-sensitive, no line break in the needle | `bytes.find` and `bytes.rfind` |
+| ascii | case-insensitive, the folded needle is ASCII, the window is ASCII | `window.lower()`, then `find` or `rfind` |
+| pattern | case-insensitive on a window with a non-ASCII byte, or any needle with a line break | a compiled byte pattern |
+
+A case-insensitive needle with a non-ASCII class cannot match an ASCII window, so that window is skipped.
+One non-ASCII window costs only that window; the rest of the file stays on the fast path.
+
+The pattern is built from escaped bytes only: alternations of the encoded variants and fixed lookarounds for line breaks.
+No user text is read as pattern syntax, and no pattern feature is exposed.
+
+A backward window runs the reversed pattern on the reversed window, because `re` has no reverse search.
+All matches of one needle have the same number of characters, so the match with the greatest end is also the one with the greatest start.
+
+### Boundary Rules of the Matcher
+
+A candidate is checked after the byte search, with the context bytes of the window.
+A needle that starts or ends with an escaped byte rejects a candidate that begins or ends inside a valid multi-byte character.
+A needle with two or more adjacent escaped bytes rejects a candidate whose bytes decode to fewer characters than the needle has (a line break counts as one).
+Without that rule the bytes of one valid character would match two escaped bytes.
+A rejected candidate continues one byte later.
+
+### Throughput Depends on the Needle
+
+The throughput of the pattern tier depends on the needle.
+A needle that starts with a literal prefix is fast, because `re` skips to the prefix.
+A needle that starts with a character that has case variants runs at about 420 MB/s (see "Search Measurements").
+
+### Windows and Overlap
+
+The document is never planned whole.
+Each unit asks `search_plan(offset, limit)` for the parts of one window (no I/O under the lock) and reads them outside the lock.
+Parts of the original are read with `cache=False`, so a search never evicts the blocks of the UI.
+A window owns `CHUNK` (256 KiB) bytes of match starts (forward) or match ends (backward).
+A forward window reads 3 bytes of head context, `Lmax - 1` bytes of overlap and 3 bytes of tail context.
+`Lmax` is the sum over the needle characters of the longest encoding (a line break counts 2).
+A backward window reads `Lmax - 1` bytes and 3 bytes of context before its range, and 3 bytes of context after it.
+A match belongs to the window that owns its start (forward) or its end (backward), so none is found twice and none is lost.
+Piece boundaries and chunk boundaries are the same case, because the matcher sees one contiguous buffer.
+
+### Regions and Wrap
+
+The origin is a byte offset on a character boundary.
+Forward, region 1 is `[origin, length)` by match start, and region 2 is `[0, origin)`.
+Backward, region 1 holds the matches that end at or before the origin, and region 2 holds the matches that end after it.
+Region 2 runs only when `wrap` is true, which is the default.
+A match found in region 2 is reported with `wrapped=True`.
+`total` is the document length with wrap, and the size of region 1 without it.
+
+### Repeat Rule
+
+A forward search starts at the end of the selection (the cursor when empty), and a backward one at its start.
+A match is selected with the cursor at its end (forward) or at its start (backward).
+A repeat therefore continues from the match and never overlaps it in the search direction.
+A needle `aa` finds `aaaa` twice, not three times.
+When the only match is the current selection, the search finds it again after wrapping.
+The default is case-sensitive, which is the fast path.
+
+### Placing the Match
+
+The match is placed through the jump machinery (`_Jump` with `select_to`), so the selection is always exact.
+When both ends are below the frontier of the line index and in rows that are not long, the selection is set at once and the view scrolls to it.
+An end beyond the frontier keeps the jump pending, with `JumpProgress`, until the scan reaches it.
+A match in a long row waits until the long index has resolved both ends, then selects.
+Until then the cursor does not move, and Escape cancels.
+`SearchFound` is posted when the selection is set.
+
+### Progress and Cancel
+
+The core reports at most 20 times per second (`progress_interval` 0.05 s).
+The widget keeps the latest report, posts at most one callback to the UI thread at a time, and turns it into `SearchProgress` at most 10 times per second, never after the terminal message.
+`SearchJob.cancel()` sets an event that is checked before every unit, so the latency is one unit plus one read.
+The `Foreground` gate of the document is asked before every unit, and the job sleeps `pause_seconds()` while the UI is busy.
+`Escape` cancels a running search: `check_action` keeps `cancel_pending` active while a jump is pending or a search runs.
+
+### Messages
+
+Exactly one terminal message is posted per search, by the handler on the UI thread: `SearchFound`, `SearchNotFound`, `SearchCancelled` or `SearchFailed`.
+The thread posts its outcome from a `finally`, so no defect leaves the widget in the searching state.
+`SearchCancelled.reason` is `cancelled`, `replaced`, `text changed` or `reloaded`.
+A second `search` replaces the running one and posts `SearchCancelled` with the reason `replaced` for it.
+A needle that cannot be searched posts `SearchFailed`, and `search` returns False.
+A change of the source during a read ends the search with `SearchFailed` and the stale view policy (see "External Changes").
+When a result arrives for a document whose `revision` changed, it is dropped as `SearchCancelled("text changed")`.
+Without a match, the cursor and the selection stay unchanged.
+
+### API
+
+`search(needle, *, backward=False, case_sensitive=True, wrap=True) -> bool` returns whether a search started.
+`cancel_search()`, `searching` and `search_settings` complete the widget API (see "Public API").
+`SearchSettings(chunk, progress_interval, tier)` is for tests and the harness; `tier` forces a tier.
+The core exports `SearchSpec`, `SearchJob`, `SearchSettings`, `SearchPlan`, `SearchPlanner`, `SearchResult`, `SearchProgress` and the errors `SearchError`, `SearchCancelled` and `SearchStale` from `nova_editor.core`.
+
+### nova_edit
+
+`F7` opens the bar, Enter searches forward and `Escape` closes the bar.
+`F3` and `Shift+F3` repeat the last needle forward and backward, also with the bar closed.
+`Alt+C` toggles the case in the bar, and the placeholder shows `Search (case-sensitive)` or `Search (ignore case)`.
+The status line shows `Searching 42% (2.1 of 5.0 GiB), Esc cancels` while it runs.
+Then it shows `Found`, `Wrapped to the top`, `Wrapped to the bottom`, `Not found: <needle>`, `Search cancelled` (with `: <reason>` unless the user cancelled) or `Search failed: <error>` for 3 seconds.
+A needle is shown at most 40 characters in `Not found`.
+The bar and the status line are plain widgets, so they have no entry in `src/tools/dialog_tester.py`.
+
+### Known Limit: Pattern Tier Cap
+
+A unit that may use the pattern tier owns at most `PATTERN_WORK_BUDGET // token_count` bytes (budget 4,000,000, minimum 256 bytes), where `token_count` is the number of needle characters.
+The cap keeps a repetitive needle from holding the GIL for long in one `re.search` call (about 22 ms per unit in the worst case).
+A long needle therefore reads smaller windows than `CHUNK`.
+A case-sensitive needle without a line break uses the plain `find` tier and is not cut.
+
+### Known Limit: Needle Validation and Compilation
+
+`SearchJob` validates the needle in its constructor, which the widget calls on the UI thread, so a needle that cannot be searched fails at once with `SearchFailed`.
+The compilation (the fold table and the regexes) runs on the search thread, at the start of `run`.
+
+### Known Limit: Search Start in an Unindexed Long Row
+
+In a long row whose index does not yet resolve the column, the exact byte of the column is unknown.
+The cursor end of the selection uses the anchor of the long cursor.
+A search whose start is the other end of the selection starts at column 0 of that row, because the exact byte needs the long-index scan.
+
+### Known Limit: A Pending Placement and a Failing Source
+
+A match that waits to be placed (beyond the frontier or in a long row) keeps the jump pending.
+When the source fails in that time, the pending search placement ends with `SearchFailed`, and the cursor and the selection stay unchanged.
+
+### Search Measurements
+
+All numbers are from the development machine (i5-14600K, 62 GiB, Linux 7.0.0, Python 3.12, Textual 8.2.8), on the 5 GB file `normal-5g.txt` (5,368,709,120 bytes), warm cache, unless a line says stand-in.
+
+| Case | Result |
+|---|---|
+| Miss, case-sensitive (find tier), full circle | 1.36 to 1.37 s, about 3.9 GB/s, 12 to 14 progress messages |
+| Miss, case-insensitive, needle with a literal prefix | 1.6 s, 3.3 GB/s; backward 2.7 s, 2.0 GB/s |
+| Miss, case-insensitive, first character with variants (pattern tier) | 12.8 s, 419 MB/s |
+| Generated ASCII 1 GiB (stand-in), case-insensitive (ascii tier) | 0.51 to 0.53 s, about 2.1 GB/s |
+| Generated non-ASCII 1 GiB (stand-in), pattern tier | 430 to 435 MB/s; with a line break in the needle 400 MB/s |
+| Match in the first block, to the terminal message | 1.4 to 2.0 ms |
+| Match in the last block | 1.87 to 2.0 s (it scans the file) |
+| Cancel at 50 percent, to the terminal message | 0.33 to 0.51 ms |
+| Memory, 5 GB search | RssAnon max 40.1 MiB, increase over the baseline under 0.01 MiB |
+| 5 GB edited text (1,000 edits, 100 MB paste, needle across a piece boundary) | found at the right offsets, 1.49 s and 0.79 s, RssAnon max 50.4 MiB |
+| 200 MB line, marker at column 100,000,000 | selected exactly, 1.9 to 2.0 ms from result to selection |
+| Long index resolves byte 100,000,000 / 199,000,000 | 1.09 s / 2.19 s |
+
+UI steps during a search on the 5 GB file stay under 50 ms with wrap off (maximum 36.6 ms sensitive, 30.2 ms pattern).
+With wrap on, no step exceeds 50 ms except the first `ctrl+end` of a run and one `up` step of 53.6 ms.
+The `up` step happened in one of 8 pattern-tier wrap-on runs on the 5 GB file.
+It did not reproduce in the 7 other runs, nor in 2 further runs after the fix loop.
+With wrap on the first `ctrl+end` of a run costs 360 to 480 ms, with and without a search.
+That step is the cold layout of the wrapped end of the 5 GB document, which exists without a search.
+With wrap on, `RssAnon` rises by about 9 MiB over the session baseline in runs that include that first `ctrl+end`, and stays under 52 MiB.
+The rise is the wrapped end layout, also seen without a search in the cold jump, and it is not attributed to the search.
+On the 200 MB line the steps during the search peak at 28.8 ms.
+
+The chunk sweep (one run each) measured 2.9, 3.6 and 4.4 GB/s for the find tier and 404, 425 and 422 MB/s for the pattern tier at 64 KiB, 256 KiB and 1 MiB.
+The longest UI step was 12.6 to 18.5 ms, and the constant stays 256 KiB.
+The fold table has 1,424 classes and 2,878 entries, the largest class has 4 members, and the first non-ASCII use builds it in 89 to 98 ms and about 268 KiB.
+
+The harness subcommands are `search-5g`, `search-latency`, `search-cancel`, `search-edited`, `search-longline`, `search-sweep`, `search-gen` and `search-fold` of `tools.measure_view`.
 
 ---
 
@@ -857,6 +1075,13 @@ A save runs on one daemon thread, `nova-save` (see "Streaming Save").
 It reads and writes outside every lock and takes the document lock only for the plan of each chunk.
 It posts its outcome with `post_message(events.Callback(...))`, like the scans, and the UI thread runs the terminal handler.
 `LazyDocument.close()` waits for the save thread through its closer before it closes the source.
+
+**Search thread:**
+A search runs on one daemon thread per search, `nova-search` (see "Search").
+It reads outside every lock and takes the document lock only for the plan of each window.
+It reports progress and posts its outcome with `post_message(events.Callback(...))`, and the UI thread runs the terminal handler.
+It is registered with `LazyDocument.join_on_close`, so `close` waits for it before the source is closed.
+Unlike the save, it passes the `Foreground` gate and sleeps while the UI is busy.
 
 ---
 
@@ -994,6 +1219,51 @@ This is the only case where a save drops undo.
 Any other `fchmod` error fails the save at stage `flush`.
 `posix_fallocate` is best effort and is skipped on file systems that do not support it.
 
+### Known Limit: Search Case Folding
+
+Case folding is simple and one to one, so `ß` does not match `ss`, and `ẞ` matches only `ß` and itself.
+`İ` matches only itself, and `ı` matches only itself.
+There is no Unicode normalisation, so the NFC and NFD forms of a letter are different text.
+The tables follow the Unicode version of the running Python.
+
+### Known Limit: Edits Cancel a Search
+
+Any edit cancels a running search: typing, delete, paste, undo and redo.
+The edit is accepted at once, and `SearchCancelled` has the reason `text changed`.
+A save does not cancel a search, because the bytes and their offsets stay the same.
+`reload` and `load_text` cancel it with the reason `reloaded`, and `close` cancels it without a message.
+A result that arrives after an edit is dropped and never moves the cursor.
+
+### Known Limit: The Search Is Literal
+
+The needle is literal text.
+The byte pattern that the pattern tier compiles is an implementation detail built from escaped bytes.
+There are no regular expressions, no whole-word option and no replace.
+
+### Known Limit: Needle Size
+
+A plain needle is limited to 1 MiB of bytes (`MAX_NEEDLE_BYTES`).
+A needle that needs the pattern tier (case-insensitive, or with a line break) is limited to 4,096 characters (`MAX_PATTERN_CHARS`).
+A longer needle raises `SearchError` before any thread starts, and the widget posts `SearchFailed`.
+
+### Known Limit: Search in an Unresolved Long Row
+
+A match in an unresolved part of a long row is selected only when the long index has resolved both ends.
+Until then the selection does not change, `JumpProgress` reports the long-index frontier, and Escape cancels.
+A goto shows a provisional cursor instead, but a selection with estimated columns would highlight the wrong characters.
+
+### Known Limit: Case-Insensitive Search of Non-ASCII Files
+
+The case-insensitive search of a file with non-ASCII bytes in every window runs at the pattern-tier throughput.
+That is 419 MB/s on the 5 GB reference file, 12.8 s for a miss, when the needle starts with a character that has case variants.
+A needle with a literal prefix and a case-sensitive search are faster (see "Search Measurements").
+
+### Known Limit: Line Breaks in a Needle
+
+A line break in a needle matches exactly one document terminator (`\r\n`, `\n` or `\r`).
+A needle `\n` never selects half of a CRLF, and a needle `\r\n` also matches a lone LF or a lone CR.
+The search bar of `nova_edit` takes one line, so a line break reaches the search only through the API.
+
 ---
 
 ## Testing
@@ -1010,12 +1280,16 @@ Tests are located under `tests/nova_editor/`.
 - `core/test_save_roundtrip.py`, `core/test_save_failure.py`, `core/test_save_cancel.py`, `core/test_save_targets.py` — `SaveJob` output, failure injection through `SaveIo`, cancel and special targets.
 - `core/test_save_layout.py`, `core/test_rebase.py`, `core/test_piece_table_layout.py`, `core/test_long_line_rebased.py` — the layout, the translation, `layout_range` and `LongLineIndex.rebased`.
 - `core/test_core_boundary.py` — the Textual import boundary.
+- `core/test_casefold.py` — the fold, the variant classes and the static ASCII table against the full scan.
+- `core/test_search_matcher.py`, `core/test_search_job.py`, `core/test_search_properties.py` — the matcher, the job (cancel, gate, stale, retry, progress) and hypothesis properties.
+- `core/search_reference.py`, `core/test_search_reference.py`, `core/fake_planner.py` — the brute-force reference model, its own tests, and the fake planner with a revision.
 
 **Document layer (`document/`):**
 - `test_lazy_document.py`, `test_lazy_wrapped_document.py`, `test_lazy_window.py` — lazy documents, wrapping and windows.
 - `test_lazy_edit.py`, `test_lazy_long_edit.py`, `test_lazy_bounded_edit.py`, `test_lazy_from_text.py` — document edits against a `str` reference (`reference_text.py`), long-row edits with lowered thresholds, and `text=` sources.
 - `test_edit_history.py`, `test_history_modified.py` — byte-based undo and redo records, typing coalescing, and the modified state.
 - `test_edit_lock.py`, `test_lock_audit.py` — the edit lock and the table accesses under the document lock.
+- `test_search_plan.py` — `search_plan` and `revision`.
 - `test_save_rebase.py`, `test_save_rebase_fuzz.py`, `test_rebase_holders.py` — the rebase and its seeded fuzz, and the holders that are re-pointed at the swap.
 - `test_cursor_anchor.py`, `test_long_row_anchor.py` — the cursor machine and its index adapter.
 - `test_capabilities.py`, `test_navigator_capabilities.py`, `test_navigator_long_rows.py` — capability methods and navigation.
@@ -1028,7 +1302,16 @@ Tests are located under `tests/nova_editor/`.
 - `test_lazy_edit_widget.py`, `test_lazy_clipboard.py`, `test_lazy_edit_long_row_memory.py` — editing, refusal, undo, redo, clipboard and memory on long rows through the widget.
 - `test_app.py`, `test_app_lazy.py`, `test_app_save.py`, `test_bindings.py` — the app, opening files, the save bars and key bindings.
 - `test_widget_save.py`, `test_widget_save_rebase.py`, `test_widget_external_change.py`, `test_save_long_row_cursor.py` — the widget API of saving, the rebase of the widget, external changes and the cursor on a long row across a save.
+- `test_widget_search.py`, `test_widget_search_events.py`, `test_widget_search_long_row.py` — the widget search: selection, wrap, repeat, cancel, edits, reload, save, truncation, close, and long rows with lowered thresholds.
+- `test_app_search.py` — the keys, the bar, the status texts and the case toggle of `nova_edit`.
 - `test_independence.py` — no dependency on `nova_navigator`.
+
+**Search reference model:**
+`core/search_reference.py` is written independently of the production matcher.
+It decodes the bytes to `str` with `surrogateescape`, compares character by character with its own fold, and treats a line break as one unit.
+It implements direction, origin, wrap and the owned-range rules by brute force.
+The properties compare the job with it over random piece layouts, random needles (also substrings of the document), both case modes, both directions, wrap on and off, and chunk sizes from 1 to 17 bytes and large.
+Further properties check that the tiers return the same result on ASCII data and that the reversed pattern agrees with the forward scan.
 
 **Helpers and benchmarks:**
 - `helpers_view.py`, `test_helpers_view.py` — synthetic file builder and oracle.
@@ -1036,6 +1319,7 @@ Tests are located under `tests/nova_editor/`.
 
 **Measurement harness (`uv run python -m tools.measure_view`):**
 Subcommands: `first-screen`, `memory`, `latency`, `jump`, `oracle`, `calllog`, `sweep-yield`, `thresholds`, `summarise`, and for editing `edit-memory`, `verify`, `edit-latency`, `edit-scatter`, `segments`, `pieces`, `undo-record` and `clipboard`.
+The search subcommands are `search-5g`, `search-latency`, `search-cancel`, `search-edited`, `search-longline`, `search-sweep`, `search-gen` and `search-fold`.
 The save subcommands are `save-5g`, `save-latency`, `save-sweep`, `save-longline`, `save-retention`, `save-records`, `save-cancel` and `save-fulldisk`.
 See `src/tools/measure_view.py` for usage.
 
@@ -1071,6 +1355,12 @@ See `src/nova_editor/UPSTREAM.md` for the file inventory, the list of edits and 
 **Widget subpackage exports** (via `nova_editor.widget.__init__.py`):
 - `NovaTextArea`, `DEFAULT_HIGHLIGHT_LIMIT`, `TextAreaLanguage`, `ThemeDoesNotExist`, `LanguageDoesNotExist`.
 
+**Search API** (see "Search"):
+- `NovaTextArea.search`, `cancel_search`, `searching` and `search_settings`.
+- The messages `SearchProgress`, `SearchFound`, `SearchNotFound`, `SearchCancelled` and `SearchFailed`.
+- `LazyDocument.search_plan` and `LazyDocument.revision`.
+- `nova_editor.core`: `SearchSpec`, `SearchJob`, `SearchSettings`, `SearchPlan`, `SearchPlanner`, `SearchResult`, `SearchProgress`, `SearchError`, `SearchCancelled` and `SearchStale`.
+
 **Usage example:**
 ```python
 from nova_editor import NovaTextArea
@@ -1100,7 +1390,6 @@ When Textual releases a new version and we want to update our vendored code, fol
 
 ## Future Work
 
-- **Search:** Add find and replace that works on lazy documents.
 - **Selection:** Multi-line and multi-region selection on lazy documents.
 - **Integration:** Embed in `nova_navigator` as an editor dialog for large file viewing and light editing.
 - **Syntax highlighting on long rows:** Currently disabled for files above 1 MiB; tree-sitter queries could be windowed.
