@@ -36,6 +36,8 @@ from nova_editor.core.save import PlanPart, SaveIo, SaveJob, SaveResult, SaveSet
 from nova_editor.core.save import SaveCancelled as CoreSaveCancelled
 from nova_editor.core.save import SaveFailed as CoreSaveFailed
 from nova_editor.core.save import SaveProgress as CoreSaveProgress
+from nova_editor.core.search import SearchError, SearchJob, SearchPlan, SearchSettings, SearchSpec
+from nova_editor.core.search import SearchProgress as CoreSearchProgress
 from nova_editor.core.text_width import SURROGATE_ESCAPE, utf8_len
 from nova_editor.document._cursor_anchor import CursorMachine, CursorState, Op, Verdict
 from nova_editor.document._document import (
@@ -56,6 +58,7 @@ from nova_editor.document._syntax_aware_document import (
 )
 from nova_editor.widget._lazy_window import WindowText, section_window, window_text
 from nova_editor.widget._long_row_cursor import PROGRESS_BELOW_ONE, LongRowCursor
+from nova_editor.widget._search_run import SearchOutcome, SearchRun, run_search_thread
 from nova_editor.widget._text_area_theme import TextAreaTheme
 
 if TYPE_CHECKING:
@@ -111,10 +114,45 @@ def _column_of_byte(text: str, relative: int) -> int:
 
 @dataclass
 class _Jump:
-    """A goto request that waits for the scan: a 0-based `row` or an absolute `byte` offset."""
+    """A request that waits for the scan: a goto of a 0-based `row` or of an absolute `byte` offset, or a search placement.
+
+    A search placement (`select_to` is set) selects the match `[byte, select_to)` exactly, so it never shows an estimated column.
+    """
 
     row: int | None = None
     byte: int | None = None
+    select_to: int | None = None
+    """End byte of the match a search placement selects; `None` for a goto."""
+    backward: bool = False
+    """A search placement of a backward match: the cursor goes to the start of the match."""
+    wrapped: bool = False
+    """A search placement of a match that was found after wrapping around; `SearchFound` carries it."""
+
+    @property
+    def is_search(self) -> bool:
+        return self.select_to is not None
+
+
+@dataclass(frozen=True)
+class _Pending:
+    """A byte that cannot be placed yet; `fraction` (below one) is the progress of the scan that has to reach it."""
+
+    fraction: float
+
+
+@dataclass(frozen=True)
+class _Rejection:
+    """A byte that cannot be placed at all."""
+
+    reason: str
+
+
+@dataclass(frozen=True)
+class _LongRowTarget:
+    """A byte inside a long row: the row and the byte relative to its start (resolved by the long index)."""
+
+    row: int
+    relative: int
 
 
 _PLACEHOLDER_CELL = "\u2591"
@@ -244,6 +282,16 @@ class _DocumentPlanner:
 
     def plan(self, offset: int, limit: int, unverified: bool) -> list[PlanPart]:
         return self._document.plan(offset, limit, unverified)
+
+
+class _DocumentSearchPlanner:
+    """`SearchPlanner` over a `LazyDocument`."""
+
+    def __init__(self, document: LazyDocument) -> None:
+        self._document = document
+
+    def search_plan(self, offset: int, limit: int) -> SearchPlan:
+        return self._document.search_plan(offset, limit)
 
 
 @dataclass(frozen=True)
@@ -522,7 +570,7 @@ NovaTextArea {
             show=False,
         ),
         Binding(
-            "f7",
+            "ctrl+shift+a,f8",
             "select_all",
             "Select all",
             show=False,
@@ -630,7 +678,7 @@ NovaTextArea {
     | ctrl+u,super+backspace | Delete from cursor to the start of the line. |
     | ctrl+k                 | Delete from cursor to the end of the line.   |
     | f6                     | Select the current line.                     |
-    | f7                     | Select all text in the document.             |
+    | ctrl+shift+a,f8        | Select all text in the document.             |
     | ctrl+z,super+z         | Undo.                                        |
     | ctrl+y,super+y         | Redo.                                        |
     | ctrl+x,super+x         | Cut selection or line if no selection.       |
@@ -962,6 +1010,83 @@ NovaTextArea {
         def control(self) -> NovaTextArea:
             return self.text_area
 
+    @dataclass
+    class SearchProgress(Message):
+        """Posted (at most 10 times per second, `done` never decreasing) while a search runs; `phase` is `forward` or `wrapped`."""
+
+        done: int
+        """Owned bytes searched so far."""
+        total: int
+        """Owned bytes to search."""
+        phase: str
+        """The region being searched: `forward` (from the origin) or `wrapped` (after wrapping around)."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
+    class SearchFound(Message):
+        """Posted once when a search found a match and the selection covers it; `row` and `column` are the cursor location (the end that holds the cursor)."""
+
+        start: int
+        """Byte offset of the start of the match."""
+        end: int
+        """Byte offset of the end of the match."""
+        row: int
+        """Row of the cursor after the match was selected."""
+        column: int
+        """Column of the cursor after the match was selected."""
+        wrapped: bool
+        """True when the match was found after wrapping around the document."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
+    class SearchNotFound(Message):
+        """Posted once when a search found no match; the cursor and the selection are unchanged."""
+
+        needle: str
+        """The text that was searched for."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
+    class SearchCancelled(Message):
+        """Posted once when a search was cancelled; `reason` is `cancelled`, `replaced`, `text changed` or `reloaded`."""
+
+        reason: str
+        """Why the search was cancelled."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
+    class SearchFailed(Message):
+        """Posted once when a search could not run or failed (an invalid needle, a changed source or a defect)."""
+
+        error: Exception
+        """The error."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
     save_settings: ClassVar[SaveSettings] = SaveSettings()
     """Chunk size, fsync interval and index settings of a save (tests lower them)."""
 
@@ -970,6 +1095,12 @@ NovaTextArea {
 
     save_clock: Callable[[], float] = time.monotonic
     """Time source of the throttle of `SaveProgress` messages; tests replace it by a fake clock."""
+
+    search_settings: ClassVar[SearchSettings] = SearchSettings()
+    """Chunk size, progress interval and tier of a search (tests lower them)."""
+
+    search_clock: Callable[[], float] = time.monotonic
+    """Time source of the throttle of `SearchProgress` messages; tests replace it by a fake clock."""
 
     clipboard_cap: int = 2_097_152
     """Largest selection (in bytes) that is also written to the system clipboard; a larger copy stays inside the editor (ACT4 design 10)."""
@@ -1090,6 +1221,9 @@ NovaTextArea {
 
         self._save_run: _SaveRun | None = None
         """The running save (at most one), else `None`."""
+
+        self._search_run: SearchRun | None = None
+        """The running search (at most one), else `None`."""
 
         self._save_epoch = 0
         """Counts the starts and ends of saves: an external check that began in another epoch compared with a file the save was about to replace."""
@@ -1237,6 +1371,7 @@ NovaTextArea {
             return
         self._lazy_closed = True
         self._abandon_save()
+        self._abandon_search()
         self._estimating = False
         self._jump = None
         timer = self._estimate_timer
@@ -1261,10 +1396,20 @@ NovaTextArea {
         self._source_failed = True
         self._stale_kind = kind
         self.document.lock_edits(STALE_REASON)
+        self._end_search_placement(CoreSourceChanged(reason, kind))
         # the rendered lines stay: rows that were painted keep showing (possibly stale), rows that were not painted render blank
         # set_sender: while the screen renders, it is the active pump, and a message whose sender is the parent does not bubble to it.
         self.post_message(self.SourceChanged(reason, self, kind).set_sender(self))
         self.refresh()
+
+    def _end_search_placement(self, error: Exception) -> None:
+        """A pending search placement can no longer be driven: end it (and its search) with the one `SearchFailed(error)`."""
+        jump = self._jump
+        if jump is None or not jump.is_search:
+            return
+        self._jump = None
+        self._set_progress(None)
+        self.post_message(self.SearchFailed(error, self).set_sender(self))
 
     def _ensure_estimating(self) -> None:
         """Resume the size re-estimate timer when an index of a lazy document grows again (a long row was reached)."""
@@ -1386,8 +1531,7 @@ NovaTextArea {
         """
         self._replay_generation += 1
         if self._jump is not None:
-            self._jump = None
-            self._set_progress(None)
+            self._drop_jump("cancelled")
         cursor = self._long_cursor
         machine = cursor.machine
         if machine is None or machine.state is not CursorState.PENDING:
@@ -1418,12 +1562,22 @@ NovaTextArea {
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Make `escape` (`cancel_pending`) active only while a jump is pending, so it never shadows another use of the key."""
         if action == "cancel_pending":
-            return self._has_pending()
+            return self._has_pending() or self.searching
         return super().check_action(action, parameters)
 
     def action_cancel_pending(self) -> None:
-        """Cancel the pending jump (bound to escape)."""
+        """Cancel the running search and the pending jump (bound to escape)."""
+        if self.searching:
+            self.cancel_search()
         self.cancel_pending()
+
+    def _drop_jump(self, reason: str) -> None:
+        """Drop the pending jump; a search placement ends the search with its one `SearchCancelled(reason)`."""
+        jump = self._jump
+        self._jump = None
+        self._set_progress(None)
+        if jump is not None and jump.is_search:
+            self.post_message(self.SearchCancelled(reason, self).set_sender(self))
 
     def _cursor_unresolved(self) -> bool:
         """Whether the cursor of a long row is provisional or pending (waits for the scan to resolve it)."""
@@ -1470,7 +1624,7 @@ NovaTextArea {
         self.post_message(self.JumpRejected(reason, self).set_sender(self))
 
     def _run_jump(self, *, notify: bool) -> None:
-        """Try the active request: finish it (moved or rejected) or keep it pending with a progress fraction."""
+        """Try the active request: finish it (moved, selected or rejected) or keep it pending with a progress fraction."""
         jump = self._jump
         if jump is None or self._lazy_closed:
             return
@@ -1478,16 +1632,24 @@ NovaTextArea {
             progress = self._drive_lazy(jump)
         except CoreSourceChanged as error:
             self._fail_source(str(error), error.kind)
-            self._reject(str(error))
+            if self._jump is jump:  # `_fail_source` ended a search placement itself
+                self._abort_jump(jump, str(error), error)
             progress = None
-        except (RowUnavailable, IndexError):
-            self._reject("the target row cannot be resolved")
+        except (RowUnavailable, IndexError) as error:
+            self._abort_jump(jump, "the target row cannot be resolved", error)
             progress = None
         if progress is None:
             self._jump = None
             self._set_progress(None)
         else:
             self._set_progress(progress, notify=notify)
+
+    def _abort_jump(self, jump: _Jump, reason: str, error: Exception) -> None:
+        """A goto is rejected (`JumpRejected`); a search placement ends the search with `SearchFailed`."""
+        if jump.is_search:
+            self.post_message(self.SearchFailed(error, self).set_sender(self))
+        else:
+            self._reject(reason)
 
     def _complete_jump(self) -> None:
         row, column = self.cursor_location
@@ -1498,6 +1660,8 @@ NovaTextArea {
         snap = lazy.snapshot()
         if snap.error is not None:
             raise snap.error
+        if jump.select_to is not None:
+            return self._drive_search(jump, snap.scanned_bytes, complete=snap.complete)
         if jump.row is not None:
             return self._drive_line(jump.row, snap.count, complete=snap.complete)
         return self._drive_byte(lazy, jump.byte or 0, snap.scanned_bytes, complete=snap.complete)
@@ -1513,27 +1677,76 @@ NovaTextArea {
         return min(count / (row + 1), PROGRESS_BELOW_ONE)
 
     def _drive_byte(self, lazy: LazyDocument, offset: int, scanned: int, *, complete: bool) -> float | None:
-        if offset >= lazy.length:
-            self._reject(f"byte offset {offset} is beyond the end of the file ({lazy.length} bytes)")
+        placed = self._resolve_byte(lazy, offset, scanned, complete=complete, allow_end=False)
+        if isinstance(placed, _Rejection):
+            self._reject(placed.reason)
             return None
+        if isinstance(placed, _Pending):
+            return placed.fraction
+        if isinstance(placed, _LongRowTarget):
+            return self._drive_long_row_byte(lazy, placed.row, placed.relative)
+        self.move_cursor(placed)
+        self._complete_jump()
+        return None
+
+    def _resolve_byte(self, lazy: LazyDocument, offset: int, scanned: int, *, complete: bool, allow_end: bool) -> tuple[int, int] | _LongRowTarget | _Pending | _Rejection:
+        """Place a byte: a location, a byte of a long row (left to the caller), pending with a progress fraction, or a rejection.
+
+        `allow_end` accepts the offset equal to the length (the end of a match that ends the document).
+        """
+        if offset > lazy.length or (offset == lazy.length and not allow_end):
+            return _Rejection(f"byte offset {offset} is beyond the end of the file ({lazy.length} bytes)")
         if offset == 0:
-            self.move_cursor((0, 0))
-            self._complete_jump()
-            return None
+            return (0, 0)
         if offset >= scanned and not complete:
-            return min(scanned / offset, PROGRESS_BELOW_ONE)
+            return _Pending(min(scanned / offset, PROGRESS_BELOW_ONE))
         found = lazy.row_at_offset(offset)
         if found is None:
-            self._reject(f"byte offset {offset} cannot be resolved")
-            return None
+            return _Rejection(f"byte offset {offset} cannot be resolved")
         row, span = found
         relative = min(offset - span.start, span.content_end - span.start)
         if lazy.is_long(row):
-            return self._drive_long_row_byte(lazy, row, relative)
-        column = _column_of_byte(lazy.get_line(row), relative)
-        self.move_cursor((row, column))
-        self._complete_jump()
+            return _LongRowTarget(row, relative)
+        return (row, _column_of_byte(lazy.get_line(row), relative))
+
+    def _drive_search(self, jump: _Jump, scanned: int, *, complete: bool) -> float | None:
+        """Place a search match: pending until both ends are exact (the line scan and the long index of their rows reached them), then select it.
+
+        Never shows an estimated column: the selection stays unchanged while pending and is set once, exactly.
+        """
+        lazy = self.document
+        start = jump.byte or 0
+        end = jump.select_to or 0
+        top = max(start, end)
+        if top >= scanned and not complete:
+            return min(scanned / max(top, 1), PROGRESS_BELOW_ONE)
+        places: list[tuple[int, int]] = []
+        for offset in (start, end):
+            placed = self._resolve_exact(lazy, offset, scanned, complete=complete)
+            if isinstance(placed, _Rejection):
+                self._abort_jump(jump, placed.reason, RuntimeError(placed.reason))
+                return None
+            if isinstance(placed, _Pending):
+                return placed.fraction
+            places.append(placed)
+        first, last = places
+        self.selection = Selection(last, first) if jump.backward else Selection(first, last)
+        self.scroll_cursor_visible()
+        row, column = self.cursor_location
+        self.post_message(self.SearchFound(start, end, row, column, jump.wrapped, self).set_sender(self))
         return None
+
+    def _resolve_exact(self, lazy: LazyDocument, offset: int, scanned: int, *, complete: bool) -> tuple[int, int] | _Pending | _Rejection:
+        """Place a byte with an exact column; a byte of a long row waits for the long index (`anchor_index` starts its scan and never waits)."""
+        placed = self._resolve_byte(lazy, offset, scanned, complete=complete, allow_end=True)
+        if not isinstance(placed, _LongRowTarget):
+            return placed
+        index = lazy.anchor_index(placed.row)  # fetched on every tick: a row may have been evicted
+        relative = index.align(placed.relative)
+        column = index.exact_column(relative)
+        if column is None:
+            return _Pending(min(index.frontier_byte() / max(relative, 1), PROGRESS_BELOW_ONE))
+        return (placed.row, column)
 
     def _drive_long_row_byte(self, lazy: LazyDocument, row: int, relative: int) -> float | None:
         """Goto a byte of a long row: exact when scanned, PROVISIONAL without wrap, pending with wrap (design 8.1)."""
@@ -2344,6 +2557,7 @@ NovaTextArea {
         """Swap in a new document: the old one is closed, every state tied to it is reset and the scan machinery is wired to the new one."""
         old = self.document
         old.require_not_saving("replacing the document")
+        self._cancel_search_for("reloaded")  # its offsets belong to the old document; `old.close()` joins the thread
         wrapped = LazyWrappedDocument(document, tab_width=self.indent_width)  # everything that can fail comes before the first assignment
         navigator = DocumentNavigator(wrapped)
         long_cursor = LongRowCursor(document)
@@ -2967,7 +3181,7 @@ NovaTextArea {
             self.suggestion = self.suggestion[len(edit.text) :]
         else:
             self.suggestion = ""
-        self._reset_cursor_machine()
+        self._after_text_change()
         self.history.record(edit)
         new_gutter_width = self.gutter_width
 
@@ -3274,6 +3488,189 @@ NovaTextArea {
         run.last_message = now
         self.post_message(self.SaveProgress(report.phase, report.done, report.total, self).set_sender(self))
 
+    # --- Search (ACT6 design 6, 7)
+    @property
+    def searching(self) -> bool:
+        """True from the start of a search until its terminal message is posted."""
+        return self._search_run is not None
+
+    def search(self, needle: str, *, backward: bool = False, case_sensitive: bool = True, wrap: bool = True) -> bool:
+        """Search for `needle` off the UI thread and select the match.
+
+        A forward search starts at the end of the selection (the cursor when empty), a backward one at its start; a match is selected with the
+        cursor at its end (forward) or its start (backward), so a repeat continues from it. A running search is cancelled (`SearchCancelled`
+        with reason `replaced`). Exactly one of `SearchFound`, `SearchNotFound`, `SearchCancelled` and `SearchFailed` is posted per search.
+
+        Returns:
+            True when a search started; False for a closed widget, or for a needle that cannot be searched (`SearchFailed` is posted).
+        """
+        if self._lazy_closed:
+            return False
+        document = self.document
+
+        def report(progress: CoreSearchProgress) -> None:
+            self._on_search_report(run, progress)
+
+        try:
+            spec = SearchSpec(needle, case_sensitive, backward, wrap)
+            job = SearchJob(_DocumentSearchPlanner(document), spec, self._search_origin(backward), self.search_settings, report, document.foreground)
+        except SearchError as error:
+            self.post_message(self.SearchFailed(error, self).set_sender(self))
+            return False
+        self._replace_search()
+        run = SearchRun(job, needle, backward)
+        self._search_run = run
+        thread = threading.Thread(target=run_search_thread, args=(run, functools.partial(self._post_search_outcome, run)), name="nova-search", daemon=True)
+        try:
+            thread.start()
+        except RuntimeError as error:  # no thread could be created
+            self._search_run = None
+            self.post_message(self.SearchFailed(error, self).set_sender(self))
+            return False
+        document.join_on_close(thread)
+        return True
+
+    def cancel_search(self) -> None:
+        """Ask the running search to stop; it ends with `SearchCancelled` (reason `cancelled`) unless it finished first."""
+        run = self._search_run
+        if run is not None:
+            run.job.cancel()
+
+    def _replace_search(self) -> None:
+        """UI thread: drop the running search for a new one and post its `SearchCancelled` (reason `replaced`)."""
+        self._cancel_search_for("replaced")
+
+    def _cancel_search_for(self, reason: str) -> None:
+        """UI thread: drop the running search at once and post its one `SearchCancelled(reason)`; the thread ends on its own and its outcome is ignored."""
+        run = self._search_run
+        if run is None:
+            jump = self._jump
+            if jump is not None and jump.is_search:  # the search is over; its match waits to be placed
+                self._drop_jump(reason)
+            return
+        run.reason = reason
+        run.job.cancel()
+        self._search_run = None
+        self.post_message(self.SearchCancelled(reason, self).set_sender(self))
+
+    def _abandon_search(self) -> None:
+        """UI thread: the widget closes; the search is cancelled and its outcome (and every message) discarded."""
+        run = self._search_run
+        if run is None:
+            return
+        self._search_run = None
+        with run.lock:
+            run.abandoned = True
+        run.job.cancel()
+
+    def _search_origin(self, backward: bool) -> int:
+        """UI thread: the byte offset a search starts from: the start of the selection (backward) or its end (forward)."""
+        selection = self.selection
+        start, end = selection.start, selection.end
+        first, last = (start, end) if start <= end else (end, start)
+        return self._byte_of_location(first if backward else last)
+
+    def _byte_of_location(self, location: tuple[int, int]) -> int:
+        """UI thread: the byte offset of a location; for an unresolved column of a long row the cursor anchor (or the row start)."""
+        document = self.document
+        row, column = location
+        offset = document.byte_offset(row, column)
+        if offset is not None:
+            return offset
+        start = document.byte_offset(row, 0) or 0
+        machine = self._long_cursor.machine
+        if machine is not None and machine.anchor.row == row and location == self.cursor_location:
+            return start + machine.anchor.byte_rel
+        return start
+
+    def _post_search_outcome(self, run: SearchRun, outcome: SearchOutcome) -> None:
+        """Search thread: hand the outcome to the UI thread (exactly once), unless the widget was closed.
+
+        When the message cannot be posted (the widget is closing) the run is dropped so that `searching` ends; no terminal message can follow.
+        """
+        with run.lock:
+            if run.abandoned:
+                return
+        try:
+            posted = self.post_message(events.Callback(functools.partial(self._finish_search, run, outcome)))
+        except RuntimeError:  # the app is closing
+            posted = False
+        if not posted and self._search_run is run:
+            self._search_run = None  # the widget is closing: no message can be posted any more, so the search must not stay pending
+
+    def _on_search_report(self, run: SearchRun, report: CoreSearchProgress) -> None:
+        """Search thread: publish the latest progress; at most one call to the UI thread is outstanding (coalescing)."""
+        with run.lock:
+            run.progress = report
+            if run.progress_outstanding or run.abandoned:
+                return
+            run.progress_outstanding = True
+        try:
+            posted = self.post_message(events.Callback(functools.partial(self._announce_search_progress, run)))
+        except RuntimeError:
+            posted = False
+        if not posted:
+            with run.lock:
+                run.progress_outstanding = False
+
+    def _announce_search_progress(self, run: SearchRun) -> None:
+        """UI thread: turn the latest progress into a `SearchProgress` message, at most 10 per second and never after the terminal message."""
+        with run.lock:
+            run.progress_outstanding = False
+            report = run.progress
+        now = self.search_clock()
+        if report is None or self._search_run is not run or now - run.last_message < _MESSAGE_INTERVAL:
+            return
+        run.last_message = now
+        self.post_message(self.SearchProgress(report.done, report.total, report.phase, self).set_sender(self))
+
+    def _finish_search(self, run: SearchRun, outcome: SearchOutcome) -> None:
+        """UI thread: the one terminal handler of a search; posts exactly one of `SearchFound`, `SearchNotFound`, `SearchCancelled` and `SearchFailed`.
+
+        A run that is no longer current (replaced or closed) is ignored: its terminal message was posted when it was dropped.
+        """
+        if self._search_run is not run:
+            return
+        self._search_run = None
+        try:
+            message = self._conclude_search(run, outcome)
+        except Exception as failure:
+            logging.getLogger(__name__).exception("the finish of a search failed")
+            self._jump = None  # a placement left pending by the defect must not post a second terminal message later
+            self._set_progress(None)
+            message = self.SearchFailed(failure, self)
+        if message is not None:
+            self.post_message(message.set_sender(self))
+
+    def _conclude_search(self, run: SearchRun, outcome: SearchOutcome) -> Message | None:
+        """UI thread: apply the outcome of the search thread and return its terminal message (`None`: the placement of the match posts it)."""
+        error = outcome.error
+        if error is not None:
+            if isinstance(error, CoreSourceChanged):
+                self._fail_source(str(error), error.kind)
+            return self.SearchFailed(error, self)
+        if outcome.cancelled:
+            return self.SearchCancelled(run.reason, self)
+        result = outcome.result
+        if result is None:
+            return self.SearchNotFound(run.needle, self)
+        if run.job.revision != self.document.revision:
+            return self.SearchCancelled("text changed", self)
+        if self._source_failed:
+            return self.SearchFailed(CoreSourceChanged(STALE_REASON, self._stale_kind or ChangeKind.MODIFIED), self)
+        self._select_match(result.start, result.end, run.backward, wrapped=result.wrapped)
+        return None
+
+    def _select_match(self, start: int, end: int, backward: bool, *, wrapped: bool) -> None:
+        """UI thread: select the match `[start, end)` exactly (the cursor at `end`, or at `start` for a backward search).
+
+        The placement is a jump: it completes at once when both ends are known, and otherwise stays pending (`pending_progress`,
+        `JumpProgress`, Escape) until the line scan and the long index reached them. It posts the one `SearchFound` when it selects the match.
+        """
+        self.cancel_pending()
+        self._jump = _Jump(byte=start, select_to=end, backward=backward, wrapped=wrapped)
+        self._run_jump(notify=True)
+
     def _end_save(self, run: _SaveRun) -> None:
         """UI thread: forget the run, lift the save registration and the edit lock."""
         self._save_run = None
@@ -3391,6 +3788,11 @@ NovaTextArea {
         self._line_cache.clear()
         self.refresh()
 
+    def _after_text_change(self) -> None:
+        """The one hook of every text change (typing, deleting, pasting, undo, redo and the roll back of a refused batch): cancel the search, reset the cursor machine."""
+        self._cancel_search_for("text changed")
+        self._reset_cursor_machine()
+
     def _reset_cursor_machine(self) -> None:
         """Forget the cursor machine of the long row after an edit, undo or redo: the next selection change starts a resolved one at the new location."""
         cursor = self._long_cursor
@@ -3463,7 +3865,7 @@ NovaTextArea {
             self._roll_back(done, minimum_top, str(error))
             return False
 
-        self._reset_cursor_machine()
+        self._after_text_change()
         new_gutter_width = self.gutter_width
         if old_gutter_width != new_gutter_width:
             self.wrapped_document.wrap(self.wrap_width, self.indent_width)
@@ -3514,7 +3916,7 @@ NovaTextArea {
             self._roll_back(done, minimum_top, str(error), redo=True)
             return False
 
-        self._reset_cursor_machine()
+        self._after_text_change()
         new_gutter_width = self.gutter_width
         if old_gutter_width != new_gutter_width:
             self.wrapped_document.wrap(self.wrap_width, self.indent_width)
@@ -3543,7 +3945,7 @@ NovaTextArea {
                     edit.do(self, record_selection=False)
         except RowUnavailable as error:
             self._fail_source(f"an undo or redo could not be rolled back: {error}")
-        self._reset_cursor_machine()
+        self._after_text_change()
         self.wrapped_document.wrap_range(top, top, top)
         self._refresh_size()
         self._refuse_edit(reason)
