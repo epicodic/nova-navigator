@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import logging
 import os
 import re
 import stat
@@ -903,6 +904,8 @@ NovaTextArea {
         """The target of the save."""
         text_area: NovaTextArea
         """The `text_area` that sent this message."""
+        committed: bool = False
+        """True when the replace already happened: the file holds the new bytes, but the document stays on the old file (reload to see the new one)."""
 
         @property
         def control(self) -> NovaTextArea:
@@ -3126,6 +3129,7 @@ NovaTextArea {
         try:
             assert run.job is not None
             result = run.job.run()
+            error = CoreSaveFailed("internal", "the save thread ended unexpectedly", committed=True)  # the replace happened
             self._on_save_report(run, CoreSaveProgress("history", result.length, result.length))
             plan = self.document.prepare_rebase(result, run.contents)
             error = None
@@ -3134,7 +3138,7 @@ NovaTextArea {
         except CoreSaveFailed as failure:
             error = failure
         except (OSError, ValueError, CoreSourceChanged) as failure:  # the translation failed: the file is written but the document is not rebased
-            error = CoreSaveFailed("internal", f"{type(failure).__name__}: {failure}")
+            error = CoreSaveFailed("internal", f"{type(failure).__name__}: {failure}", committed=True)
         finally:
             self._post_save_outcome(run, result, plan, error)
 
@@ -3185,40 +3189,51 @@ NovaTextArea {
         self.document.unlock_edits("saving")
 
     def _finish_save(self, run: _SaveRun, result: SaveResult | None, plan: RebasePlan | None, error: CoreSaveFailed | None) -> None:
-        """UI thread: the one terminal handler of a save. Lifts the lock and posts exactly one of `Saved`, `SaveFailed` and `SaveCancelled`."""
+        """UI thread: the one terminal handler of a save. Lifts the lock and posts exactly one of `Saved`, `SaveFailed` and `SaveCancelled`.
+
+        Whatever the finish raises ends in `SaveFailed` with stage `internal`; the file is then `committed` (written, the document still on the old file
+        unless the failure came after the document was rebased, in which case the history is cleared).
+        """
         if self._save_run is not run:  # the widget was closed meanwhile
             if result is not None:
                 result.source.close()
             return
-        if result is not None and plan is not None:
-            try:
-                self.document.apply_rebase(plan)
-            except ValueError as failure:
-                result.source.close()
-                result = None
-                error = CoreSaveFailed("internal", str(failure))
-        else:
-            result = None
-        if result is None or plan is None:
+        try:
+            message = self._conclude_save(run, result, plan, error)
+        except Exception as failure:
+            logging.getLogger(__name__).exception("the finish of a save failed")
+            reason = CoreSaveFailed("internal", f"{type(failure).__name__}: {failure}", committed=result is not None)
+            message = self.SaveFailed(reason, reason.stage, run.target, self, reason.committed)
+        finally:
             self._end_save(run)
+        self.post_message(message.set_sender(self))
+
+    def _conclude_save(self, run: _SaveRun, result: SaveResult | None, plan: RebasePlan | None, error: CoreSaveFailed | None) -> Message:
+        """UI thread: apply the outcome of the save thread and return its terminal message (the caller lifts the lock and posts it)."""
+        if result is None or plan is None:
+            if result is not None:
+                result.source.close()
             if error is None:
-                self.post_message(self.SaveCancelled(self).set_sender(self))
-            else:
-                self.post_message(self.SaveFailed(error, error.stage, run.target, self).set_sender(self))
-            return
-        if plan.clear_history:
-            self.history.clear()
-            self._clipboard_record = None
-            self.notify("Undo history cleared: too many saves with large deletions.", severity="warning")
-        else:
-            self._apply_translated(plan.contents)
-        self.history.mark_saved()
+                return self.SaveCancelled(self)
+            return self.SaveFailed(error, error.stage, run.target, self, error.committed)
+        self.document.apply_rebase(plan)  # closes the file itself when it fails; the document is then still on the old table
         self.file_path = result.target
         self._held_identity = result.source.identity()
-        self._lift_stale()
-        self.refresh_after_rebase()
-        self._end_save(run)
-        self.post_message(self.Saved(result.target, result.length, self).set_sender(self))
+        try:
+            if plan.clear_history:
+                self.history.clear()
+                self._clipboard_record = None
+                self.notify("Undo history cleared: too many saves with large deletions.", severity="warning")
+            else:
+                self._apply_translated(plan.contents)
+            self.history.mark_saved()
+            self._lift_stale()
+            self.refresh_after_rebase()
+        except Exception:
+            self.history.clear()  # a half-translated history must not survive
+            self._clipboard_record = None
+            raise
+        return self.Saved(result.target, result.length, self)
 
     def _lift_stale(self) -> None:
         """The document now stands on a freshly written file: end the stale state (rows render again, edits are accepted)."""

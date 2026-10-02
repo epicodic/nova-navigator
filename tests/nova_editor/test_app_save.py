@@ -13,6 +13,7 @@ import pytest
 from nova_editor.app import ConfirmBar, NovaEditApp, PathBar, SaveBar, main
 from nova_editor.core.byte_source import ChangeKind
 from nova_editor.core.save import SaveIo
+from nova_editor.document._lazy_document import LazyDocument
 from nova_editor.widget import NovaTextArea
 from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.save_widget_helpers import SETTINGS, Gate, wait_saved
@@ -457,3 +458,21 @@ async def test_poll_runs_in_a_thread_and_does_not_delay_keys(tmp_path: Path, mon
         assert elapsed - baseline < 0.05, (elapsed, baseline)
     assert threads
     assert threads[0] != threading.get_ident()
+
+
+@pytest.mark.asyncio
+async def test_committed_failure_tells_the_file_was_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = make_file(tmp_path)
+
+    def broken(*_args: object) -> None:
+        raise OSError(5, "swap failed")
+
+    monkeypatch.setattr(LazyDocument, "apply_rebase", broken)
+    app = NovaEditApp(file_path=path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        save_bar, _, _ = bars(app)
+        await pilot.press("x", "ctrl+s")
+        await wait_until(pilot, lambda: "failed" in save_bar.line.lower())
+        assert "The file was written; press F5 to reload" in save_bar.line
+    assert path.read_text() == "xone\n"

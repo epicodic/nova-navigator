@@ -473,15 +473,23 @@ class LazyDocument(DocumentBase):
         On a closed document the plan's source is closed and nothing else happens.
         The caller then writes the translated contents back into its records (`Edit.rewrite`), or clears them when `plan.clear_history` is set.
 
+        Everything that can fail runs before the first assignment: a failure leaves the document on the old table, closes the plan's source and propagates.
+
         Raises:
-            ValueError: The plan has no source, or the document changed since the save started (the caller then closes the plan's source).
+            ValueError: The plan has no source, or the document changed since the save started.
+            OSError: The new table or a rebased long index could not be built.
+            SourceChanged: Likewise, the file changed under the build.
         """
         source, line_index = plan.source, plan.line_index
         if source is None or line_index is None:
             msg = "the plan carries no saved file"
             raise ValueError(msg)
-        with self._lock:
-            swap = None if self._closed else self._install(plan, source, line_index)
+        try:
+            with self._lock:
+                swap = None if self._closed else self._install(plan, source, line_index)
+        except BaseException:
+            source.close()  # nothing was installed: the document stays on the old table and the saved file has no owner
+            raise
         if swap is None:
             source.close()
             return
@@ -526,25 +534,26 @@ class LazyDocument(DocumentBase):
             kept.append((old_index, old_source))  # the retained generation reads the old file, so its scan goes on and the file stays open
         else:
             release.append((old_index, old_source))
+        old_longs = self._long
+        longs = self._rebase_long(table, old_longs)  # the last step that can fail: from here on the state is replaced
+        for old in old_longs.values():
+            old.cancel()
         self._legacy_files = kept
         self._source, self._line_index, self._add_store, self._table = source, line_index, plan.new_add_store, table
         self._ranges.clear()
         self._texts.clear()
-        old_longs = self._long
-        self._long = OrderedDict()
-        rebased = self._rebase_long(table, old_longs)
+        self._long = longs
         retired = [*self._retired, *old_longs.values()]
         self._retired = []
-        return _Swap(list(self._subscribers), rebased, retired, list(self._reapers), release)
+        return _Swap(list(self._subscribers), list(longs.values()), retired, list(self._reapers), release)
 
-    def _rebase_long(self, table: PieceTable, old_longs: OrderedDict[int, LongLineIndex]) -> list[LongLineIndex]:
-        """Cancel the old long indexes and move them onto the new table (the caller holds the lock and has to start the results).
+    def _rebase_long(self, table: PieceTable, old_longs: OrderedDict[int, LongLineIndex]) -> OrderedDict[int, LongLineIndex]:
+        """Move the long indexes onto the new table and return them by row (the caller holds the lock, starts the results and cancels the old ones).
 
-        An index whose row cannot be resolved or rebased is dropped; it is built again when the row is asked for.
+        An index whose row cannot be resolved or rebased is dropped; it is built again when the row is asked for. The document state is not touched.
         """
-        rebased: list[LongLineIndex] = []
+        rebased: OrderedDict[int, LongLineIndex] = OrderedDict()
         for row, old in old_longs.items():
-            old.cancel()
             found = table.row_range(row)
             if found is None:
                 continue
@@ -553,8 +562,7 @@ class LazyDocument(DocumentBase):
             except (ValueError, SourceChanged):
                 continue
             if replacement is not None:
-                self._long[row] = replacement
-                rebased.append(replacement)
+                rebased[row] = replacement
         return rebased
 
     @staticmethod
