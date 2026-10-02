@@ -50,7 +50,8 @@ UNSUPPORTED = {errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL, errno.ENOSYS}
 NO_SPACE = {errno.ENOSPC, errno.EDQUOT}
 
 _UMASK_LOCK = threading.Lock()
-_TEMP_NAMES: set[str] = set()
+_TEMP_LOCK = threading.Lock()
+_TEMP_NAMES: set[str] = set()  # guarded by _TEMP_LOCK
 
 
 def check_path(path: Path | str, held: FileIdentity | None) -> ChangeKind:
@@ -193,11 +194,18 @@ class SaveIo:
     umask: Callable[[], int] = _read_umask
 
 
+def _forget_temp(name: str) -> None:
+    with _TEMP_LOCK:
+        _TEMP_NAMES.discard(name)
+
+
 def _cleanup_temp_files() -> None:
-    for name in list(_TEMP_NAMES):
+    with _TEMP_LOCK:
+        names = list(_TEMP_NAMES)
+        _TEMP_NAMES.clear()
+    for name in names:
         with contextlib.suppress(OSError):
             os.unlink(name)
-    _TEMP_NAMES.clear()
 
 
 atexit.register(_cleanup_temp_files)
@@ -292,7 +300,7 @@ class SaveJob:
                 with contextlib.suppress(OSError):
                     os.close(reader)
             if renamed or self._remove_temp(name):
-                _TEMP_NAMES.discard(name)
+                _forget_temp(name)
 
     def _finish(
         self,
@@ -418,7 +426,8 @@ class SaveJob:
                 message = f"cannot create a temporary file in {target.parent}; use Save As"
                 raise SaveFailed("prepare", OSError(error.errno, message)) from error
             raise SaveFailed("prepare", error) from error
-        _TEMP_NAMES.add(name)
+        with _TEMP_LOCK:
+            _TEMP_NAMES.add(name)
         return fd, name
 
     def _preallocate(self, fd: int, total: int) -> None:
