@@ -132,6 +132,7 @@ class LongLineIndex:
         self._cancelled = threading.Event()
         self._subscribers: list[Callable[[], None]] = []
         self._thread: threading.Thread | None = None
+        self._start_lock = threading.Lock()
         if autostart:
             self.start()
 
@@ -241,11 +242,13 @@ class LongLineIndex:
     # -- lifecycle ----------------------------------------------------------------------------
     def start(self) -> None:
         """Start the background scan; raise `RuntimeError` when it already started."""
-        if self._thread is not None:
-            msg = "scan already started"
-            raise RuntimeError(msg)
-        self._thread = threading.Thread(target=self._run, name="long-line-scan", daemon=True)
-        self._thread.start()
+        with self._start_lock:
+            if self._thread is not None:
+                msg = "scan already started"
+                raise RuntimeError(msg)
+            thread = threading.Thread(target=self._run, name="long-line-scan", daemon=True)
+            thread.start()
+            self._thread = thread  # published once alive: a thread that is not started yet would look finished to `quiescent`
 
     def cancel(self) -> None:
         """Stop the scan at the next block boundary and wake every waiter."""
