@@ -581,3 +581,21 @@ async def test_a_change_seen_during_a_save_is_dropped_when_the_save_commits(tmp_
         await pilot.pause(0.1)
         assert not confirm.display
         assert editor.check_external_change() is ChangeKind.UNCHANGED
+
+
+@pytest.mark.asyncio
+async def test_a_source_changed_message_that_arrives_after_the_save_is_ignored(tmp_path: Path) -> None:
+    path = make_file(tmp_path)
+    app = NovaEditApp(file_path=path)
+    app.POLL_SECONDS = 1000.0
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        editor = app.editor
+        assert editor is not None
+        _, confirm, _ = bars(app)
+        await pilot.press("x", "ctrl+s")
+        await wait_saved(pilot, editor)
+        # the message was posted while the save ran and is handled only now: the save already rebased the document onto its own file
+        editor.post_message(NovaTextArea.SourceChanged("the file changed on disk (modified)", editor, ChangeKind.MODIFIED).set_sender(editor))
+        await pilot.pause(0.1)
+        assert not confirm.display
