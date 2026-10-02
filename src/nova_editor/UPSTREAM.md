@@ -118,7 +118,7 @@ The widget has one document type, `LazyDocument`.
 - New constants: `SMALL_FILE_LIMIT = 1_048_576` (`open()` reads a file up to this size into memory), `TEXT_LIMIT = 8 MiB` (the `text` property returns `""` above it), `BRACKET_SEARCH_LIMIT = 1_048_576`, `_INVALID_BYTE_TABLE` (U+DC80 to U+DCFF to U+FFFD for rendering and the system clipboard) and `_PAD_SLACK_CELLS = 1024` (a rendered line is padded at most this far beyond the region width).
 - New function `_open_source(path)`, which returns a `BytesSource` up to `SMALL_FILE_LIMIT` and a `PreadSource` otherwise.
 - New message `EditRefused`.
-- New class attribute `clipboard_cap = 4_194_304` and the dataclass `_ClipboardRecord`.
+- New class attribute `clipboard_cap = 2_097_152` and the dataclass `_ClipboardRecord`.
 - New members: `_unresolved_reason`, `_refuse_edit`, `_reset_cursor_machine`, `_roll_back`, `_store_clipboard`, `_internal_clipboard`, `_search_matching_bracket`.
 - New attributes: `_clipboard_record` and `_edit_refused`.
 
