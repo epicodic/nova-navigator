@@ -443,6 +443,9 @@ class LazyDocument(DocumentBase):
             return
         for old_index, _ in swap.release:
             old_index.cancel()
+            old_index.clear_subscribers()
+        for retired in swap.retired:
+            retired.clear_subscribers()
         for callback in swap.subscribers:
             line_index.subscribe(callback)
         for replacement in swap.rebased:

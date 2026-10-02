@@ -2773,6 +2773,18 @@ NovaTextArea {
         self.notify(f"Edit refused: {reason}. It works once indexing reaches the position.", severity="warning")
         self.post_message(self.EditRefused(reason, self))
 
+    def refresh_after_rebase(self) -> None:
+        """Re-point the widget's holders after the lazy document was rebased onto a saved file, and repaint.
+
+        The text is identical, so the cursor keeps its location and state: the long-row cursor is bound to the document's current long index and the
+        rendered strips are rebuilt. Does nothing for a document that is not lazy.
+        """
+        if not isinstance(self.document, LazyDocument) or self._lazy_closed:
+            return
+        self._long_cursor.rebase()
+        self._line_cache.clear()
+        self.refresh()
+
     def _reset_cursor_machine(self) -> None:
         """Forget the cursor machine of the long row after an edit, undo or redo: the next selection change starts a resolved one at the new location."""
         cursor = self._long_cursor

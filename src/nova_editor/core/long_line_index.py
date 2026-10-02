@@ -300,6 +300,11 @@ class LongLineIndex:
         if terminal:
             call_subscriber(callback)
 
+    def clear_subscribers(self) -> None:
+        """Forget every subscriber (an index that the document no longer owns must not call its callbacks)."""
+        with self._cond:
+            self._subscribers.clear()
+
     @property
     def running(self) -> bool:
         """Whether the scan can still make progress: not complete, not failed, not cancelled (also true just before `start`)."""

@@ -251,6 +251,11 @@ class LineIndex:
         if terminal:
             call_subscriber(callback)
 
+    def clear_subscribers(self) -> None:
+        """Forget every subscriber (an index that the document no longer owns must not call its callbacks)."""
+        with self._lock:
+            self._subscribers.clear()
+
     def snapshot(self) -> LineSnapshot:
         with self._lock:
             return LineSnapshot(self._count, self._complete, self._error, self._scanned)

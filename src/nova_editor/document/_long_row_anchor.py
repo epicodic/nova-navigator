@@ -19,13 +19,17 @@ class LongRowAnchorIndex:
     """Adapts a `LongLineIndex` to the `AnchorIndex` protocol (and `EstimateLengthIndex`) of the cursor machine."""
 
     def __init__(self, index: LongLineIndex) -> None:
-        """Wrap `index`; the adapter holds no state of its own."""
+        """Wrap `index`; the adapter holds no state of its own beyond the index."""
         self._index = index
 
     @property
     def index(self) -> LongLineIndex:
         """The adapted index."""
         return self._index
+
+    def rebind(self, index: LongLineIndex) -> None:
+        """Adapt `index` instead (the document replaced the long index of the row, e.g. after a save); byte offsets stay valid because the row is unchanged."""
+        self._index = index
 
     @property
     def row_end_rel(self) -> int:
