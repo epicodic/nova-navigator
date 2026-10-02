@@ -24,7 +24,9 @@ The Notes column says what differs from upstream, and what ACT3, ACT4, ACT5 and 
 | `document/_edit.py` | `src/textual/document/_edit.py` | Imports updated to reference `NovaTextArea`; ACT4 made `Edit` record piece references and added coalescing; ACT5 added `contents` and `rewrite` (see below) |
 | `document/_history.py` | `src/textual/document/_history.py` | Imports updated to use the vendored document package; ACT4 changed the batching defaults, `record` and added restore helpers; ACT5 added revisions, branches and the modified state (see below) |
 | `document/_syntax_aware_document.py` | `src/textual/document/_syntax_aware_document.py` | Imports updated to use the vendored document package; unchanged by ACT3 and ACT4; now only the highlighting mirror of a lazy document |
-| `document/_wrapped_document.py` | `src/textual/document/_wrapped_document.py` | Imports use the vendored document package; unchanged by ACT3 |
+| `document/_wrapped_document.py` | `src/textual/document/_wrapped_document.py` | Imports use the vendored document package; ACT7 took `cell_len` from `rich.cells` and the wrap helpers from `document/_wrap.py` |
+| `document/_wrap.py` | `src/textual/_wrap.py`, `src/textual/_cells.py::cell_width_to_column_index`, `src/textual/_loop.py::loop_last` | Docstrings rewritten, `cell_len` from `rich.cells`, `loop_last` inlined as `_loop_last` (ACT7) |
+| `widget/_tree_sitter.py` | `src/textual/_tree_sitter.py` | Optional import expressed through `import_module` (ACT7) |
 | `document/__init__.py` | `src/textual/document/__init__.py` | Empty at the end of ACT4; ACT5 exports `EditsLocked`, `LazyDocument` and `RowUnavailable` (not upstream's exports); unchanged by ACT6 |
 
 ## New Files (Not Vendored)
@@ -264,21 +266,14 @@ The batching rules are unchanged.
 
 ### Remaining Private Textual Imports
 
-These imports remain.
-
-```
-textual._wrap (compute_wrap_offsets) — used by the untouched _wrapped_document.py and by _lazy_wrapped_document.py
-textual._cells (cell_len, cell_width_to_column_index) — used only by the untouched _wrapped_document.py
-textual._tree_sitter (TREE_SITTER, get_language) — used by widget/_text_area.py
-```
-
-ACT4, ACT5 and ACT6 added and removed none of them: the list is the same four import lines as at the start of the activity (the grep below gives the same lines at the end of ACT4, ACT5 and ACT6).
-No file imports `textual.widgets._text_area` or a private `textual.document` module.
-`document/_wrapped_document.py` stays vendored and unchanged: the navigator imports `WrappedDocument` for its type, while the widget wraps through `LazyWrappedDocument`.
-
-The other document classes use `rich.cells.cell_len`.
-Re-derive this list with `git grep -nE "from textual\._|import textual\._" -- src/nova_editor` after every upgrade.
-Replace an import when Textual offers a public equivalent.
+None remain.
+ACT7 vendored `textual._wrap`, `textual._cells.cell_width_to_column_index` and `textual._tree_sitter` as `document/_wrap.py` and `widget/_tree_sitter.py`.
+No file in `src/nova_editor` or `src/tools` imports a private Textual module, `textual.document` or `textual.widgets._text_area`.
+Re-derive this with `grep -rnE "^\s*(from|import) +textual\.(_|document|widgets\._text_area)" src/nova_editor src/tools` after every upgrade, which must print nothing.
+After a Textual upgrade run `uv run pytest tests/nova_editor/document/test_wrap_parity.py -q`.
+The test skips when upstream removes a module.
+When it fails, diff the upstream file against the vendored one and merge the change.
+Replace a vendored helper when Textual offers a public equivalent.
 
 ## Why Vendored?
 
