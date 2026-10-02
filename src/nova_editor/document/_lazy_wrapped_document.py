@@ -15,12 +15,12 @@ from typing import NamedTuple, SupportsIndex, overload
 
 from rich.cells import cell_len
 from rich.text import Text
-from textual._wrap import compute_wrap_offsets
 from textual.expand_tabs import expand_tabs_inline, get_tab_widths
 from textual.geometry import Offset, clamp
 
 from nova_editor.document._document import Location
 from nova_editor.document._lazy_document import LazyDocument, RowUnavailable, WholeLineAccess
+from nova_editor.document._wrap import compute_wrap_offsets
 from nova_editor.document._wrapped_document import WrappedDocument
 
 BLOCK_ROWS = 64

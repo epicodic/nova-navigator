@@ -19,7 +19,6 @@ from rich.console import RenderableType
 from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
-from textual._tree_sitter import TREE_SITTER, get_language
 from textual.actions import SkipAction
 from textual.cache import LRUCache
 from textual.color import Color
@@ -60,6 +59,7 @@ from nova_editor.widget._lazy_window import WindowText, section_window, window_t
 from nova_editor.widget._long_row_cursor import PROGRESS_BELOW_ONE, LongRowCursor
 from nova_editor.widget._search_run import SearchOutcome, SearchRun, run_search_thread
 from nova_editor.widget._text_area_theme import TextAreaTheme
+from nova_editor.widget._tree_sitter import TREE_SITTER, get_language
 
 if TYPE_CHECKING:
     from tree_sitter import Language, Query

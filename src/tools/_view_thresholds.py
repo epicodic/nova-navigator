@@ -9,10 +9,10 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from textual._wrap import compute_wrap_offsets
 from textual.geometry import Region
 
 from nova_editor.document._lazy_config import LazyConfig
+from nova_editor.document._wrap import compute_wrap_offsets
 from nova_editor.widget import LanguageDoesNotExist
 from tools._view_app import SIZE, ProbeApp, ProbeTextArea, build_config, open_probe, send_key, settle, timed, wait_until
 from tools._view_procmem import median
