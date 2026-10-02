@@ -13,19 +13,19 @@ This file documents the vendored code from upstream Textual and how to manage up
 ## Vendored Files
 
 The following files are vendored from Textual 8.2.8.
-The Notes column says what differs from upstream, and what ACT3 and ACT4 changed on top of the ACT2 state.
+The Notes column says what differs from upstream, and what ACT3, ACT4 and ACT5 changed on top of the ACT2 state.
 
 | Vendored Path | Upstream Path | Notes |
 |---|---|---|
-| `widget/_text_area.py` | `src/textual/widgets/_text_area.py` | Class renamed `TextArea` to `NovaTextArea`; imports updated; lazy document support, cursor state machine, long-row handling and new messages added; ACT4 removed the stock `Document` path and added editing on piece tables, refusal and the clipboard (see below) |
+| `widget/_text_area.py` | `src/textual/widgets/_text_area.py` | Class renamed `TextArea` to `NovaTextArea`; imports updated; lazy document support, cursor state machine, long-row handling and new messages added; ACT4 removed the stock `Document` path and added editing on piece tables, refusal and the clipboard; ACT5 added saving, reload, external change detection and the save messages (see below) |
 | `widget/_text_area_theme.py` | `src/textual/_text_area_theme.py` | Imports updated to reference `NovaTextArea`; unchanged by ACT3 |
-| `document/_document.py` | `src/textual/document/_document.py` | Capability methods added; `cell_len` now comes from `rich.cells`; `EditResult` gained `removed`, `start_byte` and `inserted` (ACT4) |
+| `document/_document.py` | `src/textual/document/_document.py` | Capability methods added; `cell_len` now comes from `rich.cells`; `EditResult` gained `removed`, `start_byte` and `inserted` (ACT4); unchanged by ACT5 |
 | `document/_document_navigator.py` | `src/textual/document/_document_navigator.py` | Lazy-document branches added (see below); `cell_len` now comes from `rich.cells` |
-| `document/_edit.py` | `src/textual/document/_edit.py` | Imports updated to reference `NovaTextArea`; ACT4 made `Edit` record piece references and added coalescing (see below) |
-| `document/_history.py` | `src/textual/document/_history.py` | Imports updated to use the vendored document package; ACT4 changed the batching defaults, `record` and added restore helpers (see below) |
+| `document/_edit.py` | `src/textual/document/_edit.py` | Imports updated to reference `NovaTextArea`; ACT4 made `Edit` record piece references and added coalescing; ACT5 added `contents` and `rewrite` (see below) |
+| `document/_history.py` | `src/textual/document/_history.py` | Imports updated to use the vendored document package; ACT4 changed the batching defaults, `record` and added restore helpers; ACT5 added revisions, branches and the modified state (see below) |
 | `document/_syntax_aware_document.py` | `src/textual/document/_syntax_aware_document.py` | Imports updated to use the vendored document package; unchanged by ACT3 and ACT4; now only the highlighting mirror of a lazy document |
 | `document/_wrapped_document.py` | `src/textual/document/_wrapped_document.py` | Imports use the vendored document package; unchanged by ACT3 |
-| `document/__init__.py` | `src/textual/document/__init__.py` | No changes |
+| `document/__init__.py` | `src/textual/document/__init__.py` | Empty at the end of ACT4; ACT5 exports `EditsLocked`, `LazyDocument` and `RowUnavailable` (not upstream's exports) |
 
 ## New Files (Not Vendored)
 
@@ -42,13 +42,17 @@ The following modules are native to `nova_editor` and are not copies of upstream
 | `core/piece_table.py` | `PieceTable`, the editable document with row queries and the open tail (ACT4). |
 | `core/row_source.py` | `RowSource`, a `ByteSource` over the pieces of one row (ACT4). |
 | `core/memory_source.py` | `BytesSource`, a `ByteSource` over bytes in memory (ACT4). |
+| `core/row_scanner.py` | `RowScanner`, the row-boundary scan moved out of `LineIndex` (ACT5). |
+| `core/save.py` | `FileIdentity` and `ChangeKind` re-exports, `check_path`, `SaveSettings`, `SaveIo`, `SaveJob`, `SaveFailed`, `SaveCancelled`, `SaveResult` (ACT5). |
+| `core/save_layout.py` | `SaveLayout`, the runs a save wrote, by source (ACT5). |
+| `core/rebase.py` | `Rebaser`, `RebasePlan` and `UNDO_COPY_LIMIT` (ACT5). |
 | `document/_lazy_config.py` | Tunable thresholds for lazy documents (`LazyConfig` dataclass). |
-| `document/_lazy_document.py` | Editable document over `PieceTable` (read-only in ACT3). |
+| `document/_lazy_document.py` | Editable document over `PieceTable` (read-only in ACT3); ACT5 added the edit lock, `plan`, `prepare_rebase`, `apply_rebase` and the save registration. |
 | `document/_lazy_wrapped_document.py` | Wrapping layer for lazy documents with grid wrap and a sparse height estimate. |
 | `document/_cursor_anchor.py` | Cursor state machine for long rows (`RESOLVED`, `PROVISIONAL`, `PENDING`). |
-| `document/_long_row_anchor.py` | Adapter from a long-line index to the cursor machine. |
+| `document/_long_row_anchor.py` | Adapter from a long-line index to the cursor machine; ACT5 added `rebind`. |
 | `widget/_lazy_window.py` | Windowed text of medium and long rows. |
-| `widget/_long_row_cursor.py` | Cursor machine holder and provisional window layout for long rows. |
+| `widget/_long_row_cursor.py` | Cursor machine holder and provisional window layout for long rows; ACT5 added `rebase`. |
 
 ACT3 also extended the core, which stays Textual-free:
 - `LineSnapshot.scanned_bytes` and `LineIndex.row_at_offset`.
@@ -59,6 +63,19 @@ ACT4 extended the core, which stays Textual-free:
 - The piece table modules listed above.
 - `LineIndex.scan_now()`, which runs the scan on the calling thread.
 - `LongLineIndex.spliced`, the `Edit` tuple, the `resume=` argument, `byte_to_char`, `quiescent` and `SPLICE_SYNC_BYTES`.
+
+ACT5 extended the core, which stays Textual-free:
+- The modules `row_scanner`, `save`, `save_layout` and `rebase` listed above.
+- `ChangeKind`, `FileIdentity`, `SourceChanged.kind`, `PreadSource.from_fd`, `identity`, `check` and `unverified_reader` in `byte_source.py`.
+- `LineIndex.from_scan`, `clear_subscribers` and the use of `RowScanner` in the scan.
+- `LineIndexSettings`, the `TypedDict` of the keyword settings of `LineIndex`.
+- `_UnverifiedReader` in `byte_source.py`, the reader that `PreadSource.unverified_reader` returns (it checks short reads only).
+- `LongLineIndex.clear_subscribers`.
+- `PlanPart`, `SavePlanner` and `PauseGate` in `core/save.py`: the parts of a planned range, what the save job needs from the document, and the gate it asks for a pause.
+- `SaveJob.committed` and `SaveFailed.committed`.
+- `PieceTable.source_of`.
+- `LongLineIndex.rebased`.
+- `PieceTable.layout_range`, `register_legacy` and `legacy`, and the generation constants and helpers in `pieces.py` (`MAX_GENERATION`, `make_src`, `generation_of`, `segment_of`).
 
 ## Nova Editor Changes to Vendored Code
 
@@ -129,6 +146,28 @@ The widget has one document type, `LazyDocument`.
 - Rendering: `render_line`, `_render_line`, `get_line` (invalid bytes are drawn as U+FFFD in the strip text only).
 - Lazy machinery that lost its stock branch: `_drive_lazy`, `_run_jump`, `_lazy_move`, `_reconcile_cursor`, `_track_cursor`, `_refresh_size`, `_estimate_tick`, `_reestimate` and the other cursor and estimate helpers.
 
+### `widget/_text_area.py` (ACT5)
+
+**New imports:** `os`, `Iterator`, `ChangeKind`, `FileIdentity`, `RebasePlan`, and `PlanPart`, `SaveIo`, `SaveJob`, `SaveResult`, `SaveSettings`, `check_path` and the core `SaveCancelled`, `SaveFailed` and `SaveProgress` (aliased with a `Core` prefix) from `core/save`.
+**New constants and helpers:** `STALE_REASON`, `_FIRST_ROW_WAIT`, `_stat_identity`, `_DocumentPlanner` and `_SaveRun`.
+**New messages:** `Reloaded`, `ReloadFailed`, `SaveProgress`, `Saved`, `SaveFailed`, `SaveCancelled` and `SaveNeedsConfirmation`; `SourceChanged` gained `kind`.
+**New class attributes:** `save_settings`, `save_io` and `save_clock`.
+**New names:** `ExternalCheck` (the pure part of an external-change check), `_SEVERITY` (the order of the kinds that `_fail_source` keeps) and `_save_epoch`.
+**New members:** `modified`, `saving`, `save`, `check_external_change`, `reload`, `cancel_save`, `begin_external_check`, `apply_external_check`, `refresh_after_rebase`, and the private `_reachable_edits`, `_reachable_contents`, `_apply_translated`, `_start_save`, `_save_thread`, `_post_save_outcome`, `_on_save_report`, `_announce_save_progress`, `_end_save`, `_finish_save`, `_conclude_save`, `_discard_reloaded`, `_lift_stale` and `_abandon_save`.
+**New attributes:** `file_path`, `_held_identity`, `_stale_kind`, `_save_run` and `_open_config`.
+**Edited members:** `__init__`, `open` (records the path, the held identity and the configuration), `close` (abandons a running save), `_replace_document` and `load_text` (refused during a save), `_fail_source` and `_guard_source` (carry the `ChangeKind` and set the edit lock), `edit`, `_render_line_guarded`, `_reestimate`, `cursor_byte_offset`, `_run_jump`, `_track_cursor`, `_reconcile_cursor` and `_mouse_target` (pass the kind of a `SourceChanged`), and `_store_clipboard` (keeps no record during a save).
+
+### `document/_edit.py` (ACT5)
+
+**New members:** `contents()` lists every `Content` the edit holds, and `rewrite(contents)` replaces them in the same order after a rebase.
+**New import:** `Iterator`.
+
+### `document/_history.py` (ACT5)
+
+**New names:** the class `Batch` (an edit list with `revision_before`, `revision_after`, `branch_before` and `branch`).
+**New members:** `revision`, `branch`, `modified` and `mark_saved()`.
+**Modified members:** `record` (revision and branch), `_pop_undo`, `_pop_redo`, `_restore_undo`, `_restore_redo` (move the revision), `clear` (resets the revision, the branch and the saved state), and the types of `undo_stack` and `redo_stack`.
+
 ### `document/_document.py`
 
 **Import:** `cell_len` comes from `rich.cells`, and `advance_disp` and `locate_cover` from `core/text_width`.
@@ -168,9 +207,12 @@ The widget has one document type, `LazyDocument`.
 
 ### `document/_history.py`
 
+**`__post_init__`:** besides the undo and redo stacks it initialises the ACT5 state: `_revision`, `_branch`, `_next_branch` and `_saved`; the undo stack holds `Batch` lists.
 **Defaults:** `max_checkpoints` is `int | None = None` (keep every batch; upstream required it), and `checkpoint_timer` (2.0) and `checkpoint_max_characters` (100) have defaults.
 **Modified member:** `record` decides replacement and newline from the piece lengths and break counts when the edit has pieces, and tries `Edit.coalesce` before it appends to the latest batch.
 **New members:** `_restore_undo` and `_restore_redo`, which put back a batch that the widget refused.
+**ACT5:** batches are `Batch` lists that store `revision_before`, `revision_after`, `branch_before` and `branch`; new members `revision`, `branch`, `mark_saved()` and `modified`; a record after an undo opens a new branch.
+The batching rules are unchanged.
 
 ### `document/_document.py` (ACT4)
 
@@ -205,7 +247,7 @@ textual._cells (cell_len, cell_width_to_column_index) — used only by the untou
 textual._tree_sitter (TREE_SITTER, get_language) — used by widget/_text_area.py
 ```
 
-ACT4 added and removed none of them: the list is the same four imports as at the start of the activity.
+ACT4 and ACT5 added and removed none of them: the list is the same four import lines as at the start of the activity (the grep below gives the same lines at the end of ACT4 and of ACT5).
 No file imports `textual.widgets._text_area` or a private `textual.document` module.
 `document/_wrapped_document.py` stays vendored and unchanged: the navigator imports `WrappedDocument` for its type, while the widget wraps through `LazyWrappedDocument`.
 

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import logging
+import os
 import re
 import stat
 import threading
 import time
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -26,9 +28,14 @@ from textual.expand_tabs import expand_text_tabs_from_widths
 from textual.screen import Screen
 from textual.style import Style as ContentStyle
 
-from nova_editor.core import ByteSource, BytesSource, PreadSource
+from nova_editor.core import ByteSource, BytesSource, ChangeKind, FileIdentity, PreadSource
 from nova_editor.core import SourceChanged as CoreSourceChanged
 from nova_editor.core.pieces import Content as PieceContent
+from nova_editor.core.rebase import RebasePlan
+from nova_editor.core.save import PlanPart, SaveIo, SaveJob, SaveResult, SaveSettings, check_path
+from nova_editor.core.save import SaveCancelled as CoreSaveCancelled
+from nova_editor.core.save import SaveFailed as CoreSaveFailed
+from nova_editor.core.save import SaveProgress as CoreSaveProgress
 from nova_editor.core.text_width import SURROGATE_ESCAPE, utf8_len
 from nova_editor.document._cursor_anchor import CursorMachine, CursorState, Op, Verdict
 from nova_editor.document._document import (
@@ -119,6 +126,8 @@ _INVALID_BYTE_TABLE = str.maketrans(dict.fromkeys(range(0xDC80, 0xDD00), 0xFFFD)
 _PAD_SLACK_CELLS = 1024
 """Cells beyond the region width that a rendered line is still padded to (a strip is never padded to the virtual width of a huge row)."""
 
+STALE_REASON = "file changed on disk"
+"""The reason of the edit lock of a view whose file changed behind it."""
 
 _GuardedMethod = TypeVar("_GuardedMethod", bound=Callable[..., Any])
 
@@ -135,7 +144,7 @@ def _guard_source(default: object) -> Callable[[_GuardedMethod], _GuardedMethod]
             try:
                 return method(self, *args, **kwargs)
             except CoreSourceChanged as error:
-                self._fail_source(str(error))
+                self._fail_source(str(error), error.kind)
                 return default
             except RowUnavailable:
                 if self._lazy_closed:
@@ -214,6 +223,71 @@ def _open_source(path: Path) -> ByteSource:
     if stat.S_ISREG(status.st_mode) and status.st_size <= SMALL_FILE_LIMIT:
         return BytesSource(path.read_bytes())
     return PreadSource(path)
+
+
+def _stat_identity(path: Path) -> FileIdentity | None:
+    """Return the identity of the file at `path` taken with one `os.stat`, or `None` when it cannot be read."""
+    try:
+        return FileIdentity.from_stat(os.stat(path))
+    except OSError:
+        return None
+
+
+class _DocumentPlanner:
+    """`SavePlanner` over a `LazyDocument` (the document's `length` is a property, the planner's a method)."""
+
+    def __init__(self, document: LazyDocument) -> None:
+        self._document = document
+
+    def length(self) -> int:
+        return self._document.length
+
+    def plan(self, offset: int, limit: int, unverified: bool) -> list[PlanPart]:
+        return self._document.plan(offset, limit, unverified)
+
+
+@dataclass(frozen=True)
+class ExternalCheck:
+    """One check for a change of the file behind a widget, split in two: `run` is pure and may run on any thread, the widget applies its result.
+
+    `NovaTextArea.begin_external_check` captures what the check compares (the document, the path and the identity held since the read) and the
+    save epoch; `NovaTextArea.apply_external_check` drops the result when a save began or ended meanwhile.
+    """
+
+    epoch: int
+    """The save epoch of the widget when the check began."""
+    document: LazyDocument
+    path: Path | None
+    held: FileIdentity | None
+
+    def run(self) -> ChangeKind:
+        """Do the `stat` calls (they may block on a network file system) without touching any widget state: what differs, or `UNCHANGED`."""
+        kind = self.document.check_source()
+        if kind is ChangeKind.UNCHANGED and self.path is not None and self.held is not None:
+            kind = check_path(self.path, self.held)
+        return kind
+
+
+_SEVERITY: dict[ChangeKind, int] = {ChangeKind.MODIFIED: 1, ChangeKind.TRUNCATED: 2, ChangeKind.DELETED: 2, ChangeKind.REPLACED: 2}
+"""How bad a change is for the stale view: what a later report may upgrade the held kind to (anything else ranks 0)."""
+
+_FIRST_ROW_WAIT = 1.0
+"""Longest wait of `reload` for the first row of the new document (the scan resolves it within milliseconds)."""
+
+
+@dataclass
+class _SaveRun:
+    """The state of one running save; the UI thread owns it, the `nova-save` thread reads `job` and writes `outcome` before it posts."""
+
+    target: Path
+    contents: list[PieceContent]
+    job: SaveJob | None = None
+    abandoned: bool = False
+    """True once the widget was closed: the thread then discards its outcome and the close already posted the terminal message."""
+    progress: CoreSaveProgress | None = None
+    progress_outstanding: bool = False
+    last_message: float = 0.0
+    lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
 
 
 class NovaTextArea(ScrollView):
@@ -698,6 +772,34 @@ NovaTextArea {
         """What the source reported."""
         text_area: NovaTextArea
         """The `text_area` that sent this message."""
+        kind: ChangeKind = ChangeKind.MODIFIED
+        """What differs: `TRUNCATED`, `MODIFIED`, `REPLACED`, `DELETED` or `UNREADABLE`."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
+    class Reloaded(Message):
+        """Posted when `reload` replaced the document by the file as it is now."""
+
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
+    class ReloadFailed(Message):
+        """Posted when `reload` could not read the file; the view keeps its stale state."""
+
+        error: OSError
+        """Why the file could not be read."""
+        path: Path
+        """The file."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
 
         @property
         def control(self) -> NovaTextArea:
@@ -782,6 +884,92 @@ NovaTextArea {
         @property
         def control(self) -> NovaTextArea:
             return self.text_area
+
+    @dataclass
+    class SaveProgress(Message):
+        """Posted (at most 10 times per second, `done` never decreasing) while a save runs; `phase` is `writing`, `flushing`, `history` or `finishing`."""
+
+        phase: str
+        """The phase of the save."""
+        done: int
+        """Bytes written so far."""
+        total: int
+        """Bytes to write."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
+    class Saved(Message):
+        """Posted once when a save completed: the file at `path` holds the document and the widget is rebased onto it."""
+
+        path: Path
+        """The file that was written."""
+        length: int
+        """Its size in bytes."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
+    class SaveFailed(Message):
+        """Posted once when a save failed; the document and the history are unchanged and, unless the failure came after the replace, so is the target."""
+
+        error: OSError
+        """The error; its `errno` is that of the cause."""
+        stage: str
+        """Where it failed: `prepare`, `write`, `flush`, `replace` or `internal`."""
+        path: Path
+        """The target of the save."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+        committed: bool = False
+        """True when the replace already happened: the file holds the new bytes, but the document stays on the old file (reload to see the new one)."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
+    class SaveCancelled(Message):
+        """Posted once when a save was cancelled (`cancel_save`, or closing the widget); the target is unchanged."""
+
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
+    class SaveNeedsConfirmation(Message):
+        """Posted when `save` found that writing `path` needs the user's consent (the file changed on disk since it was read, or the target exists); nothing was started."""
+
+        kind: ChangeKind
+        """What differs: a change of the file behind the document, or `EXISTS` for a save-as onto an existing file."""
+        path: Path
+        """The target; call `save(path, overwrite=True)` to write it."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    save_settings: ClassVar[SaveSettings] = SaveSettings()
+    """Chunk size, fsync interval and index settings of a save (tests lower them)."""
+
+    save_io: ClassVar[SaveIo | None] = None
+    """File operations of a save; `None` uses `os`. Used by tests only, to inject failures."""
+
+    save_clock: Callable[[], float] = time.monotonic
+    """Time source of the throttle of `SaveProgress` messages; tests replace it by a fake clock."""
 
     clipboard_cap: int = 2_097_152
     """Largest selection (in bytes) that is also written to the system clipboard; a larger copy stays inside the editor (ACT4 design 10)."""
@@ -888,6 +1076,24 @@ NovaTextArea {
         self._clipboard_record: NovaTextArea._ClipboardRecord | None = None
         """The internal clipboard of the last copy or cut; it references pieces of the current document only."""
 
+        self.file_path: Path | None = None
+        """The file the document was opened from or last saved to (set by `open(path)` and by a save-as), or `None`."""
+
+        self._held_identity: FileIdentity | None = None
+        """Identity of the file at `file_path` as read or as written by the last save; plain saves compare the file on disk with it."""
+
+        self._open_config: LazyConfig | None = None
+        """The configuration `open` gave the document (`reload` builds the new one with it), or `None`."""
+
+        self._stale_kind: ChangeKind | None = None
+        """What changed on disk behind the document (the stale state, edits locked with `STALE_REASON`), or `None`."""
+
+        self._save_run: _SaveRun | None = None
+        """The running save (at most one), else `None`."""
+
+        self._save_epoch = 0
+        """Counts the starts and ends of saves: an external check that began in another epoch compared with a file the save was about to replace."""
+
         self._edit_refused = False
         """True when the most recent `edit()` was refused (a position was not resolved); the keyboard helpers then report no edit."""
 
@@ -992,8 +1198,14 @@ NovaTextArea {
             The widget, ready to be mounted.
         """
         lazy_config = dataclasses.replace(config or LazyConfig(), tab_width=_DEFAULT_INDENT_WIDTH)
+        file_path: Path | None = None
+        held: FileIdentity | None = None
         if isinstance(source, str | Path):
-            source = _open_source(Path(source))
+            file_path = Path(source)
+            held = _stat_identity(file_path)
+            source = _open_source(file_path)
+            if isinstance(source, PreadSource):
+                held = source.identity()
         document = LazyDocument(source, lazy_config)
         try:
             area = cls(soft_wrap=soft_wrap, _prebuilt_document=document, **kwargs)
@@ -1002,6 +1214,9 @@ NovaTextArea {
             raise
         area._requested_language = language
         area._highlight_limit = highlight_limit
+        area.file_path = file_path
+        area._held_identity = held
+        area._open_config = lazy_config
         try:
             area._attach_highlighting(language, highlight_limit)
             area._build_highlight_map()
@@ -1021,6 +1236,7 @@ NovaTextArea {
         if self._lazy_closed:
             return
         self._lazy_closed = True
+        self._abandon_save()
         self._estimating = False
         self._jump = None
         timer = self._estimate_timer
@@ -1032,14 +1248,22 @@ NovaTextArea {
     def _on_unmount(self) -> None:
         self.close()
 
-    def _fail_source(self, reason: str) -> None:
-        """Enter the failed state (blank rows) and post `SourceChanged` once."""
+    def _fail_source(self, reason: str, kind: ChangeKind = ChangeKind.MODIFIED) -> None:
+        """Enter the failed state (blank rows for uncached rows, edits locked with `STALE_REASON`) and post `SourceChanged` once.
+
+        A later call keeps the state and posts nothing, but remembers the more severe of the two kinds (`TRUNCATED`, `DELETED` and `REPLACED` over `MODIFIED`).
+        """
         if self._source_failed:
+            held = self._stale_kind
+            if held is None or _SEVERITY.get(kind, 0) > _SEVERITY.get(held, 0):
+                self._stale_kind = kind
             return
         self._source_failed = True
-        self._line_cache.clear()
+        self._stale_kind = kind
+        self.document.lock_edits(STALE_REASON)
+        # the rendered lines stay: rows that were painted keep showing (possibly stale), rows that were not painted render blank
         # set_sender: while the screen renders, it is the active pump, and a message whose sender is the parent does not bubble to it.
-        self.post_message(self.SourceChanged(reason, self).set_sender(self))
+        self.post_message(self.SourceChanged(reason, self, kind).set_sender(self))
         self.refresh()
 
     def _ensure_estimating(self) -> None:
@@ -1091,7 +1315,7 @@ NovaTextArea {
             self.wrapped_document.refresh_estimates()
             self._refresh_size()
         except CoreSourceChanged as error:
-            self._fail_source(str(error))
+            self._fail_source(str(error), error.kind)
         except (RowUnavailable, IndexError):
             pass
         return growing
@@ -1146,7 +1370,7 @@ NovaTextArea {
             exact = lazy.byte_offset(row, column) if machine.state is CursorState.RESOLVED else None
             return start + machine.anchor.byte_rel if exact is None else exact
         except CoreSourceChanged as error:
-            self._fail_source(str(error))
+            self._fail_source(str(error), error.kind)
             return None
 
     def toggle_wrap(self) -> None:
@@ -1253,7 +1477,7 @@ NovaTextArea {
         try:
             progress = self._drive_lazy(jump)
         except CoreSourceChanged as error:
-            self._fail_source(str(error))
+            self._fail_source(str(error), error.kind)
             self._reject(str(error))
             progress = None
         except (RowUnavailable, IndexError):
@@ -1380,7 +1604,7 @@ NovaTextArea {
         try:
             return cursor.track(row, column, wrap=self.soft_wrap)
         except CoreSourceChanged as error:
-            self._fail_source(str(error))
+            self._fail_source(str(error), error.kind)
         except (RowUnavailable, IndexError):
             pass
         cursor.drop()
@@ -1521,7 +1745,7 @@ NovaTextArea {
                 self.scroll_to(x=exact_x, animate=False)
                 self._recompute_cursor_offset()
         except CoreSourceChanged as error:
-            self._fail_source(str(error))
+            self._fail_source(str(error), error.kind)
             return None
         self._set_progress(None)
         op = machine.take_pending_op()
@@ -1573,7 +1797,7 @@ NovaTextArea {
         try:
             return self._covered_mouse_target(event)
         except CoreSourceChanged as error:
-            self._fail_source(str(error))
+            self._fail_source(str(error), error.kind)
         except (RowUnavailable, IndexError):
             pass
         return None
@@ -2119,6 +2343,10 @@ NovaTextArea {
     def _replace_document(self, document: LazyDocument) -> None:
         """Swap in a new document: the old one is closed, every state tied to it is reset and the scan machinery is wired to the new one."""
         old = self.document
+        old.require_not_saving("replacing the document")
+        wrapped = LazyWrappedDocument(document, tab_width=self.indent_width)  # everything that can fail comes before the first assignment
+        navigator = DocumentNavigator(wrapped)
+        long_cursor = LongRowCursor(document)
         self._replay_generation += 1
         self._jump = None
         self.pending_progress = None
@@ -2129,9 +2357,9 @@ NovaTextArea {
         self._indexing_announced = False
         self._line_cache.clear()
         self.document = document
-        self.wrapped_document = LazyWrappedDocument(document, tab_width=self.indent_width)
-        self.navigator = DocumentNavigator(self.wrapped_document)
-        self._long_cursor = LongRowCursor(document)
+        self.wrapped_document = wrapped
+        self.navigator = navigator
+        self._long_cursor = long_cursor
         old.close()
         if self._mounted_scan:
             self._wire_scan()
@@ -2181,7 +2409,12 @@ NovaTextArea {
 
         Args:
             text: The text to load into the NovaTextArea.
+
+        Raises:
+            RuntimeError: A save of the lazy document is running (it would be replaced under the save).
         """
+        if isinstance(self.document, LazyDocument):
+            self.document.require_not_saving("load_text")
         self.history.clear()
         self._set_document(text, self.language)
         self.post_message(self.Changed(self).set_sender(self))
@@ -2363,7 +2596,7 @@ NovaTextArea {
         try:
             return self._render_line(y)
         except CoreSourceChanged as error:
-            self._fail_source(str(error))
+            self._fail_source(str(error), error.kind)
         except (RowUnavailable, IndexError):
             pass
         return self._blank_strip()
@@ -2724,7 +2957,7 @@ NovaTextArea {
             except RowUnavailable as error:
                 reason = str(error)
             except CoreSourceChanged as error:
-                self._fail_source(str(error))
+                self._fail_source(str(error), error.kind)
                 self._edit_refused = True
                 return result
         if reason is not None:
@@ -2767,6 +3000,396 @@ NovaTextArea {
         self.app.bell()
         self.notify(f"Edit refused: {reason}. It works once indexing reaches the position.", severity="warning")
         self.post_message(self.EditRefused(reason, self))
+
+    @property
+    def modified(self) -> bool:
+        """Whether the text differs from the state of the last save (or of the opening state until the first one)."""
+        return self.history.modified
+
+    @property
+    def saving(self) -> bool:
+        """Whether a save runs."""
+        return self._save_run is not None
+
+    def save(self, path: Path | None = None, *, overwrite: bool = False) -> bool:
+        """Start saving the document on a background thread; the outcome arrives as exactly one `Saved`, `SaveFailed` or `SaveCancelled` message.
+
+        A plain save (`path` is `None` or `file_path`) of an unmodified document does nothing; a save-as writes even when nothing changed.
+        While the save runs, edits are refused with `EditRefused("saving")`; the cursor, selection and scrolling keep working.
+        Without `overwrite`, a save that needs consent (the file changed on disk since it was read, or a save-as onto an existing file) posts
+        `SaveNeedsConfirmation` and starts nothing. Call `save(path, overwrite=True)` to write it; the unchanged parts are then read from the file as it is now.
+
+        Args:
+            path: The target; `None` saves to `file_path`.
+            overwrite: Write although a confirmation would be needed.
+
+        Returns:
+            True when a save was started; False when one already runs, the widget is closed, there is no target, nothing needs saving or a confirmation is needed.
+        """
+        if self._lazy_closed or self._save_run is not None:
+            return False
+        target = path if path is not None else self.file_path
+        if target is None:
+            return False
+        plain = path is None or (self.file_path is not None and os.path.realpath(path) == os.path.realpath(self.file_path))
+        if plain and not self.modified:
+            return False
+        held = self._held_identity
+        origin = check_path(self.file_path, held) if self.file_path is not None and held is not None else ChangeKind.UNCHANGED
+        if origin is ChangeKind.UNCHANGED and self._stale_kind is not None:
+            origin = self._stale_kind  # a read found the change earlier; the file may look unchanged again, but the view is stale
+        if origin is not ChangeKind.UNCHANGED:
+            self._fail_source(f"the file changed on disk ({origin.value})", origin)
+        if plain:
+            kind = origin
+        else:
+            kind = ChangeKind.EXISTS if check_path(target, None) is ChangeKind.CREATED else ChangeKind.UNCHANGED
+        if kind is not ChangeKind.UNCHANGED and not overwrite:
+            self.post_message(self.SaveNeedsConfirmation(kind, Path(target), self).set_sender(self))
+            return False
+        self._start_save(Path(target), unverified=origin in {ChangeKind.MODIFIED, ChangeKind.TRUNCATED})
+        return True
+
+    def check_external_change(self) -> ChangeKind:
+        """Check, without reading content, whether the file behind the document changed (synchronous: it does a few `stat` calls).
+
+        The check compares the file with the identity held since it was read (the descriptor of a large file, the `stat` taken around the read of
+        a small one) and, for a large file, the descriptor itself. A change puts the view into the stale state and posts `SourceChanged` once;
+        later calls return the same kind without posting again. A widget that is closed or has no file reports `UNCHANGED`, and so does one that
+        saves: the replace of the save would look like a change. A poll that must not block the UI thread uses `begin_external_check` and
+        `apply_external_check` instead.
+
+        Returns:
+            What differs, or `UNCHANGED`.
+        """
+        if self._lazy_closed:
+            return ChangeKind.UNCHANGED
+        if self._stale_kind is not None:
+            return self._stale_kind
+        check = self.begin_external_check()
+        if check is None:
+            return ChangeKind.UNCHANGED
+        return self.apply_external_check(check, check.run())
+
+    def begin_external_check(self) -> ExternalCheck | None:
+        """UI thread: capture an external check to run elsewhere (`ExternalCheck.run`); `None` when there is nothing to check.
+
+        That is the case for a closed widget, while a save runs (its own replace would look like a change) and once the view is stale already.
+        """
+        if self._lazy_closed or self._save_run is not None or self._stale_kind is not None:
+            return None
+        return ExternalCheck(self._save_epoch, self.document, self.file_path, self._held_identity)
+
+    def apply_external_check(self, check: ExternalCheck, kind: ChangeKind) -> ChangeKind:
+        """UI thread: apply the result of `check.run()`; a change puts the view into the stale state and posts `SourceChanged`.
+
+        A result is ignored (`UNCHANGED` is returned) when a save began or ended since `begin_external_check`, the widget was closed, or the
+        document was replaced: the file it compared was not the one the widget stands on.
+
+        Returns:
+            The kind that was applied, the stale kind when the view was stale already, or `UNCHANGED`.
+        """
+        if self._stale_kind is not None:
+            return self._stale_kind
+        if self._lazy_closed or self._save_run is not None or check.epoch != self._save_epoch or check.document is not self.document:
+            return ChangeKind.UNCHANGED
+        if kind is not ChangeKind.UNCHANGED:
+            self._fail_source(f"the file changed on disk ({kind.value})", kind)
+        return kind
+
+    def reload(self) -> bool:
+        """Discard every edit and show the file as it is now.
+
+        Builds a new document the way `open` does (the language, the highlight limit and the configuration are remembered), replaces the document,
+        clears the history and the clipboard record and clears the stale state. The cursor keeps its row when that row still exists (else it goes to
+        the last row) and `Reloaded` is posted. When the file cannot be read, `ReloadFailed` is posted, the old document and its stale state stay and
+        `False` is returned; so it is for a widget without a file. Whatever the new document needed (its source, the document) is closed on every
+        failure, and the history is cleared only after the document was replaced.
+        The UI thread blocks, bounded by `_FIRST_ROW_WAIT` (1 second, in practice milliseconds), until the scan has resolved row 0: the cursor, the
+        scrollbar and layout watchers read it and cannot cope with an unresolved first row, so the swap cannot be deferred without a larger rework.
+        Only the restore of the old row is a pending jump that completes when the scan gets there.
+
+        Returns:
+            True when the document was replaced.
+
+        Raises:
+            RuntimeError: A save runs (reload would replace the document under it).
+        """
+        if self._lazy_closed:
+            return False
+        self.document.require_not_saving("reload")
+        path = self.file_path
+        if path is None:
+            return False
+        row = self.cursor_location[0]
+        document: LazyDocument | None = None
+        source: ByteSource | None = None
+        try:
+            held = _stat_identity(path)
+            source = _open_source(path)
+            if isinstance(source, PreadSource):
+                held = source.identity()
+            document = LazyDocument(source, self._open_config or dataclasses.replace(LazyConfig(), tab_width=_DEFAULT_INDENT_WIDTH))
+            source = None  # the document owns it now
+            document.wait_first_row(_FIRST_ROW_WAIT)  # the cursor, the scrollbars and the layout need row 0, which the background scan resolves within milliseconds
+            self._replace_document(document)
+        except BaseException as error:
+            if document is not None and self.document is document:  # the swap happened and then something raised (closing the old document, wiring the scan)
+                self._adopt_reloaded(held)
+                raise
+            self._discard_reloaded(document, source)
+            if not isinstance(error, OSError | ValueError | CoreSourceChanged):
+                raise
+            failure = error if isinstance(error, OSError) else OSError(str(error))
+            self.post_message(self.ReloadFailed(failure, path, self).set_sender(self))
+            return False
+        self._adopt_reloaded(held)
+        self._finish_document(self._requested_language, reset_cursor=True)
+        if row > 0:
+            if self.line_count_exact:
+                row = min(row, max(self.line_count - 1, 0))
+            self.goto_line(row + 1)  # a row the scan has not reached yet stays a pending jump; one that never appears is rejected (`JumpRejected`)
+        self.post_message(self.Changed(self).set_sender(self))
+        self.post_message(self.Reloaded(self).set_sender(self))
+        self.update_suggestion()
+        return True
+
+    def _adopt_reloaded(self, held: FileIdentity | None) -> None:
+        """The document of a `reload` is in place: the history, the stale state and the held identity follow it (none of them belongs to the old document)."""
+        self.history.clear()
+        self._stale_kind = None
+        self._held_identity = held
+
+    def _discard_reloaded(self, document: LazyDocument | None, source: ByteSource | None) -> None:
+        """Close what a failed `reload` opened: the document, or the source that no document owns yet; the document in use is left alone."""
+        if document is not None:
+            if document is not self.document:
+                document.close()
+        elif source is not None:
+            source.close()
+
+    def cancel_save(self) -> None:
+        """Ask a running save to stop; it ends with `SaveCancelled` unless the replace already happened. Does nothing when no save runs."""
+        run = self._save_run
+        if run is not None and run.job is not None:
+            run.job.cancel()
+
+    def _reachable_edits(self) -> Iterator[Edit]:
+        """Every edit of the undo and redo stacks, oldest first: the one order of `_reachable_contents` and `_apply_translated`."""
+        for batch in (*self.history.undo_stack, *self.history.redo_stack):
+            yield from batch
+
+    def _reachable_contents(self) -> list[PieceContent]:
+        """Every `Content` that refers to pieces of the document and outlives a save: those of the history (see `Edit.contents`), then the clipboard record."""
+        found = [content for edit in self._reachable_edits() for content in edit.contents()]
+        record = self._clipboard_record
+        if record is not None:
+            found.append(record.content)
+        return found
+
+    def _apply_translated(self, contents: Sequence[PieceContent]) -> None:
+        """Write the translated contents back into the history and the clipboard record, in the order of `_reachable_contents`."""
+        translated = iter(contents)
+        for edit in self._reachable_edits():
+            edit.rewrite(translated)
+        record = self._clipboard_record
+        if record is not None:
+            record.content = next(translated)
+
+    def _start_save(self, target: Path, *, unverified: bool) -> None:
+        """UI thread: lock the document, collect what the history refers to and start the `nova-save` thread."""
+        document = self.document
+        self._save_epoch += 1
+        document.begin_save()
+        document.lock_edits("saving")
+        self.history.checkpoint()
+        run = _SaveRun(target, self._reachable_contents())
+        run.job = SaveJob(_DocumentPlanner(document), target, self.save_settings, functools.partial(self._on_save_report, run), None, unverified, self.save_io)
+        self._save_run = run
+        thread = threading.Thread(target=self._save_thread, args=(run,), name="nova-save", daemon=True)
+        thread.start()
+        document.join_on_close(thread)
+
+    def _save_thread(self, run: _SaveRun) -> None:
+        """The `nova-save` thread: write the file, translate the history, post the outcome. It never touches the widget state or unlocks the document.
+
+        The outcome is posted from `finally`, so that even a defect cannot leave the document locked: it then surfaces as `SaveFailed` (and in the log).
+        """
+        result: SaveResult | None = None
+        plan: RebasePlan | None = None
+        error: CoreSaveFailed | None = CoreSaveFailed("internal", "the save thread ended unexpectedly")
+        try:
+            assert run.job is not None
+            result = run.job.run()
+            error = CoreSaveFailed("internal", "the save thread ended unexpectedly", committed=True)  # the replace happened
+            self._on_save_report(run, CoreSaveProgress("history", result.length, result.length))
+            plan = self.document.prepare_rebase(result, run.contents)
+            error = None
+        except CoreSaveCancelled:
+            error = None
+        except CoreSaveFailed as failure:
+            error = failure
+        except (OSError, ValueError, CoreSourceChanged) as failure:  # the translation failed: the file is written but the document is not rebased
+            error = CoreSaveFailed("internal", f"{type(failure).__name__}: {failure}", committed=True)
+        finally:
+            self._post_save_outcome(run, result, plan, error)
+
+    def _post_save_outcome(self, run: _SaveRun, result: SaveResult | None, plan: RebasePlan | None, error: CoreSaveFailed | None) -> None:
+        """Save thread: hand the outcome to the UI thread (exactly once); a saved file that nobody can take over is closed here."""
+        if plan is None and result is not None:
+            result.source.close()
+            result = None
+        posted = False
+        if not run.abandoned:  # after a close the terminal message was posted by `close` already
+            try:
+                posted = self.post_message(events.Callback(functools.partial(self._finish_save, run, result, plan, error)))
+            except RuntimeError:  # the app is closing
+                posted = False
+        if not posted and result is not None:
+            result.source.close()
+
+    def _on_save_report(self, run: _SaveRun, report: CoreSaveProgress) -> None:
+        """Save thread: publish the latest progress; at most one call to the UI thread is outstanding (coalescing)."""
+        with run.lock:
+            run.progress = report
+            if run.progress_outstanding or run.abandoned:
+                return
+            run.progress_outstanding = True
+        try:
+            posted = self.post_message(events.Callback(functools.partial(self._announce_save_progress, run)))
+        except RuntimeError:
+            posted = False
+        if not posted:
+            with run.lock:
+                run.progress_outstanding = False
+
+    def _announce_save_progress(self, run: _SaveRun) -> None:
+        """UI thread: turn the latest progress into a `SaveProgress` message, at most 10 per second and never after the terminal message."""
+        with run.lock:
+            run.progress_outstanding = False
+            report = run.progress
+        now = self.save_clock()
+        if report is None or self._save_run is not run or now - run.last_message < _MESSAGE_INTERVAL:
+            return
+        run.last_message = now
+        self.post_message(self.SaveProgress(report.phase, report.done, report.total, self).set_sender(self))
+
+    def _end_save(self, run: _SaveRun) -> None:
+        """UI thread: forget the run, lift the save registration and the edit lock."""
+        self._save_run = None
+        self._save_epoch += 1
+        self.document.end_save()
+        self.document.unlock_edits("saving")
+
+    def _finish_save(self, run: _SaveRun, result: SaveResult | None, plan: RebasePlan | None, error: CoreSaveFailed | None) -> None:
+        """UI thread: the one terminal handler of a save. Lifts the lock and posts exactly one of `Saved`, `SaveFailed` and `SaveCancelled`.
+
+        Whatever the finish raises ends in `SaveFailed` with stage `internal`; the file is then `committed` (written, the document still on the old file
+        unless the failure came after the document was rebased, in which case the history is cleared).
+        """
+        if self._save_run is not run:  # the widget was closed meanwhile
+            if result is not None:
+                result.source.close()
+            return
+        try:
+            message = self._conclude_save(run, result, plan, error)
+        except Exception as failure:
+            logging.getLogger(__name__).exception("the finish of a save failed")
+            reason = CoreSaveFailed("internal", f"{type(failure).__name__}: {failure}", committed=result is not None)
+            message = self.SaveFailed(reason, reason.stage, run.target, self, reason.committed)
+        finally:
+            self._end_save(run)
+        self.post_message(message.set_sender(self))
+
+    def _conclude_save(self, run: _SaveRun, result: SaveResult | None, plan: RebasePlan | None, error: CoreSaveFailed | None) -> Message:
+        """UI thread: apply the outcome of the save thread and return its terminal message (the caller lifts the lock and posts it)."""
+        if result is None or plan is None:
+            if result is not None:
+                result.source.close()
+            if error is None:
+                return self.SaveCancelled(self)
+            return self.SaveFailed(error, error.stage, run.target, self, error.committed)
+        try:
+            self.document.apply_rebase(plan)  # closes the file itself when it fails before the swap: the document is then still on the old table
+        except BaseException:
+            if self.document.rebase_installed:  # the table was swapped: the history and the clipboard hold pieces of the old sources
+                self._adopt_after_failed_rebase(result)
+            raise
+        self.file_path = result.target
+        self._held_identity = result.source.identity()
+        try:
+            if plan.clear_history:
+                self.history.clear()
+                self._clipboard_record = None
+                self.notify("Undo history cleared: too many saves with large deletions.", severity="warning")
+            else:
+                self._apply_translated(plan.contents)
+            self.history.mark_saved()
+            self._lift_stale()
+            self.refresh_after_rebase()
+        except Exception:
+            self.history.clear()  # a half-translated history must not survive
+            self._clipboard_record = None
+            raise
+        return self.Saved(result.target, result.length, self)
+
+    def _adopt_after_failed_rebase(self, result: SaveResult) -> None:
+        """UI thread: `apply_rebase` raised after it replaced the table. The widget follows the document: the new file, and no history that could undo into the old sources."""
+        self.file_path = result.target
+        self.history.clear()
+        self._clipboard_record = None
+        try:
+            self._held_identity = result.source.identity()
+            self.history.mark_saved()
+            self._lift_stale()
+            self.refresh_after_rebase()
+        except Exception:
+            logging.getLogger(__name__).exception("the widget could not finish following a rebase that failed")
+
+    def _lift_stale(self) -> None:
+        """The document now stands on a freshly written file: end the stale state (rows render again, edits are accepted)."""
+        self._source_failed = False
+        self._stale_kind = None
+        self.document.unlock_edits(STALE_REASON)
+
+    def _abandon_save(self) -> None:
+        """Close with a save running: cancel the job, post its terminal message now and leave the thread to end on its own.
+
+        The document registers the thread with its closer, so the source is closed only after the writer returned.
+        A save whose replace already happened is not cancelled: the file holds the new bytes, so the message is `SaveFailed` with `committed` (the
+        widget closes instead of switching to the new file). A replace that happens after this call (the cancel came too late) is not reported.
+        A refused post (the widget is unmounting) is ignored.
+        """
+        run = self._save_run
+        if run is None:
+            return
+        run.abandoned = True
+        job = run.job
+        committed = job is not None and job.committed
+        if job is not None:
+            job.cancel()
+        self._end_save(run)
+        if committed:
+            reason = CoreSaveFailed("internal", "the file was written but the widget was closed before it switched to it", committed=True)
+            message: Message = self.SaveFailed(reason, reason.stage, run.target, self, committed=True)
+        else:
+            message = self.SaveCancelled(self)
+        try:
+            self.post_message(message.set_sender(self))
+        except RuntimeError:  # no active app any more
+            return
+
+    def refresh_after_rebase(self) -> None:
+        """Re-point the widget's holders after the lazy document was rebased onto a saved file, and repaint.
+
+        The text is identical, so the cursor keeps its location and state: the long-row cursor is bound to the document's current long index and the
+        rendered strips are rebuilt. Does nothing for a document that is not lazy.
+        """
+        if not isinstance(self.document, LazyDocument) or self._lazy_closed:
+            return
+        self._long_cursor.rebase()
+        self._line_cache.clear()
+        self.refresh()
 
     def _reset_cursor_machine(self) -> None:
         """Forget the cursor machine of the long row after an edit, undo or redo: the next selection change starts a resolved one at the new location."""
@@ -3835,6 +4458,9 @@ NovaTextArea {
                 f"Selection of {content.length:,} bytes is too large for the system clipboard (limit {self.clipboard_cap:,}); it was not updated. Paste inside the editor still works.",
                 severity="warning",
             )
+        if self._save_run is not None:
+            self._clipboard_record = None  # the save rewrites the references of the record it collected; a new one would name the old file
+            return
         self._clipboard_record = self._ClipboardRecord(content, content.length, system_text, self.app.clipboard)
 
     def _internal_clipboard(self) -> PieceContent | None:

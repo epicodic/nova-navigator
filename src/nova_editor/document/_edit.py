@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -114,6 +115,33 @@ class Edit:
         self._edit_result = edit_result
         self.end_location = edit_result.end_location
         return edit_result
+
+    def contents(self) -> list[Content]:
+        """Every `Content` this edit holds, in the one order that `rewrite` consumes them.
+
+        The order is `removed`, `inserted`, `insert_content`, then the `removed` and `inserted` of the stored edit result (duplicates of the first two).
+        Absent contents are skipped.
+        """
+        found = [content for content in (self.removed, self.inserted, self.insert_content) if content is not None]
+        result = self._edit_result
+        if result is not None:
+            found.extend(content for content in (result.removed, result.inserted) if content is not None)
+        return found
+
+    def rewrite(self, contents: Iterator[Content]) -> None:
+        """Replace the contents listed by `contents()` with the next ones of `contents`, in the same order (after the document was rebased onto a saved file)."""
+        if self.removed is not None:
+            self.removed = next(contents)
+        if self.inserted is not None:
+            self.inserted = next(contents)
+        if self.insert_content is not None:
+            self.insert_content = next(contents)
+        result = self._edit_result
+        if result is not None:
+            if result.removed is not None:
+                result.removed = next(contents)
+            if result.inserted is not None:
+                result.inserted = next(contents)
 
     def undo(self, text_area: TextArea) -> EditResult:
         """Undo the edit operation.

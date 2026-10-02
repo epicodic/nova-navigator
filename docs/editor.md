@@ -16,7 +16,9 @@ The lazy document layer (`LazyDocument`, `LazyWrappedDocument`) uses the core to
 Its capability methods never wait for a scan and return `None` or empty results beyond the scanned frontier.
 Every document uses this one path: `text=`, `load_text` and files of every size all become a `LazyDocument` (see "Converged Document Model").
 The widget is editable; undo, redo, cut, copy and paste work on piece references.
-`nova_edit` saves only through an interim Ctrl+S that streaming save (ACT5) will replace (see "Interim Save").
+Saving streams the document to a temporary file on a worker thread and replaces the target atomically (see "Streaming Save").
+After a save the document stands on the saved file, and undo still works (see "Rebase After a Save").
+A change of the file on disk is detected and never overwritten silently (see "External Changes").
 
 ---
 
@@ -38,7 +40,14 @@ No module in this package may import Textual (REQ-17); a boundary test enforces 
 
 `byte_source` — Random-access byte protocol, change detection, and `PreadSource` implementation.
 `ByteSource` protocol defines `length()`, `read(offset, size, cache)`, and `close()`.
-`SourceChanged` exception signals file mutation (size/mtime changed, short read, or OS error).
+`SourceChanged` exception signals file mutation (size/mtime changed, short read, or OS error) and carries a `ChangeKind`.
+`FileIdentity(dev, ino, size, mtime_ns)` is taken from `os.stat` or `os.fstat`.
+`PreadSource.from_fd` adopts an open descriptor, `identity()` returns the recorded identity, `check()` runs the descriptor check without a read, and `unverified_reader()` returns a reader that skips the size and mtime check.
+
+`row_scanner` — `RowScanner`, the row-boundary scan shared by `LineIndex` and the save thread (see "Row Scanner and the Stream Index").
+
+`save`, `save_layout`, `rebase` — `SaveJob` and its types, `SaveLayout`, and `Rebaser` (see "Streaming Save" and "Rebase After a Save").
+`save` re-exports `ChangeKind` and `FileIdentity` and imports only core modules.
 
 `text_width` — Display-width calculations for tabs, wide characters and combining marks.
 Cell widths come from `rich.cells`; the module does not import Textual.
@@ -51,12 +60,14 @@ A long text with some non-ASCII characters is split into ASCII and non-ASCII run
 `LineSnapshot` gives `(count, complete, error, scanned_bytes)`: count is a lower bound until complete, and `scanned_bytes` is how far the scan has covered the file.
 `LineIndex.row_at_offset(offset)` returns the row that holds a byte offset, or `None` when it is not indexed yet or the walk would exceed the read budget.
 `LineIndex.scan_now()` runs the whole scan on the calling thread; the document layer uses it for sources up to 1 MiB.
+`LineIndex.from_scan` builds a complete index from a `RowScanner` that saw every byte (see "Row Scanner and the Stream Index").
 
 `long_line_index` — Lazy checkpoint index for one very long row.
 `LongLineIndex` records character column, display column and byte offset checkpoints at most 65,536 characters apart by default.
 `Frontier` shows how far the background scan has reached: chars, disp (display columns), byte_rel (bytes relative to row start), and complete flag.
 Queries beyond the scanned frontier return `None` (non-blocking); blocking is opt-in via `wait_until_known`.
 `LongLineIndex.spliced(old, new_source, edit)` builds the index of an edited row without rescanning it (see "Long Rows After Edits").
+`LongLineIndex.rebased(old, new_source)` moves an index onto a source with identical bytes (see "Rebase After a Save").
 
 `foreground` — The `Foreground` gate that lets the scans give way to the UI thread (see "Thread Model").
 Both indexes accept it through a `foreground=` argument.
@@ -73,6 +84,8 @@ Memory map was rejected: warm window reads are 5.6x faster with mmap (1.3 us vs 
 Short-read rule: a pread result shorter than requested raises `SourceChanged` because the file shrank.
 Short data is never cached; a failed source stays failed.
 OSError during read becomes `SourceChanged`.
+`SourceChanged.kind` is `TRUNCATED` for a short read or a smaller size, `UNREADABLE` for an `OSError` and `MODIFIED` otherwise.
+`check_path(path, held)` in `core/save.py` compares the resolved path with a held `FileIdentity` (see "External Changes").
 
 **Line semantics:**
 
@@ -231,16 +244,28 @@ Textual widget and lazy rendering support.
 - `goto_byte(offset)` — go to an absolute byte offset; returns `None`, and an offset beyond the scanned frontier stays pending.
 - `cancel_pending()` — cancel a pending jump or deferred cursor operation; the action is bound to Escape while one is pending.
 - `toggle_wrap()` — flip `soft_wrap`; `nova_edit` binds it to F4.
-- `close()` — cancel the scans and close the source (also called on unmount).
+- `close()` — cancel the scans and close the source (also called on unmount); a running save is cancelled and its terminal message is posted at once.
+- `file_path` — the file the document is bound to; set by `open(path)` and by every successful save.
+- `modified` (read-only) — whether the text differs from the last saved state (see "Modified State").
+- `saving` (read-only) — whether a save runs.
+- `save(path=None, *, overwrite=False) -> bool` — start a save (see "Streaming Save" and "Save As and Confirmations").
+- `cancel_save()` — ask a running save to stop; nothing happens when none runs.
+- `reload() -> bool` — discard the edits and show the file as it is now (see "Reload").
+- `check_external_change() -> ChangeKind` — synchronous check of the file on disk (see "External Changes").
+- `refresh_after_rebase()` — re-point the cursor holders after a rebase; the widget calls it itself.
 
 **Message classes (posted by the widget):**
 - `IndexProgress(count, complete)` — posted at most 10 times per second while the line scan grows, and once at completion.
 - `IndexingComplete` — posted once when the line scan finishes.
-- `SourceChanged(reason)` — posted once if the file behind a lazy document changed or could not be read; the view stays blank.
+- `SourceChanged(reason, kind)` — posted once if the file behind a lazy document changed or could not be read; `kind` is a `ChangeKind` (see "External Changes").
 - `JumpProgress(fraction)` — posted when a deferred jump starts or advances, at most 10 times per second.
 - `JumpCompleted(row, column)` — posted when a goto has moved the cursor; `column` is an estimate while `PROVISIONAL`.
 - `JumpRejected(reason)` — posted when a goto target is out of range.
-- `EditRefused(reason)` — posted when an edit, undo, redo or copy is refused because a position is not resolved yet (see "Known Limit: Edits Refused at Unresolved Positions").
+- `EditRefused(reason)` — posted when an edit, undo, redo or copy is refused because a position is not resolved yet (see "Known Limit: Edits Refused at Unresolved Positions") or because edits are locked (see "Edit Lock").
+- `SaveProgress(phase, done, total)` — posted at most 10 times per second while a save runs.
+- `Saved(path, length)`, `SaveFailed(error, stage, path)` and `SaveCancelled` — the terminal messages of a save; exactly one is posted per save.
+- `SaveNeedsConfirmation(kind, path)` — posted instead of starting a save that needs consent.
+- `Reloaded` and `ReloadFailed(error, path)` — the outcome of `reload`.
 
 **Thresholds (defaults, tunable via `LazyConfig`):**
 - `word_wrap_limit = 65536` — rows above this use grid wrap instead of word wrap.
@@ -252,17 +277,20 @@ Textual widget and lazy rendering support.
 
 Standalone Textual app (`NovaEditApp`) providing:
 - Every file is opened through `NovaTextArea.open`; there is no eager path and no `--lazy` flag.
-- `Ctrl+S` runs the interim save (see "Interim Save").
+- `Ctrl+S` saves; without a file it opens the path bar.
+- `F2` opens the path bar for save as; `F5` reloads the file; `Escape` cancels a running save (see "nova_edit Bars and Keys").
 - `Ctrl+Z`, `Ctrl+Y`, `Ctrl+X`, `Ctrl+C` and `Ctrl+V` are the stock bindings for undo, redo, cut, copy and paste.
-- `Ctrl+Q` quits.
+- `Ctrl+Q` quits; during a save it cancels the save and waits at most 2 seconds.
 - `F4` toggles soft wrap.
 - `Ctrl+G` shows or hides the goto bar for line or byte offset navigation (`@N` syntax for byte offsets).
-- `Escape` closes the goto bar while it has the focus, and cancels a pending jump in the editor.
+- `Escape` closes the goto bar or the path bar while it has the focus, cancels a pending jump in the editor, and cancels a running save.
 - Footer showing the file path and keyboard shortcuts.
 - Entry point `main()` for the `nova_edit` CLI command.
 - Timing hook via the `NOVA_EDIT_TIMING_FILE` environment variable (writes `FIRST_CONTENT <ns>` when content first renders).
 
 **GotoBar:** Inline input field that accepts `N` (line number) or `@N` (byte offset); Enter navigates and Escape closes it.
+
+**PathBar, SaveBar and ConfirmBar:** the bars of the save (see "nova_edit Bars and Keys").
 
 **TimedNovaTextArea:** Wrapper that logs the first content render time for benchmarking.
 
@@ -440,21 +468,270 @@ Cap 2 MiB (2,097,152 bytes); rule: largest measured size whose p95 of copy plus 
 
 ---
 
-## Interim Save
+## Streaming Save
 
-Ctrl+S in `nova_edit` is an interim save that ACT5 replaces with a streaming save.
-For a document of up to `TEXT_LIMIT` (8 MiB) it writes `text.encode("utf-8", "surrogateescape")` to a temporary file next to the target, copies the permissions, and moves it over the target with `os.replace`.
-The temporary file is created next to the resolved target with a unique name (`tempfile.mkstemp`), so it cannot replace another file, and it is flushed and synced before `os.replace`.
-A symlink is followed: the target is replaced and the link stays.
-A temporary file is removed when the save fails.
-When the file existed at start but could not be read, the editor shows an empty document and Ctrl+S refuses with "Not saved" so that the file is not replaced.
-A file that did not exist at start is created with the mode its umask allows, and later saves replace it like any other file.
-If such a file appears from elsewhere before the first save, Ctrl+S refuses with "Not saved".
-If such a file is deleted after it was loaded, the next Ctrl+S creates it again with the umask mode.
-A successful save shows the notification "Interim save (replaced by streaming save in ACT5)".
-For a larger document it writes nothing and shows "Saving large files arrives with ACT5".
-No data is lost silently and no partial file replaces the original.
-Ctrl+Q quits without asking about unsaved changes.
+A save writes the document from its pieces to a temporary file and replaces the target with `os.replace`.
+`NovaTextArea.save` starts a `SaveJob` on a daemon thread named `nova-save`; the document is never loaded as a whole.
+
+**Steps of `SaveJob.run`:**
+1. The target is resolved with `os.path.realpath`.
+   A target that exists and is not a regular file fails at stage `prepare`, and so does a file without write permission ("read-only file").
+2. The mode is that of the target, or `0o666 & ~umask` for a new file.
+3. `mkstemp` creates `.<name>.<random>.tmp` in the directory of the target; the name part is cut to 100 bytes.
+   The name goes into a module set that an `atexit` hook unlinks.
+4. `posix_fallocate` reserves the expected length; `ENOTSUP`, `EOPNOTSUPP`, `EINVAL` and `ENOSYS` are ignored and other errors fail at stage `prepare`.
+5. The job writes chunks until the document length is reached.
+   For each chunk it checks the cancel flag, asks the document for the parts (`LazyDocument.plan`), reads them, writes them (partial writes are looped), feeds the bytes to a `RowScanner` and records the parts in a `SaveLayout`.
+6. A short read fails the save at stage `write`.
+7. After the loop the job calls `fsync` and `fchmod`, takes `fstat` and opens the temp file read only as the future source.
+8. The last cancel check comes next, then `os.replace(temp, target)`; after it a cancel is ignored.
+9. A best-effort `fsync` of the directory follows, and its errors are ignored.
+10. The result is a `SaveResult` with the target, length, source, line index, layout and mode.
+
+**Constants (`SaveSettings`):**
+- Chunk of 1 MiB (`CHUNK`).
+- `fsync` every 256 MiB (`FSYNC_EVERY`) and once more at the end.
+- `preallocate` and `build_index` are on by default; `build_index=False` exists for the measurement baseline.
+- Measured numbers: see the activity evidence.
+
+**Plan:**
+`LazyDocument.plan(offset, limit, unverified)` takes the document lock, asks `PieceTable.layout_range` for the runs `(src, a, b)` and returns `PlanPart(src, source, a, b)` items.
+No byte is read under the lock, so the plan cannot raise `SourceChanged`.
+Parts of the original are read with `cache=False`.
+
+**Progress:**
+The job reports `writing` (at most 20 times per second), `flushing` and `finishing`; the save thread then reports `history` while it translates the records.
+The widget keeps the latest report, posts at most one callback to the UI thread at a time, and turns it into `SaveProgress` at most 10 times per second.
+The job accepts a `Foreground` gate (`PauseGate`) and sleeps `pause_seconds()` after every chunk.
+The widget passes no gate: the measurements of the activity show no save step over 50 ms, so the UI thread is never starved and the save needs no way to give way.
+
+**Cancel:**
+`cancel_save()` sets the flag of the job.
+The job stops at the next chunk or before the replace; the latency is one chunk plus, in the worst case, one `fsync`.
+A cancel before the replace leaves the target byte for byte unchanged and removes the temp file.
+
+**Failure:**
+Every failure raises `SaveFailed` with a `stage` (`prepare`, `write`, `flush`, `replace` or `internal`) and the `errno` of the cause.
+`ENOSPC` and `EDQUOT` from the write or from `fallocate` fail at once.
+A failed `fchmod` fails the save at stage `flush`, except `ENOTSUP` and `EOPNOTSUPP`.
+An unexpected exception becomes `SaveFailed` with stage `internal`.
+The `finally` closes the descriptors and unlinks the temp file.
+
+**Terminal message:**
+Exactly one of `Saved`, `SaveFailed` and `SaveCancelled` is posted per save, and the handler on the UI thread posts it.
+If the file was written but the switch to it fails, the outcome is `SaveFailed` with stage `internal` and `committed` set (on the core exception and on the widget message), although the target already holds the new bytes.
+That covers a failure of the save thread after the replace, of the translation of the history, and of any step of the finish on the UI thread (`_finish_save`): whatever it raises, the lock is lifted and exactly one message is posted.
+A committed failure leaves the document on the old file: `apply_rebase` builds the new table and the rebased long indexes before it assigns any state, and closes the saved file itself when it fails.
+Only a failure after the swap (the translation of the history) clears the history, because a half-translated history must not survive; the document is then on the new file.
+`nova_edit` tells the user that the file was written and that F5 reloads it.
+Closing the widget during a save posts `SaveCancelled` at once, or `SaveFailed` with `committed` when the replace already happened (`SaveJob.committed`); a refused post while unmounting is ignored.
+The document registers the save thread with its closer, so the source is closed only after the writer returned.
+
+**Special targets:**
+- A symlink is followed: the target is replaced and the link stays; a dangling link creates the file it names.
+- A directory that is not writable fails at `prepare` with "cannot create a temporary file in <dir>; use Save As", and so does a read-only file system.
+  An in-place write is not offered, because pieces refer to the original bytes.
+- A new file is created with the mode `0o666 & ~umask`, and the document continues on it.
+
+---
+
+## Edit Lock
+
+`LazyDocument.lock_edits(reason)` and `unlock_edits(reason)` refuse `replace_range`, `splice` and `splice_bytes` with `EditsLocked`, a subclass of `RowUnavailable`.
+The widget treats it like any refusal: bell, warning, `EditRefused(reason)`, nothing changes and the history batch is restored.
+The locks are a list of reasons; the latest one is reported, and `unlock_edits` lifts one reason, or all when none is given.
+The reasons are `"saving"` and `"file changed on disk"`.
+A save holds `"saving"` from its start until the terminal handler runs on the UI thread, so the lock cannot stay set.
+Cursor, selection, scrolling and goto stay live during a save.
+`load_text`, `reload`, `open` and replacing the document raise `RuntimeError` while a save runs.
+A copy during a save updates the system clipboard but keeps no internal clipboard record, so a later paste inserts text.
+
+---
+
+## Rebase After a Save
+
+After the replace the document must stand on the saved file, so that the old original and the add store can be released.
+`prepare_rebase` runs on the save thread and does the heavy work; `apply_rebase` runs on the UI thread under the document lock and does bounded work.
+
+**`apply_rebase`:**
+1. Build a new `PieceTable` over the saved file, its complete line index and a fresh add store.
+2. Carry the legacy generations of the old table, plus the old files when the plan keeps them.
+3. Replace the source, line index and table, and clear the row and text caches.
+4. Rebase every cached long-row index with `LongLineIndex.rebased`; an index that cannot be rebased is dropped and rebuilt on demand.
+5. Cancel the old indexes and close the old source on a closer thread, unless a legacy generation keeps it.
+   A closed document closes the new source instead.
+6. The widget then writes the translated contents back into the history and the clipboard record, marks the state as saved, sets `file_path` and the held identity, lifts the stale state and repaints.
+
+`LongLineIndex.rebased` is `spliced` with an identity edit at the end of the row.
+Checkpoints are kept, an unfinished scan resumes from its frontier, and row numbers, columns and cached measurements stay valid.
+`apply_rebase` raises `ValueError` when the document changed since the save started; the widget then closes the new source and reports `SaveFailed` with stage `internal`.
+
+A document opened with `text=` or from a small file stands on an adopted file descriptor after its first save.
+
+---
+
+## Undo Across Saves
+
+Undo records and the internal clipboard hold piece references, and after a save those would name the old original and the old add store.
+`Rebaser` rewrites them, so undo after a save restores the pre-save content without copying text that is already in the file.
+
+**Collection:**
+When the save starts, the widget collects every `Content` of the undo and redo stacks (`Edit.contents`) and of the clipboard record.
+`Edit.rewrite` takes the translated contents back in the same order.
+
+**Layout:**
+The writer records every run `(src, a, b, out)` in compact arrays, 32 bytes per run, while the save runs.
+`SaveLayout.intervals(src)` returns disjoint ascending intervals; a source range that occurs several times keeps its first occurrence.
+
+**Translation:**
+A generation 0 piece is split against the intervals of its source.
+A present part becomes a piece of the new original at the translated offset, and adjacent parts merge, so no text is copied.
+An absent part is an orphan: text that was deleted or replaced before the save, or typed and deleted again.
+The aggregate, `breaks` and `tail_chars` of a rewritten `Content` are copied from the old one, because the bytes are identical.
+Pieces of legacy generations stay as they are.
+
+**Orphans:**
+- Up to `UNDO_COPY_LIMIT` (8 MiB) of orphan bytes in total are read from the old sources and copied into the new add store, and the old files are released.
+- Above it, the old original with its line index and the old add store become a legacy generation `g` of the new table.
+  Orphan pieces keep their ranges and get `src = (g << 24) | k`, where `k = 0` is the generation's original and `k >= 1` an add segment.
+  `Piece.src` is a `uint32` column: 8 bits of generation and 24 bits of segment.
+- At most 255 generations exist.
+  A save that needs a 256th clears the history and the clipboard record, and the widget shows "Undo history cleared: too many saves with large deletions."
+- An `OSError`, `LookupError`, `ValueError` or `SourceChanged` in the translation falls back to `RebasePlan.retain_all`: every old reference is kept under the next generation.
+  This is always correct and only wasteful.
+
+Redo records are translated the same way, so undo, save and redo works.
+Present parts never need a generation, so repeated saves with small deletions retain nothing.
+
+---
+
+## Modified State
+
+`EditHistory` keeps a revision counter and a branch id.
+Every batch stores the revision before and after it, and undo and redo move the revision with the batch.
+A record after an undo opens a new branch, so the revision counter alone cannot reach a state of the old branch.
+`modified` is `(revision, branch) != saved`, so undo back to the saved state reads unmodified, and so does the undo of typing after a save.
+A save forces a new batch (`checkpoint()` at its start and in `mark_saved()`), so coalesced typing never spans a save.
+`EditHistory.clear` resets the saved state to the current one, so `modified` is false afterwards.
+
+---
+
+## Row Scanner and the Stream Index
+
+`RowScanner(stride, threshold)` is the row-boundary scan that `LineIndex` used to hold privately.
+`feed(block, base, final)` scans a block, `take()` returns the stride entries and long rows found since the last call, and `finish(length)` returns the last row when it is long.
+A CR at a block edge is carried, so a CRLF split between two blocks is one terminator.
+`LineIndex._scan` calls it, and the behaviour of the scan did not change.
+
+The save thread feeds the scanner with the bytes it writes, so the index of the saved file costs no extra read.
+`LineIndex.from_scan` creates a complete index over the saved file from the entries and long rows; it refuses `start()` and `scan_now()`.
+The document switches to this index, so after a save there is no rescan and no blank view.
+A test compares it with a fresh scan of the saved bytes.
+
+---
+
+## External Changes
+
+The file behind a document can change while it is open.
+`ChangeKind` names what differs:
+- `UNCHANGED`.
+- `MODIFIED`: the same inode with another mtime, and a size that is equal or larger.
+- `TRUNCATED`: a smaller size, or a short read.
+- `REPLACED`: the path names another inode.
+- `DELETED`, and `CREATED` for a file expected to be new that exists.
+- `EXISTS` for a save as onto an existing file, and `UNREADABLE`.
+
+**Detection points:**
+- Every read of uncached content of a large original checks the descriptor, as before, and the `SourceChanged` carries a kind.
+  Cached blocks are served until the next miss.
+- `save` compares the resolved path with the held identity before it starts.
+  The held identity is that of the descriptor for a `PreadSource`, and the `stat` taken around the read for a small file held in memory.
+- `NovaTextArea.check_external_change()` is public and synchronous: the descriptor check plus `check_path`.
+  While a save runs it reports `UNCHANGED`, because the replace of the save would look like a change.
+- The poll of `nova_edit` splits the check so that no widget state is touched off the UI thread.
+  `begin_external_check()` (UI thread) captures the document, the path, the held identity and the save epoch; `ExternalCheck.run()` does only the `stat` calls and runs on a worker thread every 2 seconds; `apply_external_check()` (UI thread) applies the result.
+  The poll is skipped while a save runs or while the previous check still runs.
+  A result is dropped when a save began or ended since the check began (the save epoch counts both), so the replace of the app's own save is never reported as `REPLACED`.
+- When the terminal gets the focus back (the Textual `AppFocus` event), `nova_edit` runs the same check at once (design 9.1).
+
+A small document held in memory has no read-time detection; the poll and the save cover it.
+Truncating a displayed file never ends the process, because the editor uses `pread` and no memory map.
+
+**Stale view policy:**
+After a detection the widget posts `SourceChanged` once and enters the failed state.
+Rows that are cached keep showing, possibly stale, and uncached rows render blank.
+The edit lock `"file changed on disk"` is set, so edits, undo and redo are refused with that reason.
+Nothing is discarded: the pieces, the add store and the history stay, `modified` stays true, and selection and scrolling keep working.
+The state ends by `reload`, by a successful save, or by `close`.
+Later calls of `check_external_change` return the same kind without posting again.
+A later report during the stale state keeps the more severe kind (`TRUNCATED`, `DELETED` and `REPLACED` over `MODIFIED`) and posts nothing.
+`nova_edit` does not ask while a save runs: it remembers the `SourceChanged`, and when the save ends with a failure that did not commit, or with a cancel, it re-runs the check and announces what it finds.
+A save that commits lifts the state itself, so the remembered change is dropped.
+
+---
+
+## Reload
+
+`reload()` discards the edits and builds a new document the way `open` does; the language, highlight limit and configuration are remembered.
+It replaces the document first and only then clears the history and the clipboard record, ends the stale state, keeps the cursor row when it still exists (else it goes to the last row) and posts `Reloaded`.
+When the file cannot be read, it posts `ReloadFailed`, returns False and leaves the old document, the history and the stale state; whatever the failed attempt opened (the source or the new document) is closed on every failure path.
+The UI thread waits for row 0 of the new document, bounded by one second (the scan resolves it within milliseconds), because the cursor, the scrollbar and the layout watchers cannot cope with an unresolved first row; the restore of the old cursor row is a pending jump.
+It returns False without a file, and raises `RuntimeError` while a save runs.
+In `nova_edit`, F5 on a modified document asks first, and F5 during a save shows a warning.
+
+---
+
+## Save As and Confirmations
+
+`save(path=None, *, overwrite=False)` returns True when a save started.
+It returns False, and posts nothing, when a save runs, the widget is closed, there is no target, or a plain save finds the document unmodified.
+A save as writes even when nothing changed, and afterwards the document is bound to the new file.
+
+| State of the file | Plain save (Ctrl+S) | Save as (F2) |
+|---|---|---|
+| `UNCHANGED` | Writes | Writes; an existing target needs confirmation (`EXISTS`) |
+| `MODIFIED`, `TRUNCATED`, `REPLACED`, `DELETED`, `CREATED` | Posts `SaveNeedsConfirmation(kind, path)`; with `overwrite=True` it writes | Writes |
+
+A save that needs consent posts `SaveNeedsConfirmation` and starts nothing.
+After `MODIFIED` or `TRUNCATED` the job reads the original with `unverified=True`: only a short read fails, so the unchanged parts come from the file as it is now.
+A truncation that removed bytes the document still needs fails with "the file was truncated; the unchanged parts cannot be read", and the target stays untouched.
+After `REPLACED` or `DELETED` the held descriptor still names the original inode, so the save is exact.
+
+**`nova_edit` guards:**
+- A file that existed but could not be read refuses Ctrl+S and opens the path bar for a save as.
+- A file expected to be new that exists at save time is `CREATED`, which asks for confirmation.
+- Ctrl+S without a file opens the path bar.
+  The first save of a new file creates it even when it is empty.
+- Ctrl+S on an unmodified document that has a file shows "No changes to save".
+- `nova_edit` refuses to open a file that is not regular, because opening a FIFO blocks.
+
+---
+
+## nova_edit Bars and Keys
+
+| Key | Action |
+|---|---|
+| `Ctrl+S` | Save |
+| `F2` | Path bar for save as, prefilled with the current path; Enter saves and Escape closes |
+| `F5` | Reload; a modified document shows the confirm bar first |
+| `Escape` | Cancel a running save; the binding is active only while a save runs |
+| `Ctrl+Q` | Quit; during a save it cancels, waits at most 2 seconds and exits |
+
+`Ctrl+Q` does not ask about unsaved changes.
+
+**SaveBar:**
+A status line that is hidden when idle.
+It shows `Saving  1.2 / 5.0 GiB  24 %  Esc cancels`, then `Flushing`, `Finishing` or `Preserving undo history`, and a result line for 4 seconds.
+A failure shows the OS message and the stage and stays until a key is pressed.
+
+**ConfirmBar:**
+A key driven question for overwrite, reload and external change: `O` overwrite, `A` save as, `R` reload and `Esc` keep.
+Only the keys that the question lists are active.
+
+**PathBar:**
+An `Input` like the goto bar.
+
+All bars are plain widgets, not dialogs, so they have no entry in `src/tools/dialog_tester.py`.
 
 ---
 
@@ -575,6 +852,12 @@ The UI thread never joins a scan.
 The closer joins the scans and then closes the source; `wait_closed()` waits for it.
 Cancelled long-row scans beyond the retired-list limit are joined on a daemon reaper thread.
 
+**Save thread:**
+A save runs on one daemon thread, `nova-save` (see "Streaming Save").
+It reads and writes outside every lock and takes the document lock only for the plan of each chunk.
+It posts its outcome with `post_message(events.Callback(...))`, like the scans, and the UI thread runs the terminal handler.
+`LazyDocument.close()` waits for the save thread through its closer before it closes the source.
+
 ---
 
 ## Performance Thresholds (Measured)
@@ -643,19 +926,73 @@ It does so only when that stretch is at most `RELOCATE_LIMIT` (256 KiB), or when
 In other cases the end column is approximate and can be off by the characters that merged with the neighbours.
 The text itself is exact; only the cursor column after such an edit is affected.
 
-### Known Limit: The Add Store Never Shrinks
+### Known Limit: The Add Store Shrinks Only at a Save
 
-Bytes that were typed or pasted stay in the add store for the whole session, even after undo or delete.
+Bytes that were typed or pasted stay in the add store until the next save, even after undo or delete.
 The history and the internal clipboard may still reference them.
-ACT5 rebases the add store after a save.
-Until then memory grows only with typed and pasted text.
+A save rebases the add store: typed text that is in the file becomes part of the file, and only orphans are copied into the fresh store (see "Undo Across Saves").
+Between saves memory grows only with typed and pasted text.
 
 ### Known Limit: `text` Above 8 MiB
 
 `NovaTextArea.text` returns `""` for a document above `TEXT_LIMIT` (8 MiB), and `LazyDocument.read_all(limit)` raises `WholeLineAccess` there.
 Reading `text` costs O(size), so the property never decodes a large document.
 Code that needs a part of a large document uses `get_text_range` or the capability methods.
-The interim save refuses documents above this size (see "Interim Save").
+The streaming save does not use `text` and has no size limit (see "Streaming Save").
+
+### Known Limit: Hard Links, Owner, Group, ACLs and Xattrs
+
+A save creates a new inode and replaces the target, so a second hard link keeps the old content.
+The owner, the group, ACLs and extended attributes of the target are not copied to the new file.
+Only the permission bits are restored, with `fchmod`.
+
+### Known Limit: The Retained Generation Keeps Disk Space
+
+When a save has more than `UNDO_COPY_LIMIT` (8 MiB) of orphan bytes, the old file stays open as a legacy generation.
+Its disk space stays allocated, although the file is unlinked, until the document closes or the history is cleared.
+A save that needs more than 255 generations clears the history instead.
+Typical sessions never reach either case.
+
+### Known Limit: Edits Are Locked During a Save
+
+Typing, deleting, pasting, undo and redo are refused for the length of a save, with the reason `saving`.
+The notification text is the generic one of an edit refusal.
+Cursor, selection, scrolling and goto keep working, and the lock is lifted on every outcome.
+
+### Known Limit: `kill -9` Can Leave a Temp File
+
+A killed process cannot run the `atexit` hook, so a `.name.xxxx.tmp` file can stay next to the target.
+The original is intact, because the replace has not happened.
+A normal exit, a failure and a cancel remove the temp file.
+
+### Known Limit: A Save After an In-Place Change
+
+When the file was changed in place (`MODIFIED` or `TRUNCATED`) and the user confirms the overwrite, the unchanged parts of the document are read from the file as it is now.
+Bytes that were rewritten in place therefore appear in the saved file.
+A truncation that removed needed bytes fails the save.
+
+### Known Limit: `stat` on a Hung Mount
+
+`save` checks the path on the UI thread before it starts the job, with one or two `stat` calls.
+On a hung network mount this blocks the UI until the mount answers.
+The periodic check of `nova_edit` runs on a worker thread and does not block.
+
+### Known Limit: Non-Regular Files
+
+`nova_edit` refuses to open a FIFO, a device or a directory, because opening a FIFO blocks.
+A save refuses such a target at stage `prepare`.
+
+### Known Limit: 255 Generations
+
+At most 255 legacy generations exist per document.
+A save that needs another one clears the undo history and the clipboard record, and shows "Undo history cleared: too many saves with large deletions."
+This is the only case where a save drops undo.
+
+### Known Limit: File Systems Without `fchmod`
+
+`fchmod` that fails with `ENOTSUP` or `EOPNOTSUPP` is ignored, and the file keeps the mode `mkstemp` gave it (`0o600`).
+Any other `fchmod` error fails the save at stage `flush`.
+`posix_fallocate` is best effort and is skipped on file systems that do not support it.
 
 ---
 
@@ -669,12 +1006,17 @@ Tests are located under `tests/nova_editor/`.
 - `core/test_piece_tree.py`, `core/test_add_store.py`, `core/test_piece_table.py`, `core/test_original_source.py`, `core/test_row_source.py`, `core/test_scan_now.py` — the piece table and its parts, fuzzed against plain `bytes` and a regular-expression split (`core/reference.py` holds the reference and the seeded `Rng`).
 - `core/test_long_line_splice.py` — `LongLineIndex.spliced`, `resume` and `byte_to_char` against a fresh scan.
 - `core/test_truncation.py` — truncation in a subprocess.
+- `core/test_row_scanner.py` — `RowScanner` and `LineIndex.from_scan` against a fresh scan.
+- `core/test_save_roundtrip.py`, `core/test_save_failure.py`, `core/test_save_cancel.py`, `core/test_save_targets.py` — `SaveJob` output, failure injection through `SaveIo`, cancel and special targets.
+- `core/test_save_layout.py`, `core/test_rebase.py`, `core/test_piece_table_layout.py`, `core/test_long_line_rebased.py` — the layout, the translation, `layout_range` and `LongLineIndex.rebased`.
 - `core/test_core_boundary.py` — the Textual import boundary.
 
 **Document layer (`document/`):**
 - `test_lazy_document.py`, `test_lazy_wrapped_document.py`, `test_lazy_window.py` — lazy documents, wrapping and windows.
 - `test_lazy_edit.py`, `test_lazy_long_edit.py`, `test_lazy_bounded_edit.py`, `test_lazy_from_text.py` — document edits against a `str` reference (`reference_text.py`), long-row edits with lowered thresholds, and `text=` sources.
-- `test_edit_history.py` — byte-based undo and redo records and typing coalescing.
+- `test_edit_history.py`, `test_history_modified.py` — byte-based undo and redo records, typing coalescing, and the modified state.
+- `test_edit_lock.py`, `test_lock_audit.py` — the edit lock and the table accesses under the document lock.
+- `test_save_rebase.py`, `test_save_rebase_fuzz.py`, `test_rebase_holders.py` — the rebase and its seeded fuzz, and the holders that are re-pointed at the swap.
 - `test_cursor_anchor.py`, `test_long_row_anchor.py` — the cursor machine and its index adapter.
 - `test_capabilities.py`, `test_navigator_capabilities.py`, `test_navigator_long_rows.py` — capability methods and navigation.
 
@@ -684,7 +1026,8 @@ Tests are located under `tests/nova_editor/`.
 - `test_convergence.py` — `text=`, `load_text` and small files on the lazy document, and the removal of the stock widget path.
 - `test_lazy_widget.py`, `test_lazy_cursor.py`, `test_jump.py`, `test_highlight_limit.py` — lazy rendering, cursor, goto and highlighting.
 - `test_lazy_edit_widget.py`, `test_lazy_clipboard.py`, `test_lazy_edit_long_row_memory.py` — editing, refusal, undo, redo, clipboard and memory on long rows through the widget.
-- `test_app.py`, `test_app_lazy.py`, `test_bindings.py` — the app, opening files, saving and key bindings.
+- `test_app.py`, `test_app_lazy.py`, `test_app_save.py`, `test_bindings.py` — the app, opening files, the save bars and key bindings.
+- `test_widget_save.py`, `test_widget_save_rebase.py`, `test_widget_external_change.py`, `test_save_long_row_cursor.py` — the widget API of saving, the rebase of the widget, external changes and the cursor on a long row across a save.
 - `test_independence.py` — no dependency on `nova_navigator`.
 
 **Helpers and benchmarks:**
@@ -693,6 +1036,7 @@ Tests are located under `tests/nova_editor/`.
 
 **Measurement harness (`uv run python -m tools.measure_view`):**
 Subcommands: `first-screen`, `memory`, `latency`, `jump`, `oracle`, `calllog`, `sweep-yield`, `thresholds`, `summarise`, and for editing `edit-memory`, `verify`, `edit-latency`, `edit-scatter`, `segments`, `pieces`, `undo-record` and `clipboard`.
+The save subcommands are `save-5g`, `save-latency`, `save-sweep`, `save-longline`, `save-retention`, `save-records`, `save-cancel` and `save-fulldisk`.
 See `src/tools/measure_view.py` for usage.
 
 Run all tests:
@@ -756,7 +1100,6 @@ When Textual releases a new version and we want to update our vendored code, fol
 
 ## Future Work
 
-- **Streaming save (ACT5):** Replace the interim Ctrl+S, rebase the add store after a save, and remove the 8 MiB limit of saving.
 - **Search:** Add find and replace that works on lazy documents.
 - **Selection:** Multi-line and multi-region selection on lazy documents.
 - **Integration:** Embed in `nova_navigator` as an editor dialog for large file viewing and light editing.

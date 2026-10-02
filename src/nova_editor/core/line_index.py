@@ -7,17 +7,18 @@ an empty file has exactly one empty row. Unicode separators, VT, FF and NEL are 
 from __future__ import annotations
 
 import logging
-import re
 import threading
 import time
 from array import array
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from types import TracebackType
+from typing import TypedDict, Unpack
 
 from nova_editor.core.byte_source import ByteSource, SourceChanged
 from nova_editor.core.foreground import Foreground
+from nova_editor.core.row_scanner import TERMINATOR, LongRow, RowScanner
 
 DEFAULT_STRIDE = 64
 DEFAULT_LONG_LINE_THRESHOLD = 16 * 1024
@@ -28,11 +29,7 @@ DEFAULT_SCAN_BLOCK = 1 << 20
 DEFAULT_WALK_WINDOW = 64 * 1024
 
 _LOG = logging.getLogger(__name__)
-_TERMINATOR = re.compile(rb"\r\n|\n|\r")
 TAIL_BYTES = 2  # the longest terminator
-
-# (row, start, end) of a row longer than the long-line threshold
-_LongRow = tuple[int, int, int]
 
 
 @dataclass(frozen=True)
@@ -81,15 +78,6 @@ class _OverBudget(Exception):
     """A walk would exceed the per-call read budget."""
 
 
-@dataclass
-class _ScanState:
-    count: int = 1
-    prev: int = 0
-    carry: bool = False
-    entries: list[int] = field(default_factory=list)  # stride entries found in the current block
-    longs: list[_LongRow] = field(default_factory=list)  # long rows found in the current block
-
-
 class _Walker:
     """Finds row ends sequentially through a byte window and counts the bytes it asks the source for."""
 
@@ -127,7 +115,7 @@ class _Walker:
     def advance(self) -> tuple[int, int] | None:
         """Return `(end, terminator_length)` of the row starting at `pos` and move to its end; `None` when it is the last row."""
         while True:
-            match = _TERMINATOR.search(self._buf, self.pos - self._base)
+            match = TERMINATOR.search(self._buf, self.pos - self._base)
             buffer_end = self._base + len(self._buf)
             if match is not None:
                 lone_cr_at_edge = match.end() == len(self._buf) and match.group() == b"\r"
@@ -137,6 +125,20 @@ class _Walker:
             elif buffer_end >= self._length:
                 return None
             self._fill()
+
+
+class LineIndexSettings(TypedDict, total=False):
+    """Keyword settings of `LineIndex`."""
+
+    stride: int
+    long_line_threshold: int
+    long_line_cap: int
+    read_budget: int
+    max_lines_per_call: int
+    scan_block: int
+    walk_window: int
+    yield_seconds: float
+    foreground: Foreground | None
 
 
 class LineIndex:
@@ -193,6 +195,18 @@ class LineIndex:
         self._thread: threading.Thread | None = None
         self._inline = False
 
+    @classmethod
+    def from_scan(cls, source: ByteSource, scanner: RowScanner, entries: list[int], longs: list[LongRow], length: int, **settings: Unpack[LineIndexSettings]) -> LineIndex:
+        """Create a complete index over `source` from a scanner that saw every byte of it.
+
+        `entries` and `longs` are the concatenation of every `scanner.take()` result plus `scanner.finish(length)`.
+        The index is complete at once and refuses `start()` and `scan_now()`.
+        """
+        index = cls(source, **settings)
+        index._inline = True
+        index._publish(scanner.count, entries, longs, length, complete=True)
+        return index
+
     # -- public -------------------------------------------------------------------------------
     def start(self) -> None:
         if self._thread is not None or self._inline:
@@ -236,6 +250,11 @@ class LineIndex:
             terminal = self._complete or self._error is not None
         if terminal:
             call_subscriber(callback)
+
+    def clear_subscribers(self) -> None:
+        """Forget every subscriber (an index that the document no longer owns must not call its callbacks)."""
+        with self._lock:
+            self._subscribers.clear()
 
     def snapshot(self) -> LineSnapshot:
         with self._lock:
@@ -403,27 +422,26 @@ class LineIndex:
             self._error = error
 
     def _scan(self) -> None:
-        state = _ScanState()
+        scanner = RowScanner(self._stride, self._threshold)
         pos = 0
         length = self._length
         while pos < length and not self._cancelled.is_set():
             block = self._source.read(pos, self._scan_block, cache=False)
             if not block:
                 raise SourceChanged("unexpected empty read during the scan")
-            self._scan_bytes(block, pos, pos + len(block) >= length, state)
+            scanner.feed(block, pos, final=pos + len(block) >= length)
             pos += len(block)
-            self._publish(state.count, state.entries, state.longs, state.prev, complete=False)
-            state.entries, state.longs = [], []
+            entries, longs = scanner.take()
+            self._publish(scanner.count, entries, longs, scanner.prev, complete=False)
             self._notify()
             time.sleep(self._yield_seconds)
             pause = 0.0 if self._foreground is None else self._foreground.pause_seconds()
             if pause > 0:
                 time.sleep(pause)  # the UI is busy: hand it the GIL (see `Foreground`)
         if pos >= length and not self._cancelled.is_set():
-            last = [(state.count - 1, state.prev, length)] if length - state.prev > self._threshold else []
-            self._publish(state.count, [], last, length, complete=True)
+            self._publish(scanner.count, [], scanner.finish(length), length, complete=True)
 
-    def _publish(self, count: int, entries: list[int], longs: list[_LongRow], scanned: int, *, complete: bool) -> None:
+    def _publish(self, count: int, entries: list[int], longs: list[LongRow], scanned: int, *, complete: bool) -> None:
         with self._lock:
             self._starts.extend(entries)
             room = max(self._long_cap - len(self._long_rows), 0)
@@ -442,48 +460,3 @@ class LineIndex:
             subscribers = list(self._subscribers)
         for callback in subscribers:
             call_subscriber(callback)
-
-    def _scan_bytes(self, block: bytes, base: int, final: bool, state: _ScanState) -> None:
-        begin = 0
-        if state.carry:
-            state.carry = False
-            begin = 1 if block.startswith(b"\n") else 0
-            self._boundary(base + begin, state)
-        if block.find(b"\r", begin) == -1:
-            self._scan_lf(block, base, begin, state)
-        else:
-            self._scan_mixed(block, base, begin, final, state)
-
-    def _boundary(self, nxt: int, state: _ScanState) -> None:
-        """Register the start `nxt` of row `state.count`, ending the row that began at `state.prev`."""
-        if nxt - state.prev > self._threshold:
-            state.longs.append((state.count - 1, state.prev, nxt))
-        if state.count % self._stride == 0:
-            state.entries.append(nxt)
-        state.count += 1
-        state.prev = nxt
-
-    def _scan_lf(self, block: bytes, base: int, begin: int, state: _ScanState) -> None:
-        """Fast path for a block without CR: locals only, one threshold comparison per row."""
-        stride, threshold = self._stride, self._threshold
-        entries, longs = state.entries, state.longs
-        count, prev = state.count, state.prev
-        find = block.find
-        i = find(b"\n", begin)
-        while i != -1:
-            nxt = base + i + 1
-            if nxt - prev > threshold:
-                longs.append((count - 1, prev, nxt))
-            if count % stride == 0:
-                entries.append(nxt)
-            count += 1
-            prev = nxt
-            i = find(b"\n", i + 1)
-        state.count, state.prev = count, prev
-
-    def _scan_mixed(self, block: bytes, base: int, begin: int, final: bool, state: _ScanState) -> None:
-        for match in _TERMINATOR.finditer(block, begin):
-            if match.end() == len(block) and not final and match.group() == b"\r":
-                state.carry = True  # a CR at the block edge may be the first half of a CRLF
-                break
-            self._boundary(base + match.end(), state)
