@@ -496,12 +496,12 @@ class LazyDocument(DocumentBase):
             OSError: The new table or a rebased long index could not be built.
             SourceChanged: Likewise, the file changed under the build.
         """
+        self._rebase_installed = False
+        self._rebase_problems = []
         source, line_index = plan.source, plan.line_index
         if source is None or line_index is None:
             msg = "the plan carries no saved file"
             raise ValueError(msg)
-        self._rebase_installed = False
-        self._rebase_problems = []
         try:
             with self._lock:
                 swap = None if self._closed else self._install(plan, source, line_index)
@@ -511,7 +511,6 @@ class LazyDocument(DocumentBase):
         if swap is None:
             source.close()
             return
-        self._rebase_installed = True
         self._finish_install(swap, line_index)
 
     @property
@@ -600,6 +599,7 @@ class LazyDocument(DocumentBase):
             old.cancel()
         self._legacy_files = kept
         self._source, self._line_index, self._add_store, self._table = source, line_index, plan.new_add_store, table
+        self._rebase_installed = True  # still under the lock: no gap between the swap and the flag
         self._ranges.clear()
         self._texts.clear()
         self._long = longs

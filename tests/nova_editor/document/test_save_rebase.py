@@ -365,6 +365,14 @@ def test_a_failure_after_the_install_keeps_the_swap_consistent(tmp_path: Path, m
     release = threading.Event()
     holder = threading.Thread(target=release.wait, args=(JOIN_SECONDS,), name="holder")
     holder.start()
+    closers: list[threading.Thread] = []
+    real_thread_start = threading.Thread.start
+
+    def recording_start(self: threading.Thread) -> None:
+        if self.name == "lazy-rebase-closer":
+            closers.append(self)
+        real_thread_start(self)
+
     try:
         session.edit((0, 0), (0, 3), "TOPTOP")
         session.edit((2, 0), (2, 0), "new ")
@@ -411,3 +419,18 @@ def test_a_failure_before_the_install_leaves_the_flag_down(tmp_path: Path, monke
     finally:
         _finish(session)
     assert open_files(tmp_path) == []
+
+
+def test_a_plan_refused_after_a_successful_rebase_leaves_the_flag_down(tmp_path: Path) -> None:
+    session = _session(tmp_path)
+    try:
+        session.edit((0, 0), (0, 0), "x")
+        session.save(tmp_path / "doc.bin")
+        assert session.doc.rebase_installed
+        empty = RebasePlan(contents=[], new_add_store=session.doc._add_store, retained=None, clear_history=False, orphan_bytes=0)
+        with pytest.raises(ValueError, match="no saved file"):
+            session.doc.apply_rebase(empty)
+        assert not session.doc.rebase_installed
+        assert session.doc.rebase_problems == []
+    finally:
+        _finish(session)
