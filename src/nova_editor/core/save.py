@@ -270,8 +270,8 @@ class SaveJob:
             if written != total:
                 raise SaveFailed("internal", "the document changed during the save")
             self._report("flushing", written, total)
+            self._set_mode(fd, mode)  # before the final fsync, so a crash after the rename cannot leave the mkstemp mode 0600
             self._sync(fd)
-            self._set_mode(fd, mode)
             info = os.fstat(fd)
             reader = self._io.open_ro(name)
             self._check_cancel()  # the last cancel point
