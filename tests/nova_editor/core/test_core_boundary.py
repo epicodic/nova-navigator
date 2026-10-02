@@ -84,3 +84,15 @@ def test_core_text_never_mentions_a_textual_import() -> None:
         for number, line in enumerate(path.read_text().splitlines(), 1):
             stripped = line.strip()
             assert not stripped.startswith(("import textual", "from textual")), f"{path.name}:{number}"
+
+
+def test_save_modules_never_import_document_or_widget() -> None:
+    checked = 0
+    for name in ("save.py", "save_layout.py", "rebase.py"):
+        path = CORE / name
+        if not path.exists():
+            continue
+        checked += 1
+        for module in imported_modules(path):
+            assert not module.startswith(("nova_editor.document", "nova_editor.widget")), f"{name} imports {module}"
+    assert checked >= 2

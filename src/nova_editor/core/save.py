@@ -189,14 +189,14 @@ class SaveIo:
     umask: Callable[[], int] = _read_umask
 
 
-def _unlink_temp_names() -> None:
+def _cleanup_temp_files() -> None:
     for name in list(_TEMP_NAMES):
         with contextlib.suppress(OSError):
             os.unlink(name)
     _TEMP_NAMES.clear()
 
 
-atexit.register(_unlink_temp_names)
+atexit.register(_cleanup_temp_files)
 
 
 class SaveJob:
@@ -290,10 +290,8 @@ class SaveJob:
             if reader is not None:
                 with contextlib.suppress(OSError):
                     os.close(reader)
-            if not renamed:
-                with contextlib.suppress(OSError):
-                    self._io.unlink(name)
-            _TEMP_NAMES.discard(name)
+            if renamed or self._remove_temp(name):
+                _TEMP_NAMES.discard(name)
 
     def _stream(self, fd: int, total: int) -> tuple[RowScanner | None, list[int], list[LongRow], int]:
         """Write the document chunk by chunk; return the scanner (or `None`), its entries and long rows, and the bytes written."""
@@ -343,6 +341,16 @@ class SaveJob:
             long_line_cap=settings.long_line_cap,
         )
 
+    def _remove_temp(self, name: str) -> bool:
+        """Unlink the temp file; return whether it is gone (otherwise the exit hook retries)."""
+        try:
+            self._io.unlink(name)
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        return True
+
     def _check_cancel(self) -> None:
         if self._cancelled.is_set():
             raise SaveCancelled
@@ -372,8 +380,9 @@ class SaveJob:
         try:
             fd, name = self._io.mkstemp(dir=target.parent, prefix=f".{stem}.", suffix=".tmp")
         except OSError as error:
-            if error.errno == errno.EACCES:
-                raise SaveFailed("prepare", f"cannot create a temporary file in {target.parent}; use Save As") from error
+            if error.errno in {errno.EACCES, errno.EROFS}:
+                message = f"cannot create a temporary file in {target.parent}; use Save As"
+                raise SaveFailed("prepare", OSError(error.errno, message)) from error
             raise SaveFailed("prepare", error) from error
         _TEMP_NAMES.add(name)
         return fd, name
@@ -385,7 +394,7 @@ class SaveJob:
             self._io.fallocate(fd, 0, total)
         except OSError as error:
             if error.errno not in UNSUPPORTED:
-                raise SaveFailed("write", error) from error
+                raise SaveFailed("prepare", error) from error
 
     def _write_all(self, fd: int, data: bytes) -> None:
         view = memoryview(data)
