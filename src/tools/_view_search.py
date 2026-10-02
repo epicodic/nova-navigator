@@ -413,13 +413,18 @@ async def _step(session: SaveSession, spec: Spec, case: str, op: str, index: int
     return search_row(spec, case=case, state=state, op=op, step=index, search_index=search_index, searching_before=before, searching_after=after, **measured)
 
 
+def finished_search_seconds(starts: list[float], ends: list[SearchEnd]) -> list[float]:
+    """Durations of the searches that ended `not_found`: the i-th start is paired with the i-th terminal message, then filtered by kind."""
+    return [end.at - start for start, end in zip(starts, ends, strict=False) if end.kind == "not_found"]
+
+
 def _summary(session: SaveSession, spec: Spec, case: str, steps: list[Row], starts: list[float], rounds: int, mark: str) -> Row:
     app = app_of(session)
     during = [row for row in steps if row["state"] == "searching" and row["latency_ms"] is not None]
     values = [float(row["latency_ms"]) for row in during]
     longest = max(during, key=lambda row: row["latency_ms"], default=None)
     length = session.document.length
-    seconds = [end.at - start for end, start in zip(app.ends, starts, strict=False) if end.kind == "not_found"]
+    seconds = finished_search_seconds(starts, app.ends)
     typical = median(seconds) if seconds else None
     return search_row(
         spec,
