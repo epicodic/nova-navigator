@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 
 from nova_editor.core.text_width import advance_disp, utf8_len
 from nova_editor.document._cursor_anchor import CursorMachine, CursorState
-from nova_editor.document._lazy_document import LazyDocument
+from nova_editor.document._lazy_document import LazyDocument, RowUnavailable
 from nova_editor.document._long_row_anchor import LongRowAnchorIndex
 from nova_editor.widget._lazy_window import WindowText
 
@@ -69,6 +69,19 @@ class LongRowCursor:
         self.row = -1
         self.layout = None
         self.pending_target = None
+
+    def rebase(self) -> None:
+        """Point the machine at the document's current long index of its row (the document replaced it, e.g. after a save).
+
+        The row text is identical, so the machine's byte anchor, state and the layout stay valid; a row that no longer exists drops the machine.
+        """
+        index = self.index
+        if index is None:
+            return
+        try:
+            index.rebind(self._lazy.long_index(self.row))
+        except (RowUnavailable, IndexError):
+            self.drop()
 
     def track(self, row: int, column: int, *, wrap: bool) -> CursorMachine | None:
         """Return the machine of the cursor location, creating it when the cursor entered a long row; `None` on other rows.
