@@ -333,9 +333,13 @@ class NovaEditApp(App[None]):
         temp_name: str | None = None
         try:
             text_bytes = self.editor.text.encode("utf-8", "surrogateescape")
-            mode = 0o644
-            with contextlib.suppress(OSError):
+            try:
                 mode = stat.S_IMODE(target.stat().st_mode)
+            except OSError:
+                # A new file gets the mode its creator's umask allows (the umask can only be read by setting it)
+                umask = os.umask(0)
+                os.umask(umask)
+                mode = 0o666 & ~umask
             # A temp file with a unique name next to the target: it cannot collide with another file
             fd, temp_name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
             with os.fdopen(fd, "wb") as handle:

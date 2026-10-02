@@ -449,7 +449,8 @@ The temporary file is created next to the resolved target with a unique name (`t
 A symlink is followed: the target is replaced and the link stays.
 A temporary file is removed when the save fails.
 When the file existed at start but could not be read, the editor shows an empty document and Ctrl+S refuses with "Not saved" so that the file is not replaced.
-A file that did not exist at start is created.
+A file that did not exist at start is created with the mode its umask allows, and later saves replace it like any other file.
+If such a file appears from elsewhere before the first save, Ctrl+S refuses with "Not saved".
 It then shows the notification "Interim save (replaced by streaming save in ACT5)".
 For a larger document it writes nothing and shows "Saving large files arrives with ACT5".
 No data is lost silently and no partial file replaces the original.
