@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import threading
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
 from textual.message import Message
 
 from nova_editor.core.save import SaveIo, SaveSettings
+from nova_editor.core.save import SaveProgress as CoreSaveProgress
 from nova_editor.document._lazy_document import LazyDocument
 from nova_editor.widget import NovaTextArea
+from nova_editor.widget._text_area import _SaveRun
 from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.save_widget_helpers import SETTINGS, Gate, SaveHost, leftovers, text_of, wait_saved
 
@@ -230,8 +233,53 @@ async def test_edits_are_refused_during_a_save_but_the_cursor_moves(tmp_path: Pa
         assert not area.modified
 
 
+class FakeClock:
+    """A clock that moves `step` seconds at every reading, so the throttle of the progress messages is a function of the number of readings."""
+
+    def __init__(self, step: float) -> None:
+        self.now = 1000.0
+        self.step = step
+
+    def __call__(self) -> float:
+        self.now += self.step
+        return self.now
+
+
 @pytest.mark.asyncio
-async def test_progress_is_monotonic_and_at_most_ten_per_second(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_progress_messages_are_throttled_to_ten_per_second_by_the_clock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = _file(tmp_path)
+    area = NovaTextArea.open(path)
+    clock = FakeClock(0.03)
+    emitted: list[tuple[float, int]] = []
+    host = SaveHost(area)
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(area, "save_clock", clock)
+        real_post = area.post_message
+
+        def recording(message: Message) -> bool:
+            if isinstance(message, NovaTextArea.SaveProgress):
+                emitted.append((clock.now, message.done))
+            return real_post(message)
+
+        monkeypatch.setattr(area, "post_message", recording)
+        run = _SaveRun(path, [])
+        area._save_run = run
+        try:
+            for step in range(40):  # 40 announcements spread over 1.2 seconds of the fake clock
+                run.progress = CoreSaveProgress("writing", step * 10, 400)
+                area._announce_save_progress(run)
+        finally:
+            area._save_run = None
+        times = [when for when, _ in emitted]
+        done = [value for _, value in emitted]
+        assert 9 <= len(emitted) <= 11, emitted  # a vacuous pass is impossible: 40 readings need about 10 messages
+        assert all(later - earlier >= 0.1 - 1e-9 for earlier, later in pairwise(times)), times
+        assert done == sorted(done)
+
+
+@pytest.mark.asyncio
+async def test_progress_of_a_real_save_never_decreases_and_ends_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(NovaTextArea, "save_settings", SaveSettings(chunk=64, fsync_every=64))
     path = tmp_path / "big.txt"
     path.write_text(BODY * 80)
@@ -243,10 +291,8 @@ async def test_progress_is_monotonic_and_at_most_ten_per_second(tmp_path: Path, 
         await pilot.press("x")
         assert area.save() is True
         await wait_saved(pilot, area)
-        times = [when for when, message in host.saves if isinstance(message, NovaTextArea.SaveProgress)]
         done = [message.done for message in host.progress()]
         assert done == sorted(done)
-        assert all(times[index + 10] - times[index] >= 0.9 for index in range(len(times) - 10))
         assert len(host.terminals()) == 1
 
 
