@@ -375,3 +375,25 @@ async def test_a_thread_that_cannot_start_ends_the_search_with_search_failed(mon
         await pilot.pause()
         (done,) = host.terminals()
         assert isinstance(done, NovaTextArea.SearchFailed)
+
+
+@pytest.mark.asyncio
+async def test_a_defect_while_placing_a_match_posts_one_search_failed_and_drops_the_jump(monkeypatch: pytest.MonkeyPatch) -> None:
+    area = NovaTextArea(text=BODY)
+    host = SearchHost(area)
+    async with host.run_test(size=(40, 10)) as pilot:
+        await pilot.pause()
+        real = area.scroll_cursor_visible
+
+        def broken(*_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("injected defect")
+
+        monkeypatch.setattr(area, "scroll_cursor_visible", broken)
+        assert area.search("needle") is True
+        await settle(pilot, area)
+        assert [type(m) for m in host.terminals()] == [NovaTextArea.SearchFailed]
+        monkeypatch.setattr(area, "scroll_cursor_visible", real)
+        area._run_jump(notify=True)  # a leftover jump would place the match and post SearchFound now
+        await pilot.pause()
+        assert [type(m) for m in host.terminals()] == [NovaTextArea.SearchFailed]
+        assert area.pending_progress is None

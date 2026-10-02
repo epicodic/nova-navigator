@@ -3636,6 +3636,8 @@ NovaTextArea {
             message = self._conclude_search(run, outcome)
         except Exception as failure:
             logging.getLogger(__name__).exception("the finish of a search failed")
+            self._jump = None  # a placement left pending by the defect must not post a second terminal message later
+            self._set_progress(None)
             message = self.SearchFailed(failure, self)
         if message is not None:
             self.post_message(message.set_sender(self))
