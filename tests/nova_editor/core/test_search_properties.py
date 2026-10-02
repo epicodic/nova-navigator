@@ -10,7 +10,7 @@ from hypothesis import strategies as st
 
 from nova_editor.core.byte_source import ByteSource
 from nova_editor.core.memory_source import BytesSource
-from nova_editor.core.search import SearchJob, SearchResult, SearchSettings, SearchSpec, compile_matcher
+from nova_editor.core.search import SearchJob, SearchResult, SearchSettings, SearchSpec, Tier, compile_matcher
 from tests.nova_editor.core.fake_planner import FakePlanner, whole_file_planner
 from tests.nova_editor.core.search_reference import all_matches, boundaries, reference_search
 
@@ -129,7 +129,7 @@ def test_pattern_tier_backward_is_the_greatest_end_of_the_forward_matches(case: 
 @given(ascii_documents, ascii_needles, st.booleans())
 def test_forced_tiers_agree_on_ascii(data: bytes, needle: str, case_sensitive: bool) -> None:
     has_break = "\r" in needle or "\n" in needle
-    tiers = ["pattern", "auto"]
+    tiers: list[Tier] = ["pattern", "auto"]
     if case_sensitive and not has_break:
         tiers.append("find")
     if not case_sensitive and not has_break:
@@ -204,7 +204,7 @@ def test_job_matches_the_reference(draw: st.DataObject, case: tuple[str, bytes],
     st.integers(1, MAX_CHUNK),
     st.sampled_from(["auto", "pattern"]),
 )
-def test_job_over_one_piece_and_the_pattern_tier(draw: st.DataObject, case: tuple[str, bytes], case_sensitive: bool, backward: bool, wrap: bool, chunk: int, tier: str) -> None:
+def test_job_over_one_piece_and_the_pattern_tier(draw: st.DataObject, case: tuple[str, bytes], case_sensitive: bool, backward: bool, wrap: bool, chunk: int, tier: Tier) -> None:
     needle, data = case
     origin = draw.draw(st.sampled_from(boundaries(data)))
     spec = SearchSpec(needle, case_sensitive=case_sensitive, backward=backward, wrap=wrap)
@@ -279,7 +279,7 @@ def test_aa_in_aaaa_is_found_twice(chunk: int) -> None:
     st.sampled_from(["auto", "pattern"]),
 )
 def test_job_with_a_forced_small_pattern_span_matches_the_reference(
-    draw: st.DataObject, case: tuple[str, bytes], case_sensitive: bool, backward: bool, wrap: bool, chunk: int, span: int, tier: str
+    draw: st.DataObject, case: tuple[str, bytes], case_sensitive: bool, backward: bool, wrap: bool, chunk: int, span: int, tier: Tier
 ) -> None:
     needle, data = case
     origin = draw.draw(st.sampled_from(boundaries(data)))
