@@ -245,6 +245,16 @@ def test_newline_paste_and_checkpoint_rules_are_kept() -> None:
     doc.close()
 
 
+def test_typing_with_the_stock_character_limit_leaves_one_record_per_hundred_keystrokes() -> None:
+    doc = LazyDocument.from_text("", SMALL)
+    widget = area(doc)
+    history = new_history(chars=100)
+    for column in range(1000):
+        perform(widget, history, (0, column), (0, column), "x")
+    assert [len(batch) for batch in history.undo_stack] == [1] * 10
+    doc.close()
+
+
 def test_character_limit_forms_a_new_batch() -> None:
     doc = LazyDocument.from_text("", SMALL)
     widget = area(doc)

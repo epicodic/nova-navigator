@@ -307,7 +307,9 @@ The two flags tell whether the first byte is LF and whether the last byte is CR.
 Undo records, the clipboard and `splice` exchange `Content`, so no text is copied.
 
 **Counted tree (`PieceTree`):**
-A B+ tree (fan-out 32) keeps the pieces in parallel `array` columns, 37 bytes per piece in a leaf.
+A B+ tree (fan-out 32) keeps the pieces in parallel `array` columns, 37 bytes per piece in the leaf columns.
+That is the leaf slot only.
+The total per piece, with the inner nodes and the `Piece` object, is 99 bytes (see "Memory Budget While Editing"); the design target of below 80 bytes was missed.
 Every node carries the piece count and an aggregate `(length, breaks, first_is_lf, last_is_cr)`.
 The aggregates combine associatively, so offsets and breaks are found in O(log n).
 `splice(start, end, content)` replaces a byte range, returns the removed `Content`, merges adjacent pieces that are contiguous in one source, and rebalances.
@@ -406,7 +408,8 @@ After a deletion, undo needs no text: the removed pieces are put back, so a 1 GB
 Within one batch, an insertion that starts where the previous insertion ended extends the previous `Edit`.
 A backspace run and a delete run merge in the same way.
 Edits with line breaks, or with escaped invalid bytes in the inserted text, are never merged.
-A million keystrokes therefore leave one record.
+A run of typing within one batch therefore leaves one record.
+A batch holds at most `checkpoint_max_characters` (100) characters, so a million keystrokes leave about 10,000 batches of one coalesced `Edit` each.
 
 **Batching and limits:**
 The stock batching rules stay: a timer (2 s), a character limit (100), a newline, a paste and replacement versus insertion all start a new batch.
@@ -442,6 +445,11 @@ Measured p95 is 4.48 ms at 1 MiB and 18.41 ms at 4 MiB, so 4 MiB is the cap.
 
 Ctrl+S in `nova_edit` is an interim save that ACT5 replaces with a streaming save.
 For a document of up to `TEXT_LIMIT` (8 MiB) it writes `text.encode("utf-8", "surrogateescape")` to a temporary file next to the target, copies the permissions, and moves it over the target with `os.replace`.
+The temporary file is created next to the resolved target with a unique name (`tempfile.mkstemp`), so it cannot replace another file, and it is flushed and synced before `os.replace`.
+A symlink is followed: the target is replaced and the link stays.
+A temporary file is removed when the save fails.
+When the file existed at start but could not be read, the editor shows an empty document and Ctrl+S refuses with "Not saved" so that the file is not replaced.
+A file that did not exist at start is created.
 It then shows the notification "Interim save (replaced by streaming save in ACT5)".
 For a larger document it writes nothing and shows "Saving large files arrives with ACT5".
 No data is lost silently and no partial file replaces the original.
@@ -456,6 +464,7 @@ All figures are measured with `uv run python -m tools.measure_view` (subcommands
 
 **Pieces:**
 A piece costs about 99 bytes in a tree of 10^6 pieces (98.2 bytes by `tracemalloc`, 99.4 bytes by `RssAnon`).
+That is the total per piece, including the tree and the `Piece` object, and the design target of below 80 bytes was missed.
 
 **Splice and row query at 10^6 pieces:**
 One splice takes 0.20 ms (insert) and 0.15 ms (delete) at the median, and 0.23 ms and 0.17 ms at p95.
@@ -496,6 +505,13 @@ Measured: 2.4 ms to render the window without wrapping at 256 KiB, 6.2 ms at 1 M
 One call that measures wrapped heights (`height`, `y_of_row`, `row_of_y`) decodes at most `MEASURE_MAX_BYTES` (4 MiB) of row bytes.
 The same call measures at most `MEASURE_MAX_ROWS` (128) medium or long rows exactly.
 Rows beyond the budget get a provisional height, and the estimate timer of the widget finishes them on later ticks.
+
+**Estimates after an edit:**
+The y of a block that is not measured is estimated from the mean extra height of the measured blocks.
+An edit drops the measured blocks from the edit on, and the mean is pinned to its value before the edit while a block above the edit is still unmeasured.
+Without the pin, measuring the blocks again would change the mean and move the estimated y of every unmeasured block above the edit, and the view would jump.
+The pin is released when a block above the edit is measured, and it is not set when something was never measured or when every block above the edit is measured.
+Until it is released, the estimate of the unmeasured blocks below the edit uses the mean from before the edit.
 
 **Wrap toggle (F4 in `nova_edit`):**
 `toggle_wrap()` flips `soft_wrap` and re-wraps the wrapped document for every row class.
@@ -618,6 +634,13 @@ After an edit inside a long row (above `long_row_threshold`, 1 MiB), the display
 When the edit changes the display width by an amount that is not a multiple of the tab width, and tabs follow the edit, those columns can be off by up to `tab_width - 1` cells until the file is reopened.
 Short and medium rows are always exact.
 An edit that rebuilds the index of the row (see "Long Rows After Edits") measures the row again and is exact once the scan has passed it.
+
+### Known Limit: Approximate End Column After a UTF-8 Merge
+
+When an edit joins bytes into new characters (for example an inserted continuation byte next to a lead byte), `LazyDocument._relocate` decodes the row up to the end of the edit to find the end location.
+It does so only when that stretch is at most `RELOCATE_LIMIT` (256 KiB), or when the long index of the edited row gives a character boundary close to the edit.
+In other cases the end column is approximate and can be off by the characters that merged with the neighbours.
+The text itself is exact; only the cursor column after such an edit is affected.
 
 ### Known Limit: The Add Store Never Shrinks
 

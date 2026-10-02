@@ -72,7 +72,8 @@ class EditHistory:
         - An edit which inserts more than a single character (a paste) gets an isolated batch.
 
         Within a batch, an insertion that starts where the previous insertion ended, and a deletion that touches the previous deletion, are merged
-        into the previous `Edit` so that typing a million characters leaves one record.
+        into the previous `Edit`, so a batch of typing holds one record.
+        A batch ends after `checkpoint_max_characters` characters, so a million keystrokes leave about 10,000 batches of one `Edit` each.
 
         Args:
             edit: The edit to record.
