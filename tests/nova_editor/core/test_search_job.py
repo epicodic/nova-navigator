@@ -7,14 +7,19 @@ from itertools import pairwise
 
 import pytest
 
+from nova_editor.core import search as search_module
 from nova_editor.core.byte_source import ChangeKind, SourceChanged
 from nova_editor.core.memory_source import BytesSource
 from nova_editor.core.search import (
     CONTEXT_AFTER,
     CONTEXT_BEFORE,
+    MAX_NEEDLE_BYTES,
+    MAX_PATTERN_CHARS,
     MIN_PATTERN_SPAN,
     PATTERN_WORK_BUDGET,
+    Matcher,
     SearchCancelled,
+    SearchError,
     SearchJob,
     SearchPlan,
     SearchProgress,
@@ -22,6 +27,7 @@ from nova_editor.core.search import (
     SearchSettings,
     SearchSpec,
     SearchStale,
+    Tier,
     compile_matcher,
 )
 from tests.nova_editor.core.fake_planner import FakePlanner, whole_file_planner
@@ -271,3 +277,47 @@ def test_a_plain_find_needle_keeps_the_full_chunk() -> None:
     source = RecordingSource(b"a" * 5000)
     SearchJob(whole_file_planner(source), SearchSpec("needle"), 0, SearchSettings(chunk=4000)).run()
     assert max(size for _, size, _ in source.reads) >= 4000
+
+
+def _counting_compiles(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    calls: list[str] = []
+    real = search_module.compile_matcher
+
+    def counting(needle: str, *, case_sensitive: bool, tier: Tier = "auto") -> Matcher:
+        calls.append(needle)
+        return real(needle, case_sensitive=case_sensitive, tier=tier)
+
+    monkeypatch.setattr(search_module, "compile_matcher", counting)
+    return calls
+
+
+def test_constructing_a_job_does_not_compile_but_run_does(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _counting_compiles(monkeypatch)
+    needle = "k" * 3999 + chr(0xE9)
+    job = SearchJob(_planner(), SearchSpec(needle, case_sensitive=False), 0)
+    assert calls == []
+    assert job.run() is None
+    assert calls == [needle]
+
+
+INVALID_CASES: dict[str, tuple[str, bool, Tier]] = {
+    "empty": ("", True, "auto"),
+    "lone-surrogate": ("a\ud800", True, "auto"),
+    "too-many-bytes": ("a" * (MAX_NEEDLE_BYTES + 1), True, "auto"),
+    "too-many-chars-folded": ("a" * (MAX_PATTERN_CHARS + 1), False, "auto"),
+    "too-many-chars-forced-pattern": ("a" * (MAX_PATTERN_CHARS + 1), True, "pattern"),
+    "too-many-chars-with-breaks": ("a\n" * (MAX_PATTERN_CHARS + 1), True, "auto"),
+    "find-needs-case-sensitive": ("a", False, "find"),
+    "ascii-needs-case-insensitive": ("a", True, "ascii"),
+    "ascii-needs-ascii-fold": (chr(0xE9), False, "ascii"),
+    "ascii-needs-no-break": ("a\n", False, "ascii"),
+}
+
+
+@pytest.mark.parametrize("case", INVALID_CASES.values(), ids=INVALID_CASES.keys())
+def test_invalid_needles_fail_in_the_constructor_without_compiling(monkeypatch: pytest.MonkeyPatch, case: tuple[str, bool, Tier]) -> None:
+    needle, case_sensitive, tier = case
+    calls = _counting_compiles(monkeypatch)
+    with pytest.raises(SearchError):
+        SearchJob(_planner(), SearchSpec(needle, case_sensitive=case_sensitive), 0, SearchSettings(tier=tier))
+    assert calls == []
