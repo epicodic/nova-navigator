@@ -34,6 +34,10 @@ CONTEXT_BEFORE = 3
 """Bytes of document context a window carries before its owned range (boundary check, CR before an LF)."""
 CONTEXT_AFTER = 3
 """Bytes of document context a window carries after its owned range (boundary check, LF after a CR)."""
+PATTERN_WORK_BUDGET = 4_000_000
+"""Start positions times needle tokens one unit may cost the pattern tier (about 22 ms in the worst case)."""
+MIN_PATTERN_SPAN = 256
+"""Fewest bytes a unit owns when the pattern tier may run, however long the needle is."""
 
 _ESCAPED = range(0xDC80, 0xDD00)
 _BREAK_FORWARD = rb"(?:\r\n|(?<!\r)\n|\r(?!\n))"
@@ -77,6 +81,10 @@ class SearchSettings:
     progress_interval: float = PROGRESS_INTERVAL
     tier: str = "auto"
     """Test switch passed to `compile_matcher`."""
+    pattern_work_budget: int = PATTERN_WORK_BUDGET
+    """Work budget of a unit that may use the pattern tier (see `PATTERN_WORK_BUDGET`); tests force tiny spans."""
+    min_pattern_span: int = MIN_PATTERN_SPAN
+    """Fewest owned bytes of such a unit (see `MIN_PATTERN_SPAN`)."""
 
 
 @dataclass(frozen=True)
@@ -194,6 +202,16 @@ class Matcher:
     def max_length(self) -> int:
         """Bytes of the longest possible match (the sum over the tokens of the longest encoding)."""
         return self._max_length
+
+    @property
+    def token_count(self) -> int:
+        """Number of tokens of the needle (characters, a line break counting as one)."""
+        return len(self._tokens)
+
+    @property
+    def may_use_pattern(self) -> bool:
+        """False only when every window is served by the plain `find` tier (case-sensitive, no line break)."""
+        return self._plain is None or self._forced == "pattern"
 
     def find(self, window: bytes, lo: int, hi: int) -> tuple[int, int] | None:
         """Return the leftmost match `(start, end)` whose start lies in `[lo, hi)`; the match may extend past `hi`.
@@ -449,13 +467,22 @@ class SearchJob:
         return None
 
     def _windows(self, lo: int, hi: int, *, backward: bool) -> Iterator[tuple[int, int]]:
-        chunk = max(1, self._settings.chunk)
+        chunk = self._span()
         if not backward:
             for a in range(lo, hi, chunk):
                 yield a, min(a + chunk, hi)
         else:
             for b in range(hi, lo, -chunk):
                 yield max(lo, b - chunk), b
+
+    def _span(self) -> int:
+        """Bytes one unit owns: the chunk, cut down for long needles that may use the pattern tier."""
+        chunk = max(1, self._settings.chunk)
+        if not self._matcher.may_use_pattern:
+            return chunk
+        settings = self._settings
+        span = max(1, settings.min_pattern_span, settings.pattern_work_budget // self._matcher.token_count)
+        return min(chunk, span)
 
     def _unit(self, a: int, b: int, length: int) -> tuple[int, int] | None:
         """Search the window owning `[a, b)`; return the match in document offsets."""

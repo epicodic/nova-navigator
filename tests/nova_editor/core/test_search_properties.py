@@ -265,3 +265,25 @@ def test_aa_in_aaaa_is_found_twice(chunk: int) -> None:
     assert SearchJob(planner, back, 4, settings_).run() == SearchResult(2, 4, False)
     assert SearchJob(planner, back, 2, settings_).run() == SearchResult(0, 2, False)
     assert SearchJob(planner, back, 0, settings_).run() is None
+
+
+@JOB_SETTINGS
+@given(
+    st.data(),
+    needle_and_data(),
+    st.booleans(),
+    st.booleans(),
+    st.booleans(),
+    st.integers(1, MAX_CHUNK),
+    st.integers(1, 6),
+    st.sampled_from(["auto", "pattern"]),
+)
+def test_job_with_a_forced_small_pattern_span_matches_the_reference(
+    draw: st.DataObject, case: tuple[str, bytes], case_sensitive: bool, backward: bool, wrap: bool, chunk: int, span: int, tier: str
+) -> None:
+    needle, data = case
+    origin = draw.draw(st.sampled_from(boundaries(data)))
+    spec = SearchSpec(needle, case_sensitive=case_sensitive, backward=backward, wrap=wrap)
+    tuning = SearchSettings(chunk=chunk, tier=tier, pattern_work_budget=span, min_pattern_span=span)
+    got = SearchJob(layout_planner(data, draw), spec, origin, tuning).run()
+    assert got == _expected(data, spec, origin)
