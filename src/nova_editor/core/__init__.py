@@ -4,7 +4,7 @@ No module in this package may import Textual (REQ-17); a test enforces it.
 """
 
 from nova_editor.core.add_store import AddSegment, AddStore
-from nova_editor.core.byte_source import ByteSource, PreadSource, SourceChanged
+from nova_editor.core.byte_source import ByteSource, ChangeKind, FileIdentity, PreadSource, SourceChanged
 from nova_editor.core.line_index import LineIndex, LineSnapshot, RowRange
 from nova_editor.core.long_line_index import Frontier, LongLineIndex
 from nova_editor.core.memory_source import BytesSource
@@ -12,7 +12,11 @@ from nova_editor.core.original_source import OriginalSource, RowNotIndexed
 from nova_editor.core.piece_table import PieceTable
 from nova_editor.core.piece_tree import Location, PieceTree
 from nova_editor.core.pieces import Aggregate, Content, Piece, PieceSource, combine, make_piece, merge_pieces
+from nova_editor.core.rebase import RebasePlan, Rebaser
+from nova_editor.core.row_scanner import RowScanner
 from nova_editor.core.row_source import RowSource
+from nova_editor.core.save import check_path
+from nova_editor.core.save_layout import SaveLayout
 
 __all__ = [
     "AddSegment",
@@ -20,7 +24,9 @@ __all__ = [
     "Aggregate",
     "ByteSource",
     "BytesSource",
+    "ChangeKind",
     "Content",
+    "FileIdentity",
     "Frontier",
     "LineIndex",
     "LineSnapshot",
@@ -32,10 +38,15 @@ __all__ = [
     "PieceTable",
     "PieceTree",
     "PreadSource",
+    "RebasePlan",
+    "Rebaser",
     "RowNotIndexed",
     "RowRange",
+    "RowScanner",
     "RowSource",
+    "SaveLayout",
     "SourceChanged",
+    "check_path",
     "combine",
     "make_piece",
     "merge_pieces",

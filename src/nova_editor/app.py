@@ -1,34 +1,42 @@
 """Standalone Nova Editor application.
 
 Provides a minimal Textual app that uses NovaTextArea to edit text files.
-Supports Ctrl+S to save, Ctrl+Q to quit, and shows file path in footer.
+Supports Ctrl+S to save (streaming, atomic), F2 to save as, F5 to reload, Ctrl+Q to quit, and shows file path in footer.
 Supports lazy loading for large files with Ctrl+G goto navigation and F4 wrap toggle.
+A status bar shows the progress and the result of a save; a key driven bar asks before overwriting or discarding.
+A background poll notices when the file changed on disk.
 """
 
 from __future__ import annotations
 
 import argparse
-import contextlib
+import asyncio
 import os
 import stat
-import tempfile
+import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, ClassVar, Literal, cast
 
 from rich.console import RenderableType
 from rich.segment import Segment
+from textual import events
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.content import Content
+from textual.message import Message
 from textual.strip import Strip
 from textual.widgets import Header, Input, Static
 
 from nova_editor.core import ByteSource
+from nova_editor.core.byte_source import ChangeKind
+from nova_editor.core.save import check_path
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.document._lazy_document import LazyDocument
-from nova_editor.widget import NovaTextArea
-from nova_editor.widget._text_area import TEXT_LIMIT
+from nova_editor.widget import ExternalCheck, NovaTextArea
 
 
 @dataclass
@@ -85,6 +93,201 @@ class GotoBar(Input):
         editors = self.app.query(NovaTextArea)
         if editors:
             editors.first().focus()
+
+
+class PathBar(Input):
+    """Input field for the save-as path (F2). Enter saves, Escape closes it."""
+
+    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [("escape", "close", "Close")]
+
+    def __init__(self) -> None:
+        super().__init__(id="path_bar", placeholder="Save as: path")
+
+    def open(self, path: Path | None) -> None:
+        """Show the bar prefilled with `path` and focus it."""
+        self.value = "" if path is None else str(path)
+        self.display = True
+        self.focus()
+        self.cursor_position = len(self.value)
+
+    def action_close(self) -> None:
+        """Hide the bar, clear it and give the focus back to the editor."""
+        self.display = False
+        self.value = ""
+        editors = self.app.query(NovaTextArea)
+        if editors:
+            editors.first().focus()
+
+
+QUIT_POLL_SECONDS = 0.02
+_UNITS = ("B", "KiB", "MiB", "GiB", "TiB")
+_KIB = 1024
+
+
+def format_sizes(done: int, total: int) -> str:
+    """Format `done / total` in the binary unit that suits `total` (`1.2 / 5.0 GiB`)."""
+    unit = 0
+    while unit < len(_UNITS) - 1 and total >= _KIB ** (unit + 1):
+        unit += 1
+    scale = _KIB**unit
+    if unit == 0:
+        return f"{done} / {total} B"
+    return f"{done / scale:.1f} / {total / scale:.1f} {_UNITS[unit]}"
+
+
+class SaveBar(Static):
+    """Status line of a save: progress while it runs, then a result line for 4 s; a failure stays until a key is pressed. Hidden when idle."""
+
+    RESULT_SECONDS: ClassVar[float] = 4.0
+
+    def __init__(self) -> None:
+        super().__init__("", id="save_bar", markup=False)
+        self.line = ""
+        """The text shown (empty when idle)."""
+        self.clock: Callable[[], float] = time.monotonic
+        """Time source of the result timeout (tests replace it)."""
+        self.failed = False
+        """Whether the line is a failure, which stays until a key is pressed."""
+        self._expires: float | None = None
+
+    def on_mount(self) -> None:
+        self.set_interval(0.1, self.tick)
+
+    def _show(self, line: str) -> None:
+        self.line = line
+        self.update(line)
+        self.display = True
+
+    def show_progress(self, phase: str, done: int, total: int) -> None:
+        """Show the state of a running save."""
+        self.failed = False
+        self._expires = None
+        if phase == "flushing":
+            self._show("Flushing")
+        elif phase == "history":
+            self._show("Preserving undo history")
+        elif phase == "finishing":
+            self._show("Finishing")
+        else:
+            percent = 100 if total <= 0 else round(done * 100 / total)
+            self._show(f"Saving  {format_sizes(done, total)}  {percent} %  Esc cancels")
+
+    def show_result(self, line: str) -> None:
+        """Show a result line that disappears after `RESULT_SECONDS`."""
+        self.failed = False
+        self._expires = self.clock() + self.RESULT_SECONDS
+        self._show(line)
+
+    def show_failure(self, line: str) -> None:
+        """Show a failure; it stays until `clear`."""
+        self.failed = True
+        self._expires = None
+        self._show(line)
+
+    def clear(self) -> None:
+        """Hide the bar."""
+        self.failed = False
+        self._expires = None
+        self.line = ""
+        self.update("")
+        self.display = False
+
+    def tick(self) -> None:
+        """Hide a result line whose time is over."""
+        if self._expires is not None and self.clock() >= self._expires:
+            self.clear()
+
+
+_CHANGE_TEXT: dict[ChangeKind, str] = {
+    ChangeKind.MODIFIED: "The file changed on disk",
+    ChangeKind.TRUNCATED: "The file was truncated on disk",
+    ChangeKind.REPLACED: "The file was replaced on disk",
+    ChangeKind.DELETED: "The file was deleted on disk",
+    ChangeKind.CREATED: "The file was created since the editor started",
+    ChangeKind.EXISTS: "The file already exists",
+    ChangeKind.UNREADABLE: "The file cannot be read",
+}
+
+
+class ConfirmBar(Static):
+    """Key driven question for overwrite, reload and external change: O overwrite, A save as, R reload, Esc keep."""
+
+    can_focus = True
+
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("o,O", "choose('overwrite')", "Overwrite", show=False),
+        Binding("a,A", "choose('save_as')", "Save as", show=False),
+        Binding("r,R", "choose('reload')", "Reload", show=False),
+        Binding("escape", "choose('keep')", "Keep", show=False),
+    ]
+
+    @dataclass
+    class Chosen(Message):
+        """The user answered the question."""
+
+        choice: str
+        """`overwrite`, `save_as`, `reload` or `keep`."""
+        path: Path | None
+        """The file the question was about."""
+
+    def __init__(self) -> None:
+        super().__init__("", id="confirm_bar", markup=False)
+        self.kind: ChangeKind | None = None
+        """What the question is about (`None` for a plain reload)."""
+        self.path: Path | None = None
+        """The file the question is about."""
+        self._allowed: set[str] = set()
+
+    def ask(self, kind: ChangeKind | None, path: Path | None, *, overwrite: bool, save_as: bool, reload: bool) -> None:
+        """Show the question and take the focus.
+
+        Args:
+            kind: What differs; `None` asks whether to discard the edits and reload.
+            path: The file the question is about.
+            overwrite: Offer `O`.
+            save_as: Offer `A`.
+            reload: Offer `R`.
+        """
+        self.kind = kind
+        self.path = path
+        self._allowed = {"keep"}
+        offers = []
+        if overwrite:
+            self._allowed.add("overwrite")
+            offers.append("O overwrite")
+        if save_as:
+            self._allowed.add("save_as")
+            offers.append("A save as")
+        if reload:
+            self._allowed.add("reload")
+            offers.append("R reload")
+        offers.append("Esc keep")
+        head = "Discard the edits and reload?" if kind is None else _CHANGE_TEXT.get(kind, "The file changed")
+        self.update(f"{head}  {'  '.join(offers)}")
+        self.display = True
+        self.focus()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Offer only the keys that the question lists."""
+        if action == "choose":
+            return str(parameters[0]) in self._allowed
+        return super().check_action(action, parameters)
+
+    def action_choose(self, choice: str) -> None:
+        """Hide the bar and report the answer."""
+        self.display = False
+        self.post_message(self.Chosen(choice, self.path))
+
+
+def not_regular_reason(path: Path) -> str | None:
+    """Return why `path` cannot be opened (it exists but is a FIFO, a device, a directory, ...), or `None`."""
+    try:
+        mode = os.stat(path).st_mode
+    except OSError:
+        return None
+    if stat.S_ISREG(mode):
+        return None
+    return f"{path}: not a regular file"
 
 
 class TimedNovaTextArea(NovaTextArea):
@@ -214,7 +417,7 @@ class EditorFooter(Static):
         self.file_path = file_path
 
     def render(self) -> str:
-        base = "Ctrl+S: Save | Ctrl+Q: Quit | F4 Wrap | Ctrl+G Goto"
+        base = "Ctrl+S: Save | F2 Save as | F5 Reload | Ctrl+Q: Quit | F4 Wrap | Ctrl+G Goto"
         if self.file_path:
             return f"File: {self.file_path} | {base}"
         return base
@@ -226,8 +429,11 @@ class NovaEditApp(App[None]):
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
         ("ctrl+s", "save", "Save"),
         ("ctrl+q", "quit", "Quit"),
+        ("f2", "show_path_bar", "Save as"),
         ("f4", "toggle_wrap", "Toggle wrap"),
+        ("f5", "reload", "Reload"),
         ("ctrl+g", "show_goto", "Show goto"),
+        ("escape", "cancel_save", "Cancel save"),
     ]
 
     CSS: ClassVar[str] = """
@@ -252,11 +458,35 @@ class NovaEditApp(App[None]):
         display: none;
     }
 
+    #path_bar {
+        width: 100%;
+        height: 1;
+        border: none;
+        display: none;
+    }
+
+    #save_bar, #confirm_bar {
+        width: 100%;
+        height: 1;
+        display: none;
+    }
+
+    #confirm_bar {
+        background: $warning;
+        color: $text;
+    }
+
     #footer {
         height: 1;
         dock: bottom;
     }
     """
+
+    POLL_SECONDS: float = 2.0
+    """Interval of the check for a change of the file on disk."""
+
+    QUIT_WAIT_SECONDS: ClassVar[float] = 2.0
+    """Longest wait for a cancelled save before quitting."""
 
     def __init__(self, file_path: Path | None = None) -> None:
         super().__init__()
@@ -267,116 +497,198 @@ class NovaEditApp(App[None]):
         self.goto_bar: GotoBar | None = None
         self._timing_file: str | None = os.environ.get("NOVA_EDIT_TIMING_FILE")
         self._timing_first_content_written = False
+        self._polling = False
+        self._deferred_change: ChangeKind | None = None
+        """A change that `SourceChanged` reported while a save ran: announced after the save when it did not rebase the document."""
+
+    def _empty_editor(self) -> TimedNovaTextArea:
+        return TimedNovaTextArea(id="editor", text="", soft_wrap=False, timing_file=self._timing_file)
+
+    def _open_editor(self, path: Path) -> TimedNovaTextArea:
+        """Open `path` in an editor; when it cannot be opened, notify, set the load state and return an empty editor."""
+        reason = not_regular_reason(path)  # opening a FIFO would block
+        if reason is not None:
+            self._load_state = "failed"
+            self.notify(f"Error loading file: {reason}", severity="error")
+            return self._empty_editor()
+        try:
+            return TimedNovaTextArea.open(path, id="editor", soft_wrap=False, timing_file=self._timing_file)
+        except OSError as e:
+            self._load_state = "new" if isinstance(e, FileNotFoundError) else "failed"
+            self.notify(f"Error loading file: {e}", severity="error")
+            return self._empty_editor()
 
     def compose(self) -> ComposeResult:
         """Compose the UI."""
         yield Header(show_clock=False)
 
-        # Open the file using TimedNovaTextArea for timing hook support
-        if self.file_path:
-            try:
-                self.editor = TimedNovaTextArea.open(
-                    self.file_path,
-                    id="editor",
-                    soft_wrap=False,
-                    timing_file=self._timing_file,
-                )
-            except OSError as e:
-                self._load_state = "new" if isinstance(e, FileNotFoundError) else "failed"
-                self.notify(f"Error loading file: {e}", severity="error")
-                self.editor = TimedNovaTextArea(
-                    id="editor",
-                    text="",
-                    soft_wrap=False,
-                    timing_file=self._timing_file,
-                )
-        else:
-            self.editor = TimedNovaTextArea(
-                id="editor",
-                text="",
-                soft_wrap=False,
-                timing_file=self._timing_file,
-            )
-
+        self.editor = self._open_editor(self.file_path) if self.file_path else self._empty_editor()
         yield self.editor
 
         # Add goto bar (initially hidden)
         self.goto_bar = GotoBar()
         yield self.goto_bar
+        yield PathBar()
+        yield SaveBar()
+        yield ConfirmBar()
 
         yield EditorFooter(self.file_path)
 
-    def action_save(self) -> None:
-        """Save the current document.
+    def on_mount(self) -> None:
+        """Start the poll for external changes."""
+        self.set_interval(self.POLL_SECONDS, self._poll)
 
-        ACT5 replaces this with streaming save.
-        """
-        if not self.editor or not self.file_path:
-            self.notify("No file loaded", severity="warning")
+    @property
+    def _save_bar(self) -> SaveBar:
+        return self.query_one(SaveBar)
+
+    @property
+    def _confirm_bar(self) -> ConfirmBar:
+        return self.query_one(ConfirmBar)
+
+    @property
+    def _path_bar(self) -> PathBar:
+        return self.query_one(PathBar)
+
+    def _refocus_editor(self) -> None:
+        if self.editor:
+            self.editor.focus()
+
+    # Polling
+
+    def _poll(self) -> None:
+        """Timer or app focus: start one check of the file on a thread, unless one still runs or a save is under way."""
+        editor = self.editor
+        if editor is None or self._polling:
             return
-
-        # `text` is "" above TEXT_LIMIT: never write that over the file (streaming save arrives with ACT5)
-        if self.editor.document.length > TEXT_LIMIT:
-            self.notify("Saving large files arrives with ACT5", severity="warning")
+        check = editor.begin_external_check()
+        if check is None:
             return
+        self._polling = True
+        self.run_worker(partial(self._poll_check, check), thread=True, group="poll", exit_on_error=False)
 
-        if self._load_state == "failed":
-            self.notify("Not saved: the file could not be loaded, saving would replace it with an empty document", severity="error")
-            return
-
-        # Follow symlinks: the target is replaced, the link stays
-        target = Path(os.path.realpath(self.file_path))
-        if self._load_state == "new" and target.exists():
-            self.notify("Not saved: the file was created after the editor started", severity="error")
-            return
-
-        temp_name: str | None = None
+    def _poll_check(self, check: ExternalCheck) -> None:
+        """Worker thread: only the `stat` calls of the check (they may block on a network file system); the UI thread applies the result."""
+        kind = ChangeKind.UNCHANGED
         try:
-            text_bytes = self.editor.text.encode("utf-8", "surrogateescape")
-            try:
-                mode = stat.S_IMODE(target.stat().st_mode)
-            except OSError:
-                # A new file gets the mode its creator's umask allows (the umask can only be read by setting it)
-                umask = os.umask(0)
-                os.umask(umask)
-                mode = 0o666 & ~umask
-            # A temp file with a unique name next to the target: it cannot collide with another file
-            fd, temp_name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(text_bytes)
-                handle.flush()
-                os.fsync(handle.fileno())
-                os.fchmod(handle.fileno(), mode)
-            os.replace(temp_name, target)
-            temp_name = None
-            # The document is now bound to this file, so later saves replace it like any loaded file
-            self._load_state = "loaded"
-            self.notify("Interim save (replaced by streaming save in ACT5)", severity="information")
-        except OSError as e:
-            self.notify(f"Error saving file: {e}", severity="error")
+            kind = check.run()
         finally:
-            if temp_name is not None:
-                with contextlib.suppress(OSError):
-                    os.unlink(temp_name)
+            try:
+                posted = self.post_message(events.Callback(partial(self._poll_done, check, kind)))
+            except RuntimeError:  # the app is closing
+                posted = False
+            if not posted:
+                self._polling = False
+
+    def _poll_done(self, check: ExternalCheck, kind: ChangeKind) -> None:
+        """UI thread: the poll ended; apply its result (the widget ignores one that a save made out of date)."""
+        self._polling = False
+        editor = self.editor
+        if editor is not None:
+            editor.apply_external_check(check, kind)
+
+    def on_app_focus(self, event: events.AppFocus) -> None:
+        """The terminal got the focus back: the file may have changed meanwhile, so run the same check as the poll."""
+        self._poll()
+
+    # Keys
+
+    def action_save(self) -> None:
+        """Save the document (Ctrl+S); without a file the path bar asks for one."""
+        editor = self.editor
+        if editor is None or editor.saving:
+            return
+        if self._load_state == "failed":
+            self.notify("Not saved: the file could not be loaded, saving would replace it with an empty document. Use save as.", severity="error")
+            self._path_bar.open(self.file_path)
+            return
+        if editor.file_path is None:
+            if self.file_path is None:
+                self._path_bar.open(None)
+            else:
+                self._save_to(self.file_path)
+            return
+        if not editor.modified:
+            self._save_bar.show_result("No changes to save")
+            return
+        editor.save()
+
+    def action_show_path_bar(self) -> None:
+        """Open the save-as bar (F2), prefilled with the current path."""
+        editor = self.editor
+        current = editor.file_path if editor is not None and editor.file_path is not None else self.file_path
+        self._path_bar.open(current)
+
+    def action_reload(self) -> None:
+        """Reload the file (F5); a modified document asks first."""
+        editor = self.editor
+        if editor is None:
+            return
+        if editor.saving:
+            self.notify("A save is running", severity="warning")
+            return
+        if editor.file_path is None:
+            self.notify("Nothing to reload", severity="warning")
+            return
+        if editor.modified:
+            self._confirm_bar.ask(None, editor.file_path, overwrite=False, save_as=False, reload=True)
+            return
+        editor.reload()
+
+    def action_cancel_save(self) -> None:
+        """Cancel a running save (Esc)."""
+        if self.editor:
+            self.editor.cancel_save()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Keep Esc for the widget and the bars unless a save runs."""
+        if action == "cancel_save":
+            return self.editor is not None and self.editor.saving
+        return super().check_action(action, parameters)
+
+    async def on_event(self, event: events.Event) -> None:
+        """A key press dismisses a failure shown by the save bar."""
+        if isinstance(event, events.Key):
+            bars = self.query(SaveBar)
+            if bars and bars.first().failed:
+                bars.first().clear()
+        await super().on_event(event)
 
     async def action_quit(self) -> None:
-        """Quit the application."""
+        """Quit the application; a running save is cancelled and given up to `QUIT_WAIT_SECONDS` to end."""
+        editor = self.editor
+        if editor is not None and editor.saving:
+            editor.cancel_save()
+            for _ in range(round(self.QUIT_WAIT_SECONDS / QUIT_POLL_SECONDS)):
+                if not editor.saving:
+                    break
+                await asyncio.sleep(QUIT_POLL_SECONDS)
         self.exit()
 
-    def action_toggle_wrap(self) -> None:
-        """Toggle soft wrap mode."""
-        if self.editor:
-            self.editor.toggle_wrap()
+    # Saving
 
-    def action_show_goto(self) -> None:
-        """Show/hide the GotoBar."""
-        if self.goto_bar:
-            self.goto_bar.display = not self.goto_bar.display
-            if self.goto_bar.display:
-                self.goto_bar.focus()
+    def _save_to(self, path: Path, *, confirmed: bool = False) -> None:
+        """Save to `path` (a save as, or the first save of a new file)."""
+        editor = self.editor
+        if editor is None:
+            return
+        path = path.expanduser().absolute()
+        first_save = self._load_state == "new" and self.file_path is not None and os.path.realpath(path) == os.path.realpath(self.file_path)
+        if first_save and not confirmed and check_path(path, None) is ChangeKind.CREATED:
+            self._confirm_bar.ask(ChangeKind.CREATED, path, overwrite=True, save_as=True, reload=False)
+            return
+        editor.save(path, overwrite=confirmed or first_save)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Handle input submission from GotoBar."""
+        """Handle input submission from the goto bar and the path bar."""
+        if event.input.id == "path_bar":
+            text = event.value.strip()
+            if not text:
+                self.notify("No path given", severity="warning")
+                return
+            self._path_bar.action_close()
+            self._save_to(Path(text))
+            return
         if event.input.id != "goto_bar":
             return
 
@@ -398,6 +710,108 @@ class NovaEditApp(App[None]):
         if self.editor:
             self.editor.focus()
 
+    def on_confirm_bar_chosen(self, message: ConfirmBar.Chosen) -> None:
+        """Carry out the answer of the confirm bar."""
+        self._refocus_editor()
+        editor = self.editor
+        if editor is None:
+            return
+        if message.choice == "overwrite" and message.path is not None:
+            if editor.file_path is None:
+                self._save_to(message.path, confirmed=True)
+            else:
+                editor.save(message.path, overwrite=True)
+        elif message.choice == "save_as":
+            self._path_bar.open(message.path)
+        elif message.choice == "reload" and not editor.saving:
+            editor.reload()
+
+    def on_nova_text_area_save_progress(self, message: NovaTextArea.SaveProgress) -> None:
+        """Show the progress of the save."""
+        self._save_bar.show_progress(message.phase, message.done, message.total)
+
+    def on_nova_text_area_saved(self, message: NovaTextArea.Saved) -> None:
+        """Show the result and follow the file the document is bound to now."""
+        self._load_state = "loaded"
+        self.file_path = message.path
+        footer = self.query_one(EditorFooter)
+        footer.file_path = message.path
+        footer.refresh()
+        self._save_bar.show_result(f"Saved  {message.path.name}  {format_sizes(message.length, message.length)}")
+        self._deferred_change = None
+
+    def on_nova_text_area_save_failed(self, message: NovaTextArea.SaveFailed) -> None:
+        """Show the failure with its stage; it stays until a key is pressed."""
+        reason = message.error.strerror or str(message.error)
+        written = "  The file was written; press F5 to reload." if message.committed else ""
+        self._save_bar.show_failure(f"Save failed ({message.stage}): {reason}{written}  Press a key")
+        self._recheck_deferred_change(committed=message.committed)
+
+    def on_nova_text_area_save_cancelled(self, message: NovaTextArea.SaveCancelled) -> None:
+        """Show that the save was cancelled."""
+        self._save_bar.show_result("Save cancelled")
+        self._recheck_deferred_change()
+
+    def on_nova_text_area_save_needs_confirmation(self, message: NovaTextArea.SaveNeedsConfirmation) -> None:
+        """Ask before overwriting."""
+        exists = message.kind in {ChangeKind.EXISTS, ChangeKind.CREATED}
+        reload = not exists and self.editor is not None and self.editor.file_path is not None
+        self._confirm_bar.ask(message.kind, message.path, overwrite=True, save_as=True, reload=reload)
+
+    def on_nova_text_area_source_changed(self, message: NovaTextArea.SourceChanged) -> None:
+        """Ask what to do about a file that changed on disk."""
+        editor = self.editor
+        if editor is None:
+            return
+        if editor.saving:  # asking now would compete with the save: remember it, the end of the save decides (a commit lifts the state)
+            self._deferred_change = message.kind
+            return
+        self._announce_change(message.kind)
+
+    def _announce_change(self, kind: ChangeKind) -> None:
+        """Ask what to do about a file that changed on disk, unless the view is not stale any more.
+
+        A `SourceChanged` posted during a save can be handled after the save ended; when the save rebased the document onto its own file the view
+        is no longer stale and the check finds nothing, so there is nothing to ask.
+        """
+        editor = self.editor
+        if editor is None:
+            return
+        current = editor.check_external_change()  # the stale kind while the view is stale, else a fresh check
+        if current is ChangeKind.UNCHANGED:
+            return
+        self._confirm_bar.ask(kind, editor.file_path, overwrite=editor.modified, save_as=True, reload=editor.file_path is not None)
+
+    def _recheck_deferred_change(self, *, committed: bool = False) -> None:
+        """After a save: announce the change that was seen while it ran unless the save rebased the document (the file is then the app's own)."""
+        deferred, self._deferred_change = self._deferred_change, None
+        editor = self.editor
+        if deferred is None or committed or editor is None or editor.saving:
+            return
+        kind = editor.check_external_change()  # still stale, or changed again: either way the current kind
+        if kind is not ChangeKind.UNCHANGED:
+            self._announce_change(kind)
+
+    def on_nova_text_area_reloaded(self, message: NovaTextArea.Reloaded) -> None:
+        """Show that the file was reloaded."""
+        self._save_bar.show_result("Reloaded")
+
+    def on_nova_text_area_reload_failed(self, message: NovaTextArea.ReloadFailed) -> None:
+        """Show why the file could not be reloaded."""
+        self._save_bar.show_failure(f"Reload failed: {message.error.strerror or message.error}  Press a key")
+
+    def action_toggle_wrap(self) -> None:
+        """Toggle soft wrap mode."""
+        if self.editor:
+            self.editor.toggle_wrap()
+
+    def action_show_goto(self) -> None:
+        """Show/hide the GotoBar."""
+        if self.goto_bar:
+            self.goto_bar.display = not self.goto_bar.display
+            if self.goto_bar.display:
+                self.goto_bar.focus()
+
 
 def main() -> None:
     """Entry point for the nova_edit command."""
@@ -416,6 +830,10 @@ def main() -> None:
     file_path: Path | None = None
     if args.file:
         file_path = Path(args.file)
+        reason = not_regular_reason(file_path)
+        if reason is not None:
+            sys.stderr.write(f"nova_edit: {reason}\n")
+            sys.exit(1)
 
     app = NovaEditApp(file_path=file_path)
     app.run()

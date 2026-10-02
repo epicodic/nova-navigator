@@ -19,6 +19,15 @@ Usage (every subcommand appends JSON lines to `--out`, prints one summary line a
     uv run python -m tools.measure_view pieces [--sizes 1000,10000,100000,1000000] [--calls N] [--memory-size N] [--runs N] [--out O]
     uv run python -m tools.measure_view undo-record [--file F] [--count N] [--out O]
     uv run python -m tools.measure_view clipboard [--file F] [--sizes 65536,262144,1048576,4194304] [--calls 50] [--out O]
+  ACT5 (save) subcommands; `--out` defaults to `<results>/<subcommand>-<file stem>[-<wrap>].jsonl`, `--results` to `$RESULTS` or `$REFS/results/act5` (`$REFS`: `/tmp/scratchpad/s0001-refs`):
+    uv run python -m tools.measure_view save-5g --file F [--target T] [--wrap {off,on}] [--chunk N] [--fsync-every N] [--scatter 1000] [--delete-bytes N] [--paste-bytes N] --runs N [--out O]
+    uv run python -m tools.measure_view save-latency --file F [--target T] --wrap {off,on,both} [--steps 150] [--max-rounds N] --runs N [--out O]
+    uv run python -m tools.measure_view save-sweep --file F [--target T] [--chunks 1048576,4194304] [--fsync-every 67108864,268435456,1073741824] [--no-index] [--out O]
+    uv run python -m tools.measure_view save-longline --file F --copy C [--column 100000000] [--keep-copy] [--out O]
+    uv run python -m tools.measure_view save-retention --file F --copy C [--delete-bytes N] [--keep-copy] [--out O]
+    uv run python -m tools.measure_view save-records [--records 1,1000,10000] [--long-indexes 8] [--out O]
+    uv run python -m tools.measure_view save-cancel --file F [--target T] [--cancel-at 0.5] [--out O]
+    uv run python -m tools.measure_view save-fulldisk --file F [--target T] [--no-mount] [--tmpfs-bytes N] [--out O]
 
 OP is one of down, up, pagedown, pageup, left, right, home, end, ctrl+right, hscroll, farjump.
 
@@ -35,6 +44,13 @@ Methods:
     edit-memory: one child process, `RssAnon` sampled every 50 ms by the parent; the child selects about 1 GB (100 MB of the line for a long row file), deletes,
         undoes, redoes, copies, pastes elsewhere and undoes, printing `PHASE <step> <ns>`; every step is followed by a `verify` row (window hashes of the document against
         windows computed from the file with the offset arithmetic of the scenario). `<out>.samples.jsonl` holds every 50 ms sample with its phase.
+    save-*: one child per run in a headless app; the parent samples `RssAnon` every 50 ms (`<out>.samples.jsonl`) and cuts the samples at the phase marks `writing`,
+        `flushing`, `finishing` and `history` that the child prints when the first progress report of the next phase arrives (`save-window` is `pre_save` to the end of `history`).
+        The edited document (1,000 scattered edits, a 1 GB delete, a paste) is saved as to `--target`; the output is verified by window hashes plus the length against
+        a model computed from the original file and the edit offsets (never by reading the document). `--target` equal to `--file`, and any write under `$REFS` outside
+        `results/act5`, is refused. `save-longline` and `save-retention` copy `--file` to `--copy` and save in place on the copy. `--no-index` runs `build_index=False`:
+        the save ends with `SaveFailed` stage `internal` (no line index to rebase onto, Task 20 is conditional); the file is written and verified and the row says
+        `index_after_rebase: false`. `save-fulldisk` tries a tmpfs mount and otherwise injects `ENOSPC` through `SaveIo` (the row says which: `method`).
     edit-latency, edit-scatter, segments: direct injection of keys (no Pilot), one child per run, `latency_ms` as for `latency`; edits count as a change when the document length changes.
 Percentiles in `summarise` use the nearest-rank method.
 Files of at most 1 MiB get lowered thresholds (`--config auto`), so a small synthetic file exercises the medium and long row paths.
@@ -52,6 +68,7 @@ import logging
 import os
 import pty
 import select
+import shutil
 import struct
 import subprocess
 import sys
@@ -62,14 +79,19 @@ from collections.abc import Callable, Coroutine, Sequence
 from pathlib import Path
 from typing import Any
 
-from tools import _view_edit, _view_edit_core, _view_edit_latency, _view_oracle, _view_scenarios, _view_thresholds
+from nova_editor.core.save import CHUNK, FSYNC_EVERY
+from tools import _view_edit, _view_edit_core, _view_edit_latency, _view_oracle, _view_save, _view_scenarios, _view_thresholds
 from tools._view_app import versions
 from tools._view_procmem import COLD_RESIDENCY_LIMIT, KIB_PER_MIB, Supervised, drop_cache, kill_group, median, percentile, read_mem, read_rchar, resident_fraction, supervise
 from tools._view_summary import summarise_files
 from tools._view_thresholds import run_thresholds
 
 FAR = 100_000_000
-DEFAULT_RESULTS = str(Path(tempfile.gettempdir()) / "scratchpad" / "s0001-refs" / "results" / "act4")
+DEFAULT_REFS = str(Path(tempfile.gettempdir()) / "scratchpad" / "s0001-refs")
+DEFAULT_RESULTS = str(Path(DEFAULT_REFS) / "results" / "act4")
+SAVE_RESULTS = Path("results") / "act5"
+"""Where under `$REFS` the save measurements may write."""
+BYTES_PER_GIB = 1 << 30
 EDIT_TIMEOUT = 1800.0
 SYNTHETIC_ROWS = 3000
 DEFAULT_SCAN_BLOCK = 1 << 20
@@ -99,6 +121,11 @@ def _scenarios() -> dict[str, Scenario]:
         "pieces": _view_edit_core.pieces_scenario,
         "undo-record": _view_edit_core.undo_record_scenario,
         "clipboard": _view_edit_core.clipboard_scenario,
+        "save": _view_save.save_scenario,
+        "save-latency": _view_save.latency_scenario,
+        "save-longline": _view_save.longline_scenario,
+        "save-retention": _view_save.retention_scenario,
+        "save-records": _view_save.records_scenario,
     }
 
 
@@ -354,11 +381,11 @@ def cmd_sweep(args: argparse.Namespace) -> int:
 
 
 # -- edit subcommands (ACT4) --------------------------------------------------------------------------------------------------------
-def _out_path(args: argparse.Namespace, name: str) -> Path:
-    """`--out` when given, otherwise `<results>/<name>-<file stem>[-<wrap>].jsonl` with the results directory from `--results`, `$RESULTS` or the ACT4 default."""
+def _out_path(args: argparse.Namespace, name: str, default: str = DEFAULT_RESULTS) -> Path:
+    """`--out` when given, otherwise `<results>/<name>-<file stem>[-<wrap>].jsonl` with the results directory from `--results`, `$RESULTS` or `default` (the ACT4 directory)."""
     if args.out:
         return Path(args.out)
-    results = Path(args.results or os.environ.get("RESULTS") or DEFAULT_RESULTS)
+    results = Path(args.results or os.environ.get("RESULTS") or default)
     parts = [name, Path(args.file).stem if getattr(args, "file", None) else "synthetic"]
     wrap = getattr(args, "wrap", None)
     if wrap:
@@ -520,6 +547,253 @@ def cmd_clipboard(args: argparse.Namespace) -> int:
         return code
 
     return _with_file(args, run)
+
+
+# -- save subcommands (ACT5) --------------------------------------------------------------------------------------------------------
+def _save_results() -> str:
+    return str(Path(os.environ.get("REFS") or DEFAULT_REFS) / SAVE_RESULTS)
+
+
+def _guard_write(path: Path, *references: Path) -> Path:
+    """Return the resolved `path`, or exit when writing it would touch a reference file or `$REFS` outside `results/act5`."""
+    resolved = Path(os.path.realpath(path))
+    for reference in references:
+        if resolved == Path(os.path.realpath(reference)) or (resolved.exists() and reference.exists() and resolved.samefile(reference)):
+            msg = f"refusing to write {path}: it is the reference file {reference}"
+            raise SystemExit(msg)
+    refs = Path(os.path.realpath(os.environ.get("REFS") or DEFAULT_REFS))
+    if resolved.is_relative_to(refs) and not resolved.is_relative_to(refs / SAVE_RESULTS):
+        msg = f"refusing to write {path}: under {refs} only {refs / SAVE_RESULTS} may be written"
+        raise SystemExit(msg)
+    return resolved
+
+
+def _require_free(directory: Path, gib: float) -> None:
+    """Exit unless the file system of `directory` (or of its nearest existing parent) has `gib` GiB free."""
+    existing = directory
+    while not existing.exists() and existing != existing.parent:
+        existing = existing.parent
+    free = shutil.disk_usage(existing).free
+    if free < gib * BYTES_PER_GIB:
+        msg = f"only {free / BYTES_PER_GIB:.1f} GiB free on {existing}; need {gib:.1f} GiB (--min-free-gib)"
+        raise SystemExit(msg)
+
+
+def _save_target(args: argparse.Namespace) -> Path:
+    """The save-as target: `--target` or `<results>/out-5g.txt`; guarded, its directory made, free space checked."""
+    default = Path(args.results or os.environ.get("RESULTS") or _save_results()) / "out-5g.txt"
+    target = _guard_write(Path(args.target) if args.target else default, Path(args.file))
+    _guard_write(_out_path(args, args.command, _save_results()))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _require_free(target.parent, args.min_free_gib)
+    return target
+
+
+def _save_spec(args: argparse.Namespace, run: int, case: str, **extra: object) -> dict[str, Any]:
+    return _spec(
+        args,
+        run,
+        case=case,
+        chunk=getattr(args, "chunk", CHUNK),
+        fsync_every=getattr(args, "fsync_every", FSYNC_EVERY),
+        scatter=getattr(args, "scatter", 1000),
+        delete_bytes=getattr(args, "delete_bytes", 1_000_000_000),
+        paste_bytes=getattr(args, "paste_bytes", 100_000_000),
+        **extra,
+    )
+
+
+def _save_one(args: argparse.Namespace, kind: str, spec: dict[str, Any], samples: list[Row]) -> tuple[list[Row], bool]:
+    """Run one save child; return its rows plus one `phase` row per mark, the `save-window` row and a `session` row, and whether it ended as expected."""
+    path = Path(spec["file"])
+    case = str(spec["case"])
+    child_rows, lines, result = run_child(kind, spec, args.timeout)
+    done = "DONE" in lines
+    marks = _marks(lines)
+    common = {"status": result.status if result.status != "exit" or done else "exit_incomplete", "returncode": result.returncode}
+    rows: list[Row] = [*child_rows]
+    begin = result.t0_ns
+    for name, end in marks:
+        window = [sample for sample in result.samples if begin <= sample.t_ns <= end]
+        last = window[-1].rss_anon_kb if window else None
+        rows.append(_base(case, path, wrap=spec["wrap"], state=name, op="phase", run=spec["run"], **common, phase_ms=(end - begin) / 1e6, rss_anon_kb_last=last, **_figures(result.maxima(begin, end))))
+        samples.extend(
+            {"case": f"{case}-sample", "file": path.name, "wrap": spec["wrap"], "run": spec["run"], "phase": name, "t_ms": (sample.t_ns - result.t0_ns) / 1e6, "rss_anon_kb": sample.rss_anon_kb}
+            for sample in window
+        )
+        begin = end
+    start, stop = _view_save.start_mark(marks), _view_save.last_saved_phase(marks)
+    if start is not None and stop is not None:
+        rows.append(_base(case, path, wrap=spec["wrap"], state="save-window", op="phase", run=spec["run"], **common, phase_ms=(stop - start) / 1e6, **_figures(result.maxima(start, stop))))
+    rows.append(
+        _base(
+            case,
+            path,
+            wrap=spec["wrap"],
+            state="session",
+            op="session",
+            run=spec["run"],
+            **common,
+            phases=[name for name, _ in marks],
+            stderr_tail=result.stderr_tail if not done else "",
+            **_figures(result.maxima()),
+        )
+    )
+    ok = done and not any(row.get("ok") is False for row in child_rows)
+    return rows, ok
+
+
+def _save_finish(case: str, rows: list[Row], samples: list[Row], out: Path, failures: int) -> int:
+    _append(out, [row for row in rows if row["state"] != "session"])
+    _append(Path(f"{out}.samples.jsonl"), samples)
+    peaks = [float(row["rss_anon_mib_max"]) for row in rows if row["state"] == "save-window" and "rss_anon_mib_max" in row]
+    if peaks:
+        print(f"{case}: RssAnon peak over the save window {max(peaks):.1f} MiB (series -> {out}.samples.jsonl)")
+    bad = sum(_mismatches(rows))
+    print(f"{case}: window mismatches {bad} (expected 0)")
+    return _finish(case, [row for row in rows if row["state"] == "session"], out, "rss_anon_mib_max", failures + (1 if bad else 0))
+
+
+def _save_loop(
+    args: argparse.Namespace,
+    case: str,
+    kind: str,
+    specs: Sequence[dict[str, Any]],
+    *,
+    before: Callable[[dict[str, Any]], None] | None = None,
+    after: Callable[[dict[str, Any]], None] | None = None,
+) -> int:
+    out = _out_path(args, case, _save_results())
+    rows: list[Row] = []
+    samples: list[Row] = []
+    failures = 0
+    for spec in specs:
+        if before is not None:
+            before(spec)
+        try:
+            run_rows, ok = _save_one(args, kind, spec, samples)
+        finally:
+            if after is not None:
+                after(spec)
+        rows += run_rows
+        failures += 0 if ok else 1
+    return _save_finish(case, rows, samples, out, failures)
+
+
+def cmd_save_5g(args: argparse.Namespace) -> int:
+    target = _save_target(args)
+    specs = [_save_spec(args, run, "save-5g", target=str(target)) for run in range(1, args.runs + 1)]
+    return _save_loop(args, "save-5g", "save", specs)
+
+
+def cmd_save_sweep(args: argparse.Namespace) -> int:
+    target = _save_target(args)
+    chunks = [int(item) for item in args.chunks.split(",")]
+    cadences = [int(item) for item in args.fsync_every.split(",")]
+    specs = [
+        {**_save_spec(args, run, "save-sweep", target=str(target)), "chunk": chunk, "fsync_every": cadence, "build_index": not args.no_index}
+        for chunk in chunks
+        for cadence in cadences
+        for run in range(1, args.runs + 1)
+    ]
+    return _save_loop(args, "save-sweep", "save", specs)
+
+
+def cmd_save_latency(args: argparse.Namespace) -> int:
+    target = _save_target(args)
+    out = _out_path(args, "save-latency", _save_results())
+    rows: list[Row] = []
+    failures = 0
+    for wrap in _wraps(args):
+        for run in range(1, args.runs + 1):
+            spec = {**_save_spec(args, run, "save-latency", target=str(target), steps=args.steps, max_rounds=args.max_rounds), "wrap": wrap}
+            run_rows, _lines, result = run_child("save-latency", spec, args.timeout)
+            rows += run_rows
+            failures += 0 if result.returncode == 0 and result.status == "exit" and not any(row.get("ok") is False for row in run_rows) else 1
+    for row in rows:
+        if row.get("op") == "summary":
+            print(
+                f"save-latency: wrap={row['wrap']} run={row['run']} steps during the save {row['steps_saving']}, longest {row['longest_step_ms']} ms ({row['longest_step_op']}), "
+                f"plan calls {row['plan_calls']} (expected {row['plan_calls_expected']}) max {row['plan_ms_max']} ms"
+            )
+    return _finish("save-latency", rows, out, "latency_ms", failures)
+
+
+def _copy_of(args: argparse.Namespace) -> Path:
+    """Copy `--file` to `--copy` (guarded: never the reference, nothing under `$REFS` outside `results/act5`) and return the copy."""
+    reference = Path(args.file)
+    copy = _guard_write(Path(args.copy), reference)
+    _guard_write(_out_path(args, args.command, _save_results()))
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    _require_free(copy.parent, args.min_free_gib + reference.stat().st_size / BYTES_PER_GIB)
+    shutil.copyfile(reference, copy)
+    return copy
+
+
+def _copy_loop(args: argparse.Namespace, case: str, kind: str, extras: Sequence[dict[str, Any]]) -> int:
+    reference = str(Path(args.file).resolve())
+    copy = Path(args.copy)
+    specs = [{**_save_spec(args, run, case, origin=reference, column=getattr(args, "column", 0)), **extra} for run in range(1, args.runs + 1) for extra in extras]
+
+    def make(spec: dict[str, Any]) -> None:
+        spec["file"] = str(_copy_of(args))
+
+    def drop(_spec: dict[str, Any]) -> None:
+        if not args.keep_copy:
+            copy.unlink(missing_ok=True)
+
+    return _save_loop(args, case, kind, specs, before=make, after=drop)
+
+
+def cmd_save_longline(args: argparse.Namespace) -> int:
+    return _copy_loop(args, "save-longline", "save-longline", [{}])
+
+
+def cmd_save_retention(args: argparse.Namespace) -> int:
+    return _copy_loop(args, "save-retention", "save-retention", [{"sequence": "undo-save"}, {"sequence": "save-undo"}])
+
+
+def cmd_save_records(args: argparse.Namespace) -> int:
+    out = _out_path(args, "save-records", _save_results())
+    _guard_write(out)
+    counts = [int(item) for item in args.records.split(",")]
+    with tempfile.TemporaryDirectory() as directory:
+        args.file = str(_view_save.write_records_file(Path(directory) / "records.txt", args.long_indexes))
+        specs = [_spec(args, run, case="save-records", records=counts, long_indexes=args.long_indexes) for run in range(1, args.runs + 1)]
+        return _run_many("save-records", "save-records", args, specs, "prepare_rebase_ms", out)
+
+
+def cmd_save_cancel(args: argparse.Namespace) -> int:
+    target = _save_target(args)
+    specs = [_save_spec(args, run, "save-cancel", target=str(target), fault="cancel", cancel_at=args.cancel_at) for run in range(1, args.runs + 1)]
+    return _save_loop(args, "save-cancel", "save", specs)
+
+
+def _try_tmpfs(size: int) -> Path | None:
+    """Mount a tmpfs of `size` bytes on a new directory when `mount` allows it (it needs root), otherwise return `None`."""
+    directory = Path(tempfile.mkdtemp(prefix="nn-fulldisk-"))
+    try:
+        done = subprocess.run(["mount", "-t", "tmpfs", "-o", f"size={size}", "tmpfs", str(directory)], capture_output=True, timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        done = None
+    if done is not None and done.returncode == 0:
+        return directory
+    directory.rmdir()
+    return None
+
+
+def cmd_save_fulldisk(args: argparse.Namespace) -> int:
+    mounted = None if args.no_mount else _try_tmpfs(args.tmpfs_bytes)
+    method = "tmpfs" if mounted else "injection"
+    print(f"save-fulldisk: method {method}" + ("" if mounted else " (no tmpfs could be mounted without root: ENOSPC is injected through SaveIo at the cancel-at fraction)"))
+    try:
+        target = (mounted / "out.txt") if mounted else _save_target(args)
+        specs = [_save_spec(args, run, "save-fulldisk", target=str(target), fault="real-enospc" if mounted else "enospc", cancel_at=args.cancel_at, method=method) for run in range(1, args.runs + 1)]
+        return _save_loop(args, "save-fulldisk", "save", specs)
+    finally:
+        if mounted:
+            subprocess.run(["umount", str(mounted)], capture_output=True, timeout=30, check=False)
+            mounted.rmdir()
 
 
 # -- in-process checks --------------------------------------------------------------------------------------------------------------
@@ -698,12 +972,82 @@ def _add_edit_parsers(sub: Any) -> None:
     p.set_defaults(func=cmd_clipboard, wrap="off")
 
 
+def _add_save_common(parser: argparse.ArgumentParser, *, wrap: str | None, file_required: bool = True, runs: int = 3) -> None:
+    _add_edit_common(parser, wrap=wrap, file_required=file_required, runs=runs)
+    parser.add_argument("--min-free-gib", type=float, default=11.0, help="GiB that must be free where the output goes (plus the size of a copy)")
+
+
+def _add_save_edit_args(parser: argparse.ArgumentParser, *, target: bool = True) -> None:
+    if target:
+        parser.add_argument("--target", default="", help="the save-as target (default <results>/out-5g.txt); refused when it is a reference file")
+    parser.add_argument("--scatter", type=int, default=1000, help="scattered single character edits before the save")
+    parser.add_argument("--delete-bytes", type=int, default=1_000_000_000, help="bytes of the delete (clamped to half of the document)")
+    parser.add_argument("--paste-bytes", type=int, default=100_000_000, help="bytes copied and pasted (clamped to a quarter of the document)")
+
+
+def _add_save_parsers(sub: Any) -> None:
+    p = sub.add_parser("save-5g", help="the edited save: RssAnon per phase, time per phase, throughput, progress messages, window verification of the output")
+    _add_save_common(p, wrap="off")
+    _add_save_edit_args(p)
+    p.add_argument("--chunk", type=int, default=CHUNK)
+    p.add_argument("--fsync-every", type=int, default=FSYNC_EVERY)
+    p.set_defaults(func=cmd_save_5g)
+    p = sub.add_parser("save-latency", help="cursor keys, page keys, End, Ctrl+End, scroll and a refused typing key while the edited save runs; plan lock hold times")
+    _add_save_common(p, wrap="both")
+    _add_save_edit_args(p)
+    p.add_argument("--chunk", type=int, default=CHUNK)
+    p.add_argument("--fsync-every", type=int, default=FSYNC_EVERY)
+    p.add_argument("--steps", type=int, default=150, help="rounds of one step per op (more while the save still runs)")
+    p.add_argument("--max-rounds", type=int, default=2000)
+    p.set_defaults(func=cmd_save_latency)
+    p = sub.add_parser("save-sweep", help="the edited save for chunk sizes and fsync cadences; --no-index runs build_index=False")
+    _add_save_common(p, wrap="off", runs=1)
+    _add_save_edit_args(p)
+    p.add_argument("--chunks", default=f"{1 << 20},{4 << 20}")
+    p.add_argument("--fsync-every", default=f"{64 << 20},{256 << 20},{1024 << 20}")
+    p.add_argument("--no-index", action="store_true", help="build_index=False: the scan baseline (the rebase then has no line index)")
+    p.set_defaults(func=cmd_save_sweep)
+    for name, helptext, func in (
+        ("save-longline", "save a copy of the 200 MB line file in place with the cursor at --column, then type there", cmd_save_longline),
+        ("save-retention", "delete 1 GB, undo, save and delete 1 GB, save, undo (in place on a copy), with window hashes and the retained disk space", cmd_save_retention),
+    ):
+        p = sub.add_parser(name, help=helptext)
+        _add_save_common(p, wrap="off", runs=1)
+        _add_save_edit_args(p, target=False)
+        p.add_argument("--copy", required=True, help="where the copy of --file is made (the reference is never opened for writing)")
+        p.add_argument("--keep-copy", action="store_true")
+        p.add_argument("--chunk", type=int, default=CHUNK)
+        p.add_argument("--fsync-every", type=int, default=FSYNC_EVERY)
+        p.add_argument("--column", type=int, default=FAR)
+        p.set_defaults(func=func)
+    p = sub.add_parser("save-records", help="prepare_rebase and apply_rebase times for N undo records and cached long row indexes (a synthetic file)")
+    _add_edit_common(p, wrap=None, file_required=False, runs=1)
+    p.set_defaults(config="lowered", wrap="off", func=cmd_save_records)
+    p.add_argument("--records", default="1,1000,10000")
+    p.add_argument("--long-indexes", type=int, default=8)
+    for name, helptext, func in (
+        ("save-cancel", "cancel the edited save at --cancel-at: time to the terminal message, temp file removed", cmd_save_cancel),
+        ("save-fulldisk", "the edited save on a full disk (tmpfs when mount allows it, else ENOSPC injected at --cancel-at)", cmd_save_fulldisk),
+    ):
+        p = sub.add_parser(name, help=helptext)
+        _add_save_common(p, wrap="off", runs=1)
+        _add_save_edit_args(p)
+        p.add_argument("--chunk", type=int, default=CHUNK)
+        p.add_argument("--fsync-every", type=int, default=FSYNC_EVERY)
+        p.add_argument("--cancel-at", type=float, default=0.5, help="fraction of the document written when the cancel or the failure happens")
+        if name == "save-fulldisk":
+            p.add_argument("--no-mount", action="store_true", help="do not try to mount a tmpfs")
+            p.add_argument("--tmpfs-bytes", type=int, default=2 << 30)
+        p.set_defaults(func=func)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tools.measure_view", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
     _add_measuring_parsers(sub)
     _add_checking_parsers(sub)
     _add_edit_parsers(sub)
+    _add_save_parsers(sub)
     return parser
 
 

@@ -14,6 +14,24 @@ class HistoryException(Exception):
     """
 
 
+class Batch(list[Edit]):
+    """A batch of edits that are undone and redone together, with the revision states around it.
+
+    A state is a `(revision, branch)` pair.
+    """
+
+    def __init__(self, edits: list[Edit], revision_before: int, branch_before: int, branch: int) -> None:
+        super().__init__(edits)
+        self.revision_before = revision_before
+        """Revision of the document before the batch."""
+        self.revision_after = revision_before + 1
+        """Revision of the document after the batch (it grows when edits are coalesced into the batch)."""
+        self.branch_before = branch_before
+        """Branch id of the state before the batch."""
+        self.branch = branch
+        """Branch id of the batch (and of the state after it)."""
+
+
 @dataclass
 class EditHistory:
     """Manages batching/checkpointing of Edits into groups that can be undone/redone in the TextArea."""
@@ -43,9 +61,13 @@ class EditHistory:
     """
 
     def __post_init__(self) -> None:
-        self._undo_stack: deque[list[Edit]] = deque(maxlen=self.max_checkpoints)
+        self._revision = 0
+        self._branch = 0
+        self._next_branch = 1
+        self._saved = (0, 0)
+        self._undo_stack: deque[Batch] = deque(maxlen=self.max_checkpoints)
         """Batching Edit operations together (edits are simply grouped together in lists)."""
-        self._redo_stack: deque[list[Edit]] = deque()
+        self._redo_stack: deque[Batch] = deque()
         """Stores batches that have been undone, allowing them to be redone."""
 
     def record(self, edit: Edit) -> None:
@@ -97,6 +119,12 @@ class EditHistory:
         undo_stack = self._undo_stack
         current_time = self._get_time()
         edit_characters = edit.characters
+        branch_before = self._branch
+        if self._redo_stack:
+            # A record after an undo leaves the branch that holds the redo stack, so the revision counter alone cannot reach a state of that branch.
+            self._branch = self._next_branch
+            self._next_branch += 1
+            self._force_end_batch = True
 
         # Determine whether to create a new batch, or add to the latest batch.
         if (
@@ -109,7 +137,7 @@ class EditHistory:
             or self._character_count + edit_characters > self.checkpoint_max_characters
         ):
             # Create a new batch (creating a "checkpoint").
-            undo_stack.append([edit])
+            undo_stack.append(Batch([edit], self._revision, branch_before, self._branch))
             self._character_count = edit_characters
             self._last_edit_time = current_time
             self._force_end_batch = False
@@ -118,9 +146,11 @@ class EditHistory:
             batch = undo_stack[-1]
             if not batch[-1].coalesce(edit):
                 batch.append(edit)
+            batch.revision_after += 1
             self._character_count += edit_characters
             self._last_edit_time = current_time
 
+        self._revision += 1
         self._previously_replaced = is_replacement
         self._redo_stack.clear()
 
@@ -129,7 +159,7 @@ class EditHistory:
         if contains_newline or edit_characters > 1:
             self.checkpoint()
 
-    def _pop_undo(self) -> list[Edit] | None:
+    def _pop_undo(self) -> Batch | None:
         """Pop the latest batch from the undo stack and return it.
 
         This will also place it on the redo stack.
@@ -142,10 +172,12 @@ class EditHistory:
         if undo_stack:
             batch = undo_stack.pop()
             redo_stack.append(batch)
+            self._revision = batch.revision_before
+            self._branch = batch.branch_before
             return batch
         return None
 
-    def _pop_redo(self) -> list[Edit] | None:
+    def _pop_redo(self) -> Batch | None:
         """Redo the latest batch on the redo stack and return it.
 
         This will also place it on the undo stack (with a forced checkpoint to ensure
@@ -159,27 +191,37 @@ class EditHistory:
         if redo_stack:
             batch = redo_stack.pop()
             undo_stack.append(batch)
+            self._revision = batch.revision_after
+            self._branch = batch.branch
             # Ensure edits which follow cannot be added to the redone batch.
             self.checkpoint()
             return batch
         return None
 
-    def _restore_undo(self, batch: list[Edit]) -> None:
+    def _restore_undo(self, batch: Batch) -> None:
         """Put back a batch that `_pop_undo` returned but that was refused (it is again the top of the undo stack)."""
         if self._redo_stack and self._redo_stack[-1] is batch:
             self._redo_stack.pop()
         self._undo_stack.append(batch)
+        self._revision = batch.revision_after
+        self._branch = batch.branch
 
-    def _restore_redo(self, batch: list[Edit]) -> None:
+    def _restore_redo(self, batch: Batch) -> None:
         """Put back a batch that `_pop_redo` returned but that was refused (it is again the top of the redo stack)."""
         if self._undo_stack and self._undo_stack[-1] is batch:
             self._undo_stack.pop()
         self._redo_stack.append(batch)
+        self._revision = batch.revision_before
+        self._branch = batch.branch_before
 
     def clear(self) -> None:
-        """Completely clear the history."""
+        """Completely clear the history; the current text is then the saved state (`modified` is false)."""
         self._undo_stack.clear()
         self._redo_stack.clear()
+        self._revision = 0
+        self._branch = 0
+        self._next_branch = 1
+        self._saved = (0, 0)
         self._last_edit_time = time.monotonic()
         self._force_end_batch = False
         self._previously_replaced = False
@@ -189,12 +231,32 @@ class EditHistory:
         self._force_end_batch = True
 
     @property
-    def undo_stack(self) -> list[list[Edit]]:
+    def revision(self) -> int:
+        """The number of recorded edits on the current branch up to the current state (undo and redo move it with the batch)."""
+        return self._revision
+
+    @property
+    def branch(self) -> int:
+        """The id of the current branch; a record after an undo opens a new one."""
+        return self._branch
+
+    def mark_saved(self) -> None:
+        """Record the current state as the saved one and start a new batch, so that coalesced typing never spans a save."""
+        self._saved = (self._revision, self._branch)
+        self.checkpoint()
+
+    @property
+    def modified(self) -> bool:
+        """Whether the current state differs from the saved one (the opening state until `mark_saved` is called)."""
+        return (self._revision, self._branch) != self._saved
+
+    @property
+    def undo_stack(self) -> list[Batch]:
         """A copy of the undo stack, with references to the original Edits."""
         return list(self._undo_stack)
 
     @property
-    def redo_stack(self) -> list[list[Edit]]:
+    def redo_stack(self) -> list[Batch]:
         """A copy of the redo stack, with references to the original Edits."""
         return list(self._redo_stack)
 

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from nova_editor.core import byte_source
-from nova_editor.core.byte_source import PreadSource, SourceChanged
+from nova_editor.core.byte_source import ChangeKind, FileIdentity, PreadSource, SourceChanged
 
 BLOCK = 1024
 
@@ -265,3 +265,128 @@ def test_close_survives_raising_os_close(tmp_path: Path, monkeypatch: pytest.Mon
     assert finished.wait(2.0), "second close() hung after os.close raised"
     with pytest.raises(ValueError, match="closed"):
         source.read(0, 1)
+
+
+def test_source_changed_kinds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path, _ = make_file(tmp_path)
+    source = PreadSource(path, block_size=BLOCK, cache_blocks=4)
+    os.truncate(path, 100)
+    with pytest.raises(SourceChanged) as truncated:
+        source.read(0, 10)
+    assert truncated.value.kind is ChangeKind.TRUNCATED
+    assert str(truncated.value).startswith("file changed: size ")
+
+    path, _ = make_file(tmp_path)
+    source = PreadSource(path)
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    with pytest.raises(SourceChanged) as modified:
+        source.read(0, 10)
+    assert modified.value.kind is ChangeKind.MODIFIED
+
+    path, _ = make_file(tmp_path)
+    source = PreadSource(path)
+
+    def fail(fd: int, size: int, offset: int) -> bytes:
+        del fd, size, offset
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(byte_source.os, "pread", fail)
+    with pytest.raises(SourceChanged, match="read failed at 0") as unreadable:
+        source.read(0, 10)
+    assert unreadable.value.kind is ChangeKind.UNREADABLE
+
+
+def test_short_read_is_truncated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path, _ = make_file(tmp_path)
+    source = PreadSource(path, block_size=BLOCK, cache_blocks=4)
+
+    def empty(fd: int, size: int, offset: int) -> bytes:
+        del fd, size, offset
+        return b""
+
+    monkeypatch.setattr(byte_source.os, "pread", empty)
+    with pytest.raises(SourceChanged, match="short read at 0") as error:
+        source.read(0, 10)
+    assert error.value.kind is ChangeKind.TRUNCATED
+
+
+def test_from_fd_adopts_descriptor(tmp_path: Path) -> None:
+    path, data = make_file(tmp_path)
+    fd = os.open(path, os.O_RDONLY)
+    source = PreadSource.from_fd(fd, block_size=BLOCK)
+    assert source.length() == len(data)
+    assert source.identity() == FileIdentity.from_stat(os.stat(path))
+    assert source.read(5, 20) == data[5:25]
+    source.close()
+    with pytest.raises(OSError, match="Bad file descriptor"):
+        os.fstat(fd)
+
+
+def test_from_fd_uses_given_identity(tmp_path: Path) -> None:
+    path, data = make_file(tmp_path)
+    held = FileIdentity.from_stat(os.stat(path))
+    fd = os.open(path, os.O_RDONLY)
+    source = PreadSource.from_fd(fd, identity=held)
+    assert source.identity() is held
+    assert source.read(0, 4) == data[:4]
+    source.close()
+
+
+def test_open_by_path_has_identity(tmp_path: Path) -> None:
+    path, _ = make_file(tmp_path)
+    source = PreadSource(path)
+    assert source.identity() == FileIdentity.from_stat(os.stat(path))
+    source.close()
+
+
+def test_unverified_reader_skips_stat_check(tmp_path: Path) -> None:
+    path, data = make_file(tmp_path)
+    source = PreadSource(path, block_size=BLOCK, cache_blocks=4)
+    reader = source.unverified_reader()
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    with open(path, "ab") as handle:
+        handle.write(b"tail")
+    assert reader.length() == len(data)
+    assert reader.read(10, 100) == data[10:110]
+    assert reader.read(len(data) - 5, 50) == data[-5:]
+    assert reader.read(len(data), 1) == b""
+    with pytest.raises(SourceChanged):
+        source.read(0, 10)  # the verified path still notices
+
+
+def test_unverified_reader_fails_only_on_short_read(tmp_path: Path) -> None:
+    path, data = make_file(tmp_path)
+    source = PreadSource(path, block_size=BLOCK, cache_blocks=4)
+    reader = source.unverified_reader()
+    os.truncate(path, 5 * BLOCK)
+    assert reader.read(0, 100) == data[:100]  # the part that is still there reads fine
+    with pytest.raises(SourceChanged, match="short read") as error:
+        reader.read(4 * BLOCK, 3 * BLOCK)
+    assert error.value.kind is ChangeKind.TRUNCATED
+    with pytest.raises(SourceChanged):
+        source.read(0, 10)  # the verified path sees the size change, the reader never recorded a failure
+
+
+def test_unverified_reader_does_not_populate_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path, _ = make_file(tmp_path)
+    source = PreadSource(path, block_size=BLOCK, cache_blocks=4)
+    reader = source.unverified_reader()
+    reader.read(0, 10)
+    reader.read(0, 10, cache=True)
+    spy = PreadSpy(monkeypatch)
+    source.read(0, 10)  # loads block 0 now: it was not cached by the reader
+    source.read(0, 10)
+    assert spy.calls == [(0, BLOCK)]
+
+
+def test_close_waits_for_unverified_reader(tmp_path: Path) -> None:
+    path, _ = make_file(tmp_path)
+    source = PreadSource(path)
+    reader = source.unverified_reader()
+    reader.close()  # a no-op: the source still works
+    assert source.read(0, 4)
+    source.close()
+    with pytest.raises(ValueError, match="closed source"):
+        reader.read(0, 4)
