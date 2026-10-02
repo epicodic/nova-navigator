@@ -171,6 +171,8 @@ The widget has one document type, `LazyDocument`.
 **Defaults:** `max_checkpoints` is `int | None = None` (keep every batch; upstream required it), and `checkpoint_timer` (2.0) and `checkpoint_max_characters` (100) have defaults.
 **Modified member:** `record` decides replacement and newline from the piece lengths and break counts when the edit has pieces, and tries `Edit.coalesce` before it appends to the latest batch.
 **New members:** `_restore_undo` and `_restore_redo`, which put back a batch that the widget refused.
+**ACT5:** batches are `Batch` lists that store `revision_before`, `revision_after`, `branch_before` and `branch`; new members `revision`, `branch`, `mark_saved()` and `modified`; a record after an undo opens a new branch.
+The batching rules are unchanged.
 
 ### `document/_document.py` (ACT4)
 
