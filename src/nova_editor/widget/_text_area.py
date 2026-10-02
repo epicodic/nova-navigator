@@ -3521,7 +3521,12 @@ NovaTextArea {
         run = SearchRun(job, needle, backward)
         self._search_run = run
         thread = threading.Thread(target=run_search_thread, args=(run, functools.partial(self._post_search_outcome, run)), name="nova-search", daemon=True)
-        thread.start()
+        try:
+            thread.start()
+        except RuntimeError as error:  # no thread could be created
+            self._search_run = None
+            self.post_message(self.SearchFailed(error, self).set_sender(self))
+            return False
         document.join_on_close(thread)
         return True
 
@@ -3579,14 +3584,19 @@ NovaTextArea {
         return start
 
     def _post_search_outcome(self, run: SearchRun, outcome: SearchOutcome) -> None:
-        """Search thread: hand the outcome to the UI thread (exactly once), unless the widget was closed."""
+        """Search thread: hand the outcome to the UI thread (exactly once), unless the widget was closed.
+
+        When the message cannot be posted (the widget is closing) the run is dropped so that `searching` ends; no terminal message can follow.
+        """
         with run.lock:
             if run.abandoned:
                 return
         try:
-            self.post_message(events.Callback(functools.partial(self._finish_search, run, outcome)))
+            posted = self.post_message(events.Callback(functools.partial(self._finish_search, run, outcome)))
         except RuntimeError:  # the app is closing
-            return
+            posted = False
+        if not posted and self._search_run is run:
+            self._search_run = None  # the widget is closing: no message can be posted any more, so the search must not stay pending
 
     def _on_search_report(self, run: SearchRun, report: CoreSearchProgress) -> None:
         """Search thread: publish the latest progress; at most one call to the UI thread is outstanding (coalescing)."""
