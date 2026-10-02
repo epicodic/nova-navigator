@@ -35,7 +35,7 @@ from nova_editor.widget import NovaTextArea
 from tools._view_app import ProbeTextArea, emit, settle, wait_until
 from tools._view_edit import place_at
 from tools._view_procmem import KIB_PER_MIB, Supervised, median, percentile, read_mem
-from tools._view_save import LATENCY_OPS, SLOW_STEP_MS, ByteModel, SaveApp, SaveSession, edit_row, literal, measure_op, open_session, scatter, settle_edits
+from tools._view_save import LATENCY_OPS, SLOW_STEP_MS, ByteModel, SaveApp, SaveSession, edit_row, literal, measure_op, open_session, paste_block, scatter, settle_edits
 from tools._view_scenarios import Row, Spec, base_row
 from tools.gen_reference_files import _Rng
 
@@ -60,7 +60,6 @@ EMOJI_FIRST, EMOJI_LAST = 0x1F600, 0x1F64F
 ACCENTED_ITEMS, CJK_ITEMS, EMOJI_ITEMS = 600, 600, 300
 CONTINUATION_MASK, CONTINUATION = 0xC0, 0x80
 ASCII_PUNCTUATION = ".,;:-_/()[]{}<>=+*&%$#!?~|"
-PASTE_LINE = "paste filler line 0123456789 the quick brown fox jumps over the lazy dog\n"
 SETTLE_AFTER_EDITS = 0.1
 ROUND_SETTLE = 0.03
 END_LIMIT = 30.0
@@ -581,22 +580,27 @@ async def plant_boundary(session: SaveSession) -> Planted:
 
 
 async def plant_paste(session: SaveSession, size: int) -> Planted:
-    """Paste about `size` bytes of known ASCII text with `@@paste-<seed>@@` in its middle at three quarters of the document."""
+    """Paste about `size` bytes of the document's own text (the memory-cheap `paste_block` of the 5 GB save) and put `@@paste-<seed>@@` in the middle of the pasted text.
+
+    The pasted text is a copy of original bytes, so the marker is the only known text: it is inserted at a row start inside the paste, and the `ByteModel` takes both edits.
+    """
     spec, document, area, model = session.spec, session.document, session.area, session.model
     marker = f"@@paste-{spec.get('seed', 1)}@@"
-    half = max(0, (size - len(marker)) // 2)
-    filler = (PASTE_LINE * (half // len(PASTE_LINE) + 1))[:half]
-    text = filler + marker + filler
-    location, byte = place_at(document, document.length * 3 // 4)
+    pasted = await paste_block(session, size)
+    if pasted is None:
+        msg = "the document has no text to copy for the paste"
+        raise RuntimeError(msg)
+    paste_byte, length = pasted
+    location, byte = place_at(document, paste_byte + length // 2)
     area.move_cursor(location)
     await settle(SETTLE_AFTER_EDITS)
     started = time.perf_counter()
-    area.insert(text, location)
+    area.insert(marker, location)
     elapsed = (time.perf_counter() - started) * 1000
-    model.insert(byte, literal(text.encode()))
-    edit_row(session, "paste", elapsed, bytes=len(text))
+    model.insert(byte, literal(marker.encode()))
+    edit_row(session, "marker", elapsed, bytes=len(marker))
     await settle_edits(session)
-    return Planted("paste", marker, byte + len(filler))
+    return Planted("paste", marker, byte)
 
 
 async def edited_scenario(spec: Spec) -> list[Row]:
@@ -611,11 +615,18 @@ async def edited_scenario(spec: Spec) -> list[Row]:
         paste = await plant_paste(session, int(spec.get("paste_bytes", 100_000_000)))
         emit(f"PHASE edits {time.perf_counter_ns()}")
         rows: list[Row] = []
-        for planted in (paste, boundary):
+        for occurrence, planted in enumerate((paste, boundary)):
             session.area.move_cursor((0, 0))
             await settle(SETTLE_AFTER_EDITS)
             row = await search_once(
-                session, {**spec, "needle": planted.needle, "expect": "found"}, case="search-edited", state="edited", mark=None, target=planted.target, needle_bytes=len(planted.needle.encode())
+                session,
+                {**spec, "needle": planted.needle, "expect": "found"},
+                case="search-edited",
+                state="edited",
+                mark="search",
+                target=planted.target,
+                needle_bytes=len(planted.needle.encode()),
+                memory_occurrence=occurrence,
             )
             size = len(planted.needle.encode())
             offset_ok = row.get("found_start") == planted.start and row.get("found_end") == planted.start + size
@@ -734,16 +745,17 @@ async def fold_scenario(spec: Spec) -> list[Row]:
 
 
 # -- parent side --------------------------------------------------------------------------------------------------------------------
-def search_memory(result: Supervised, marks: Sequence[tuple[str, int]], window: str) -> Row:
+def search_memory(result: Supervised, marks: Sequence[tuple[str, int]], window: str, occurrence: int = 0) -> Row:
     """`RssAnon` over the memory window `window` (`pre_<window>` to `<window>_end`): the last sample before the start is the baseline, the delta is the peak minus the baseline.
 
+    `occurrence` picks the n-th pair of marks when a scenario repeats the window (`search-edited` runs two searches).
     A window shorter than the sampling interval holds no sample; the first sample after it then stands for the window (`rss_samples_in_window` says how many samples were inside).
     """
     starts = [stamp for name, stamp in marks if name == f"pre_{window}"]
     stops = [stamp for name, stamp in marks if name == f"{window}_end"]
-    if not starts or not stops or not result.samples:
+    if len(starts) <= occurrence or len(stops) <= occurrence or not result.samples:
         return {"rss_samples_in_window": 0}
-    start, stop = starts[0], stops[0]
+    start, stop = starts[occurrence], stops[occurrence]
     before = [sample for sample in result.samples if sample.t_ns <= start]
     inside = [sample for sample in result.samples if start <= sample.t_ns <= stop]
     after = [sample for sample in result.samples if sample.t_ns > stop][:1]

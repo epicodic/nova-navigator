@@ -498,14 +498,17 @@ async def delete_block(session: SaveSession, size: int) -> Deleted:
     return Deleted(first_byte, removed)
 
 
-async def paste_block(session: SaveSession, size: int) -> None:
-    """Copy about `size` bytes from an eighth of the document and paste them at three quarters."""
+async def paste_block(session: SaveSession, size: int) -> tuple[int, int] | None:
+    """Copy about `size` bytes from an eighth of the document and paste them at three quarters.
+
+    Returns the byte where the paste went and its length in bytes, or `None` when there was nothing to copy.
+    """
     document, area, model = session.document, session.area, session.model
     size = max(1, min(size, document.length // 4))
     copy_start, copy_start_byte = place_at(document, document.length // 8)
     copy_end, copy_end_byte = place_at(document, document.length // 8 + size, up=True)
     if copy_end_byte <= copy_start_byte:
-        return
+        return None
     clip = model.slice(copy_start_byte, copy_end_byte - copy_start_byte)
     area.selection = Selection(copy_start, copy_end)
     await settle(0.1)
@@ -520,6 +523,7 @@ async def paste_block(session: SaveSession, size: int) -> None:
     model.insert(paste_byte, clip)
     edit_row(session, "paste", elapsed, bytes=copy_end_byte - copy_start_byte)
     await settle_edits(session)
+    return paste_byte, copy_end_byte - copy_start_byte
 
 
 async def scripted_edits(session: SaveSession) -> None:
