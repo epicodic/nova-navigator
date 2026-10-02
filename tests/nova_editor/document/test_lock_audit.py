@@ -60,6 +60,14 @@ def _locked_edit(doc: LazyDocument, row: int) -> None:
             doc.unlock_edits()
 
 
+def _finished_thread() -> threading.Thread:
+    """A started thread that has already returned (what `join_on_close` is given when a save ends before the close)."""
+    thread = threading.Thread(target=len, args=((),))
+    thread.start()
+    thread.join()
+    return thread
+
+
 def _gated(call: Call) -> Call:
     """Run `call` under `SAVE_GATE`."""
 
@@ -145,8 +153,9 @@ CALLS: dict[str, Call] = {
     "prepare_rebase": lambda d, r: _save_and_rebase(d, r, apply=False),
     "apply_rebase": lambda d, r: _save_and_rebase(d, r, apply=True),
     "wait_rebased": lambda d, _: d.wait_rebased(0.0),
+    "join_on_close": lambda d, _: d.join_on_close(_finished_thread()),
     "plan": lambda d, r: (d.plan(0, d.length, unverified=False), d.plan(max(r, 0), 7, unverified=True)),
-    "require_not_saving": lambda d, _: d.require_not_saving("audit"),
+    "require_not_saving": _gated(lambda d, _: d.require_not_saving("audit")),
     "saving": lambda d, _: d.saving,
 }
 ATTRIBUTES = frozenset({"attach_syntax", "call_log", "foreground", "from_bytes", "from_path", "from_text"})

@@ -324,6 +324,12 @@ class LazyDocument(DocumentBase):
             finally:
                 self._close_done.set()
 
+    def join_on_close(self, thread: threading.Thread) -> None:
+        """Make `close` wait for `thread` (a started thread that reads or writes through this document) before it closes the source."""
+        with self._lock:
+            self._rebase_closers = [closer for closer in self._rebase_closers if closer.is_alive()]
+            self._rebase_closers.append(thread)
+
     def wait_closed(self, timeout: float) -> bool:
         """Wait until `close` has joined every scan and closed the source; return whether that happened within `timeout` seconds."""
         return self._close_done.wait(timeout)

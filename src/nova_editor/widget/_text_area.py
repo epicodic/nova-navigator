@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import os
 import re
 import stat
 import threading
 import time
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -26,9 +27,14 @@ from textual.expand_tabs import expand_text_tabs_from_widths
 from textual.screen import Screen
 from textual.style import Style as ContentStyle
 
-from nova_editor.core import ByteSource, BytesSource, PreadSource
+from nova_editor.core import ByteSource, BytesSource, ChangeKind, FileIdentity, PreadSource
 from nova_editor.core import SourceChanged as CoreSourceChanged
 from nova_editor.core.pieces import Content as PieceContent
+from nova_editor.core.rebase import RebasePlan
+from nova_editor.core.save import PlanPart, SaveIo, SaveJob, SaveResult, SaveSettings, check_path
+from nova_editor.core.save import SaveCancelled as CoreSaveCancelled
+from nova_editor.core.save import SaveFailed as CoreSaveFailed
+from nova_editor.core.save import SaveProgress as CoreSaveProgress
 from nova_editor.core.text_width import SURROGATE_ESCAPE, utf8_len
 from nova_editor.document._cursor_anchor import CursorMachine, CursorState, Op, Verdict
 from nova_editor.document._document import (
@@ -214,6 +220,42 @@ def _open_source(path: Path) -> ByteSource:
     if stat.S_ISREG(status.st_mode) and status.st_size <= SMALL_FILE_LIMIT:
         return BytesSource(path.read_bytes())
     return PreadSource(path)
+
+
+def _stat_identity(path: Path) -> FileIdentity | None:
+    """Return the identity of the file at `path` taken with one `os.stat`, or `None` when it cannot be read."""
+    try:
+        return FileIdentity.from_stat(os.stat(path))
+    except OSError:
+        return None
+
+
+class _DocumentPlanner:
+    """`SavePlanner` over a `LazyDocument` (the document's `length` is a property, the planner's a method)."""
+
+    def __init__(self, document: LazyDocument) -> None:
+        self._document = document
+
+    def length(self) -> int:
+        return self._document.length
+
+    def plan(self, offset: int, limit: int, unverified: bool) -> list[PlanPart]:
+        return self._document.plan(offset, limit, unverified)
+
+
+@dataclass
+class _SaveRun:
+    """The state of one running save; the UI thread owns it, the `nova-save` thread reads `job` and writes `outcome` before it posts."""
+
+    target: Path
+    contents: list[PieceContent]
+    job: SaveJob | None = None
+    abandoned: bool = False
+    """True once the widget was closed: the thread then discards its outcome and the close already posted the terminal message."""
+    progress: CoreSaveProgress | None = None
+    progress_outstanding: bool = False
+    last_message: float = 0.0
+    lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
 
 
 class NovaTextArea(ScrollView):
@@ -783,6 +825,87 @@ NovaTextArea {
         def control(self) -> NovaTextArea:
             return self.text_area
 
+    @dataclass
+    class SaveProgress(Message):
+        """Posted (at most 10 times per second, `done` never decreasing) while a save runs; `phase` is `writing`, `flushing`, `history` or `finishing`."""
+
+        phase: str
+        """The phase of the save."""
+        done: int
+        """Bytes written so far."""
+        total: int
+        """Bytes to write."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
+    class Saved(Message):
+        """Posted once when a save completed: the file at `path` holds the document and the widget is rebased onto it."""
+
+        path: Path
+        """The file that was written."""
+        length: int
+        """Its size in bytes."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
+    class SaveFailed(Message):
+        """Posted once when a save failed; the document and the history are unchanged and, unless the failure came after the replace, so is the target."""
+
+        error: OSError
+        """The error; its `errno` is that of the cause."""
+        stage: str
+        """Where it failed: `prepare`, `write`, `flush`, `replace` or `internal`."""
+        path: Path
+        """The target of the save."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
+    class SaveCancelled(Message):
+        """Posted once when a save was cancelled (`cancel_save`, or closing the widget); the target is unchanged."""
+
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
+    class SaveNeedsConfirmation(Message):
+        """Posted when `save` found that writing `path` needs the user's consent (the file changed on disk since it was read, or the target exists); nothing was started."""
+
+        kind: ChangeKind
+        """What differs: a change of the file behind the document, or `EXISTS` for a save-as onto an existing file."""
+        path: Path
+        """The target; call `save(path, overwrite=True)` to write it."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    save_settings: ClassVar[SaveSettings] = SaveSettings()
+    """Chunk size, fsync interval and index settings of a save (tests lower them)."""
+
+    save_io: ClassVar[SaveIo | None] = None
+    """File operations of a save; `None` uses `os`. Used by tests only, to inject failures."""
+
     clipboard_cap: int = 2_097_152
     """Largest selection (in bytes) that is also written to the system clipboard; a larger copy stays inside the editor (ACT4 design 10)."""
 
@@ -888,6 +1011,15 @@ NovaTextArea {
         self._clipboard_record: NovaTextArea._ClipboardRecord | None = None
         """The internal clipboard of the last copy or cut; it references pieces of the current document only."""
 
+        self.file_path: Path | None = None
+        """The file the document was opened from or last saved to (set by `open(path)` and by a save-as), or `None`."""
+
+        self._held_identity: FileIdentity | None = None
+        """Identity of the file at `file_path` as read or as written by the last save; plain saves compare the file on disk with it."""
+
+        self._save_run: _SaveRun | None = None
+        """The running save (at most one), else `None`."""
+
         self._edit_refused = False
         """True when the most recent `edit()` was refused (a position was not resolved); the keyboard helpers then report no edit."""
 
@@ -992,8 +1124,14 @@ NovaTextArea {
             The widget, ready to be mounted.
         """
         lazy_config = dataclasses.replace(config or LazyConfig(), tab_width=_DEFAULT_INDENT_WIDTH)
+        file_path: Path | None = None
+        held: FileIdentity | None = None
         if isinstance(source, str | Path):
-            source = _open_source(Path(source))
+            file_path = Path(source)
+            held = _stat_identity(file_path)
+            source = _open_source(file_path)
+            if isinstance(source, PreadSource):
+                held = source.identity()
         document = LazyDocument(source, lazy_config)
         try:
             area = cls(soft_wrap=soft_wrap, _prebuilt_document=document, **kwargs)
@@ -1002,6 +1140,8 @@ NovaTextArea {
             raise
         area._requested_language = language
         area._highlight_limit = highlight_limit
+        area.file_path = file_path
+        area._held_identity = held
         try:
             area._attach_highlighting(language, highlight_limit)
             area._build_highlight_map()
@@ -1021,6 +1161,7 @@ NovaTextArea {
         if self._lazy_closed:
             return
         self._lazy_closed = True
+        self._abandon_save()
         self._estimating = False
         self._jump = None
         timer = self._estimate_timer
@@ -2119,6 +2260,7 @@ NovaTextArea {
     def _replace_document(self, document: LazyDocument) -> None:
         """Swap in a new document: the old one is closed, every state tied to it is reset and the scan machinery is wired to the new one."""
         old = self.document
+        old.require_not_saving("replacing the document")
         self._replay_generation += 1
         self._jump = None
         self.pending_progress = None
@@ -2772,6 +2914,210 @@ NovaTextArea {
         self.app.bell()
         self.notify(f"Edit refused: {reason}. It works once indexing reaches the position.", severity="warning")
         self.post_message(self.EditRefused(reason, self))
+
+    @property
+    def modified(self) -> bool:
+        """Whether the text differs from the state of the last save (or of the opening state until the first one)."""
+        return self.history.modified
+
+    @property
+    def saving(self) -> bool:
+        """Whether a save runs."""
+        return self._save_run is not None
+
+    def save(self, path: Path | None = None, *, overwrite: bool = False) -> bool:
+        """Start saving the document on a background thread; the outcome arrives as exactly one `Saved`, `SaveFailed` or `SaveCancelled` message.
+
+        A plain save (`path` is `None` or `file_path`) of an unmodified document does nothing; a save-as writes even when nothing changed.
+        While the save runs, edits are refused with `EditRefused("saving")`; the cursor, selection and scrolling keep working.
+        Without `overwrite`, a save that needs consent (the file changed on disk since it was read, or a save-as onto an existing file) posts
+        `SaveNeedsConfirmation` and starts nothing. Call `save(path, overwrite=True)` to write it; the unchanged parts are then read from the file as it is now.
+
+        Args:
+            path: The target; `None` saves to `file_path`.
+            overwrite: Write although a confirmation would be needed.
+
+        Returns:
+            True when a save was started; False when one already runs, the widget is closed, there is no target, nothing needs saving or a confirmation is needed.
+        """
+        if self._lazy_closed or self._save_run is not None:
+            return False
+        target = path if path is not None else self.file_path
+        if target is None:
+            return False
+        plain = path is None or (self.file_path is not None and os.path.realpath(path) == os.path.realpath(self.file_path))
+        if plain and not self.modified:
+            return False
+        held = self._held_identity
+        origin = check_path(self.file_path, held) if self.file_path is not None and held is not None else ChangeKind.UNCHANGED
+        if plain:
+            kind = check_path(target, held)
+        else:
+            kind = ChangeKind.EXISTS if check_path(target, None) is ChangeKind.CREATED else ChangeKind.UNCHANGED
+        if kind is not ChangeKind.UNCHANGED and not overwrite:
+            self.post_message(self.SaveNeedsConfirmation(kind, Path(target), self).set_sender(self))
+            return False
+        self._start_save(Path(target), unverified=origin in {ChangeKind.MODIFIED, ChangeKind.TRUNCATED})
+        return True
+
+    def cancel_save(self) -> None:
+        """Ask a running save to stop; it ends with `SaveCancelled` unless the replace already happened. Does nothing when no save runs."""
+        run = self._save_run
+        if run is not None and run.job is not None:
+            run.job.cancel()
+
+    def _reachable_edits(self) -> Iterator[Edit]:
+        """Every edit of the undo and redo stacks, oldest first: the one order of `_reachable_contents` and `_apply_translated`."""
+        for batch in (*self.history.undo_stack, *self.history.redo_stack):
+            yield from batch
+
+    def _reachable_contents(self) -> list[PieceContent]:
+        """Every `Content` that refers to pieces of the document and outlives a save: those of the history (see `Edit.contents`), then the clipboard record."""
+        found = [content for edit in self._reachable_edits() for content in edit.contents()]
+        record = self._clipboard_record
+        if record is not None:
+            found.append(record.content)
+        return found
+
+    def _apply_translated(self, contents: Sequence[PieceContent]) -> None:
+        """Write the translated contents back into the history and the clipboard record, in the order of `_reachable_contents`."""
+        translated = iter(contents)
+        for edit in self._reachable_edits():
+            edit.rewrite(translated)
+        record = self._clipboard_record
+        if record is not None:
+            record.content = next(translated)
+
+    def _start_save(self, target: Path, *, unverified: bool) -> None:
+        """UI thread: lock the document, collect what the history refers to and start the `nova-save` thread."""
+        document = self.document
+        document.begin_save()
+        document.lock_edits("saving")
+        self.history.checkpoint()
+        run = _SaveRun(target, self._reachable_contents())
+        run.job = SaveJob(_DocumentPlanner(document), target, self.save_settings, functools.partial(self._on_save_report, run), None, unverified, self.save_io)
+        self._save_run = run
+        thread = threading.Thread(target=self._save_thread, args=(run,), name="nova-save", daemon=True)
+        thread.start()
+        document.join_on_close(thread)
+
+    def _save_thread(self, run: _SaveRun) -> None:
+        """The `nova-save` thread: write the file, translate the history, post the outcome. It never touches the widget state or unlocks the document.
+
+        The outcome is posted from `finally`, so that even a defect cannot leave the document locked: it then surfaces as `SaveFailed` (and in the log).
+        """
+        result: SaveResult | None = None
+        plan: RebasePlan | None = None
+        error: CoreSaveFailed | None = CoreSaveFailed("internal", "the save thread ended unexpectedly")
+        try:
+            assert run.job is not None
+            result = run.job.run()
+            self._on_save_report(run, CoreSaveProgress("history", result.length, result.length))
+            plan = self.document.prepare_rebase(result, run.contents)
+            error = None
+        except CoreSaveCancelled:
+            error = None
+        except CoreSaveFailed as failure:
+            error = failure
+        except (OSError, ValueError, CoreSourceChanged) as failure:  # the translation failed: the file is written but the document is not rebased
+            error = CoreSaveFailed("internal", f"{type(failure).__name__}: {failure}")
+        finally:
+            self._post_save_outcome(run, result, plan, error)
+
+    def _post_save_outcome(self, run: _SaveRun, result: SaveResult | None, plan: RebasePlan | None, error: CoreSaveFailed | None) -> None:
+        """Save thread: hand the outcome to the UI thread (exactly once); a saved file that nobody can take over is closed here."""
+        if plan is None and result is not None:
+            result.source.close()
+            result = None
+        posted = False
+        if not run.abandoned:  # after a close the terminal message was posted by `close` already
+            try:
+                posted = self.post_message(events.Callback(functools.partial(self._finish_save, run, result, plan, error)))
+            except RuntimeError:  # the app is closing
+                posted = False
+        if not posted and result is not None:
+            result.source.close()
+
+    def _on_save_report(self, run: _SaveRun, report: CoreSaveProgress) -> None:
+        """Save thread: publish the latest progress; at most one call to the UI thread is outstanding (coalescing)."""
+        with run.lock:
+            run.progress = report
+            if run.progress_outstanding or run.abandoned:
+                return
+            run.progress_outstanding = True
+        try:
+            posted = self.post_message(events.Callback(functools.partial(self._announce_save_progress, run)))
+        except RuntimeError:
+            posted = False
+        if not posted:
+            with run.lock:
+                run.progress_outstanding = False
+
+    def _announce_save_progress(self, run: _SaveRun) -> None:
+        """UI thread: turn the latest progress into a `SaveProgress` message, at most 10 per second and never after the terminal message."""
+        with run.lock:
+            run.progress_outstanding = False
+            report = run.progress
+        now = time.monotonic()
+        if report is None or self._save_run is not run or now - run.last_message < _MESSAGE_INTERVAL:
+            return
+        run.last_message = now
+        self.post_message(self.SaveProgress(report.phase, report.done, report.total, self).set_sender(self))
+
+    def _end_save(self, run: _SaveRun) -> None:
+        """UI thread: forget the run, lift the save registration and the edit lock."""
+        self._save_run = None
+        self.document.end_save()
+        self.document.unlock_edits()
+
+    def _finish_save(self, run: _SaveRun, result: SaveResult | None, plan: RebasePlan | None, error: CoreSaveFailed | None) -> None:
+        """UI thread: the one terminal handler of a save. Lifts the lock and posts exactly one of `Saved`, `SaveFailed` and `SaveCancelled`."""
+        if self._save_run is not run:  # the widget was closed meanwhile
+            if result is not None:
+                result.source.close()
+            return
+        if result is not None and plan is not None:
+            try:
+                self.document.apply_rebase(plan)
+            except ValueError as failure:
+                result.source.close()
+                result = None
+                error = CoreSaveFailed("internal", str(failure))
+        else:
+            result = None
+        if result is None or plan is None:
+            self._end_save(run)
+            if error is None:
+                self.post_message(self.SaveCancelled(self).set_sender(self))
+            else:
+                self.post_message(self.SaveFailed(error, error.stage, run.target, self).set_sender(self))
+            return
+        if plan.clear_history:
+            self.history.clear()
+            self._clipboard_record = None
+            self.notify("Undo history cleared: too many saves with large deletions.", severity="warning")
+        else:
+            self._apply_translated(plan.contents)
+        self.history.mark_saved()
+        self.file_path = result.target
+        self._held_identity = result.source.identity()
+        self.refresh_after_rebase()
+        self._end_save(run)
+        self.post_message(self.Saved(result.target, result.length, self).set_sender(self))
+
+    def _abandon_save(self) -> None:
+        """Close with a save running: cancel the job, post its terminal message now and leave the thread to end on its own.
+
+        The document registers the thread with its closer, so the source is closed only after the writer returned.
+        """
+        run = self._save_run
+        if run is None:
+            return
+        run.abandoned = True
+        if run.job is not None:
+            run.job.cancel()
+        self._end_save(run)
+        self.post_message(self.SaveCancelled(self).set_sender(self))
 
     def refresh_after_rebase(self) -> None:
         """Re-point the widget's holders after the lazy document was rebased onto a saved file, and repaint.
@@ -3852,6 +4198,9 @@ NovaTextArea {
                 f"Selection of {content.length:,} bytes is too large for the system clipboard (limit {self.clipboard_cap:,}); it was not updated. Paste inside the editor still works.",
                 severity="warning",
             )
+        if self._save_run is not None:
+            self._clipboard_record = None  # the save rewrites the references of the record it collected; a new one would name the old file
+            return
         self._clipboard_record = self._ClipboardRecord(content, content.length, system_text, self.app.clipboard)
 
     def _internal_clipboard(self) -> PieceContent | None:
