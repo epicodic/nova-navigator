@@ -8,7 +8,7 @@ from bisect import bisect_right
 BREAK = re.compile(rb"\r\n|\n|\r")
 
 # Junction alphabet: terminators, multibyte characters and the pieces of a split UTF-8 sequence.
-ALPHABET: list[bytes] = [b"a", b"\r", b"\n", "é".encode(), b"\xff", b"\xe2", b"\x82", b"\xac", b"\t", "漢".encode()]
+ALPHABET: list[bytes] = [b"a", b"\r", b"\n", "é".encode(), b"\xff", b"\xe2", b"\x82", b"\xac", b"\t", "漢".encode(), b"\xef\xbb\xbf"]
 
 
 def break_ends(data: bytes) -> list[int]:

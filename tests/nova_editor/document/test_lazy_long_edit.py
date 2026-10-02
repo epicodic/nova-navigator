@@ -531,6 +531,6 @@ def test_fuzz_long_rows_against_the_str_reference(seed: int) -> None:
 
 def test_fuzz_exercises_splices_and_rebuilds(monkeypatch: pytest.MonkeyPatch) -> None:
     spy = Spy(monkeypatch)
-    run_long_fuzz(900, FUZZ_STEPS)
+    run_long_fuzz(902, FUZZ_STEPS)  # a seed whose rows are long enough for many splices
     assert spy.spliced >= 3
     assert spy.starts > spy.spliced
