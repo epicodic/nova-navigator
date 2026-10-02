@@ -126,9 +126,6 @@ _INVALID_BYTE_TABLE = str.maketrans(dict.fromkeys(range(0xDC80, 0xDD00), 0xFFFD)
 _PAD_SLACK_CELLS = 1024
 """Cells beyond the region width that a rendered line is still padded to (a strip is never padded to the virtual width of a huge row)."""
 
-
-"""Longest `reload` waits (seconds) for the scan of the new document to resolve its first row."""
-
 STALE_REASON = "file changed on disk"
 """The reason of the edit lock of a view whose file changed behind it."""
 
@@ -1092,9 +1089,10 @@ NovaTextArea {
         """What changed on disk behind the document (the stale state, edits locked with `STALE_REASON`), or `None`."""
 
         self._save_run: _SaveRun | None = None
+        """The running save (at most one), else `None`."""
+
         self._save_epoch = 0
         """Counts the starts and ends of saves: an external check that began in another epoch compared with a file the save was about to replace."""
-        """The running save (at most one), else `None`."""
 
         self._edit_refused = False
         """True when the most recent `edit()` was refused (a position was not resolved); the keyboard helpers then report no edit."""
