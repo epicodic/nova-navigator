@@ -6,6 +6,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from textual.message import Message
 
 from nova_editor.core.save import SaveIo, SaveSettings
 from nova_editor.document._lazy_document import LazyDocument
@@ -410,3 +411,67 @@ async def test_a_failed_translation_on_the_save_thread_is_committed(tmp_path: Pa
     assert failed.stage == "internal"
     assert failed.committed is True
     assert editable
+
+
+@pytest.mark.asyncio
+async def test_closing_after_the_replace_does_not_report_a_cancel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    reached, opened = threading.Event(), threading.Event()
+    real = SaveIo()
+
+    def held_dir_sync(directory: str) -> None:
+        reached.set()  # the replace has happened: the commit point is behind the job
+        assert opened.wait(10)
+        real.fsync_dir(directory)
+
+    monkeypatch.setattr(NovaTextArea, "save_io", SaveIo(fsync_dir=held_dir_sync))
+    path = _file(tmp_path)
+    area = NovaTextArea.open(path)
+    host = SaveHost(area)
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        area.focus()
+        await pilot.press("x")
+        document = area.document
+        assert area.save() is True
+        assert reached.wait(10)
+        area.close()
+        opened.set()
+        assert document.wait_closed(10)
+        await pilot.pause(0.1)
+        (failed,) = host.terminals()
+        assert isinstance(failed, NovaTextArea.SaveFailed)
+        assert failed.committed is True
+        assert not area.saving
+        assert path.read_bytes().startswith(b"x")
+    assert leftovers(tmp_path) == []
+
+
+@pytest.mark.asyncio
+async def test_closing_survives_a_refused_post(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    gate = Gate()
+    monkeypatch.setattr(NovaTextArea, "save_io", gate.io())
+    path = _file(tmp_path)
+    area = NovaTextArea.open(path)
+    host = SaveHost(area)
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        area.focus()
+        await pilot.press("x")
+        document = area.document
+        assert area.save() is True
+        assert gate.reached.wait(10)
+        real_post = area.post_message
+        refused: list[object] = []
+
+        def post(message: Message) -> bool:
+            if isinstance(message, NovaTextArea.SaveCancelled):
+                refused.append(message)
+                return False
+            return real_post(message)
+
+        monkeypatch.setattr(area, "post_message", post)
+        area.close()
+        assert len(refused) == 1
+        gate.release()
+        assert document.wait_closed(10)
+        assert not area.saving

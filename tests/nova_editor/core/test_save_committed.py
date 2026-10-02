@@ -102,3 +102,19 @@ def test_pre_commit_failures_are_not_committed(tmp_path: Path, op: str) -> None:
         job.run()
     source.close()
     assert info.value.committed is False
+
+
+def test_job_reports_the_commit_point(tmp_path: Path) -> None:
+    target = tmp_path / "f.txt"
+    target.write_bytes(ORIGINAL)
+    seen: list[bool] = []
+    io = SaveIo()
+    job, source = _swapped_job(target, io)
+    io.replace = lambda src, dst: (seen.append(job.committed), os.replace(src, dst))[1]
+    io.fsync_dir = lambda _directory: seen.append(job.committed)
+    assert job.committed is False
+    result = job.run()
+    result.source.close()
+    source.close()
+    assert seen == [False, True]
+    assert job.committed is True
