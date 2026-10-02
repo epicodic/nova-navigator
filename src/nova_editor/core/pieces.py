@@ -17,6 +17,25 @@ CR = 0x0D
 
 _BREAK = re.compile(rb"\r\n|\n|\r")
 
+GENERATION_SHIFT = 24
+SEGMENT_MASK = (1 << GENERATION_SHIFT) - 1
+MAX_GENERATION = 255
+
+
+def make_src(generation: int, segment: int) -> int:
+    """Return the `Piece.src` number of `segment` in `generation` (generation 0 is the live original and add store)."""
+    return (generation << GENERATION_SHIFT) | segment
+
+
+def generation_of(src: int) -> int:
+    """Return the generation of a `Piece.src` number."""
+    return src >> GENERATION_SHIFT
+
+
+def segment_of(src: int) -> int:
+    """Return the segment of a `Piece.src` number (0 is the generation's original, `k >= 1` an add segment)."""
+    return src & SEGMENT_MASK
+
 
 class PieceSource(Protocol):
     """Row oracle and byte reader of one source (the original or one add segment).
