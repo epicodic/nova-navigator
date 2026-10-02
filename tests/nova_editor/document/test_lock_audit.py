@@ -157,6 +157,8 @@ CALLS: dict[str, Call] = {
     "wait_rebased": lambda d, _: d.wait_rebased(0.0),
     "join_on_close": lambda d, _: d.join_on_close(_finished_thread()),
     "plan": lambda d, r: (d.plan(0, d.length, unverified=False), d.plan(max(r, 0), 7, unverified=True)),
+    "revision": lambda d, _: d.revision,
+    "search_plan": lambda d, r: (d.search_plan(0, d.length), d.search_plan(max(r, 0), 7)),
     "require_not_saving": _gated(lambda d, _: d.require_not_saving("audit")),
     "saving": lambda d, _: d.saving,
 }
