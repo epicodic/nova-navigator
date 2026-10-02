@@ -17,7 +17,7 @@ def test_static_ascii_table_equals_the_full_scan() -> None:
 
 @pytest.mark.parametrize(
     ("char", "member"),
-    [("k", "K"), ("s", "ſ"), ("σ", "ς"), ("µ", "μ"), ("ß", "ẞ"), ("é", "É")],
+    [("k", "K"), ("s", "\u017f"), ("\u03c3", "ς"), ("µ", "μ"), ("ß", "ẞ"), ("é", "É")],
 )
 def test_named_classes(char: str, member: str) -> None:
     assert member in variants(char)
@@ -27,12 +27,12 @@ def test_named_classes(char: str, member: str) -> None:
 
 def test_sharp_s_does_not_match_ss() -> None:
     assert "s" not in variants("ß")
-    assert variants("s") == ("S", "s", "ſ")
+    assert variants("s") == ("S", "s", "\u017f")
 
 
 def test_dotted_and_dotless_i_match_only_themselves() -> None:
     assert variants("İ") == ("İ",)
-    assert variants("ı") == ("ı",)
+    assert variants("\u0131") == ("\u0131",)
     assert variants("i") == ("I", "i")
 
 
