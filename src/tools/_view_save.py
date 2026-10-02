@@ -412,10 +412,13 @@ def settings_of(spec: Spec) -> SaveSettings:
 
 
 @contextlib.asynccontextmanager
-async def open_session(spec: Spec) -> AsyncIterator[SaveSession]:
-    """Open the file of `spec` in a headless app, wait until it is indexed and yield the session; the model reads `spec["origin"]` (default the file)."""
+async def open_session(spec: Spec, app_factory: Callable[[NovaTextArea], SaveApp] = SaveApp) -> AsyncIterator[SaveSession]:
+    """Open the file of `spec` in a headless app, wait until it is indexed and yield the session; the model reads `spec["origin"]` (default the file).
+
+    `app_factory` builds the app that hosts the widget (a subclass of `SaveApp` that records more messages, as the search scenarios do).
+    """
     _plain, area = _open(spec)
-    app = SaveApp(area)
+    app = app_factory(area)
     ProbeTextArea.save_settings = settings_of(spec)
     ProbeTextArea.save_io = None
     model = ByteModel(Path(spec.get("origin") or spec["file"]))
@@ -605,26 +608,15 @@ async def save_scenario(spec: Spec) -> list[Row]:
 
 
 # -- steps during a save ------------------------------------------------------------------------------------------------------------
-async def _latency_step(session: SaveSession, op: str, index: int) -> Row:
-    area, app, runner = session.area, session.app, session.runner
-    saving = area.saving
-    common = {"phase": runner.current_phase() if saving else "idle", "step": index, "saving": saving}
-    state = "saving" if saving else "idle"
-    if op == "x-refused":
-        app.refused.clear()
-        started = time.perf_counter()
-        send_key(app, "x")
-        refused = True
-        try:
-            async with asyncio.timeout(REFUSE_LIMIT):
-                await app.refused.wait()
-        except TimeoutError:
-            refused = False
-        return base_row(session.spec, case="save-latency", state=state, op=op, latency_ms=(app.refused_at - started) * 1000 if refused else None, handler_ms=None, changed=False, **common)
+async def measure_op(app: SaveApp, area: ProbeTextArea, document: LazyDocument, op: str, index: int) -> Row:
+    """Run one step of the latency rounds (not `x-refused`, which is an edit) and return its measured fields: `latency_ms`, `handler_ms`, `changed`.
+
+    A `vscroll` step also reports `scroll_y_before`, `scroll_y_after` and `noop` (a step that did not scroll is never a latency sample: it waits for the next cursor blink repaint).
+    """
     if op in JUMP_OPS:
 
         def jump() -> None:
-            area.move_cursor(session.document.end if op == "ctrl+end" else (0, 0))
+            area.move_cursor(document.end if op == "ctrl+end" else (0, 0))
 
         action = jump
     elif op == "vscroll":
@@ -646,21 +638,36 @@ async def _latency_step(session: SaveSession, op: str, index: int) -> Row:
     timing = await timed(area, action, limit=STEP_LIMIT, require_change=False, state=edit_state)
     if op == "vscroll":
         scroll_after = area.scroll_offset.y
-        noop = scroll_after == scroll_before  # a step that did not scroll waits for the next cursor-blink repaint: never a latency sample
-        return base_row(
-            session.spec,
-            case="save-latency",
-            state=state,
-            op=op,
-            latency_ms=None if noop else timing.latency_ms,
-            handler_ms=timing.handler_ms,
-            changed=timing.changed,
-            scroll_y_before=scroll_before,
-            scroll_y_after=scroll_after,
-            noop=noop,
-            **common,
-        )
-    return base_row(session.spec, case="save-latency", state=state, op=op, latency_ms=timing.latency_ms, handler_ms=timing.handler_ms, changed=timing.changed, **common)
+        noop = scroll_after == scroll_before
+        return {
+            "latency_ms": None if noop else timing.latency_ms,
+            "handler_ms": timing.handler_ms,
+            "changed": timing.changed,
+            "scroll_y_before": scroll_before,
+            "scroll_y_after": scroll_after,
+            "noop": noop,
+        }
+    return {"latency_ms": timing.latency_ms, "handler_ms": timing.handler_ms, "changed": timing.changed}
+
+
+async def _latency_step(session: SaveSession, op: str, index: int) -> Row:
+    area, app, runner = session.area, session.app, session.runner
+    saving = area.saving
+    common = {"phase": runner.current_phase() if saving else "idle", "step": index, "saving": saving}
+    state = "saving" if saving else "idle"
+    if op == "x-refused":
+        app.refused.clear()
+        started = time.perf_counter()
+        send_key(app, "x")
+        refused = True
+        try:
+            async with asyncio.timeout(REFUSE_LIMIT):
+                await app.refused.wait()
+        except TimeoutError:
+            refused = False
+        return base_row(session.spec, case="save-latency", state=state, op=op, latency_ms=(app.refused_at - started) * 1000 if refused else None, handler_ms=None, changed=False, **common)
+    measured = await measure_op(app, area, session.document, op, index)
+    return base_row(session.spec, case="save-latency", state=state, op=op, **measured, **common)
 
 
 async def latency_rounds(session: SaveSession, steps: int, max_rounds: int) -> list[Row]:
