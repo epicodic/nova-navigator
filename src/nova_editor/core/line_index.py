@@ -14,6 +14,7 @@ from bisect import bisect_left, bisect_right
 from collections.abc import Callable
 from dataclasses import dataclass
 from types import TracebackType
+from typing import TypedDict, Unpack
 
 from nova_editor.core.byte_source import ByteSource, SourceChanged
 from nova_editor.core.foreground import Foreground
@@ -126,6 +127,20 @@ class _Walker:
             self._fill()
 
 
+class LineIndexSettings(TypedDict, total=False):
+    """Keyword settings of `LineIndex`."""
+
+    stride: int
+    long_line_threshold: int
+    long_line_cap: int
+    read_budget: int
+    max_lines_per_call: int
+    scan_block: int
+    walk_window: int
+    yield_seconds: float
+    foreground: Foreground | None
+
+
 class LineIndex:
     """Sparse row index built by a background thread that only appends.
 
@@ -179,6 +194,18 @@ class LineIndex:
         self._subscribers: list[Callable[[], None]] = []
         self._thread: threading.Thread | None = None
         self._inline = False
+
+    @classmethod
+    def from_scan(cls, source: ByteSource, scanner: RowScanner, entries: list[int], longs: list[LongRow], length: int, **settings: Unpack[LineIndexSettings]) -> LineIndex:
+        """Create a complete index over `source` from a scanner that saw every byte of it.
+
+        `entries` and `longs` are the concatenation of every `scanner.take()` result plus `scanner.finish(length)`.
+        The index is complete at once and refuses `start()` and `scan_now()`.
+        """
+        index = cls(source, **settings)
+        index._inline = True
+        index._publish(scanner.count, entries, longs, length, complete=True)
+        return index
 
     # -- public -------------------------------------------------------------------------------
     def start(self) -> None:
