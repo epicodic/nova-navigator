@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from nova_editor.core.save import SaveIo, SaveSettings
+from nova_editor.document._lazy_document import LazyDocument
 from nova_editor.widget import NovaTextArea
 from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.save_widget_helpers import SETTINGS, Gate, SaveHost, leftovers, text_of, wait_saved
@@ -306,3 +307,106 @@ async def test_save_as_onto_an_existing_file_needs_confirmation(tmp_path: Path) 
         assert message[1].kind.value == "exists"
         assert area.save(other, overwrite=True) is True
         await wait_saved(pilot, area)
+
+
+async def _failing_finish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, owner: type, name: str, error: Exception, *, modified: bool = True) -> tuple[NovaTextArea.SaveFailed, bytes, bool]:
+    """Save an edited file while `owner.name` raises `error`; return the failure, the text before the save and whether the area took more edits."""
+
+    def broken(*_args: object, **_kwargs: object) -> None:
+        raise error
+
+    monkeypatch.setattr(owner, name, broken)
+    path = _file(tmp_path)
+    area = NovaTextArea.open(path)
+    host = SaveHost(area)
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        area.focus()
+        await pilot.press("x")
+        before = text_of(area)
+        assert area.save() is True
+        await wait_saved(pilot, area)
+        (failed,) = host.terminals()
+        assert isinstance(failed, NovaTextArea.SaveFailed)
+        assert text_of(area) == before
+        assert area.modified is modified
+        monkeypatch.undo()
+        await pilot.press("y")
+        assert host.refused == []
+        return failed, before, len(text_of(area)) == len(before) + 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [OSError(5, "boom"), ValueError("bad"), RuntimeError("defect")])
+async def test_any_exception_in_apply_rebase_ends_in_one_save_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception) -> None:
+    failed, _, editable = await _failing_finish(tmp_path, monkeypatch, LazyDocument, "apply_rebase", error)
+    assert failed.stage == "internal"
+    assert failed.committed is True
+    assert editable
+    assert leftovers(tmp_path) == []
+
+
+@pytest.mark.asyncio
+async def test_a_failure_while_swapping_leaves_the_document_on_the_old_table(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    original = LazyDocument._rebase_long
+
+    def broken(*_args: object) -> object:
+        raise OSError(5, "mid-swap")
+
+    monkeypatch.setattr(LazyDocument, "_rebase_long", broken)
+    path = _file(tmp_path)
+    area = NovaTextArea.open(path)
+    host = SaveHost(area)
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        area.focus()
+        await pilot.press("x")
+        before = text_of(area)
+        table = area.document._table
+        assert area.save() is True
+        await wait_saved(pilot, area)
+        (failed,) = host.terminals()
+        assert isinstance(failed, NovaTextArea.SaveFailed)
+        assert failed.committed is True
+        assert failed.stage == "internal"
+        assert area.document._table is table
+        assert text_of(area) == before
+        monkeypatch.setattr(LazyDocument, "_rebase_long", original)
+        await pilot.press("y")
+        assert host.refused == []
+
+
+@pytest.mark.asyncio
+async def test_a_failure_after_the_swap_clears_the_history_and_still_ends_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    failed, _, editable = await _failing_finish(tmp_path, monkeypatch, NovaTextArea, "_apply_translated", RuntimeError("defect"), modified=False)
+    assert failed.stage == "internal"
+    assert failed.committed is True
+    assert editable
+
+
+@pytest.mark.asyncio
+async def test_a_failure_before_the_commit_is_not_committed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(_fd: int, _data: bytes | memoryview) -> int:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(NovaTextArea, "save_io", SaveIo(write=broken))
+    path = _file(tmp_path)
+    area = NovaTextArea.open(path)
+    host = SaveHost(area)
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        area.focus()
+        await pilot.press("x")
+        assert area.save() is True
+        await wait_saved(pilot, area)
+        (failed,) = host.terminals()
+        assert isinstance(failed, NovaTextArea.SaveFailed)
+        assert failed.committed is False
+
+
+@pytest.mark.asyncio
+async def test_a_failed_translation_on_the_save_thread_is_committed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    failed, _, editable = await _failing_finish(tmp_path, monkeypatch, LazyDocument, "prepare_rebase", OSError(5, "translate"))
+    assert failed.stage == "internal"
+    assert failed.committed is True
+    assert editable

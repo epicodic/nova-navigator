@@ -720,7 +720,8 @@ class NovaEditApp(App[None]):
     def on_nova_text_area_save_failed(self, message: NovaTextArea.SaveFailed) -> None:
         """Show the failure with its stage; it stays until a key is pressed."""
         reason = message.error.strerror or str(message.error)
-        self._save_bar.show_failure(f"Save failed ({message.stage}): {reason}  Press a key")
+        written = "  The file was written; press F5 to reload." if message.committed else ""
+        self._save_bar.show_failure(f"Save failed ({message.stage}): {reason}{written}  Press a key")
 
     def on_nova_text_area_save_cancelled(self, message: NovaTextArea.SaveCancelled) -> None:
         """Show that the save was cancelled."""
