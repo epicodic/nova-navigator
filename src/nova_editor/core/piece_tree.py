@@ -467,9 +467,7 @@ class PieceTree:
         first = self.split_at(start)
         last = self.split_at(end)
         removed = list(self._walk_count(first, last - first))
-        for _ in range(last - first):
-            self._delete_at(self._root, first)
-        self._collapse_root()
+        self._delete_pieces(first, last - first)
         pos = first
         for piece in content.pieces:
             previous = self.piece_at(pos - 1) if pos > 0 else None
@@ -481,6 +479,59 @@ class PieceTree:
                 pos += 1
         self._try_merge(pos)
         return Content.from_pieces(removed, tail_chars_of(removed, self._source_of) if removed_tail_chars is None else removed_tail_chars)
+
+    def _delete_pieces(self, index: int, count: int) -> None:
+        """Delete `count` consecutive pieces from `index` in one pass: slice inside the boundary leaves, drop whole nodes, rebalance each cut node once."""
+        if count <= 0:
+            return
+        if count == self.piece_count:
+            self._root = _Leaf()
+            return
+        self._delete_range(self._root, index, count)
+        self._collapse_root()
+
+    def _delete_range(self, node: _Node, index: int, count: int) -> None:
+        """Delete the pieces `[index, index + count)` below `node`; the range is non-empty, inside the node, and leaves at least one piece in it."""
+        if isinstance(node, _Leaf):
+            for col in node.cols:
+                del col[index : index + count]
+            node.refresh()
+            return
+        end = index + count
+        base = 0
+        kept: list[_Node] = []
+        for child in node.children:
+            child_end = base + child.count
+            if child_end <= index or base >= end:
+                kept.append(child)
+            elif index <= base and child_end <= end:
+                pass  # wholly inside the range: dropped
+            else:
+                lo = max(index, base)
+                self._delete_range(child, lo - base, min(end, child_end) - lo)
+                kept.append(child)
+            base = child_end
+        node.children[:] = kept
+        self._repair_children(node)
+
+    def _repair_children(self, node: _Inner) -> None:
+        """Bring every child of `node` up to the minimum occupancy and refresh `node`.
+
+        A rebalance can join two nodes whose facing children are under the minimum (a node left with one child could not repair them),
+        so the repair goes down into the nodes a rebalance touched.
+        """
+        i = 0
+        while i < len(node.children) and len(node.children) > 1:
+            if node.children[i].size() >= self._min:
+                i += 1
+                continue
+            left = i - 1 if i > 0 else i
+            self._rebalance(node, i)
+            for child in node.children[left : left + 2]:
+                if isinstance(child, _Inner):
+                    self._repair_children(child)
+            i = 0
+        node.refresh()
 
     def _check_range(self, start: int, end: int) -> None:
         if not 0 <= start <= end <= self.length:

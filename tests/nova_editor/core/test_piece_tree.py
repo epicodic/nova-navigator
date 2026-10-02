@@ -12,7 +12,7 @@ from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, initialize, invariant, rule
 
 from nova_editor.core import Content, PieceTree, combine, make_piece
-from nova_editor.core.piece_tree import _Inner
+from nova_editor.core.piece_tree import _Inner, _Node
 from nova_editor.core.pieces import EMPTY_AGGREGATE, Aggregate, Piece, PieceSource, aggregate_of_bytes, merge_pieces, tail_chars_of
 from tests.nova_editor.core.reference import ALPHABET, FakeSource, Rng, Sources, break_ends, inside_crlf, tail_chars
 
@@ -142,8 +142,11 @@ def run_random(seed: int, steps: int, fanout: int) -> None:
         n = len(harness.ref)
         a = rng.randint(0, n)
         b = rng.randint(a, min(n, a + rng.choice([1, 3, 10, 40])))
-        op = rng.choice(["insert", "delete", "replace", "reinsert", "extract", "replace_saved"])
-        if op == "insert":
+        op = rng.choice(["insert", "delete", "replace", "reinsert", "extract", "replace_saved", "wide_delete"])
+        if op == "wide_delete":
+            wide_start = rng.randint(0, n)
+            harness.delete(wide_start, rng.randint(wide_start, n))
+        elif op == "insert":
             harness.insert(a, random_bytes(rng, 6))
         elif op == "delete":
             harness.delete(a, b)
@@ -404,3 +407,70 @@ def test_tail_chars_reads_only_the_last_row_part_of_a_large_piece() -> None:
     piece = make_piece(source, 1, 0, len(data))
     assert tail_chars_of([piece], lambda _src: cast("PieceSource", Counting())) == 6000 + 2
     assert sum(reads) <= 4 * 4096
+
+
+def build_many(count: int, fanout: int) -> tuple[PieceTree, Sources, bytes, list[int]]:
+    """A tree of `count` pieces of one or two bytes that never merge (each has its own source), the bytes it holds, and the offset of every piece."""
+    sources = Sources()
+    pieces = []
+    data = b""
+    starts: list[int] = []
+    for i in range(count):
+        chunk = b"a\n" if i % 3 == 0 else b"b"
+        src = sources.add(chunk)
+        pieces.append(make_piece(sources(src), src, 0, len(chunk)))
+        starts.append(len(data))
+        data += chunk
+    starts.append(len(data))
+    return PieceTree.from_pieces(sources, pieces, fanout), sources, data, starts
+
+
+def removed_bytes(removed: Content, sources: Sources) -> bytes:
+    return b"".join(sources(piece.src).read(piece.a, piece.b) for piece in removed.pieces)
+
+
+def test_a_wide_delete_does_not_delete_piece_by_piece(monkeypatch: pytest.MonkeyPatch) -> None:
+    tree, sources, data, starts = build_many(10_000, 32)
+    calls: list[int] = []
+    original = PieceTree._delete_at
+
+    def counting(self: PieceTree, node: _Node, index: int) -> None:
+        calls.append(index)
+        original(self, node, index)
+
+    monkeypatch.setattr(PieceTree, "_delete_at", counting)
+    start, end = starts[1_000], starts[9_000]
+    removed = tree.splice(start, end, Content.from_pieces((), 0))
+    assert len(calls) <= 8, len(calls)
+    assert removed_bytes(removed, sources) == data[start:end]
+    tree.check_invariants(deep=True)
+    assert tree.read(0, tree.length) == data[:start] + data[end:]
+
+
+@pytest.mark.parametrize("fanout", [4, 5, 8, 32])
+def test_bulk_delete_matches_a_plain_bytes_reference(fanout: int) -> None:
+    rng = Rng(fanout)
+    for _ in range(60):
+        tree, sources, data, _starts = build_many(rng.randint(1, 400), fanout)
+        for _ in range(12):
+            if tree.length == 0:
+                break
+            start = rng.randint(0, tree.length)
+            end = rng.randint(start, tree.length)
+            removed = tree.splice(start, end, Content.from_pieces((), 0))
+            assert removed_bytes(removed, sources) == data[start:end]
+            data = data[:start] + data[end:]
+            tree.check_invariants(deep=True)
+            assert tree.read(0, tree.length) == data
+
+
+@pytest.mark.parametrize("fanout", [4, 32])
+@pytest.mark.parametrize("pieces", [(0, 300), (10, 12), (0, 4), (2, 70), (1, 300), (0, 299), (150, 151)])
+def test_bulk_delete_shapes(fanout: int, pieces: tuple[int, int]) -> None:
+    """Everything, inside one leaf, a leaf's worth, across several leaves, all but one end piece, one piece."""
+    tree, sources, data, starts = build_many(300, fanout)
+    start, end = starts[pieces[0]], starts[pieces[1]]
+    removed = tree.splice(start, end, Content.from_pieces((), 0))
+    assert removed_bytes(removed, sources) == data[start:end]
+    tree.check_invariants(deep=True)
+    assert tree.read(0, tree.length) == data[:start] + data[end:]
