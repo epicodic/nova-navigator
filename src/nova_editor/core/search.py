@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from itertools import pairwise
-from typing import Protocol
+from typing import Literal, Protocol
 
 from nova_editor.core.byte_source import ChangeKind, SourceChanged
 from nova_editor.core.casefold import fold1, variants
@@ -48,7 +48,9 @@ _CONTINUATION = range(0x80, 0xC0)
 _LEAD_2 = range(0xC2, 0xE0)
 _LEAD_3 = range(0xE0, 0xF0)
 _LEAD_4 = range(0xF0, 0xF5)
-_TIERS = ("auto", "find", "ascii", "pattern")
+Tier = Literal["auto", "find", "ascii", "pattern"]
+"""The tier switch of `compile_matcher` and `SearchSettings`."""
+_TIERS: tuple[Tier, ...] = ("auto", "find", "ascii", "pattern")
 
 
 class SearchError(ValueError):
@@ -79,7 +81,7 @@ class SearchSettings:
 
     chunk: int = CHUNK
     progress_interval: float = PROGRESS_INTERVAL
-    tier: str = "auto"
+    tier: Tier = "auto"
     """Test switch passed to `compile_matcher`."""
     pattern_work_budget: int = PATTERN_WORK_BUDGET
     """Work budget of a unit that may use the pattern tier (see `PATTERN_WORK_BUDGET`); tests force tiny spans."""
@@ -179,7 +181,7 @@ class Matcher:
         case_sensitive: bool,
         ascii_fold: bytes | None,
         plain: bytes | None,
-        forced: str,
+        forced: Tier,
     ) -> None:
         self._tokens = tokens
         self._case_sensitive = case_sensitive
@@ -340,7 +342,7 @@ def _tokenize(needle: str, *, case_sensitive: bool) -> list[tuple[bytes, ...]]:
     return tokens
 
 
-def compile_matcher(needle: str, *, case_sensitive: bool, tier: str = "auto") -> Matcher:
+def compile_matcher(needle: str, *, case_sensitive: bool, tier: Tier = "auto") -> Matcher:
     """Compile `needle` into a `Matcher`.
 
     `tier` is a test switch: `"auto"` picks per window, `"find"`, `"ascii"` and `"pattern"` force a tier; a forced tier

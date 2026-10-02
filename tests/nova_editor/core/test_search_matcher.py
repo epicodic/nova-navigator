@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from nova_editor.core.search import (
@@ -10,6 +12,7 @@ from nova_editor.core.search import (
     MAX_NEEDLE_BYTES,
     MAX_PATTERN_CHARS,
     SearchError,
+    Tier,
     compile_matcher,
 )
 
@@ -23,11 +26,11 @@ DOTTED_I = chr(0x130)
 GRINNING = chr(0x1F600)
 
 
-def forward(needle: str, data: bytes, *, case_sensitive: bool = True, tier: str = "auto") -> tuple[int, int] | None:
+def forward(needle: str, data: bytes, *, case_sensitive: bool = True, tier: Tier = "auto") -> tuple[int, int] | None:
     return compile_matcher(needle, case_sensitive=case_sensitive, tier=tier).find(data, 0, len(data))
 
 
-def backward(needle: str, data: bytes, *, case_sensitive: bool = True, tier: str = "auto") -> tuple[int, int] | None:
+def backward(needle: str, data: bytes, *, case_sensitive: bool = True, tier: Tier = "auto") -> tuple[int, int] | None:
     return compile_matcher(needle, case_sensitive=case_sensitive, tier=tier).rfind(data, 0, len(data))
 
 
@@ -233,7 +236,7 @@ def test_forced_tier_that_cannot_apply_is_refused() -> None:
     with pytest.raises(SearchError):
         compile_matcher("a\n", case_sensitive=False, tier="ascii")
     with pytest.raises(SearchError):
-        compile_matcher("a", case_sensitive=True, tier="nonsense")
+        compile_matcher("a", case_sensitive=True, tier=cast("Tier", "nonsense"))
     for tier in ("find", "pattern", "auto"):
         compile_matcher("a", case_sensitive=True, tier=tier)
     for tier in ("ascii", "pattern", "auto"):
