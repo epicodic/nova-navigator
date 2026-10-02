@@ -430,14 +430,13 @@ A paste of outside text is held once in the add store, which is the only permitt
 
 **System clipboard:**
 The system clipboard is written through `app.copy_to_clipboard` only when the selection is at most `NovaTextArea.clipboard_cap` bytes.
-`clipboard_cap` is 4 MiB (4,194,304 bytes).
+`clipboard_cap` is 2 MiB (2,097,152 bytes).
 The system text is the decoded selection with U+DC80 to U+DCFF replaced by U+FFFD, so the system copy is lossy for invalid bytes and the internal copy is exact.
 Above the cap, `notify` shows a warning: the system clipboard was not updated, and pasting inside the editor still works.
 
 **How the cap was chosen:**
-The rule is the largest measured size whose copy plus terminal write stays under 20 ms at p95 on the development machine.
-The candidates were 64 KiB, 256 KiB, 1 MiB and 4 MiB.
-Measured p95 is 4.48 ms at 1 MiB and 18.41 ms at 4 MiB, so 4 MiB is the cap.
+The rule is the largest measured size whose copy plus terminal write stays clearly under 20 ms at p95 on the development machine.
+Cap 2 MiB (2,097,152 bytes); rule: largest measured size whose p95 of copy plus terminal write stays clearly under 20 ms in repeated runs (2 MiB: worst p95 14.1 ms over three runs; 3 MiB peaked at 19.8 ms and 4 MiB at 32.1 ms, so they are not used).
 
 ---
 

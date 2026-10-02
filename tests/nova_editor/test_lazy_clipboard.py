@@ -30,10 +30,10 @@ def _rows(count: int) -> str:
     return "\n".join(f"row {n} " + "x" * (n % 7) for n in range(count))
 
 
-def test_clipboard_cap_default_is_4_mib() -> None:
-    """The system clipboard cap is set to 4 MiB (the p95 of measured copy + terminal write time)."""
+def test_clipboard_cap_default_is_2_mib() -> None:
+    """The system clipboard cap is set to 2 MiB (the p95 of measured copy + terminal write time)."""
     area = NovaTextArea(text="test")
-    assert area.clipboard_cap == 4_194_304
+    assert area.clipboard_cap == 2_097_152
 
 
 @pytest.mark.asyncio
