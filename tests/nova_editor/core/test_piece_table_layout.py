@@ -164,3 +164,15 @@ def test_generation_zero_is_unchanged_and_limit() -> None:
     assert [table.register_legacy(old_original, store) for _ in range(MAX_GENERATION)] == list(range(1, MAX_GENERATION + 1))
     with pytest.raises(ValueError, match="generation"):
         table.register_legacy(old_original, store)
+
+
+def test_source_of_is_public_and_resolves_every_source() -> None:
+    store = AddStore()
+    source = BytesSource(LINES)
+    index = LineIndex(source)
+    index.scan_now()
+    table = PieceTable(source, index, store)
+    content = table.add(b"new")
+    (piece,) = content.pieces
+    assert isinstance(table.source_of(0), OriginalSource)
+    assert table.source_of(piece.src).read(piece.a, piece.b) == b"new"

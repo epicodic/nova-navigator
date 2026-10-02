@@ -692,3 +692,35 @@ async def test_a_check_between_the_replace_and_the_finish_reports_nothing(tmp_pa
         assert host.kinds == []
         assert [type(message) for message in host.terminals()] == [NovaTextArea.Saved]
         assert area.check_external_change() is ChangeKind.UNCHANGED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("order", [(ChangeKind.MODIFIED, ChangeKind.TRUNCATED), (ChangeKind.TRUNCATED, ChangeKind.MODIFIED)], ids=["worse-later", "worse-first"])
+async def test_the_stale_state_keeps_the_most_severe_kind_and_posts_once(tmp_path: Path, order: tuple[ChangeKind, ChangeKind]) -> None:
+    path = _file(tmp_path)
+    area = NovaTextArea.open(path)
+    host = ChangeHost(area)
+    async with host.run_test() as pilot:
+        await _opened(pilot, area)
+        for kind in order:
+            area._fail_source(f"changed ({kind.value})", kind)
+        await pilot.pause(0.05)
+        assert area._stale_kind is ChangeKind.TRUNCATED
+        assert host.kinds == [order[0]]
+
+
+@pytest.mark.asyncio
+async def test_save_as_from_a_stale_origin_keeps_the_state_and_posts_no_second_change(tmp_path: Path) -> None:
+    path = _file(tmp_path)
+    copy = tmp_path / "copy.txt"
+    area = NovaTextArea.open(path)
+    host = ChangeHost(area)
+    async with host.run_test() as pilot:
+        await _opened(pilot, area)
+        _append(path)
+        assert area.check_external_change() is ChangeKind.MODIFIED
+        _touch(path)  # changes again, still readable
+        assert area.save(copy, overwrite=True) is True
+        await wait_saved(pilot, area)
+        assert host.kinds == [ChangeKind.MODIFIED]
+        assert copy.exists()

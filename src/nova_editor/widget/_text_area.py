@@ -271,6 +271,9 @@ class ExternalCheck:
         return kind
 
 
+_SEVERITY: dict[ChangeKind, int] = {ChangeKind.MODIFIED: 1, ChangeKind.TRUNCATED: 2, ChangeKind.DELETED: 2, ChangeKind.REPLACED: 2}
+"""How bad a change is for the stale view: what a later report may upgrade the held kind to (anything else ranks 0)."""
+
 _FIRST_ROW_WAIT = 1.0
 """Longest wait of `reload` for the first row of the new document (the scan resolves it within milliseconds)."""
 
@@ -1245,8 +1248,14 @@ NovaTextArea {
         self.close()
 
     def _fail_source(self, reason: str, kind: ChangeKind = ChangeKind.MODIFIED) -> None:
-        """Enter the failed state (blank rows for uncached rows, edits locked with `STALE_REASON`) and post `SourceChanged` once."""
+        """Enter the failed state (blank rows for uncached rows, edits locked with `STALE_REASON`) and post `SourceChanged` once.
+
+        A later call keeps the state and posts nothing, but remembers the more severe of the two kinds (`TRUNCATED`, `DELETED` and `REPLACED` over `MODIFIED`).
+        """
         if self._source_failed:
+            held = self._stale_kind
+            if held is None or _SEVERITY.get(kind, 0) > _SEVERITY.get(held, 0):
+                self._stale_kind = kind
             return
         self._source_failed = True
         self._stale_kind = kind

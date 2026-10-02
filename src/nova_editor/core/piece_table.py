@@ -99,6 +99,10 @@ class PieceTable:
 
     # ----- sources -------------------------------------------------------------------------------------------------------------------
 
+    def source_of(self, src: int) -> PieceSource:
+        """Return the source that the piece source number `src` stands for (the original, an add segment or a legacy generation)."""
+        return self._source_of(src)
+
     def _source_of(self, src: int) -> PieceSource:
         if src == 0:
             return self._original
