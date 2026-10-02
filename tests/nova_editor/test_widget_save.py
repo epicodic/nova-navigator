@@ -15,7 +15,7 @@ from textual.pilot import Pilot
 
 from nova_editor.core import LineIndex, PreadSource
 from nova_editor.core.rebase import RebasePlan
-from nova_editor.core.save import SaveIo, SaveSettings
+from nova_editor.core.save import FileIdentity, SaveIo, SaveSettings
 from nova_editor.core.save import SaveProgress as CoreSaveProgress
 from nova_editor.document._lazy_document import LazyDocument
 from nova_editor.widget import NovaTextArea
@@ -590,6 +590,37 @@ async def test_a_failure_after_the_install_adopts_the_file_and_clears_the_histor
         await out.pilot.press("ctrl+z")  # the history is gone: nothing may undo into the old pieces
         assert text_of(out.area) == out.target.read_bytes()
         assert not out.area.history.undo_stack
+
+
+@pytest.mark.asyncio
+async def test_an_identity_that_raises_after_a_failed_rebase_still_clears_the_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def patch(patcher: pytest.MonkeyPatch) -> None:
+        real = LazyDocument.apply_rebase
+        swapped: list[bool] = []
+
+        def failing(self: LazyDocument, plan: RebasePlan) -> None:
+            real(self, plan)
+            swapped.append(True)
+            msg = "after the swap"
+            raise RuntimeError(msg)
+
+        real_identity = PreadSource.identity
+
+        def identity(self: PreadSource) -> FileIdentity:
+            if swapped:
+                msg = "identity"
+                raise OSError(msg)
+            return real_identity(self)
+
+        patcher.setattr(LazyDocument, "apply_rebase", failing)
+        patcher.setattr(PreadSource, "identity", identity)
+
+    async with _failed_save_as(tmp_path, monkeypatch, patch) as out:
+        (failed,) = out.host.terminals()
+        assert isinstance(failed, NovaTextArea.SaveFailed)
+        assert out.area.file_path == out.target
+        assert not out.area.history.undo_stack
+        assert text_of(out.area) == out.target.read_bytes()
 
 
 @pytest.mark.asyncio

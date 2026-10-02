@@ -3336,10 +3336,10 @@ NovaTextArea {
     def _adopt_after_failed_rebase(self, result: SaveResult) -> None:
         """UI thread: `apply_rebase` raised after it replaced the table. The widget follows the document: the new file, and no history that could undo into the old sources."""
         self.file_path = result.target
-        self._held_identity = result.source.identity()
         self.history.clear()
         self._clipboard_record = None
         try:
+            self._held_identity = result.source.identity()
             self.history.mark_saved()
             self._lift_stale()
             self.refresh_after_rebase()
