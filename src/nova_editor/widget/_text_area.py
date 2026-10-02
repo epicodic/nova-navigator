@@ -2446,6 +2446,7 @@ NovaTextArea {
         """Swap in a new document: the old one is closed, every state tied to it is reset and the scan machinery is wired to the new one."""
         old = self.document
         old.require_not_saving("replacing the document")
+        self._cancel_search_for("reloaded")  # its offsets belong to the old document; `old.close()` joins the thread
         wrapped = LazyWrappedDocument(document, tab_width=self.indent_width)  # everything that can fail comes before the first assignment
         navigator = DocumentNavigator(wrapped)
         long_cursor = LongRowCursor(document)
@@ -3069,7 +3070,7 @@ NovaTextArea {
             self.suggestion = self.suggestion[len(edit.text) :]
         else:
             self.suggestion = ""
-        self._reset_cursor_machine()
+        self._after_text_change()
         self.history.record(edit)
         new_gutter_width = self.gutter_width
 
@@ -3421,13 +3422,17 @@ NovaTextArea {
 
     def _replace_search(self) -> None:
         """UI thread: drop the running search for a new one and post its `SearchCancelled` (reason `replaced`)."""
+        self._cancel_search_for("replaced")
+
+    def _cancel_search_for(self, reason: str) -> None:
+        """UI thread: drop the running search at once and post its one `SearchCancelled(reason)`; the thread ends on its own and its outcome is ignored."""
         run = self._search_run
         if run is None:
             return
-        run.reason = "replaced"
+        run.reason = reason
         run.job.cancel()
         self._search_run = None
-        self.post_message(self.SearchCancelled("replaced", self).set_sender(self))
+        self.post_message(self.SearchCancelled(reason, self).set_sender(self))
 
     def _abandon_search(self) -> None:
         """UI thread: the widget closes; the search is cancelled and its outcome (and every message) discarded."""
@@ -3674,6 +3679,11 @@ NovaTextArea {
         self._line_cache.clear()
         self.refresh()
 
+    def _after_text_change(self) -> None:
+        """The one hook of every text change (typing, deleting, pasting, undo, redo and the roll back of a refused batch): cancel the search, reset the cursor machine."""
+        self._cancel_search_for("text changed")
+        self._reset_cursor_machine()
+
     def _reset_cursor_machine(self) -> None:
         """Forget the cursor machine of the long row after an edit, undo or redo: the next selection change starts a resolved one at the new location."""
         cursor = self._long_cursor
@@ -3746,7 +3756,7 @@ NovaTextArea {
             self._roll_back(done, minimum_top, str(error))
             return False
 
-        self._reset_cursor_machine()
+        self._after_text_change()
         new_gutter_width = self.gutter_width
         if old_gutter_width != new_gutter_width:
             self.wrapped_document.wrap(self.wrap_width, self.indent_width)
@@ -3797,7 +3807,7 @@ NovaTextArea {
             self._roll_back(done, minimum_top, str(error), redo=True)
             return False
 
-        self._reset_cursor_machine()
+        self._after_text_change()
         new_gutter_width = self.gutter_width
         if old_gutter_width != new_gutter_width:
             self.wrapped_document.wrap(self.wrap_width, self.indent_width)
@@ -3826,7 +3836,7 @@ NovaTextArea {
                     edit.do(self, record_selection=False)
         except RowUnavailable as error:
             self._fail_source(f"an undo or redo could not be rolled back: {error}")
-        self._reset_cursor_machine()
+        self._after_text_change()
         self.wrapped_document.wrap_range(top, top, top)
         self._refresh_size()
         self._refuse_edit(reason)
