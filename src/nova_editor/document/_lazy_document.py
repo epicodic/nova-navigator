@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, NamedTuple, overload
 
@@ -23,9 +24,12 @@ from nova_editor.core import (
     LineIndex,
     LineSnapshot,
     LongLineIndex,
+    OriginalSource,
     PieceSource,
     PieceTable,
     PreadSource,
+    RebasePlan,
+    Rebaser,
     RowNotIndexed,
     RowRange,
     SourceChanged,
@@ -34,7 +38,9 @@ from nova_editor.core.foreground import Foreground
 from nova_editor.core.line_index import call_subscriber
 from nova_editor.core.long_line_index import SPLICE_SYNC_BYTES
 from nova_editor.core.long_line_index import Edit as LongEdit
-from nova_editor.core.save import PlanPart
+from nova_editor.core.pieces import MAX_GENERATION
+from nova_editor.core.rebase import UNDO_COPY_LIMIT
+from nova_editor.core.save import PlanPart, SaveResult
 from nova_editor.core.text_width import SURROGATE_ESCAPE, advance_disp, locate_cover, utf8_len
 from nova_editor.document._document import DocumentBase, EditResult, Location, Newline
 from nova_editor.document._lazy_config import LazyConfig
@@ -73,6 +79,30 @@ class RowUnavailable(RuntimeError):
 
 class EditsLocked(RowUnavailable):
     """The document refuses edits at the moment (`LazyDocument.lock_edits`); the message holds the reason."""
+
+
+class _Swap(NamedTuple):
+    """What `apply_rebase` does after the table was replaced and the lock is released."""
+
+    subscribers: list[Callable[[], None]]
+    rebased: list[LongLineIndex]
+    retired: list[LongLineIndex]
+    reapers: list[threading.Thread]
+    release: list[tuple[LineIndex, ByteSource]]
+
+
+def _release(files: list[tuple[LineIndex, ByteSource]]) -> None:
+    """Join the (cancelled) line scan of each file, then close its source; every source is closed even when an earlier one fails."""
+    if not files:
+        return
+    index, source = files[0]
+    try:
+        index.join()
+    finally:
+        try:
+            source.close()
+        finally:
+            _release(files[1:])
 
 
 class _SegmentBytes:
@@ -176,8 +206,13 @@ class LazyDocument(DocumentBase):
         self._closed = False
         self._edit_lock_reason: str | None = None
         self._saving = False
+        self._save_edits: int | None = None
+        self._edit_count = 0
         self._close_done = threading.Event()
         self._reapers: list[threading.Thread] = []
+        self._rebase_closers: list[threading.Thread] = []
+        self._legacy_files: list[tuple[LineIndex, ByteSource]] = []
+        """The line index and source behind each legacy generation of the table (generation `g` is element `g - 1`); closed with the document."""
         self._started = False
         self.foreground = Foreground()
         """Touched by the widget on key and mouse events; the scans of this document give way to the UI while it is."""
@@ -189,7 +224,8 @@ class LazyDocument(DocumentBase):
             foreground=self.foreground,
             scan_block=self._config.scan_block,
         )
-        self._table = PieceTable(source, self._line_index, AddStore())
+        self._add_store = AddStore()
+        self._table = self._build_table(source, self._line_index, self._add_store)
         self._ranges: OrderedDict[int, RowRange] = OrderedDict()
         self._texts: OrderedDict[int, str] = OrderedDict()
         self._long: OrderedDict[int, LongLineIndex] = OrderedDict()
@@ -219,6 +255,11 @@ class LazyDocument(DocumentBase):
     def from_text(cls, text: str, config: LazyConfig | None = None) -> LazyDocument:
         """Open `text` encoded as UTF-8 (lone surrogates from `SURROGATE_ESCAPE` round-trip to their original bytes)."""
         return cls.from_bytes(text.encode("utf-8", SURROGATE_ESCAPE), config)
+
+    @staticmethod
+    def _build_table(source: ByteSource, line_index: LineIndex, add_store: AddStore) -> PieceTable:
+        """Create the piece table over `source` (the lock audit replaces this to wrap the table it builds)."""
+        return PieceTable(source, line_index, add_store)
 
     # -- lifecycle ----------------------------------------------------------------------------
     @property
@@ -259,23 +300,27 @@ class LazyDocument(DocumentBase):
             indexes = [*self._long.values(), *self._retired]
             self._long.clear()
             self._retired.clear()
-            reapers = list(self._reapers)
-        self._line_index.cancel()
+            reapers = [*self._reapers, *self._rebase_closers]
+            legacy = list(self._legacy_files)
+            line_index, source = self._line_index, self._source
+        line_index.cancel()
         for index in indexes:
             index.cancel()
-        threading.Thread(target=self._finish_close, args=(indexes, reapers), name="lazy-closer", daemon=True).start()
+        for old_index, _ in legacy:
+            old_index.cancel()
+        files = [*legacy, (line_index, source)]
+        threading.Thread(target=self._finish_close, args=(indexes, reapers, files), name="lazy-closer", daemon=True).start()
 
-    def _finish_close(self, indexes: list[LongLineIndex], reapers: list[threading.Thread]) -> None:
-        """Closer thread: join the cancelled scans, then close the source."""
+    def _finish_close(self, indexes: list[LongLineIndex], reapers: list[threading.Thread], files: list[tuple[LineIndex, ByteSource]]) -> None:
+        """Closer thread: join the cancelled scans, then close the sources (the current one and those of the legacy generations)."""
         try:
             for index in indexes:
                 index.join()
             for reaper in reapers:
                 reaper.join()
-            self._line_index.join()
         finally:
             try:
-                self._source.close()
+                _release(files)
             finally:
                 self._close_done.set()
 
@@ -297,11 +342,13 @@ class LazyDocument(DocumentBase):
         """Register a running save: `require_not_saving` refuses until `end_save`."""
         with self._lock:
             self._saving = True
+            self._save_edits = self._edit_count
 
     def end_save(self) -> None:
         """Clear the registration of a save."""
         with self._lock:
             self._saving = False
+            self._save_edits = None
 
     @property
     def saving(self) -> bool:
@@ -338,6 +385,150 @@ class LazyDocument(DocumentBase):
             if unverified and isinstance(original, PreadSource):
                 original = original.unverified_reader()
             return [PlanPart(src, original if src == 0 else _SegmentBytes(self._table._source_of(src)), a, b) for src, a, b in runs]
+
+    def prepare_rebase(self, result: SaveResult, contents: Sequence[Content]) -> RebasePlan:
+        """Translate `contents` (every piece reference the undo and redo stacks and the clipboard hold) onto the saved file (design 7.3 and 8).
+
+        Runs on the save thread after the commit and does the heavy work; it touches no table state (the lock is taken only to read which source,
+        line index and add store are current), so edits must stay locked until `apply_rebase`.
+        The plan carries the saved file's source and line index: the caller hands it to `apply_rebase`, which then owns them.
+
+        Raises:
+            ValueError: The save built no line index.
+        """
+        if result.line_index is None:
+            msg = "a rebase needs the line index of the saved file"
+            raise ValueError(msg)
+        with self._lock:
+            source, line_index, store = self._source, self._line_index, self._add_store
+            generations = len(self._legacy_files)
+        original = OriginalSource(line_index, source)
+        old_sources: list[PieceSource] = [original, *(store.segment(segment) for segment in range(1, store.segment_count + 1))]
+        rebaser = Rebaser(
+            result.layout,
+            old_sources,
+            OriginalSource(result.line_index, result.source),
+            AddStore(),
+            limit=UNDO_COPY_LIMIT,
+            max_generation=MAX_GENERATION,
+            legacy=(original, store),
+            generations=generations,
+        )
+        plan = rebaser.translate(contents)
+        plan.source = result.source
+        plan.line_index = result.line_index
+        return plan
+
+    def apply_rebase(self, plan: RebasePlan) -> None:
+        """Switch the document onto the saved file (UI thread; bounded work, under the document lock; design 7.3).
+
+        In order: build the new table over the file with a fresh add store; carry the legacy generations and register the one the plan keeps;
+        replace source, line index and table; clear the row-range and text caches; rebase the cached long indexes (one that cannot be rebased is
+        dropped and rebuilt on demand); retire the old indexes, scan and add store; close the old source on a closer thread once the scans that read
+        it have returned (it stays open when a legacy generation keeps it).
+        On a closed document the plan's source is closed and nothing else happens.
+        The caller then writes the translated contents back into its records (`Edit.rewrite`), or clears them when `plan.clear_history` is set.
+
+        Raises:
+            ValueError: The plan has no source, or the document changed since the save started (the caller then closes the plan's source).
+        """
+        source, line_index = plan.source, plan.line_index
+        if source is None or line_index is None:
+            msg = "the plan carries no saved file"
+            raise ValueError(msg)
+        with self._lock:
+            swap = None if self._closed else self._install(plan, source, line_index)
+        if swap is None:
+            source.close()
+            return
+        for old_index, _ in swap.release:
+            old_index.cancel()
+        for callback in swap.subscribers:
+            line_index.subscribe(callback)
+        for replacement in swap.rebased:
+            for callback in swap.subscribers:
+                replacement.subscribe(callback)
+            replacement.start()
+        closer = threading.Thread(target=self._finish_rebase, args=(swap.retired, swap.reapers, swap.release), name="lazy-rebase-closer", daemon=True)
+        with self._lock:
+            self._rebase_closers = [thread for thread in self._rebase_closers if thread.is_alive()]
+            self._rebase_closers.append(closer)
+        closer.start()
+
+    def _install(self, plan: RebasePlan, source: ByteSource, line_index: LineIndex) -> _Swap:
+        """Replace source, line index and table by the saved file (the caller holds the lock); return what is left to do outside it.
+
+        Raises:
+            ValueError: The document changed since the save started; nothing is changed.
+        """
+        if (self._save_edits is not None and self._save_edits != self._edit_count) or source.length() != self._table.length:
+            msg = "the document changed since the save started"
+            raise ValueError(msg)
+        old_source, old_index, old_table = self._source, self._line_index, self._table
+        table = self._build_table(source, line_index, plan.new_add_store)
+        kept: list[tuple[LineIndex, ByteSource]] = []
+        release: list[tuple[LineIndex, ByteSource]] = []
+        if plan.clear_history:
+            release.extend(self._legacy_files)  # nothing refers to a legacy generation after the history is cleared
+        else:
+            kept.extend(self._legacy_files)
+            for original, store in old_table.legacy:
+                table.register_legacy(original, store)
+        if plan.retained is not None:
+            table.register_legacy(*plan.retained)
+            kept.append((old_index, old_source))  # the retained generation reads the old file, so its scan goes on and the file stays open
+        else:
+            release.append((old_index, old_source))
+        self._legacy_files = kept
+        self._source, self._line_index, self._add_store, self._table = source, line_index, plan.new_add_store, table
+        self._ranges.clear()
+        self._texts.clear()
+        old_longs = self._long
+        self._long = OrderedDict()
+        rebased = self._rebase_long(table, old_longs)
+        retired = [*self._retired, *old_longs.values()]
+        self._retired = []
+        return _Swap(list(self._subscribers), rebased, retired, list(self._reapers), release)
+
+    def _rebase_long(self, table: PieceTable, old_longs: OrderedDict[int, LongLineIndex]) -> list[LongLineIndex]:
+        """Cancel the old long indexes and move them onto the new table (the caller holds the lock and has to start the results).
+
+        An index whose row cannot be resolved or rebased is dropped; it is built again when the row is asked for.
+        """
+        rebased: list[LongLineIndex] = []
+        for row, old in old_longs.items():
+            old.cancel()
+            found = table.row_range(row)
+            if found is None:
+                continue
+            try:
+                replacement = LongLineIndex.rebased(old, table.row_source(found.start, found.content_end), autostart=False)
+            except (ValueError, SourceChanged):
+                continue
+            if replacement is not None:
+                self._long[row] = replacement
+                rebased.append(replacement)
+        return rebased
+
+    @staticmethod
+    def _finish_rebase(indexes: list[LongLineIndex], reapers: list[threading.Thread], release: list[tuple[LineIndex, ByteSource]]) -> None:
+        """Closer thread of a rebase: join the cancelled scans of the old table, then close the old files that no generation keeps."""
+        try:
+            for index in indexes:
+                index.join()
+            for reaper in reapers:
+                reaper.join()
+        finally:
+            _release(release)
+
+    def wait_rebased(self, timeout: float) -> bool:
+        """Wait until the closers of earlier rebases have closed the old files (tests and shutdown code); return whether they did within `timeout` seconds."""
+        with self._lock:
+            closers = list(self._rebase_closers)
+        deadline = time.monotonic() + timeout
+        for closer in closers:
+            closer.join(max(deadline - time.monotonic(), 0.0))
+        return not any(closer.is_alive() for closer in closers)
 
     def _require_editable(self) -> None:
         """Raise `EditsLocked` while edits are locked; the caller holds the lock."""
@@ -822,6 +1013,7 @@ class LazyDocument(DocumentBase):
         except RowNotIndexed as error:
             msg = f"offset {finish} is not scanned yet"
             raise RowUnavailable(msg) from error
+        self._edit_count += 1
         head_joined, tail_joined = self._crlf_formed(content, left, right)
         row_delta = content.breaks - (last.row - first.row) - head_joined - tail_joined
         replacement = None

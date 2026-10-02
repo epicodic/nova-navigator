@@ -7,6 +7,7 @@ document, from one thread and from two threads at once, and any table access mad
 from __future__ import annotations
 
 import contextlib
+import tempfile
 import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
@@ -14,9 +15,11 @@ from typing import TYPE_CHECKING, cast
 import pytest
 
 from nova_editor.core import BytesSource, Content, SourceChanged
+from nova_editor.core.save import SaveFailed, SaveJob, SaveSettings
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.document._lazy_document import EditsLocked, LazyDocument, RowUnavailable, WholeLineAccess
 from tests.nova_editor.document.helpers_lock import GuardedTable, TrackedLock, install_guards
+from tests.nova_editor.document.helpers_save import DocPlanner
 
 if TYPE_CHECKING:
     from tree_sitter import Query
@@ -30,6 +33,10 @@ EXPECTED = (RowUnavailable, WholeLineAccess, IndexError, ValueError, SourceChang
 UNEXPECTED = (AssertionError, TypeError, AttributeError, KeyError, RuntimeError, LookupError)
 
 Call = Callable[[LazyDocument, int], object]
+SAVE_GATE = threading.RLock()
+"""Saves and everything that changes the content or the edit lock take this gate: a save assumes that nothing edits the document under it (the
+widget guarantees that with the edit lock; the audit drives members from two threads at random, so it serialises these few entries)."""
+AUDIT_SAVE = SaveSettings(chunk=7, fsync_every=64, stride=4, long_line_threshold=8)
 
 
 def _content(doc: LazyDocument) -> Content:
@@ -44,12 +51,47 @@ def _no_query() -> Query:
 def _locked_edit(doc: LazyDocument, row: int) -> None:
     """Lock edits, try one (refused unless the other thread unlocked first), and unlock again so the other entries keep editing."""
     del row
-    doc.lock_edits("audit")
-    try:
-        with contextlib.suppress(EditsLocked):
-            doc.replace_range((0, 0), (0, 0), "x")
-    finally:
-        doc.unlock_edits()
+    with SAVE_GATE:
+        doc.lock_edits("audit")
+        try:
+            with contextlib.suppress(EditsLocked):
+                doc.replace_range((0, 0), (0, 0), "x")
+        finally:
+            doc.unlock_edits()
+
+
+def _gated(call: Call) -> Call:
+    """Run `call` under `SAVE_GATE`."""
+
+    def gated(doc: LazyDocument, row: int) -> object:
+        with SAVE_GATE:
+            return call(doc, row)
+
+    return gated
+
+
+def _save_and_rebase(doc: LazyDocument, row: int, *, apply: bool) -> None:
+    """Save the document to a temporary file, prepare the rebase and (with `apply`) apply it, as the widget does with its edits locked."""
+    del row
+    with SAVE_GATE, tempfile.TemporaryDirectory() as directory:
+        if doc.saving:
+            return
+        doc.lock_edits("saving")
+        doc.begin_save()
+        try:
+            try:
+                result = SaveJob(DocPlanner(doc), f"{directory}/audit.bin", AUDIT_SAVE, progress=None, foreground=None).run()
+            except SaveFailed:
+                return  # a closed document cannot be planned
+            contents = [doc.selection_content((0, 0), (0, 2))] if doc.length > 2 else []
+            plan = doc.prepare_rebase(result, contents)
+            if apply:
+                doc.apply_rebase(plan)
+            else:
+                result.source.close()
+        finally:
+            doc.end_save()
+            doc.unlock_edits()
 
 
 CALLS: dict[str, Call] = {
@@ -79,15 +121,15 @@ CALLS: dict[str, Call] = {
     "query_syntax_tree": lambda d, _: d.query_syntax_tree(_no_query()),
     "read_all": lambda d, _: d.read_all(1 << 20),
     "read_bytes": lambda d, _: d.read_bytes(0, 40),
-    "replace_range": lambda d, r: d.replace_range((max(r, 0), 1), (max(r, 0), 2), "x\ny"),
+    "replace_range": _gated(lambda d, r: d.replace_range((max(r, 0), 1), (max(r, 0), 2), "x\ny")),
     "row_at_offset": lambda d, _: d.row_at_offset(5),
     "row_byte_length": lambda d, r: d.row_byte_length(r),
     "row_class": lambda d, r: d.row_class(r),
     "row_display_width": lambda d, r: d.row_display_width(r),
     "selection_content": lambda d, r: d.selection_content((0, 0), (max(r, 0), 2)),
     "snapshot": lambda d, _: d.snapshot(),
-    "splice": lambda d, _: d.splice((0, 1), (0, 1), _content(d)),
-    "splice_bytes": lambda d, _: d.splice_bytes(1, 2, d.selection_content((0, 0), (0, 1))),
+    "splice": _gated(lambda d, _: d.splice((0, 1), (0, 1), _content(d))),
+    "splice_bytes": _gated(lambda d, _: d.splice_bytes(1, 2, d.selection_content((0, 0), (0, 1)))),
     "start": lambda d, _: d.start,
     "start_scan": lambda d, _: d.start_scan(),
     "subscribe": lambda d, _: d.subscribe(lambda: None),
@@ -96,10 +138,13 @@ CALLS: dict[str, Call] = {
     "wait_closed": lambda d, _: d.wait_closed(0.0),
     "wait_indexed": lambda d, _: d.wait_indexed(5.0),
     "__getitem__": lambda d, r: (d[r], d[0:2]),
-    "begin_save": lambda d, _: (d.begin_save(), d.end_save()),
-    "end_save": lambda d, _: d.end_save(),
+    "begin_save": _gated(lambda d, _: (d.begin_save(), d.end_save())),
+    "end_save": _gated(lambda d, _: d.end_save()),
     "lock_edits": _locked_edit,
-    "unlock_edits": lambda d, _: d.unlock_edits(),
+    "unlock_edits": _gated(lambda d, _: d.unlock_edits()),
+    "prepare_rebase": lambda d, r: _save_and_rebase(d, r, apply=False),
+    "apply_rebase": lambda d, r: _save_and_rebase(d, r, apply=True),
+    "wait_rebased": lambda d, _: d.wait_rebased(0.0),
     "plan": lambda d, r: (d.plan(0, d.length, unverified=False), d.plan(max(r, 0), 7, unverified=True)),
     "require_not_saving": lambda d, _: d.require_not_saving("audit"),
     "saving": lambda d, _: d.saving,

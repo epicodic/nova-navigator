@@ -15,7 +15,8 @@ from dataclasses import dataclass, replace
 from typing import NamedTuple
 
 from nova_editor.core.add_store import AddStore
-from nova_editor.core.byte_source import SourceChanged
+from nova_editor.core.byte_source import ByteSource, SourceChanged
+from nova_editor.core.line_index import LineIndex
 from nova_editor.core.original_source import OriginalSource
 from nova_editor.core.pieces import MAX_GENERATION, Content, Piece, PieceSource, generation_of, make_piece, make_src, merge_pieces, segment_of
 from nova_editor.core.save_layout import SaveLayout
@@ -40,6 +41,7 @@ class RebasePlan:
     `retained` is the old original and add store when they become the next legacy generation of the table.
     `clear_history` means that no generation is free: the caller must drop the history and the clipboard.
     `orphan_bytes` is the total size of the distinct orphan ranges (0 after `retain_all`, which does not measure).
+    `source` and `line_index` are the saved file and its row index; the document layer fills them in so that `apply_rebase` needs only the plan.
     """
 
     contents: list[Content]
@@ -47,6 +49,8 @@ class RebasePlan:
     retained: Legacy | None
     clear_history: bool
     orphan_bytes: int
+    source: ByteSource | None = None
+    line_index: LineIndex | None = None
 
     @staticmethod
     def retain_all(
