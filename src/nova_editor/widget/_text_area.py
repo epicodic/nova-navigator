@@ -114,9 +114,10 @@ _PLACEHOLDER_CELL = "\u2591"
 """Fills the part of a window that the scan has not reached yet."""
 
 _INVALID_BYTE_TABLE = str.maketrans(dict.fromkeys(range(0xDC80, 0xDD00), 0xFFFD))
+"""Translation table that shows an escaped invalid byte (U+DC80 to U+DCFF) as U+FFFD; applied to the strip text only (REQ-13)."""
+
 _PAD_SLACK_CELLS = 1024
 """Cells beyond the region width that a rendered line is still padded to (a strip is never padded to the virtual width of a huge row)."""
-"""Translation table that shows an escaped invalid byte (U+DC80 to U+DCFF) as U+FFFD; applied to the strip text only (REQ-13)."""
 
 
 _GuardedMethod = TypeVar("_GuardedMethod", bound=Callable[..., Any])
@@ -1806,7 +1807,7 @@ NovaTextArea {
         self.set_class(read_only, "-read-only")
         self._set_theme(self._theme.name)
 
-    def _recompute_cursor_offset(self):
+    def _recompute_cursor_offset(self) -> None:
         """Recompute the (x, y) coordinate of the cursor in the wrapped document (a provisional cursor row: from its window layout)."""
         self._cursor_offset = self.wrapped_document.location_to_offset(self.cursor_location)
         cursor = self._long_cursor
