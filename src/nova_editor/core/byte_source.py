@@ -9,15 +9,53 @@ from __future__ import annotations
 import os
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, Self
 
 BLOCK_SIZE = 64 * 1024
 CACHE_BLOCKS = 128
 
 
+class ChangeKind(Enum):
+    """How a file differs from the identity held at open time."""
+
+    UNCHANGED = "unchanged"
+    MODIFIED = "modified"
+    TRUNCATED = "truncated"
+    REPLACED = "replaced"
+    DELETED = "deleted"
+    CREATED = "created"
+    EXISTS = "exists"
+    UNREADABLE = "unreadable"
+
+
+@dataclass(frozen=True)
+class FileIdentity:
+    """Device, inode, size and mtime of a file, taken from `os.stat` or `os.fstat`."""
+
+    dev: int
+    ino: int
+    size: int
+    mtime_ns: int
+
+    @classmethod
+    def from_stat(cls, info: os.stat_result) -> FileIdentity:
+        """Return the identity recorded in `info`."""
+        return cls(info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+
+
 class SourceChanged(Exception):
-    """The file changed underneath the editor: size or mtime differs, a read came back short, or the OS reported an I/O error."""
+    """The file changed underneath the editor: size or mtime differs, a read came back short, or the OS reported an I/O error.
+
+    `kind` is `TRUNCATED` for a short read or a smaller size, `UNREADABLE` for an `OSError`, `MODIFIED` otherwise.
+    """
+
+    def __init__(self, message: str, kind: ChangeKind = ChangeKind.MODIFIED) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 class ByteSource(Protocol):
@@ -49,10 +87,32 @@ class PreadSource:
     def __init__(self, path: Path | str, *, block_size: int = BLOCK_SIZE, cache_blocks: int = CACHE_BLOCKS) -> None:
         if block_size <= 0 or cache_blocks <= 0:
             raise ValueError("block_size and cache_blocks must be positive")
-        self._fd = os.open(path, os.O_RDONLY)
-        info = os.fstat(self._fd)
-        self._size = info.st_size
-        self._mtime_ns = info.st_mtime_ns
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            self._setup(fd, None, block_size, cache_blocks)
+        except BaseException:
+            os.close(fd)
+            raise
+
+    @classmethod
+    def from_fd(cls, fd: int, *, identity: FileIdentity | None = None, block_size: int = BLOCK_SIZE, cache_blocks: int = CACHE_BLOCKS) -> Self:
+        """Adopt the open read-only descriptor `fd`; `close()` closes it.
+
+        `identity` is the identity of the descriptor when the caller already has it; otherwise it is taken with `os.fstat`.
+        On an error the descriptor stays open and belongs to the caller.
+        """
+        if block_size <= 0 or cache_blocks <= 0:
+            raise ValueError("block_size and cache_blocks must be positive")
+        source = cls.__new__(cls)
+        source._setup(fd, identity, block_size, cache_blocks)
+        return source
+
+    def _setup(self, fd: int, identity: FileIdentity | None, block_size: int, cache_blocks: int) -> None:
+        self._fd = fd
+        held = identity if identity is not None else FileIdentity.from_stat(os.fstat(fd))
+        self._identity = held
+        self._size = held.size
+        self._mtime_ns = held.mtime_ns
         self._block_size = block_size
         self._max_blocks = cache_blocks
         self._cache: OrderedDict[int, bytes] = OrderedDict()
@@ -64,6 +124,18 @@ class PreadSource:
 
     def length(self) -> int:
         return self._size
+
+    def identity(self) -> FileIdentity:
+        """Return the identity of the descriptor recorded when the source was opened."""
+        return self._identity
+
+    def unverified_reader(self) -> ByteSource:
+        """Return a reader of the same descriptor that skips the size and mtime check.
+
+        Only a short read fails it (`SourceChanged` with kind `TRUNCATED`); it neither uses nor fills the shared cache and
+        never marks this source failed. It is valid until this source is closed; its own `close()` does nothing.
+        """
+        return _UnverifiedReader(self._size, self._read_unverified)
 
     def read(self, offset: int, size: int, *, cache: bool = True) -> bytes:
         if offset < 0 or size < 0:
@@ -126,7 +198,8 @@ class PreadSource:
     def _check_stat(self) -> None:
         info = os.fstat(self._fd)
         if info.st_size != self._size or info.st_mtime_ns != self._mtime_ns:
-            raise self._fail(SourceChanged(f"file changed: size {self._size} -> {info.st_size}, mtime_ns {self._mtime_ns} -> {info.st_mtime_ns}"))
+            kind = ChangeKind.TRUNCATED if info.st_size < self._size else ChangeKind.MODIFIED
+            raise self._fail(SourceChanged(f"file changed: size {self._size} -> {info.st_size}, mtime_ns {self._mtime_ns} -> {info.st_mtime_ns}", kind))
 
     def _fail(self, error: SourceChanged) -> SourceChanged:
         with self._lock:
@@ -151,17 +224,60 @@ class PreadSource:
 
     def _pread_exact(self, offset: int, size: int) -> bytes:
         """Read exactly `size` bytes or fail the source: a short read means the file shrank (REQ-14)."""
+        try:
+            return self._pread_raw(offset, size)
+        except SourceChanged as error:
+            raise self._fail(error) from error.__cause__
+
+    def _pread_raw(self, offset: int, size: int) -> bytes:
+        """Read exactly `size` bytes or raise `SourceChanged` without recording the failure."""
         chunks: list[bytes] = []
         got = 0
         while got < size:
             try:
                 data = os.pread(self._fd, size - got, offset + got)
             except OSError as error:
-                raise self._fail(SourceChanged(f"read failed at {offset + got}: {error}")) from error
+                raise SourceChanged(f"read failed at {offset + got}: {error}", ChangeKind.UNREADABLE) from error
             if not data:
                 break
             chunks.append(data)
             got += len(data)
         if got < size:
-            raise self._fail(SourceChanged(f"short read at {offset}: wanted {size}, got {got}"))
+            raise SourceChanged(f"short read at {offset}: wanted {size}, got {got}", ChangeKind.TRUNCATED)
         return chunks[0] if len(chunks) == 1 else b"".join(chunks)
+
+    def _read_unverified(self, offset: int, size: int) -> bytes:
+        if offset < 0 or size < 0:
+            raise ValueError("offset and size must not be negative")
+        with self._lock:
+            if self._closing:
+                raise ValueError("read of a closed source")
+            self._inflight += 1
+        try:
+            end = min(offset + size, self._size)
+            if end <= offset:
+                return b""
+            return self._pread_raw(offset, end - offset)
+        finally:
+            with self._lock:
+                self._inflight -= 1
+                if self._inflight == 0:
+                    self._lock.notify_all()
+
+
+class _UnverifiedReader:
+    """A `ByteSource` over a `PreadSource` descriptor that checks only for short reads."""
+
+    def __init__(self, length: int, read: Callable[[int, int], bytes]) -> None:
+        self._length = length
+        self._read = read
+
+    def length(self) -> int:
+        return self._length
+
+    def read(self, offset: int, size: int, *, cache: bool = True) -> bytes:
+        del cache  # accepted for the protocol; this reader never uses the cache
+        return self._read(offset, size)
+
+    def close(self) -> None:
+        """Do nothing: the descriptor belongs to the `PreadSource`."""
