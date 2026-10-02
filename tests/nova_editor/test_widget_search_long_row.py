@@ -205,3 +205,41 @@ async def test_a_new_search_cancels_the_pending_placement(tmp_path: Path) -> Non
         assert kinds == [("SearchCancelled", "replaced"), ("SearchFound", None)]
         assert area.selection == exact
         assert all(isinstance(message, TERMINALS) for message in host.terminals())
+
+
+@pytest.mark.asyncio
+async def test_a_source_failure_ends_a_pending_placement_with_one_search_failed(tmp_path: Path) -> None:
+    area, source = _long_area(tmp_path, wrap=False)
+    host = SearchHost(area)
+    async with host.run_test(size=(40, 10)) as pilot:
+        await pilot.pause()
+        before = area.selection
+        assert area.search("NEEDLE") is True
+        await settle_until(pilot, area, lambda: area.pending_progress is not None, (before,))
+        area._fail_source("the file changed on disk")
+        await pilot.pause()
+        assert _kinds(host.terminals()) == ["SearchFailed"]
+        assert area.pending_progress is None
+        source.release()
+        for _ in range(10):
+            await pilot.pause(0.02)
+        assert _kinds(host.terminals()) == ["SearchFailed"]
+        assert area.selection == before
+
+
+@pytest.mark.asyncio
+async def test_a_result_arriving_after_a_source_failure_posts_search_failed(tmp_path: Path) -> None:
+    area, source = _long_area(tmp_path, wrap=False)
+    host = SearchHost(area)
+    async with host.run_test(size=(40, 10)) as pilot:
+        await pilot.pause()
+        before = area.selection
+        area._fail_source("the file changed on disk")
+        source.release()
+        assert area.search("NEEDLE") is True
+        await wait_until(pilot, lambda: bool(host.terminals()))
+        for _ in range(10):
+            await pilot.pause(0.02)
+        assert _kinds(host.terminals()) == ["SearchFailed"]
+        assert area.pending_progress is None
+        assert area.selection == before

@@ -1396,10 +1396,20 @@ NovaTextArea {
         self._source_failed = True
         self._stale_kind = kind
         self.document.lock_edits(STALE_REASON)
+        self._end_search_placement(CoreSourceChanged(reason, kind))
         # the rendered lines stay: rows that were painted keep showing (possibly stale), rows that were not painted render blank
         # set_sender: while the screen renders, it is the active pump, and a message whose sender is the parent does not bubble to it.
         self.post_message(self.SourceChanged(reason, self, kind).set_sender(self))
         self.refresh()
+
+    def _end_search_placement(self, error: Exception) -> None:
+        """A pending search placement can no longer be driven: end it (and its search) with the one `SearchFailed(error)`."""
+        jump = self._jump
+        if jump is None or not jump.is_search:
+            return
+        self._jump = None
+        self._set_progress(None)
+        self.post_message(self.SearchFailed(error, self).set_sender(self))
 
     def _ensure_estimating(self) -> None:
         """Resume the size re-estimate timer when an index of a lazy document grows again (a long row was reached)."""
@@ -1622,7 +1632,8 @@ NovaTextArea {
             progress = self._drive_lazy(jump)
         except CoreSourceChanged as error:
             self._fail_source(str(error), error.kind)
-            self._abort_jump(jump, str(error), error)
+            if self._jump is jump:  # `_fail_source` ended a search placement itself
+                self._abort_jump(jump, str(error), error)
             progress = None
         except (RowUnavailable, IndexError) as error:
             self._abort_jump(jump, "the target row cannot be resolved", error)
@@ -3633,6 +3644,8 @@ NovaTextArea {
             return self.SearchNotFound(run.needle, self)
         if run.job.revision != self.document.revision:
             return self.SearchCancelled("text changed", self)
+        if self._source_failed:
+            return self.SearchFailed(CoreSourceChanged(STALE_REASON, self._stale_kind or ChangeKind.MODIFIED), self)
         self._select_match(result.start, result.end, run.backward, wrapped=result.wrapped)
         return None
 
