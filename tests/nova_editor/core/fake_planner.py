@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from nova_editor.core.byte_source import ByteSource
 from nova_editor.core.save import PlanPart
 
@@ -12,12 +14,21 @@ class FakePlanner:
     def __init__(self, runs: list[tuple[int, int, int]], sources: dict[int, ByteSource]) -> None:
         self._runs = runs
         self._sources = sources
+        self.revision = 0
+        """The revision `search_plan` reports; tests change it to simulate an edit."""
+        self.plan_calls: list[tuple[int, int]] = []
+        """Every `(offset, limit)` asked of `plan` or `search_plan`, in order."""
+        self.on_plan: Callable[[int], None] | None = None
+        """Called with the call number before a plan is returned (tests cancel or edit from here)."""
 
     def length(self) -> int:
         return sum(b - a for _, a, b in self._runs)
 
     def plan(self, offset: int, limit: int, unverified: bool) -> list[PlanPart]:
         del unverified
+        self.plan_calls.append((offset, limit))
+        if self.on_plan is not None:
+            self.on_plan(len(self.plan_calls))
         parts: list[PlanPart] = []
         pos = 0
         end = offset + limit
