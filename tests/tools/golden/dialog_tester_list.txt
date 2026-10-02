@@ -1,0 +1,73 @@
+ConnectToDialog
+  Pick a saved remote connection (uses real config).
+
+SettingsDialog
+  Edit all application settings (uses real config).
+
+CredentialsDialog
+  Username + password prompt for SSH authentication.
+
+MessageBox (default)
+  Simple informational message with OK button.
+
+MessageBox (success)
+  Success message with green background.
+
+MessageBox (warning)
+  Warning message with yellow background.
+
+MessageBox (error)
+  Error message with red background.
+
+MessageBox (confirm)
+  Confirmation message with OK/Cancel — styled like the unknown-host prompt.
+
+ResponseDialog
+  Simple yes/no response prompt.
+
+OverwriteResponseDialog
+  File overwrite confirmation with source/destination info.
+
+IconPickerDialog
+  Grid-based icon selection dialog.
+
+InputNameDialog
+  Single-line name prompt (used by New Directory / New File).
+
+EditBookmarksDialog
+  Full-screen bookmark editor (uses real user bookmarks).
+
+EditRemotesDialog
+  Remote connection editor with real config.
+
+LocalCopiesDialog
+  Manage local copies of non-local files (synced, conflict, and read-only demo 
+rows).
+
+CopyMoveFilesDialog (copy)
+  Copy multiple files to a destination.
+
+CopyMoveFilesDialog (move)
+  Move a single file — shows rename input.
+
+DeleteFilesDialog
+  Delete confirmation for multiple files.
+
+KeyCaptureDialog
+  Capture a key sequence for a single action.
+
+KeybindingsDialog
+  View and edit key bindings.
+
+FileDialog (open)
+  File picker in open mode — select an existing file.
+
+FileDialog (save)
+  File picker in save mode — with file-type filters.
+
+FileDialog (dir)
+  Directory picker mode — select a folder.
+
+UserMenuInputDialog
+  Collects the input fields of a user menu entry before it runs.
+
