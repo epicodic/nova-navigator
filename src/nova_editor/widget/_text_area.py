@@ -114,10 +114,45 @@ def _column_of_byte(text: str, relative: int) -> int:
 
 @dataclass
 class _Jump:
-    """A goto request that waits for the scan: a 0-based `row` or an absolute `byte` offset."""
+    """A request that waits for the scan: a goto of a 0-based `row` or of an absolute `byte` offset, or a search placement.
+
+    A search placement (`select_to` is set) selects the match `[byte, select_to)` exactly, so it never shows an estimated column.
+    """
 
     row: int | None = None
     byte: int | None = None
+    select_to: int | None = None
+    """End byte of the match a search placement selects; `None` for a goto."""
+    backward: bool = False
+    """A search placement of a backward match: the cursor goes to the start of the match."""
+    wrapped: bool = False
+    """A search placement of a match that was found after wrapping around; `SearchFound` carries it."""
+
+    @property
+    def is_search(self) -> bool:
+        return self.select_to is not None
+
+
+@dataclass(frozen=True)
+class _Pending:
+    """A byte that cannot be placed yet; `fraction` (below one) is the progress of the scan that has to reach it."""
+
+    fraction: float
+
+
+@dataclass(frozen=True)
+class _Rejection:
+    """A byte that cannot be placed at all."""
+
+    reason: str
+
+
+@dataclass(frozen=True)
+class _LongRowTarget:
+    """A byte inside a long row: the row and the byte relative to its start (resolved by the long index)."""
+
+    row: int
+    relative: int
 
 
 _PLACEHOLDER_CELL = "\u2591"
@@ -1486,8 +1521,7 @@ NovaTextArea {
         """
         self._replay_generation += 1
         if self._jump is not None:
-            self._jump = None
-            self._set_progress(None)
+            self._drop_jump("cancelled")
         cursor = self._long_cursor
         machine = cursor.machine
         if machine is None or machine.state is not CursorState.PENDING:
@@ -1526,6 +1560,14 @@ NovaTextArea {
         if self.searching:
             self.cancel_search()
         self.cancel_pending()
+
+    def _drop_jump(self, reason: str) -> None:
+        """Drop the pending jump; a search placement ends the search with its one `SearchCancelled(reason)`."""
+        jump = self._jump
+        self._jump = None
+        self._set_progress(None)
+        if jump is not None and jump.is_search:
+            self.post_message(self.SearchCancelled(reason, self).set_sender(self))
 
     def _cursor_unresolved(self) -> bool:
         """Whether the cursor of a long row is provisional or pending (waits for the scan to resolve it)."""
@@ -1572,7 +1614,7 @@ NovaTextArea {
         self.post_message(self.JumpRejected(reason, self).set_sender(self))
 
     def _run_jump(self, *, notify: bool) -> None:
-        """Try the active request: finish it (moved or rejected) or keep it pending with a progress fraction."""
+        """Try the active request: finish it (moved, selected or rejected) or keep it pending with a progress fraction."""
         jump = self._jump
         if jump is None or self._lazy_closed:
             return
@@ -1580,16 +1622,23 @@ NovaTextArea {
             progress = self._drive_lazy(jump)
         except CoreSourceChanged as error:
             self._fail_source(str(error), error.kind)
-            self._reject(str(error))
+            self._abort_jump(jump, str(error), error)
             progress = None
-        except (RowUnavailable, IndexError):
-            self._reject("the target row cannot be resolved")
+        except (RowUnavailable, IndexError) as error:
+            self._abort_jump(jump, "the target row cannot be resolved", error)
             progress = None
         if progress is None:
             self._jump = None
             self._set_progress(None)
         else:
             self._set_progress(progress, notify=notify)
+
+    def _abort_jump(self, jump: _Jump, reason: str, error: Exception) -> None:
+        """A goto is rejected (`JumpRejected`); a search placement ends the search with `SearchFailed`."""
+        if jump.is_search:
+            self.post_message(self.SearchFailed(error, self).set_sender(self))
+        else:
+            self._reject(reason)
 
     def _complete_jump(self) -> None:
         row, column = self.cursor_location
@@ -1600,6 +1649,8 @@ NovaTextArea {
         snap = lazy.snapshot()
         if snap.error is not None:
             raise snap.error
+        if jump.select_to is not None:
+            return self._drive_search(jump, snap.scanned_bytes, complete=snap.complete)
         if jump.row is not None:
             return self._drive_line(jump.row, snap.count, complete=snap.complete)
         return self._drive_byte(lazy, jump.byte or 0, snap.scanned_bytes, complete=snap.complete)
@@ -1615,27 +1666,76 @@ NovaTextArea {
         return min(count / (row + 1), PROGRESS_BELOW_ONE)
 
     def _drive_byte(self, lazy: LazyDocument, offset: int, scanned: int, *, complete: bool) -> float | None:
-        if offset >= lazy.length:
-            self._reject(f"byte offset {offset} is beyond the end of the file ({lazy.length} bytes)")
+        placed = self._resolve_byte(lazy, offset, scanned, complete=complete, allow_end=False)
+        if isinstance(placed, _Rejection):
+            self._reject(placed.reason)
             return None
+        if isinstance(placed, _Pending):
+            return placed.fraction
+        if isinstance(placed, _LongRowTarget):
+            return self._drive_long_row_byte(lazy, placed.row, placed.relative)
+        self.move_cursor(placed)
+        self._complete_jump()
+        return None
+
+    def _resolve_byte(self, lazy: LazyDocument, offset: int, scanned: int, *, complete: bool, allow_end: bool) -> tuple[int, int] | _LongRowTarget | _Pending | _Rejection:
+        """Place a byte: a location, a byte of a long row (left to the caller), pending with a progress fraction, or a rejection.
+
+        `allow_end` accepts the offset equal to the length (the end of a match that ends the document).
+        """
+        if offset > lazy.length or (offset == lazy.length and not allow_end):
+            return _Rejection(f"byte offset {offset} is beyond the end of the file ({lazy.length} bytes)")
         if offset == 0:
-            self.move_cursor((0, 0))
-            self._complete_jump()
-            return None
+            return (0, 0)
         if offset >= scanned and not complete:
-            return min(scanned / offset, PROGRESS_BELOW_ONE)
+            return _Pending(min(scanned / offset, PROGRESS_BELOW_ONE))
         found = lazy.row_at_offset(offset)
         if found is None:
-            self._reject(f"byte offset {offset} cannot be resolved")
-            return None
+            return _Rejection(f"byte offset {offset} cannot be resolved")
         row, span = found
         relative = min(offset - span.start, span.content_end - span.start)
         if lazy.is_long(row):
-            return self._drive_long_row_byte(lazy, row, relative)
-        column = _column_of_byte(lazy.get_line(row), relative)
-        self.move_cursor((row, column))
-        self._complete_jump()
+            return _LongRowTarget(row, relative)
+        return (row, _column_of_byte(lazy.get_line(row), relative))
+
+    def _drive_search(self, jump: _Jump, scanned: int, *, complete: bool) -> float | None:
+        """Place a search match: pending until both ends are exact (the line scan and the long index of their rows reached them), then select it.
+
+        Never shows an estimated column: the selection stays unchanged while pending and is set once, exactly.
+        """
+        lazy = self.document
+        start = jump.byte or 0
+        end = jump.select_to or 0
+        top = max(start, end)
+        if top >= scanned and not complete:
+            return min(scanned / max(top, 1), PROGRESS_BELOW_ONE)
+        places: list[tuple[int, int]] = []
+        for offset in (start, end):
+            placed = self._resolve_exact(lazy, offset, scanned, complete=complete)
+            if isinstance(placed, _Rejection):
+                self._abort_jump(jump, placed.reason, RuntimeError(placed.reason))
+                return None
+            if isinstance(placed, _Pending):
+                return placed.fraction
+            places.append(placed)
+        first, last = places
+        self.selection = Selection(last, first) if jump.backward else Selection(first, last)
+        self.scroll_cursor_visible()
+        row, column = self.cursor_location
+        self.post_message(self.SearchFound(start, end, row, column, jump.wrapped, self).set_sender(self))
         return None
+
+    def _resolve_exact(self, lazy: LazyDocument, offset: int, scanned: int, *, complete: bool) -> tuple[int, int] | _Pending | _Rejection:
+        """Place a byte with an exact column; a byte of a long row waits for the long index (`anchor_index` starts its scan and never waits)."""
+        placed = self._resolve_byte(lazy, offset, scanned, complete=complete, allow_end=True)
+        if not isinstance(placed, _LongRowTarget):
+            return placed
+        index = lazy.anchor_index(placed.row)  # fetched on every tick: a row may have been evicted
+        relative = index.align(placed.relative)
+        column = index.exact_column(relative)
+        if column is None:
+            return _Pending(min(index.frontier_byte() / max(relative, 1), PROGRESS_BELOW_ONE))
+        return (placed.row, column)
 
     def _drive_long_row_byte(self, lazy: LazyDocument, row: int, relative: int) -> float | None:
         """Goto a byte of a long row: exact when scanned, PROVISIONAL without wrap, pending with wrap (design 8.1)."""
@@ -3428,6 +3528,9 @@ NovaTextArea {
         """UI thread: drop the running search at once and post its one `SearchCancelled(reason)`; the thread ends on its own and its outcome is ignored."""
         run = self._search_run
         if run is None:
+            jump = self._jump
+            if jump is not None and jump.is_search:  # the search is over; its match waits to be placed
+                self._drop_jump(reason)
             return
         run.reason = reason
         run.job.cancel()
@@ -3513,10 +3616,11 @@ NovaTextArea {
         except Exception as failure:
             logging.getLogger(__name__).exception("the finish of a search failed")
             message = self.SearchFailed(failure, self)
-        self.post_message(message.set_sender(self))
+        if message is not None:
+            self.post_message(message.set_sender(self))
 
-    def _conclude_search(self, run: SearchRun, outcome: SearchOutcome) -> Message:
-        """UI thread: apply the outcome of the search thread and return its terminal message."""
+    def _conclude_search(self, run: SearchRun, outcome: SearchOutcome) -> Message | None:
+        """UI thread: apply the outcome of the search thread and return its terminal message (`None`: the placement of the match posts it)."""
         error = outcome.error
         if error is not None:
             if isinstance(error, CoreSourceChanged):
@@ -3529,38 +3633,18 @@ NovaTextArea {
             return self.SearchNotFound(run.needle, self)
         if run.job.revision != self.document.revision:
             return self.SearchCancelled("text changed", self)
-        return self._select_match(result.start, result.end, run.backward, wrapped=result.wrapped)
+        self._select_match(result.start, result.end, run.backward, wrapped=result.wrapped)
+        return None
 
-    def _select_match(self, start: int, end: int, backward: bool, *, wrapped: bool) -> Message:
-        """UI thread: select the match `[start, end)` (the cursor at `end`, or at `start` for a backward search) and return `SearchFound`.
+    def _select_match(self, start: int, end: int, backward: bool, *, wrapped: bool) -> None:
+        """UI thread: select the match `[start, end)` exactly (the cursor at `end`, or at `start` for a backward search).
 
-        Exact when both ends lie below the frontier of the line index in rows that are not long. Otherwise the cursor is sent to `start` with
-        `goto_byte` (a provisional or pending jump, no selection); ACT6 task 10 replaces this by the pending exact selection.
+        The placement is a jump: it completes at once when both ends are known, and otherwise stays pending (`pending_progress`,
+        `JumpProgress`, Escape) until the line scan and the long index reached them. It posts the one `SearchFound` when it selects the match.
         """
-        first = self._exact_location(start)
-        last = self._exact_location(end)
-        if first is None or last is None:
-            self.goto_byte(start)
-        else:
-            self.selection = Selection(last, first) if backward else Selection(first, last)
-            self.scroll_cursor_visible()
-        row, column = self.cursor_location
-        return self.SearchFound(start, end, row, column, wrapped, self)
-
-    def _exact_location(self, offset: int) -> tuple[int, int] | None:
-        """UI thread: the exact `(row, column)` of a byte offset, or `None` beyond the line frontier or in a long row."""
-        document = self.document
-        found = document.row_at_offset(offset)
-        if found is None:
-            return None
-        row, span = found
-        try:
-            if document.is_long(row):
-                return None
-            line = document.get_line(row)
-        except RowUnavailable:
-            return None
-        return row, _column_of_byte(line, offset - span.start)
+        self.cancel_pending()
+        self._jump = _Jump(byte=start, select_to=end, backward=backward, wrapped=wrapped)
+        self._run_jump(notify=True)
 
     def _end_save(self, run: _SaveRun) -> None:
         """UI thread: forget the run, lift the save registration and the edit lock."""
