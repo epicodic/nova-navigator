@@ -23,7 +23,13 @@ MAX_GENERATION = 255
 
 
 def make_src(generation: int, segment: int) -> int:
-    """Return the `Piece.src` number of `segment` in `generation` (generation 0 is the live original and add store)."""
+    """Return the `Piece.src` number of `segment` in `generation` (generation 0 is the live original and add store).
+
+    Raises:
+        ValueError: `segment` does not fit the low `GENERATION_SHIFT` bits.
+    """
+    if not 0 <= segment <= SEGMENT_MASK:
+        raise ValueError(f"segment {segment} does not fit in {GENERATION_SHIFT} bits")
     return (generation << GENERATION_SHIFT) | segment
 
 

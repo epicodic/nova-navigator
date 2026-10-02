@@ -9,6 +9,7 @@ import pytest
 from nova_editor.core import AddStore, BytesSource, Content, LineIndex, PieceTable, RowNotIndexed, RowRange, make_piece
 from nova_editor.core.byte_source import ByteSource
 from nova_editor.core.line_index import LineSnapshot
+from nova_editor.core.pieces import SEGMENT_MASK, make_src
 
 from .helpers import CountingSource, reference_row_at_offset, reference_rows
 from .reference import ALPHABET, FakeSource, Rng, inside_crlf
@@ -445,3 +446,11 @@ def test_add_continues_the_tail_segment_so_typing_stays_one_piece() -> None:
         table.splice(position, position, table.add(bytes([char])))
     assert table.tree.piece_count == 1
     assert table.read(0, 5) == b"hello"
+
+
+def test_make_src_rejects_a_segment_beyond_the_mask() -> None:
+    assert make_src(1, SEGMENT_MASK) == (1 << 24) | SEGMENT_MASK
+    with pytest.raises(ValueError, match="segment"):
+        make_src(0, SEGMENT_MASK + 1)
+    with pytest.raises(ValueError, match="segment"):
+        make_src(0, -1)
