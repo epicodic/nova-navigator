@@ -422,7 +422,7 @@ def test_main_refuses_a_fifo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ca
 
 
 @pytest.mark.asyncio
-async def test_ctrl_q_during_a_save_cancels_and_exits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_ctrl_q_during_a_save_cancels_then_asks_and_q_exits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = make_file(tmp_path, "a" * 100 + "\n")
     gate = Gate()
     monkeypatch.setattr(NovaTextArea, "save_io", gate.io())
@@ -434,8 +434,11 @@ async def test_ctrl_q_during_a_save_cancels_and_exits(tmp_path: Path, monkeypatc
             await wait_until(pilot, gate.reached.is_set)
             started = time.monotonic()
             await pilot.press("ctrl+q")
-            await wait_until(pilot, lambda: app._exit, limit=5.0)
+            await wait_until(pilot, lambda: app.query_one(ConfirmBar).display, limit=5.0)
             assert time.monotonic() - started < 3.0
+            assert not app._exit
+            await pilot.press("q")
+            await wait_until(pilot, lambda: app._exit, limit=5.0)
     finally:
         gate.release()
     assert path.read_text() == "a" * 100 + "\n"

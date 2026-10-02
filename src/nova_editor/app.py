@@ -1,7 +1,7 @@
 """Standalone Nova Editor application.
 
 Provides a minimal Textual app that uses NovaTextArea to edit text files.
-Supports Ctrl+S to save (streaming, atomic), F2 to save as, F5 to reload, Ctrl+Q to quit, and shows the file path in the header; the footer lists the keys.
+Supports Ctrl+S to save (streaming, atomic), F2 to save as, F5 to reload, Ctrl+Q to quit (it asks before discarding changes), and shows the file path in the header; the footer lists the keys.
 Supports lazy loading for large files with Ctrl+G goto navigation and F4 wrap toggle.
 A status bar shows the progress and the result of a save; a key driven bar asks before overwriting or discarding.
 A background poll notices when the file changed on disk.
@@ -223,6 +223,7 @@ class ConfirmBar(Static):
         Binding("o,O", "choose('overwrite')", "Overwrite", show=False),
         Binding("a,A", "choose('save_as')", "Save as", show=False),
         Binding("r,R", "choose('reload')", "Reload", show=False),
+        Binding("q,Q", "choose('quit')", "Quit", show=False),
         Binding("escape", "choose('keep')", "Keep", show=False),
     ]
 
@@ -231,7 +232,7 @@ class ConfirmBar(Static):
         """The user answered the question."""
 
         choice: str
-        """`overwrite`, `save_as`, `reload` or `keep`."""
+        """`overwrite`, `save_as`, `reload`, `quit` or `keep`."""
         path: Path | None
         """The file the question was about."""
 
@@ -269,6 +270,17 @@ class ConfirmBar(Static):
         offers.append("Esc keep")
         head = "Discard the edits and reload?" if kind is None else _CHANGE_TEXT.get(kind, "The file changed")
         self.update(f"{head}  {'  '.join(offers)}")
+        self.display = True
+        self.focus()
+
+    def ask_quit(self, *, save_running: bool) -> None:
+        """Ask whether to quit: while a save still runs, or with unsaved changes (replaces any open question)."""
+        self.kind = None
+        self.path = None
+        self._allowed = {"quit", "keep"}
+        head = "A save is still running." if save_running else "Discard the unsaved changes and quit?"
+        tail = "Q quit anyway  Esc stay" if save_running else "Q quit  Esc stay"
+        self.update(f"{head}  {tail}")
         self.display = True
         self.focus()
 
@@ -737,14 +749,26 @@ class NovaEditApp(App[None]):
         await super().on_event(event)
 
     async def action_quit(self) -> None:
-        """Quit the application; a running save is cancelled and given up to `QUIT_WAIT_SECONDS` to end."""
+        """Quit (Ctrl+Q): cancel a search and a save, then ask when edits would be lost or a save still runs."""
         editor = self.editor
-        if editor is not None and editor.saving:
+        if editor is None:
+            self.exit()
+            return
+        if editor.searching:
+            editor.cancel_search()
+        editor.cancel_pending()
+        if editor.saving:
             editor.cancel_save()
             for _ in range(round(self.QUIT_WAIT_SECONDS / QUIT_POLL_SECONDS)):
                 if not editor.saving:
                     break
                 await asyncio.sleep(QUIT_POLL_SECONDS)
+            if editor.saving:
+                self._confirm_bar.ask_quit(save_running=True)
+                return
+        if editor.modified:
+            self._confirm_bar.ask_quit(save_running=False)
+            return
         self.exit()
 
     # Saving
@@ -801,6 +825,9 @@ class NovaEditApp(App[None]):
 
     def on_confirm_bar_chosen(self, message: ConfirmBar.Chosen) -> None:
         """Carry out the answer of the confirm bar."""
+        if message.choice == "quit":
+            self.exit()
+            return
         self._refocus_editor()
         editor = self.editor
         if editor is None:
