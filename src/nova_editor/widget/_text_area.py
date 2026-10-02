@@ -127,7 +127,6 @@ _PAD_SLACK_CELLS = 1024
 """Cells beyond the region width that a rendered line is still padded to (a strip is never padded to the virtual width of a huge row)."""
 
 
-_FIRST_ROW_WAIT = 1.0
 """Longest `reload` waits (seconds) for the scan of the new document to resolve its first row."""
 
 STALE_REASON = "file changed on disk"
@@ -248,6 +247,10 @@ class _DocumentPlanner:
 
     def plan(self, offset: int, limit: int, unverified: bool) -> list[PlanPart]:
         return self._document.plan(offset, limit, unverified)
+
+
+_FIRST_ROW_WAIT = 1.0
+"""Longest wait of `reload` for the first row of the new document (the scan resolves it within milliseconds)."""
 
 
 @dataclass
@@ -2307,6 +2310,9 @@ NovaTextArea {
         """Swap in a new document: the old one is closed, every state tied to it is reset and the scan machinery is wired to the new one."""
         old = self.document
         old.require_not_saving("replacing the document")
+        wrapped = LazyWrappedDocument(document, tab_width=self.indent_width)  # everything that can fail comes before the first assignment
+        navigator = DocumentNavigator(wrapped)
+        long_cursor = LongRowCursor(document)
         self._replay_generation += 1
         self._jump = None
         self.pending_progress = None
@@ -2317,9 +2323,9 @@ NovaTextArea {
         self._indexing_announced = False
         self._line_cache.clear()
         self.document = document
-        self.wrapped_document = LazyWrappedDocument(document, tab_width=self.indent_width)
-        self.navigator = DocumentNavigator(self.wrapped_document)
-        self._long_cursor = LongRowCursor(document)
+        self.wrapped_document = wrapped
+        self.navigator = navigator
+        self._long_cursor = long_cursor
         old.close()
         if self._mounted_scan:
             self._wire_scan()
@@ -3037,7 +3043,11 @@ NovaTextArea {
         Builds a new document the way `open` does (the language, the highlight limit and the configuration are remembered), replaces the document,
         clears the history and the clipboard record and clears the stale state. The cursor keeps its row when that row still exists (else it goes to
         the last row) and `Reloaded` is posted. When the file cannot be read, `ReloadFailed` is posted, the old document and its stale state stay and
-        `False` is returned; so it is for a widget without a file.
+        `False` is returned; so it is for a widget without a file. Whatever the new document needed (its source, the document) is closed on every
+        failure, and the history is cleared only after the document was replaced.
+        The UI thread blocks, bounded by `_FIRST_ROW_WAIT` (1 second, in practice milliseconds), until the scan has resolved row 0: the cursor, the
+        scrollbar and layout watchers read it and cannot cope with an unresolved first row, so the swap cannot be deferred without a larger rework.
+        Only the restore of the old row is a pending jump that completes when the scan gets there.
 
         Returns:
             True when the document was replaced.
@@ -3051,20 +3061,27 @@ NovaTextArea {
         path = self.file_path
         if path is None:
             return False
+        row = self.cursor_location[0]
+        document: LazyDocument | None = None
+        source: ByteSource | None = None
         try:
             held = _stat_identity(path)
             source = _open_source(path)
             if isinstance(source, PreadSource):
                 held = source.identity()
             document = LazyDocument(source, self._open_config or dataclasses.replace(LazyConfig(), tab_width=_DEFAULT_INDENT_WIDTH))
-        except (OSError, ValueError) as error:
+            source = None  # the document owns it now
+            document.wait_first_row(_FIRST_ROW_WAIT)  # the cursor, the scrollbars and the layout need row 0, which the background scan resolves within milliseconds
+            self._replace_document(document)
+        except (OSError, ValueError, CoreSourceChanged) as error:
+            self._discard_reloaded(document, source)
             failure = error if isinstance(error, OSError) else OSError(str(error))
             self.post_message(self.ReloadFailed(failure, path, self).set_sender(self))
             return False
-        row = self.cursor_location[0]
-        document.wait_first_row(_FIRST_ROW_WAIT)  # the cursor and the scrollbars need row 0, which the background scan resolves within milliseconds
+        except BaseException:
+            self._discard_reloaded(document, source)
+            raise
         self.history.clear()
-        self._replace_document(document)
         self._stale_kind = None
         self._held_identity = held
         self._finish_document(self._requested_language, reset_cursor=True)
@@ -3076,6 +3093,14 @@ NovaTextArea {
         self.post_message(self.Reloaded(self).set_sender(self))
         self.update_suggestion()
         return True
+
+    def _discard_reloaded(self, document: LazyDocument | None, source: ByteSource | None) -> None:
+        """Close what a failed `reload` opened: the document, or the source that no document owns yet; the document in use is left alone."""
+        if document is not None:
+            if document is not self.document:
+                document.close()
+        elif source is not None:
+            source.close()
 
     def cancel_save(self) -> None:
         """Ask a running save to stop; it ends with `SaveCancelled` unless the replace already happened. Does nothing when no save runs."""
