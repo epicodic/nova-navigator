@@ -12,9 +12,10 @@ from pathlib import Path
 import pytest
 from textual.pilot import Pilot
 
-from nova_editor.core import ChangeKind, PreadSource
+from nova_editor.core import ChangeKind, PreadSource, SourceChanged
 from nova_editor.core.save import SaveSettings
 from nova_editor.widget import NovaTextArea
+from nova_editor.widget import _text_area as widget_module
 from tests.nova_editor.helpers_view import await_first_layout, row_strip_text, wait_until
 from tests.nova_editor.save_widget_helpers import Gate, SaveHost, leftovers, text_of, wait_saved
 
@@ -515,3 +516,93 @@ async def test_truncating_a_displayed_file_to_zero_never_ends_the_process(tmp_pa
         assert area.check_external_change() is ChangeKind.TRUNCATED
         assert host.kinds == [ChangeKind.TRUNCATED]
         assert len(host.source_changed) == 1
+
+
+def _track_sources(monkeypatch: pytest.MonkeyPatch) -> list[PreadSource]:
+    """Record every source that `reload` opens (the one of `NovaTextArea.open` before this call is not included)."""
+    opened: list[PreadSource] = []
+    real = widget_module._open_source
+
+    def tracking(path: Path) -> object:
+        source = real(path)
+        assert isinstance(source, PreadSource)
+        opened.append(source)
+        return source
+
+    monkeypatch.setattr(widget_module, "_open_source", tracking)
+    return opened
+
+
+def _is_closed(source: PreadSource) -> bool:
+    return source._closed
+
+
+@pytest.mark.asyncio
+async def test_reload_closes_the_new_source_when_the_document_cannot_be_built(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = _file(tmp_path)
+    area = NovaTextArea.open(path)
+    host = ChangeHost(area)
+    async with host.run_test() as pilot:
+        await _opened(pilot, area)
+        area.focus()
+        await pilot.press("x")
+        opened = _track_sources(monkeypatch)
+
+        def refuse(*_args: object, **_kwargs: object) -> None:
+            raise ValueError("no document")
+
+        monkeypatch.setattr(widget_module, "LazyDocument", refuse)
+        assert area.reload() is False
+        await pilot.pause(0.05)
+        (source,) = opened
+        assert _is_closed(source)
+        assert len(host.reload_failures) == 1
+        assert area.modified
+        assert area.history.undo_stack
+
+
+@pytest.mark.asyncio
+async def test_reload_keeps_the_history_and_closes_the_new_document_when_the_swap_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = _file(tmp_path)
+    area = NovaTextArea.open(path)
+    host = ChangeHost(area)
+    async with host.run_test() as pilot:
+        await _opened(pilot, area)
+        area.focus()
+        await pilot.press("x")
+        old = area.document
+        opened = _track_sources(monkeypatch)
+
+        def refuse(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("swap failed")
+
+        monkeypatch.setattr(widget_module, "LazyWrappedDocument", refuse)
+        with pytest.raises(RuntimeError, match="swap failed"):
+            area.reload()
+        assert area.document is old
+        assert area.modified
+        assert area.history.undo_stack
+        assert host.reloaded == 0
+        (source,) = opened
+        await wait_until(pilot, lambda: _is_closed(source))  # the document closes its source on a closer thread
+
+
+@pytest.mark.asyncio
+async def test_reload_closes_the_new_source_when_row_zero_cannot_be_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = _file(tmp_path)
+    area = NovaTextArea.open(path)
+    host = ChangeHost(area)
+    async with host.run_test() as pilot:
+        await _opened(pilot, area)
+        opened = _track_sources(monkeypatch)
+
+        def changed(*_args: object, **_kwargs: object) -> None:
+            raise SourceChanged("changed while reloading", ChangeKind.MODIFIED)
+
+        monkeypatch.setattr(widget_module.LazyDocument, "_range", changed)
+        assert area.reload() is False
+        monkeypatch.undo()
+        await pilot.pause(0.05)
+        (source,) = opened
+        await wait_until(pilot, lambda: _is_closed(source))  # the document closes its source on a closer thread
+        assert len(host.reload_failures) == 1

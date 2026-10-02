@@ -287,7 +287,13 @@ class LazyDocument(DocumentBase):
         self._line_index.scan_now()
 
     def wait_first_row(self, timeout: float) -> bool:
-        """Wait until the line scan has resolved row 0 (or knows there is none); return whether it did within `timeout` seconds (a first block takes milliseconds)."""
+        """Block the calling thread, polling, until the line scan has resolved row 0 (or knows there is none); return whether it did within `timeout` seconds.
+
+        A first block takes milliseconds. With `timeout` 0 this is one non-blocking probe. Do not call it with a positive timeout on the UI thread.
+
+        Raises:
+            SourceChanged: The file changed under the scan (also for a probe).
+        """
         deadline = time.monotonic() + timeout
         while True:
             try:
