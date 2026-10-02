@@ -345,6 +345,8 @@ class NovaEditApp(App[None]):
                 os.fchmod(handle.fileno(), mode)
             os.replace(temp_name, target)
             temp_name = None
+            # The document is now bound to this file, so later saves replace it like any loaded file
+            self._load_state = "loaded"
             self.notify("Interim save (replaced by streaming save in ACT5)", severity="information")
         except OSError as e:
             self.notify(f"Error saving file: {e}", severity="error")
