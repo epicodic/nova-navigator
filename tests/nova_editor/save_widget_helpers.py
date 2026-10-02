@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -90,3 +91,16 @@ def text_of(area: NovaTextArea) -> bytes:
 def leftovers(directory: Path) -> list[str]:
     """Names in `directory` that are temp files of a save."""
     return sorted(entry.name for entry in directory.iterdir() if entry.name.endswith(".tmp"))
+
+
+def open_files(directory: Path) -> list[str]:
+    """The files under `directory` that this process holds open (a leaked source shows up here)."""
+    found = []
+    for name in os.listdir("/proc/self/fd"):
+        try:
+            target = os.readlink(f"/proc/self/fd/{name}")
+        except OSError:
+            continue
+        if target.startswith(str(directory)):
+            found.append(target)
+    return found

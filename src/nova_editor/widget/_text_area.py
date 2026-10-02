@@ -3305,7 +3305,12 @@ NovaTextArea {
             if error is None:
                 return self.SaveCancelled(self)
             return self.SaveFailed(error, error.stage, run.target, self, error.committed)
-        self.document.apply_rebase(plan)  # closes the file itself when it fails; the document is then still on the old table
+        try:
+            self.document.apply_rebase(plan)  # closes the file itself when it fails before the swap: the document is then still on the old table
+        except BaseException:
+            if self.document.rebase_installed:  # the table was swapped: the history and the clipboard hold pieces of the old sources
+                self._adopt_after_failed_rebase(result)
+            raise
         self.file_path = result.target
         self._held_identity = result.source.identity()
         try:
@@ -3323,6 +3328,19 @@ NovaTextArea {
             self._clipboard_record = None
             raise
         return self.Saved(result.target, result.length, self)
+
+    def _adopt_after_failed_rebase(self, result: SaveResult) -> None:
+        """UI thread: `apply_rebase` raised after it replaced the table. The widget follows the document: the new file, and no history that could undo into the old sources."""
+        self.file_path = result.target
+        self._held_identity = result.source.identity()
+        self.history.clear()
+        self._clipboard_record = None
+        try:
+            self.history.mark_saved()
+            self._lift_stale()
+            self.refresh_after_rebase()
+        except Exception:
+            logging.getLogger(__name__).exception("the widget could not finish following a rebase that failed")
 
     def _lift_stale(self) -> None:
         """The document now stands on a freshly written file: end the stale state (rows render again, edits are accepted)."""

@@ -3,19 +3,25 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
 
 import pytest
 from textual.message import Message
+from textual.pilot import Pilot
 
+from nova_editor.core import LineIndex, PreadSource
+from nova_editor.core.rebase import RebasePlan
 from nova_editor.core.save import SaveIo, SaveSettings
 from nova_editor.core.save import SaveProgress as CoreSaveProgress
 from nova_editor.document._lazy_document import LazyDocument
 from nova_editor.widget import NovaTextArea
 from nova_editor.widget._text_area import _SaveRun
 from tests.nova_editor.helpers_view import wait_until
-from tests.nova_editor.save_widget_helpers import SETTINGS, Gate, SaveHost, leftovers, text_of, wait_saved
+from tests.nova_editor.save_widget_helpers import SETTINGS, Gate, SaveHost, leftovers, open_files, text_of, wait_saved
 
 BODY = "".join(f"row {n} {'x' * (n % 9)}\n" for n in range(60))
 
@@ -386,11 +392,13 @@ async def _failing_finish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, owner
 @pytest.mark.asyncio
 @pytest.mark.parametrize("error", [OSError(5, "boom"), ValueError("bad"), RuntimeError("defect")])
 async def test_any_exception_in_apply_rebase_ends_in_one_save_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception) -> None:
-    failed, _, editable = await _failing_finish(tmp_path, monkeypatch, LazyDocument, "apply_rebase", error)
+    # the real apply_rebase fails after it built the new table (in `_install`, before the swap): it must close the saved file itself and leave the old table in place
+    failed, _, editable = await _failing_finish(tmp_path, monkeypatch, LazyDocument, "_rebase_long", error)
     assert failed.stage == "internal"
     assert failed.committed is True
     assert editable
     assert leftovers(tmp_path) == []
+    assert open_files(tmp_path) == []
 
 
 @pytest.mark.asyncio
@@ -521,3 +529,109 @@ async def test_closing_survives_a_refused_post(tmp_path: Path, monkeypatch: pyte
         gate.release()
         assert document.wait_closed(10)
         assert not area.saving
+
+
+@dataclass
+class _Outcome:
+    area: NovaTextArea
+    host: SaveHost
+    pilot: Pilot[None]
+    target: Path
+    before: bytes
+    """The text before the edit that was saved."""
+
+
+@asynccontextmanager
+async def _failed_save_as(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patch: Callable[[pytest.MonkeyPatch], None]) -> AsyncIterator[_Outcome]:
+    """Edit, apply `patch`, save as another file, undo the patch and wait for the end of the save; check what every outcome shares."""
+    path = _file(tmp_path)
+    target = tmp_path / "saved.txt"
+    area = NovaTextArea.open(path)
+    host = SaveHost(area)
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        area.focus()
+        before = text_of(area)
+        await pilot.press("x")
+        patch(monkeypatch)
+        assert area.save(target) is True
+        await wait_saved(pilot, area)
+        monkeypatch.undo()
+        assert not area.saving
+        assert len(host.terminals()) == 1  # one terminal message
+        await pilot.press("y")
+        assert host.refused == []  # the lock is lifted
+        await pilot.press("ctrl+z")
+        yield _Outcome(area, host, pilot, target, before)
+    assert area.document.wait_closed(10.0)
+    assert open_files(tmp_path) == []  # no leaked descriptor
+
+
+@pytest.mark.asyncio
+async def test_a_failure_after_the_install_adopts_the_file_and_clears_the_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def patch(patcher: pytest.MonkeyPatch) -> None:
+        real = LazyDocument.apply_rebase
+
+        def failing(self: LazyDocument, plan: RebasePlan) -> None:
+            real(self, plan)
+            msg = "after the swap"
+            raise RuntimeError(msg)
+
+        patcher.setattr(LazyDocument, "apply_rebase", failing)
+
+    async with _failed_save_as(tmp_path, monkeypatch, patch) as out:
+        (failed,) = out.host.terminals()
+        assert isinstance(failed, NovaTextArea.SaveFailed)
+        assert failed.committed is True
+        assert out.area.file_path == out.target
+        source = out.area.document._source
+        assert isinstance(source, PreadSource)
+        assert out.area._held_identity == source.identity()
+        await out.pilot.press("ctrl+z")  # the history is gone: nothing may undo into the old pieces
+        assert text_of(out.area) == out.target.read_bytes()
+        assert not out.area.history.undo_stack
+
+
+@pytest.mark.asyncio
+async def test_a_failure_before_the_install_keeps_the_path_and_the_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def patch(patcher: pytest.MonkeyPatch) -> None:
+        def broken(*_args: object, **_kwargs: object) -> None:
+            raise OSError(5, "before the swap")
+
+        patcher.setattr(LazyDocument, "_build_table", broken)
+
+    async with _failed_save_as(tmp_path, monkeypatch, patch) as out:
+        (failed,) = out.host.terminals()
+        assert isinstance(failed, NovaTextArea.SaveFailed)
+        assert out.area.file_path == tmp_path / "doc.txt"
+        await out.pilot.press("ctrl+z")
+        assert text_of(out.area) == out.before  # the old table and the history still work
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("step", ["line_subscribe", "closer_start"])
+async def test_a_failing_tail_step_still_ends_in_saved_with_a_working_undo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str) -> None:
+    real_start = threading.Thread.start
+
+    def patch(patcher: pytest.MonkeyPatch) -> None:
+        def broken(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError(step)
+
+        def start(self: threading.Thread) -> None:
+            if self.name == "lazy-rebase-closer":
+                raise RuntimeError(step)
+            real_start(self)
+
+        if step == "line_subscribe":
+            patcher.setattr(LineIndex, "subscribe", broken)
+        else:
+            patcher.setattr(threading.Thread, "start", start)
+
+    async with _failed_save_as(tmp_path, monkeypatch, patch) as out:
+        (done,) = out.host.terminals()
+        assert isinstance(done, NovaTextArea.Saved)
+        assert out.area.file_path == out.target
+        assert out.area.document.rebase_problems
+        assert text_of(out.area) == out.target.read_bytes()  # the undo of "y"
+        await out.pilot.press("ctrl+z")
+        assert text_of(out.area) == out.before  # and of "x": the translated history still reads the right bytes

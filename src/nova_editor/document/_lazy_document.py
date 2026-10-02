@@ -6,6 +6,8 @@ is reported as `None` (or an empty slice) and the caller asks again after a subs
 
 from __future__ import annotations
 
+import functools
+import logging
 import re
 import threading
 import time
@@ -214,6 +216,8 @@ class LazyDocument(DocumentBase):
         self._close_done = threading.Event()
         self._reapers: list[threading.Thread] = []
         self._rebase_closers: list[threading.Thread] = []
+        self._rebase_installed = False
+        self._rebase_problems: list[str] = []
         self._legacy_files: list[tuple[LineIndex, ByteSource]] = []
         """The line index and source behind each legacy generation of the table (generation `g` is element `g - 1`); closed with the document."""
         self._started = False
@@ -482,7 +486,10 @@ class LazyDocument(DocumentBase):
         On a closed document the plan's source is closed and nothing else happens.
         The caller then writes the translated contents back into its records (`Edit.rewrite`), or clears them when `plan.clear_history` is set.
 
-        Everything that can fail runs before the first assignment: a failure leaves the document on the old table, closes the plan's source and propagates.
+        Everything that can fail runs before the first assignment: a failure leaves the document on the old table, closes the plan's source and
+        propagates (`rebase_installed` stays false). Once the table is replaced (`rebase_installed` is true) nothing raises any more: a step of the
+        tail (subscriptions, starting a rebased index, the closer thread) that fails is logged and described in `rebase_problems`, and the swap stays
+        consistent (a rebased index that cannot start is dropped and built again on demand; a closer that cannot start is replaced by closing inline).
 
         Raises:
             ValueError: The plan has no source, or the document changed since the save started.
@@ -493,6 +500,8 @@ class LazyDocument(DocumentBase):
         if source is None or line_index is None:
             msg = "the plan carries no saved file"
             raise ValueError(msg)
+        self._rebase_installed = False
+        self._rebase_problems = []
         try:
             with self._lock:
                 swap = None if self._closed else self._install(plan, source, line_index)
@@ -502,22 +511,64 @@ class LazyDocument(DocumentBase):
         if swap is None:
             source.close()
             return
+        self._rebase_installed = True
+        self._finish_install(swap, line_index)
+
+    @property
+    def rebase_installed(self) -> bool:
+        """Whether the last `apply_rebase` replaced the table (false before it, and when it failed before the swap)."""
+        return self._rebase_installed
+
+    @property
+    def rebase_problems(self) -> list[str]:
+        """What failed in the tail of the last `apply_rebase`, after the table was replaced (empty when everything went well)."""
+        return list(self._rebase_problems)
+
+    def _tail_step(self, what: str, step: Callable[[], None]) -> bool:
+        """Run one step of the tail of `apply_rebase`; a failure is logged and recorded, never raised. Return whether the step succeeded."""
+        try:
+            step()
+        except Exception as failure:
+            logging.getLogger(__name__).exception("rebase: %s failed", what)
+            self._rebase_problems.append(f"{what}: {type(failure).__name__}: {failure}")
+            return False
+        return True
+
+    def _finish_install(self, swap: _Swap, line_index: LineIndex) -> None:
+        """The part of `apply_rebase` after the swap and the lock: subscriptions, restarting the rebased indexes, the closer. Raises nothing."""
         for old_index, _ in swap.release:
-            old_index.cancel()
-            old_index.clear_subscribers()
+            self._tail_step("cancel an old index", old_index.cancel)
+            self._tail_step("clear the subscribers of an old index", old_index.clear_subscribers)
         for retired in swap.retired:
-            retired.clear_subscribers()
+            self._tail_step("clear the subscribers of a retired index", retired.clear_subscribers)
         for callback in swap.subscribers:
-            line_index.subscribe(callback)
+            self._tail_step("subscribe to the new line index", functools.partial(line_index.subscribe, callback))
         for replacement in swap.rebased:
-            for callback in swap.subscribers:
-                replacement.subscribe(callback)
-            replacement.start()
+            started = all(self._tail_step("subscribe to a rebased index", functools.partial(replacement.subscribe, callback)) for callback in swap.subscribers)
+            if started:
+                started = self._tail_step("start a rebased index", replacement.start)
+            if not started:
+                self._drop_long(replacement)
         closer = threading.Thread(target=self._finish_rebase, args=(swap.retired, swap.reapers, swap.release), name="lazy-rebase-closer", daemon=True)
+        self._tail_step("register the closer", functools.partial(self._register_closer, closer))
+        if not self._tail_step("start the closer", closer.start):
+            with self._lock:
+                self._rebase_closers = [thread for thread in self._rebase_closers if thread is not closer]  # an unstarted thread cannot be joined
+            self._tail_step("close the old files inline", functools.partial(self._finish_rebase, swap.retired, swap.reapers, swap.release))
+
+    def _register_closer(self, closer: threading.Thread) -> None:
+        """Remember `closer` so that `close` and `wait_rebased` wait for it."""
         with self._lock:
             self._rebase_closers = [thread for thread in self._rebase_closers if thread.is_alive()]
             self._rebase_closers.append(closer)
-        closer.start()
+
+    def _drop_long(self, index: LongLineIndex) -> None:
+        """Forget a rebased long index that could not be started (the row builds a new one when it is asked for) and cancel it."""
+        with self._lock:
+            for row, held in list(self._long.items()):
+                if held is index:
+                    del self._long[row]
+        self._tail_step("cancel a rebased index", index.cancel)
 
     def _install(self, plan: RebasePlan, source: ByteSource, line_index: LineIndex) -> _Swap:
         """Replace source, line index and table by the saved file (the caller holds the lock); return what is left to do outside it.
