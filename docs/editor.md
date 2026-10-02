@@ -450,7 +450,8 @@ A temporary file is removed when the save fails.
 When the file existed at start but could not be read, the editor shows an empty document and Ctrl+S refuses with "Not saved" so that the file is not replaced.
 A file that did not exist at start is created with the mode its umask allows, and later saves replace it like any other file.
 If such a file appears from elsewhere before the first save, Ctrl+S refuses with "Not saved".
-It then shows the notification "Interim save (replaced by streaming save in ACT5)".
+If such a file is deleted after it was loaded, the next Ctrl+S creates it again with the umask mode.
+A successful save shows the notification "Interim save (replaced by streaming save in ACT5)".
 For a larger document it writes nothing and shows "Saving large files arrives with ACT5".
 No data is lost silently and no partial file replaces the original.
 Ctrl+Q quits without asking about unsaved changes.
