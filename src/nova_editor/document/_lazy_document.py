@@ -20,6 +20,7 @@ from nova_editor.core import (
     AddStore,
     ByteSource,
     BytesSource,
+    ChangeKind,
     Content,
     LineIndex,
     LineSnapshot,
@@ -58,6 +59,7 @@ MAX_SLICE_ROWS = 128
 _RANGE_CACHE_ROWS = 4096
 _MAX_RETIRED = 64
 _MAX_EVENTS = 10_000
+_FIRST_ROW_POLL = 0.002
 REPLACED_TEXT_LIMIT = 64 * 1024
 """`EditResult.replaced_text` is filled only when at most this many bytes were removed."""
 RELOCATE_LIMIT = 256 * 1024
@@ -204,7 +206,8 @@ class LazyDocument(DocumentBase):
         self._source = source
         self._lock = threading.RLock()
         self._closed = False
-        self._edit_lock_reason: str | None = None
+        self._edit_locks: list[str] = []
+        """The reasons that refuse edits at the moment, oldest first; the latest one is reported."""
         self._saving = False
         self._save_edits: int | None = None
         self._edit_count = 0
@@ -283,6 +286,21 @@ class LazyDocument(DocumentBase):
             self._started = True
         self._line_index.scan_now()
 
+    def wait_first_row(self, timeout: float) -> bool:
+        """Wait until the line scan has resolved row 0 (or knows there is none); return whether it did within `timeout` seconds (a first block takes milliseconds)."""
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                self._range(0)
+            except IndexError:
+                return True
+            except RowUnavailable:
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(_FIRST_ROW_POLL)
+            else:
+                return True
+
     def wait_indexed(self, timeout: float) -> bool:
         """Wait for the line scan to complete (tests and workers only); return whether it completed."""
         return self._line_index.join(timeout)
@@ -335,14 +353,34 @@ class LazyDocument(DocumentBase):
         return self._close_done.wait(timeout)
 
     def lock_edits(self, reason: str) -> None:
-        """Refuse `replace_range`, `splice` and `splice_bytes` with `EditsLocked(reason)` until `unlock_edits`."""
-        with self._lock:
-            self._edit_lock_reason = reason
+        """Refuse `replace_range`, `splice` and `splice_bytes` with `EditsLocked(reason)` until `unlock_edits`.
 
-    def unlock_edits(self) -> None:
-        """Accept edits again."""
+        Reasons are kept apart: locking with a second reason does not replace the first, and the latest one is the one reported.
+        """
         with self._lock:
-            self._edit_lock_reason = None
+            if reason in self._edit_locks:
+                self._edit_locks.remove(reason)
+            self._edit_locks.append(reason)
+
+    def unlock_edits(self, reason: str | None = None) -> None:
+        """Lift the lock `reason` (one that is not held changes nothing); without a reason lift every lock. Edits are accepted again when none is left."""
+        with self._lock:
+            if reason is None:
+                self._edit_locks.clear()
+            elif reason in self._edit_locks:
+                self._edit_locks.remove(reason)
+
+    def check_source(self) -> ChangeKind:
+        """Check the descriptor of a large original without reading content: `UNCHANGED`, or why a read would fail. A source in memory is `UNCHANGED`."""
+        with self._lock:
+            source = self._source
+        if not isinstance(source, PreadSource):
+            return ChangeKind.UNCHANGED
+        try:
+            source.check()
+        except SourceChanged as error:
+            return error.kind
+        return ChangeKind.UNCHANGED
 
     def begin_save(self) -> None:
         """Register a running save: `require_not_saving` refuses until `end_save`."""
@@ -541,8 +579,8 @@ class LazyDocument(DocumentBase):
 
     def _require_editable(self) -> None:
         """Raise `EditsLocked` while edits are locked; the caller holds the lock."""
-        if self._edit_lock_reason is not None:
-            raise EditsLocked(self._edit_lock_reason)
+        if self._edit_locks:
+            raise EditsLocked(self._edit_locks[-1])
 
     def subscribe(self, callback: Callable[[], None]) -> None:
         """Call `callback` (on a scan thread) on progress of the line index and of every long index, including later ones."""
