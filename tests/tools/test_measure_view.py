@@ -156,6 +156,8 @@ def test_percentile_is_nearest_rank() -> None:
     assert median([5, 1, 3]) == 3
     assert percentile(list(range(1, 101)), 0.95) == 95
     assert percentile([7], 0.95) == 7
+    assert percentile(list(range(1, 20)), 0.95) == 19
+    assert percentile(list(range(1, 21)), 0.95) == 19  # n = 20: the second largest, not the max
 
 
 def test_summarise_prints_percentiles(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -203,6 +205,7 @@ def test_summarise_counts_direct_steps_issued_during_a_scan(tmp_path: Path, caps
     assert "n scan_running" in text
     assert "n completing" in text
     assert "p95 is the nearest-rank value of the n samples" in text
+    assert "with n of at most 19 it equals the max" in text
     assert "| a | off | indexing | pagedown | - | latency_ms | 3 | 6.00 | 7.00 | 7.00 | 0 | 2 | 1 |" in text
     assert "| a | off | indexing | pagedown | - | pilot_ms | 1 | 3000.00 | 3000.00 | 3000.00 | 1 | - | - |" in text
 
