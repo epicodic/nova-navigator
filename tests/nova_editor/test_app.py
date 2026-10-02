@@ -238,6 +238,59 @@ async def test_save_of_a_new_file_creates_it(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_second_save_of_a_new_file_writes_the_later_edit(tmp_path: Path) -> None:
+    path = tmp_path / "new.txt"
+
+    app = NovaEditApp(file_path=path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("h", "i")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert path.read_text() == "hi"
+        await pilot.press("!")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    assert path.read_text() == "hi!"
+    assert not any("Not saved" in n.message for n in app._notifications)
+
+
+@pytest.mark.asyncio
+async def test_save_refuses_a_file_that_appeared_before_the_first_save(tmp_path: Path) -> None:
+    path = tmp_path / "new.txt"
+
+    app = NovaEditApp(file_path=path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        path.write_text("from elsewhere")
+        await pilot.press("h", "i")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    assert path.read_text() == "from elsewhere"
+    assert any("Not saved" in n.message for n in app._notifications)
+
+
+@pytest.mark.asyncio
+async def test_new_file_mode_follows_the_umask(tmp_path: Path) -> None:
+    path = tmp_path / "new.txt"
+
+    old = os.umask(0o077)
+    try:
+        app = NovaEditApp(file_path=path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("h", "i")
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+    finally:
+        os.umask(old)
+
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.asyncio
 async def test_failed_save_removes_the_temp_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "f.txt"
     path.write_text("one")
