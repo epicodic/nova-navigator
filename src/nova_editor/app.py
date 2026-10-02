@@ -769,10 +769,18 @@ class NovaEditApp(App[None]):
         self._announce_change(message.kind)
 
     def _announce_change(self, kind: ChangeKind) -> None:
-        """Ask what to do about a file that changed on disk."""
+        """Ask what to do about a file that changed on disk, unless the view is not stale any more.
+
+        A `SourceChanged` posted during a save can be handled after the save ended; when the save rebased the document onto its own file the view
+        is no longer stale and the check finds nothing, so there is nothing to ask.
+        """
         editor = self.editor
-        if editor is not None:
-            self._confirm_bar.ask(kind, editor.file_path, overwrite=editor.modified, save_as=True, reload=editor.file_path is not None)
+        if editor is None:
+            return
+        current = editor.check_external_change()  # the stale kind while the view is stale, else a fresh check
+        if current is ChangeKind.UNCHANGED:
+            return
+        self._confirm_bar.ask(kind, editor.file_path, overwrite=editor.modified, save_as=True, reload=editor.file_path is not None)
 
     def _recheck_deferred_change(self, *, committed: bool = False) -> None:
         """After a save: announce the change that was seen while it ran unless the save rebased the document (the file is then the app's own)."""
