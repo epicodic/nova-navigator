@@ -104,13 +104,15 @@ def labels(spec: Spec) -> Row:
 def search_row(spec: Spec, *, case: str, state: str, op: str, **extra: object) -> Row:
     """A row with the identifying fields, the machine facts, the file label and the search settings."""
     settings = search_settings_of(spec)
+    extra.setdefault("needle", str(spec.get("needle", NO_NEEDLE)))
     return base_row(spec, case=case, state=state, op=op, **labels(spec), search_chunk=settings.chunk, progress_interval=settings.progress_interval, **extra)
 
 
 def label_rows(spec: Spec, rows: Sequence[Row]) -> None:
-    """Add the machine facts and the file label to rows that lack them (the phase rows the parent builds, the edit rows of the save helpers)."""
+    """Add the machine facts, the file label and (when the spec has one) the needle to rows that lack them (the phase rows the parent builds, the edit rows of the save helpers)."""
+    facts = {**labels(spec), **({"needle": str(spec["needle"])} if "needle" in spec else {})}
     for row in rows:
-        for key, value in labels(spec).items():
+        for key, value in facts.items():
             row.setdefault(key, value)
 
 
