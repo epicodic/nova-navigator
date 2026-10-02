@@ -3,19 +3,24 @@
 from __future__ import annotations
 
 import gc
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 from tests.nova_editor.helpers_view import make_mixed
 from tools._view_app import LOWERED
 from tools._view_edit_latency import GcTimer
 from tools._view_procmem import median, percentile
+from tools._view_save import ByteModel, literal, verify_file
 from tools.measure_view import main
 
 MAX_TEST_FILE_BYTES = 1 << 20
+MODEL_EXAMPLES = 80
 
 
 @pytest.fixture(scope="module")
@@ -498,3 +503,208 @@ def test_summarise_tables_of_the_edit_metrics(tmp_path: Path, capsys: pytest.Cap
     assert "| a | on | indexed | type | clean | reestimate_ms | 2 | 3.00 | 25.00 | 25.00 | 0 | - | - |" in text
     assert "bytes_per_piece_rss" in text
     assert "clipboard_ms" in text
+
+
+SAVE_SMALL = ["--chunk", "512", "--fsync-every", "4096", "--scatter", "20", "--delete-bytes", "3000", "--paste-bytes", "1500", "--min-free-gib", "0"]
+SAVE_PHASES = {"writing", "flushing", "finishing", "history"}
+
+
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _run_save(name: str, mixed_file: Path, tmp_path: Path, *extra: str) -> list[dict[str, Any]]:
+    out = tmp_path / f"{name}.jsonl"
+    assert main([name, "--file", str(mixed_file), "--out", str(out), "--runs", "1", *extra]) == 0
+    return _rows(out)
+
+
+def test_save_5g_saves_the_edited_document_and_verifies_the_output(mixed_file: Path, tmp_path: Path) -> None:
+    before = _digest(mixed_file)
+    target = tmp_path / "out-5g.txt"
+    rows = _run_save("save-5g", mixed_file, tmp_path, "--target", str(target), *SAVE_SMALL)
+    save = next(row for row in rows if row["case"] == "save-5g" and row["op"] == "save")
+    assert save["terminal"] == "saved"
+    assert save["ok"] is True
+    assert save["progress_messages"] >= 1
+    assert save["plan_calls"] > 1
+    verify = [row for row in rows if row["case"] == "verify"]
+    assert {row["state"] for row in verify} >= {"output", "after_rebase"}
+    assert all(row["mismatches"] == 0 for row in verify)
+    assert target.stat().st_size == next(row for row in verify if row["state"] == "output")["model_length"]
+    assert {row["state"] for row in rows if row["op"] == "phase"} >= SAVE_PHASES
+    assert all(row["rss_anon_kb_max"] > 0 for row in rows if row["op"] == "phase" and row["state"] in SAVE_PHASES and "rss_anon_kb_max" in row)
+    assert Path(f"{tmp_path / 'save-5g.jsonl'}.samples.jsonl").exists()
+    assert _digest(mixed_file) == before
+    assert main(["summarise", str(tmp_path / "save-5g.jsonl")]) == 0
+
+
+def test_save_commands_refuse_a_target_that_is_a_reference_file(mixed_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    out = str(tmp_path / "o.jsonl")
+    before = _digest(mixed_file)
+    with pytest.raises(SystemExit, match="refusing"):
+        main(["save-5g", "--file", str(mixed_file), "--target", str(mixed_file), "--out", out, *SAVE_SMALL])
+    refs = tmp_path / "refs"
+    (refs / "results" / "act5").mkdir(parents=True)
+    monkeypatch.setenv("REFS", str(refs))
+    with pytest.raises(SystemExit, match="refusing"):
+        main(["save-5g", "--file", str(mixed_file), "--target", str(refs / "other.txt"), "--out", out, *SAVE_SMALL])
+    assert _digest(mixed_file) == before
+    assert not (refs / "other.txt").exists()
+
+
+def test_save_latency_steps_and_times_the_plan_calls(mixed_file: Path, tmp_path: Path) -> None:
+    rows = _run_save("save-latency", mixed_file, tmp_path, "--target", str(tmp_path / "t.txt"), "--wrap", "both", "--steps", "3", *SAVE_SMALL)
+    steps = [row for row in rows if row["op"] not in ("plan", "summary", "scatter", "delete", "paste", "save")]
+    assert {row["wrap"] for row in steps} == {"off", "on"}
+    assert {"down", "pagedown", "end", "ctrl+end", "vscroll", "x-refused"} <= {row["op"] for row in steps}
+    assert any(row["state"] == "saving" for row in steps)
+    refused = [row for row in steps if row["op"] == "x-refused"]
+    assert refused
+    assert all(row["state"] == "saving" for row in refused)
+    plans = [row for row in rows if row["op"] == "plan"]
+    assert len(plans) > 10
+    assert all(row["action_ms"] >= 0 for row in plans)
+    summary = [row for row in rows if row["op"] == "summary"]
+    assert len(summary) == 2
+    assert all(row["longest_step_ms"] is not None and row["plan_calls"] == row["plan_calls_expected"] for row in summary)
+    assert main(["summarise", str(tmp_path / "save-latency.jsonl")]) == 0
+
+
+def test_save_sweep_runs_every_combination_and_the_no_index_baseline(mixed_file: Path, tmp_path: Path) -> None:
+    grid = ["--chunks", "512,2048", "--fsync-every", "4096,65536", "--scatter", "5", "--delete-bytes", "2000", "--paste-bytes", "500", "--min-free-gib", "0"]
+    rows = _run_save("save-sweep", mixed_file, tmp_path, "--target", str(tmp_path / "t.txt"), *grid)
+    saves = [row for row in rows if row["op"] == "save"]
+    assert {(row["chunk"], row["fsync_every"]) for row in saves} == {(512, 4096), (512, 65536), (2048, 4096), (2048, 65536)}
+    assert all(row["terminal"] == "saved" and row["build_index"] is True and row["index_after_rebase"] is True for row in saves)
+    (tmp_path / "base").mkdir()
+    base = _run_save("save-sweep", mixed_file, tmp_path / "base", "--target", str(tmp_path / "t.txt"), "--no-index", *grid)
+    baseline = [row for row in base if row["op"] == "save"]
+    assert len(baseline) == 4
+    assert all(row["build_index"] is False and row["index_after_rebase"] is False and row["ok"] is True for row in baseline)
+    assert all(row["mismatches"] == 0 for row in base if row["case"] == "verify")
+
+
+def test_save_longline_saves_a_copy_in_place_and_types_at_the_column(mixed_file: Path, tmp_path: Path) -> None:
+    before = _digest(mixed_file)
+    copy = tmp_path / "copy.txt"
+    rows = _run_save("save-longline", mixed_file, tmp_path, "--copy", str(copy), "--column", "3000", "--min-free-gib", "0", "--chunk", "512")
+    assert _digest(mixed_file) == before
+    assert not copy.exists()
+    save = next(row for row in rows if row["op"] == "save")
+    assert save["terminal"] == "saved"
+    assert save["apply_rebase_ms"] > 0
+    typed = next(row for row in rows if row["op"] == "type")
+    assert typed["changed"] is True
+    assert typed["doc_delta"] == 1
+    assert {"cursor_state_before", "cursor_state_after", "cursor_location_after"} <= set(typed)
+    assert all(row["mismatches"] == 0 for row in rows if row["case"] == "verify")
+
+
+def test_save_retention_runs_both_sequences_with_window_hashes(mixed_file: Path, tmp_path: Path) -> None:
+    rows = _run_save("save-retention", mixed_file, tmp_path, "--copy", str(tmp_path / "copy.txt"), "--delete-bytes", "4000", "--min-free-gib", "0", "--chunk", "512")
+    assert {row["sequence"] for row in rows if row["op"] == "save"} == {"undo-save", "save-undo"}
+    assert all(row["terminal"] == "saved" for row in rows if row["op"] == "save")
+    verify = [row for row in rows if row["case"] == "verify"]
+    assert {"undo", "output", "redo"} <= {row["state"] for row in verify}
+    assert all(row["mismatches"] == 0 for row in verify)
+    disk = [row for row in rows if row["op"] == "disk"]
+    assert len(disk) == 2
+    assert all({"old_file_bytes", "new_file_bytes", "disk_used_delta", "retained_inode_bytes", "extra_disk_bytes"} <= set(row) for row in disk)
+
+
+def test_save_records_times_prepare_and_apply_rebase(tmp_path: Path) -> None:
+    out = tmp_path / "records.jsonl"
+    assert main(["save-records", "--records", "1,30,200", "--long-indexes", "8", "--runs", "1", "--out", str(out)]) == 0
+    rows = [row for row in _rows(out) if row["op"] == "rebase"]
+    assert [row["records_requested"] for row in rows] == [1, 30, 200]
+    assert all(row["long_indexes"] == 8 and row["terminal"] == "saved" for row in rows)
+    assert all(row["prepare_rebase_ms"] > 0 and row["apply_rebase_ms"] > 0 for row in rows)
+    assert [row["contents"] for row in rows] == sorted(row["contents"] for row in rows)
+    assert rows[-1]["contents"] >= 200
+    assert main(["summarise", str(out)]) == 0
+
+
+def test_save_cancel_stops_at_half_and_removes_the_temp_file(mixed_file: Path, tmp_path: Path) -> None:
+    target = tmp_path / "out" / "t.txt"
+    rows = _run_save("save-cancel", mixed_file, tmp_path, "--target", str(target), *SAVE_SMALL)
+    save = next(row for row in rows if row["op"] == "save")
+    assert save["terminal"] == "cancelled"
+    assert save["ok"] is True
+    assert save["cancel_latency_ms"] >= 0
+    assert save["temp_files_left"] == 0
+    assert save["target_unchanged"] is True
+    assert not target.exists()
+    assert not list(target.parent.glob(".*"))
+
+
+def test_save_fulldisk_injects_enospc_when_no_tmpfs_can_be_mounted(mixed_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    target = tmp_path / "out" / "t.txt"
+    rows = _run_save("save-fulldisk", mixed_file, tmp_path, "--target", str(target), "--no-mount", *SAVE_SMALL)
+    save = next(row for row in rows if row["op"] == "save")
+    assert save["terminal"] == "failed"
+    assert save["stage"] == "write"
+    assert save["errno"] == 28
+    assert save["method"] == "injection"
+    assert save["ok"] is True
+    assert save["temp_files_left"] == 0
+    assert save["target_unchanged"] is True
+    assert "injection" in capsys.readouterr().out
+
+
+MODEL_BYTES = bytes((i * 37 + 11) % 256 for i in range(400))
+MODEL_OPS = st.lists(st.tuples(st.sampled_from(["insert", "delete", "paste"]), st.integers(0, 10_000), st.integers(0, 10_000), st.binary(min_size=1, max_size=8)), max_size=40)
+
+
+@pytest.fixture(scope="module")
+def model_file(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    path = tmp_path_factory.mktemp("model") / "orig.bin"
+    path.write_bytes(MODEL_BYTES)
+    return path
+
+
+@given(ops=MODEL_OPS)
+@settings(deadline=None, max_examples=MODEL_EXAMPLES, derandomize=True, suppress_health_check=[HealthCheck.function_scoped_fixture])
+def test_byte_model_follows_a_plain_bytes_reference(model_file: Path, ops: list[tuple[str, int, int, bytes]]) -> None:
+    model = ByteModel(model_file)
+    expected = bytearray(MODEL_BYTES)
+    try:
+        for kind, first, second, data in ops:
+            at = first % (len(expected) + 1)
+            if kind == "insert":
+                model.insert(at, literal(data))
+                expected[at:at] = data
+            elif kind == "delete":
+                model.delete(at, second % 40)
+                del expected[at : at + second % 40]
+            else:
+                start = second % (len(expected) + 1)
+                size = len(data) * 5
+                model.insert(at, model.slice(start, size))
+                expected[at:at] = bytes(expected[start : start + size])
+            assert model.length == len(expected)
+            assert model.read(0, len(expected)) == bytes(expected)
+            assert model.read(first % (len(expected) + 1), 17) == bytes(expected[first % (len(expected) + 1) :][:17])
+    finally:
+        model.close()
+
+
+def test_verify_file_reports_a_differing_window_and_a_differing_length(tmp_path: Path) -> None:
+    original = tmp_path / "orig.bin"
+    original.write_bytes(bytes(range(256)) * 40)
+    model = ByteModel(original)
+    spec = {"file": str(original), "wrap": "off", "run": 1}
+    try:
+        assert verify_file(spec, "same", original, model, [])["mismatches"] == 0
+        damaged = tmp_path / "damaged.bin"
+        data = bytearray(original.read_bytes())
+        data[5000] ^= 1
+        damaged.write_bytes(data)
+        row = verify_file(spec, "flipped", damaged, model, [5000])
+        assert row["mismatches"] >= 1  # windows overlap, so a flipped byte shows in several
+        assert row["mismatch_offsets"]
+        short = tmp_path / "short.bin"
+        short.write_bytes(original.read_bytes()[:-1])
+        assert verify_file(spec, "short", short, model, [])["mismatches"] >= 1
+    finally:
+        model.close()
