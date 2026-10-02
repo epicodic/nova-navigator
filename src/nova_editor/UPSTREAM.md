@@ -68,6 +68,12 @@ ACT5 extended the core, which stays Textual-free:
 - The modules `row_scanner`, `save`, `save_layout` and `rebase` listed above.
 - `ChangeKind`, `FileIdentity`, `SourceChanged.kind`, `PreadSource.from_fd`, `identity`, `check` and `unverified_reader` in `byte_source.py`.
 - `LineIndex.from_scan`, `clear_subscribers` and the use of `RowScanner` in the scan.
+- `LineIndexSettings`, the `TypedDict` of the keyword settings of `LineIndex`.
+- `_UnverifiedReader` in `byte_source.py`, the reader that `PreadSource.unverified_reader` returns (it checks short reads only).
+- `LongLineIndex.clear_subscribers`.
+- `PlanPart`, `SavePlanner` and `PauseGate` in `core/save.py`: the parts of a planned range, what the save job needs from the document, and the gate it asks for a pause.
+- `SaveJob.committed` and `SaveFailed.committed`.
+- `PieceTable.source_of`.
 - `LongLineIndex.rebased`.
 - `PieceTable.layout_range`, `register_legacy` and `legacy`, and the generation constants and helpers in `pieces.py` (`MAX_GENERATION`, `make_src`, `generation_of`, `segment_of`).
 
@@ -145,8 +151,9 @@ The widget has one document type, `LazyDocument`.
 **New imports:** `os`, `Iterator`, `ChangeKind`, `FileIdentity`, `RebasePlan`, and `PlanPart`, `SaveIo`, `SaveJob`, `SaveResult`, `SaveSettings`, `check_path` and the core `SaveCancelled`, `SaveFailed` and `SaveProgress` (aliased with a `Core` prefix) from `core/save`.
 **New constants and helpers:** `STALE_REASON`, `_FIRST_ROW_WAIT`, `_stat_identity`, `_DocumentPlanner` and `_SaveRun`.
 **New messages:** `Reloaded`, `ReloadFailed`, `SaveProgress`, `Saved`, `SaveFailed`, `SaveCancelled` and `SaveNeedsConfirmation`; `SourceChanged` gained `kind`.
-**New class attributes:** `save_settings` and `save_io`.
-**New members:** `modified`, `saving`, `save`, `check_external_change`, `reload`, `cancel_save`, `refresh_after_rebase`, and the private `_reachable_edits`, `_reachable_contents`, `_apply_translated`, `_start_save`, `_save_thread`, `_post_save_outcome`, `_on_save_report`, `_announce_save_progress`, `_end_save`, `_finish_save`, `_lift_stale` and `_abandon_save`.
+**New class attributes:** `save_settings`, `save_io` and `save_clock`.
+**New names:** `ExternalCheck` (the pure part of an external-change check), `_SEVERITY` (the order of the kinds that `_fail_source` keeps) and `_save_epoch`.
+**New members:** `modified`, `saving`, `save`, `check_external_change`, `reload`, `cancel_save`, `begin_external_check`, `apply_external_check`, `refresh_after_rebase`, and the private `_reachable_edits`, `_reachable_contents`, `_apply_translated`, `_start_save`, `_save_thread`, `_post_save_outcome`, `_on_save_report`, `_announce_save_progress`, `_end_save`, `_finish_save`, `_conclude_save`, `_discard_reloaded`, `_lift_stale` and `_abandon_save`.
 **New attributes:** `file_path`, `_held_identity`, `_stale_kind`, `_save_run` and `_open_config`.
 **Edited members:** `__init__`, `open` (records the path, the held identity and the configuration), `close` (abandons a running save), `_replace_document` and `load_text` (refused during a save), `_fail_source` and `_guard_source` (carry the `ChangeKind` and set the edit lock), `edit`, `_render_line_guarded`, `_reestimate`, `cursor_byte_offset`, `_run_jump`, `_track_cursor`, `_reconcile_cursor` and `_mouse_target` (pass the kind of a `SourceChanged`), and `_store_clipboard` (keeps no record during a save).
 
@@ -200,6 +207,7 @@ The widget has one document type, `LazyDocument`.
 
 ### `document/_history.py`
 
+**`__post_init__`:** besides the undo and redo stacks it initialises the ACT5 state: `_revision`, `_branch`, `_next_branch` and `_saved`; the undo stack holds `Batch` lists.
 **Defaults:** `max_checkpoints` is `int | None = None` (keep every batch; upstream required it), and `checkpoint_timer` (2.0) and `checkpoint_max_characters` (100) have defaults.
 **Modified member:** `record` decides replacement and newline from the piece lengths and break counts when the edit has pieces, and tries `Edit.coalesce` before it appends to the latest batch.
 **New members:** `_restore_undo` and `_restore_redo`, which put back a batch that the widget refused.

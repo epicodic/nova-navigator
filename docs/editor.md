@@ -502,7 +502,8 @@ Parts of the original are read with `cache=False`.
 **Progress:**
 The job reports `writing` (at most 20 times per second), `flushing` and `finishing`; the save thread then reports `history` while it translates the records.
 The widget keeps the latest report, posts at most one callback to the UI thread at a time, and turns it into `SaveProgress` at most 10 times per second.
-The job accepts a `Foreground` gate and sleeps `pause_seconds()` after every chunk; the widget passes none.
+The job accepts a `Foreground` gate (`PauseGate`) and sleeps `pause_seconds()` after every chunk.
+The widget passes no gate: the measurements of the activity show no save step over 50 ms, so the UI thread is never starved and the save needs no way to give way.
 
 **Cancel:**
 `cancel_save()` sets the flag of the job.
@@ -518,8 +519,12 @@ The `finally` closes the descriptors and unlinks the temp file.
 
 **Terminal message:**
 Exactly one of `Saved`, `SaveFailed` and `SaveCancelled` is posted per save, and the handler on the UI thread posts it.
-If the file was written but the rebase step fails, the outcome is `SaveFailed` with stage `internal`, although the target already holds the new bytes.
-Closing the widget during a save posts `SaveCancelled` at once.
+If the file was written but the switch to it fails, the outcome is `SaveFailed` with stage `internal` and `committed` set (on the core exception and on the widget message), although the target already holds the new bytes.
+That covers a failure of the save thread after the replace, of the translation of the history, and of any step of the finish on the UI thread (`_finish_save`): whatever it raises, the lock is lifted and exactly one message is posted.
+A committed failure leaves the document on the old file: `apply_rebase` builds the new table and the rebased long indexes before it assigns any state, and closes the saved file itself when it fails.
+Only a failure after the swap (the translation of the history) clears the history, because a half-translated history must not survive; the document is then on the new file.
+`nova_edit` tells the user that the file was written and that F5 reloads it.
+Closing the widget during a save posts `SaveCancelled` at once, or `SaveFailed` with `committed` when the replace already happened (`SaveJob.committed`); a refused post while unmounting is ignored.
 The document registers the save thread with its closer, so the source is closed only after the writer returned.
 
 **Special targets:**
@@ -642,10 +647,14 @@ The file behind a document can change while it is open.
 - `save` compares the resolved path with the held identity before it starts.
   The held identity is that of the descriptor for a `PreadSource`, and the `stat` taken around the read for a small file held in memory.
 - `NovaTextArea.check_external_change()` is public and synchronous: the descriptor check plus `check_path`.
-  `nova_edit` calls it every 2 seconds from a thread worker; the poll is skipped while a save runs or while the previous check still runs.
+  While a save runs it reports `UNCHANGED`, because the replace of the save would look like a change.
+- The poll of `nova_edit` splits the check so that no widget state is touched off the UI thread.
+  `begin_external_check()` (UI thread) captures the document, the path, the held identity and the save epoch; `ExternalCheck.run()` does only the `stat` calls and runs on a worker thread every 2 seconds; `apply_external_check()` (UI thread) applies the result.
+  The poll is skipped while a save runs or while the previous check still runs.
+  A result is dropped when a save began or ended since the check began (the save epoch counts both), so the replace of the app's own save is never reported as `REPLACED`.
+- When the terminal gets the focus back (the Textual `AppFocus` event), `nova_edit` runs the same check at once (design 9.1).
 
 A small document held in memory has no read-time detection; the poll and the save cover it.
-`nova_edit` does not check on focus changes.
 Truncating a displayed file never ends the process, because the editor uses `pread` and no memory map.
 
 **Stale view policy:**
@@ -655,15 +664,18 @@ The edit lock `"file changed on disk"` is set, so edits, undo and redo are refus
 Nothing is discarded: the pieces, the add store and the history stay, `modified` stays true, and selection and scrolling keep working.
 The state ends by `reload`, by a successful save, or by `close`.
 Later calls of `check_external_change` return the same kind without posting again.
-`nova_edit` ignores `SourceChanged` while a save runs, because a poll that overlapped the replace sees the new file, and the save lifts the state itself.
+A later report during the stale state keeps the more severe kind (`TRUNCATED`, `DELETED` and `REPLACED` over `MODIFIED`) and posts nothing.
+`nova_edit` does not ask while a save runs: it remembers the `SourceChanged`, and when the save ends with a failure that did not commit, or with a cancel, it re-runs the check and announces what it finds.
+A save that commits lifts the state itself, so the remembered change is dropped.
 
 ---
 
 ## Reload
 
 `reload()` discards the edits and builds a new document the way `open` does; the language, highlight limit and configuration are remembered.
-It clears the history and the clipboard record, ends the stale state, keeps the cursor row when it still exists (else it goes to the last row) and posts `Reloaded`.
-When the file cannot be read, it posts `ReloadFailed`, returns False and leaves the stale state.
+It replaces the document first and only then clears the history and the clipboard record, ends the stale state, keeps the cursor row when it still exists (else it goes to the last row) and posts `Reloaded`.
+When the file cannot be read, it posts `ReloadFailed`, returns False and leaves the old document, the history and the stale state; whatever the failed attempt opened (the source or the new document) is closed on every failure path.
+The UI thread waits for row 0 of the new document, bounded by one second (the scan resolves it within milliseconds), because the cursor, the scrollbar and the layout watchers cannot cope with an unresolved first row; the restore of the old cursor row is a pending jump.
 It returns False without a file, and raises `RuntimeError` while a save runs.
 In `nova_edit`, F5 on a modified document asks first, and F5 during a save shows a warning.
 
