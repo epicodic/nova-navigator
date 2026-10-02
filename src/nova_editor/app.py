@@ -36,6 +36,7 @@ from nova_editor.core.byte_source import ChangeKind
 from nova_editor.core.save import check_path
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.document._lazy_document import LazyDocument
+from nova_editor.search_bar import SearchBar, SearchStatus
 from nova_editor.widget import ExternalCheck, NovaTextArea
 
 
@@ -120,6 +121,8 @@ class PathBar(Input):
 
 
 QUIT_POLL_SECONDS = 0.02
+NEEDLE_SHOWN = 40
+"""Most characters of a needle that the status line shows."""
 _UNITS = ("B", "KiB", "MiB", "GiB", "TiB")
 _KIB = 1024
 
@@ -417,7 +420,7 @@ class EditorFooter(Static):
         self.file_path = file_path
 
     def render(self) -> str:
-        base = "Ctrl+S: Save | F2 Save as | F5 Reload | Ctrl+Q: Quit | F4 Wrap | Ctrl+G Goto"
+        base = "Ctrl+S: Save | F2 Save as | F5 Reload | Ctrl+Q: Quit | F4 Wrap | Ctrl+G Goto | F7 Search | F3 Next"
         if self.file_path:
             return f"File: {self.file_path} | {base}"
         return base
@@ -433,6 +436,9 @@ class NovaEditApp(App[None]):
         ("f4", "toggle_wrap", "Toggle wrap"),
         ("f5", "reload", "Reload"),
         ("ctrl+g", "show_goto", "Show goto"),
+        ("f7", "show_search", "Search"),
+        ("f3", "search_next", "Next"),
+        ("shift+f3", "search_prev", "Previous"),
         ("escape", "cancel_save", "Cancel save"),
     ]
 
@@ -465,7 +471,14 @@ class NovaEditApp(App[None]):
         display: none;
     }
 
-    #save_bar, #confirm_bar {
+    #search_bar {
+        width: 100%;
+        height: 1;
+        border: none;
+        display: none;
+    }
+
+    #save_bar, #confirm_bar, #search_status {
         width: 100%;
         height: 1;
         display: none;
@@ -498,6 +511,10 @@ class NovaEditApp(App[None]):
         self._timing_file: str | None = os.environ.get("NOVA_EDIT_TIMING_FILE")
         self._timing_first_content_written = False
         self._polling = False
+        self._needle: str | None = None
+        """The last needle searched, repeated by F3 and Shift+F3."""
+        self._last_backward = False
+        """Direction of the search in progress or last started (it decides the wrap text)."""
         self._deferred_change: ChangeKind | None = None
         """A change that `SourceChanged` reported while a save ran: announced after the save when it did not rebase the document."""
 
@@ -531,6 +548,8 @@ class NovaEditApp(App[None]):
         yield PathBar()
         yield SaveBar()
         yield ConfirmBar()
+        yield SearchBar()
+        yield SearchStatus()
 
         yield EditorFooter(self.file_path)
 
@@ -549,6 +568,14 @@ class NovaEditApp(App[None]):
     @property
     def _path_bar(self) -> PathBar:
         return self.query_one(PathBar)
+
+    @property
+    def _search_bar(self) -> SearchBar:
+        return self.query_one(SearchBar)
+
+    @property
+    def _search_status(self) -> SearchStatus:
+        return self.query_one(SearchStatus)
 
     def _refocus_editor(self) -> None:
         if self.editor:
@@ -689,6 +716,13 @@ class NovaEditApp(App[None]):
             self._path_bar.action_close()
             self._save_to(Path(text))
             return
+        if event.input.id == "search_bar":
+            needle = event.value
+            if not needle:
+                return
+            self._search_bar.action_close()
+            self.search(needle, case_sensitive=self._search_bar.case_sensitive)
+            return
         if event.input.id != "goto_bar":
             return
 
@@ -799,6 +833,78 @@ class NovaEditApp(App[None]):
     def on_nova_text_area_reload_failed(self, message: NovaTextArea.ReloadFailed) -> None:
         """Show why the file could not be reloaded."""
         self._save_bar.show_failure(f"Reload failed: {message.error.strerror or message.error}  Press a key")
+
+    # Searching
+
+    def search(self, needle: str, *, backward: bool = False, case_sensitive: bool | None = None) -> None:
+        """Search the editor for `needle` and remember it for F3 and Shift+F3.
+
+        Args:
+            needle: The text to find (it may hold line breaks, which a bar cannot take).
+            backward: Search towards the start of the document.
+            case_sensitive: Distinguish case; the case state of the search bar when `None`.
+        """
+        editor = self.editor
+        if editor is None or not needle:
+            return
+        if case_sensitive is None:
+            case_sensitive = self._search_bar.case_sensitive
+        self._needle = needle
+        self._last_backward = backward
+        editor.search(needle, backward=backward, case_sensitive=case_sensitive)
+
+    def _repeat_search(self, *, backward: bool) -> None:
+        if self._needle is None:
+            self.action_show_search()
+            return
+        self.search(self._needle, backward=backward)
+
+    def action_show_search(self) -> None:
+        """Open the search bar (F7)."""
+        self._search_bar.open()
+
+    def action_search_next(self) -> None:
+        """Repeat the last search forward (F3)."""
+        self._repeat_search(backward=False)
+
+    def action_search_prev(self) -> None:
+        """Repeat the last search backward (Shift+F3)."""
+        self._repeat_search(backward=True)
+
+    def on_nova_text_area_search_progress(self, message: NovaTextArea.SearchProgress) -> None:
+        """Show the progress of the search."""
+        editor = self.editor
+        if editor is None or not editor.searching:
+            return
+        percent = 100 if message.total <= 0 else round(message.done * 100 / message.total)
+        sizes = format_sizes(message.done, message.total).replace(" / ", " of ")
+        self._search_status.show_progress(f"Searching {percent}% ({sizes}), Esc cancels")
+
+    def on_nova_text_area_search_found(self, message: NovaTextArea.SearchFound) -> None:
+        """Show the result of a search that found a match."""
+        if not message.wrapped:
+            text = "Found"
+        else:
+            text = "Wrapped to the bottom" if self._last_backward else "Wrapped to the top"
+        self._search_status.show_result(text)
+
+    def on_nova_text_area_search_not_found(self, message: NovaTextArea.SearchNotFound) -> None:
+        """Show that nothing was found."""
+        needle = message.needle
+        if len(needle) > NEEDLE_SHOWN:
+            needle = needle[:NEEDLE_SHOWN] + chr(0x2026)
+        self._search_status.show_result(f"Not found: {needle}")
+
+    def on_nova_text_area_search_cancelled(self, message: NovaTextArea.SearchCancelled) -> None:
+        """Show why a search ended without a result; a replaced one is followed by its successor."""
+        if message.reason == "replaced":
+            return
+        suffix = "" if message.reason == "cancelled" else f": {message.reason}"
+        self._search_status.show_result(f"Search cancelled{suffix}")
+
+    def on_nova_text_area_search_failed(self, message: NovaTextArea.SearchFailed) -> None:
+        """Show why a search failed."""
+        self._search_status.show_result(f"Search failed: {message.error}")
 
     def action_toggle_wrap(self) -> None:
         """Toggle soft wrap mode."""
