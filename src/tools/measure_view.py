@@ -31,11 +31,11 @@ Usage (every subcommand appends JSON lines to `--out`, prints one summary line a
 
   ACT6 (search) subcommands; `--out` defaults to `<results>/<subcommand>-<file stem>[-<wrap>].jsonl`, `--results` to `$RESULTS` or `$REFS/results/act6`; they write nothing else under `$REFS`:
     uv run python -m tools.measure_view search-5g --file F [--needle N [--escapes]] [--case {sensitive,insensitive}] [--direction {forward,backward}] [--expect E] --runs N [--out O]
-    uv run python -m tools.measure_view search-latency --file F [--case ...] --wrap {off,on,both} [--steps 150] [--max-rounds N] --runs N [--out O]
-    uv run python -m tools.measure_view search-cancel --file F [--cancel-at 0.5] [--case ...] [--out O]
+    uv run python -m tools.measure_view search-latency --file F [--needle N [--escapes]] [--case ...] --wrap {off,on,both} [--steps 150] [--max-rounds N] --runs N [--out O]
+    uv run python -m tools.measure_view search-cancel --file F [--needle N [--escapes]] [--cancel-at 0.5] [--case ...] [--out O]
     uv run python -m tools.measure_view search-edited --file F [--scatter 1000] [--paste-bytes 100000000] [--out O]
     uv run python -m tools.measure_view search-longline --file F --copy C [--column 100000000] [--wrap {off,on,both}] [--steps 150] [--keep-copy] [--out O]
-    uv run python -m tools.measure_view search-sweep --file F [--chunks 65536,262144,1048576] [--case ...] [--steps 40] [--out O]
+    uv run python -m tools.measure_view search-sweep --file F [--needle N [--escapes]] [--chunks 65536,262144,1048576] [--case ...] [--steps 40] [--out O]
     uv run python -m tools.measure_view search-gen --kind {ascii,nonascii} --size 1GiB [--seed N] --out FILE
     uv run python -m tools.measure_view search-fold [--runs N] [--out O]
 
@@ -68,7 +68,10 @@ Methods:
         `search-latency` are the ACT5 steps except the refused typing key (typing is an edit, an edit cancels the search) and count only while the widget is searching; a finished search is
         started again until `--steps` rounds ran. `search-longline` plants the marker in the COPY `--copy` (never in the reference) and checks the exact selected text. `search-edited`
         checks offsets against the `ByteModel` of the scripted edits. `--out`, `--copy` and `search-gen --out` equal to a reference file, and any write under `$REFS` outside
-        `results/act6`, are refused.
+        `results/act6`, are refused. `search-5g`, `search-latency`, `search-sweep` and `search-cancel` take `--needle N` (default `@@no-such-needle@@`, a needle that cannot occur) and
+        `--escapes` (read backslash escapes such as the one for a newline in N); every row of those scenarios records the needle in `needle`.
+        A case-insensitive search for the default needle takes the literal-prefix
+        fast path of `re`; use a needle that starts with a letter that has case variants (for example `Kzq@no-such --case insensitive`) to measure the pattern tier.
 Percentiles in `summarise` use the nearest-rank method.
 Files of at most 1 MiB get lowered thresholds (`--config auto`), so a small synthetic file exercises the medium and long row paths.
 """
@@ -899,24 +902,29 @@ def _search_loop(args: argparse.Namespace, case: str, kind: str, specs: Sequence
     return _save_loop(args, case, kind, specs, annotate=_annotate_search, **hooks)
 
 
+def _needle(args: argparse.Namespace) -> str:
+    """The `--needle` of a search subcommand, with its backslash escapes read when `--escapes` is given."""
+    return args.needle.encode("latin-1", "backslashreplace").decode("unicode_escape") if args.escapes else args.needle
+
+
 def cmd_search_5g(args: argparse.Namespace) -> int:
-    needle = args.needle.encode("latin-1", "backslashreplace").decode("unicode_escape") if args.escapes else args.needle
+    needle = _needle(args)
     expect = args.expect or ("not_found" if needle == _view_search.NO_NEEDLE else "any")
     return _search_loop(args, "search-5g", "search-5g", _search_specs(args, "search-5g", needle=needle, backward=args.direction == "backward", expect=expect))
 
 
 def cmd_search_latency(args: argparse.Namespace) -> int:
-    return _search_loop(args, "search-latency", "search-latency", _search_specs(args, "search-latency", steps=args.steps, max_rounds=args.max_rounds))
+    return _search_loop(args, "search-latency", "search-latency", _search_specs(args, "search-latency", needle=_needle(args), steps=args.steps, max_rounds=args.max_rounds))
 
 
 def cmd_search_sweep(args: argparse.Namespace) -> int:
     chunks = [int(item) for item in args.chunks.split(",")]
-    specs = [{**spec, "search_chunk": chunk} for chunk in chunks for spec in _search_specs(args, "search-sweep", steps=args.steps, max_rounds=args.max_rounds, idle_search=True)]
+    specs = [{**spec, "search_chunk": chunk} for chunk in chunks for spec in _search_specs(args, "search-sweep", needle=_needle(args), steps=args.steps, max_rounds=args.max_rounds, idle_search=True)]
     return _search_loop(args, "search-sweep", "search-latency", specs)
 
 
 def cmd_search_cancel(args: argparse.Namespace) -> int:
-    return _search_loop(args, "search-cancel", "search-cancel", _search_specs(args, "search-cancel", cancel_at=args.cancel_at))
+    return _search_loop(args, "search-cancel", "search-cancel", _search_specs(args, "search-cancel", needle=_needle(args), cancel_at=args.cancel_at))
 
 
 def cmd_search_edited(args: argparse.Namespace) -> int:
@@ -1214,6 +1222,11 @@ def _add_search_common(parser: argparse.ArgumentParser, *, wrap: str | None, fil
         parser.add_argument("--case", choices=("sensitive", "insensitive"), default="sensitive")
 
 
+def _add_search_needle(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--needle", default=_view_search.NO_NEEDLE, help="default a needle that cannot occur (the generated files contain no @)")
+    parser.add_argument("--escapes", action="store_true", help="read backslash escapes in --needle (\\n, \\r\\n, \\u00e9)")
+
+
 def _add_search_steps(parser: argparse.ArgumentParser, steps: int) -> None:
     parser.add_argument("--steps", type=int, default=steps, help="rounds of one step per operation (a finished search is started again before the next step)")
     parser.add_argument("--max-rounds", type=int, default=2000)
@@ -1222,22 +1235,24 @@ def _add_search_steps(parser: argparse.ArgumentParser, steps: int) -> None:
 def _add_search_parsers(sub: Any) -> None:
     p = sub.add_parser("search-5g", help="a full-circle search: time, throughput, progress messages, RssAnon and the terminal message (a miss unless --needle exists)")
     _add_search_common(p, wrap="off")
-    p.add_argument("--needle", default=_view_search.NO_NEEDLE, help="default a needle that cannot occur (the generated files contain no @)")
-    p.add_argument("--escapes", action="store_true", help="read backslash escapes in --needle (\\n, \\r\\n, \\u00e9)")
+    _add_search_needle(p)
     p.add_argument("--direction", choices=("forward", "backward"), default="forward")
     p.add_argument("--expect", choices=("found", "not_found", "any"), default="", help="the terminal message that counts as ok (default not_found for the default needle, else found or not_found)")
     p.set_defaults(func=cmd_search_5g)
     p = sub.add_parser("search-latency", help="the ACT5 latency steps while a miss search runs; steps counted only while the widget is searching")
     _add_search_common(p, wrap="both")
+    _add_search_needle(p)
     _add_search_steps(p, 150)
     p.set_defaults(func=cmd_search_latency)
     p = sub.add_parser("search-sweep", help="throughput and longest step per search chunk")
     _add_search_common(p, wrap="off", runs=1)
+    _add_search_needle(p)
     _add_search_steps(p, 40)
     p.add_argument("--chunks", default=f"{1 << 16},{1 << 18},{1 << 20}")
     p.set_defaults(func=cmd_search_sweep)
     p = sub.add_parser("search-cancel", help="cancel a miss search at --cancel-at of its progress: time from cancel_search() to SearchCancelled")
     _add_search_common(p, wrap="off", runs=1)
+    _add_search_needle(p)
     p.add_argument("--cancel-at", type=float, default=0.5)
     p.set_defaults(func=cmd_search_cancel)
     p = sub.add_parser("search-edited", help="1,000 scattered edits and a paste of known text; a needle in the paste and one across a piece boundary, offsets checked against ByteModel")

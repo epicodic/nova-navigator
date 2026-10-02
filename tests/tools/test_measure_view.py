@@ -921,6 +921,40 @@ def test_search_sweep_reports_throughput_and_the_longest_step_per_chunk(mixed_fi
     assert all(row["case"] == "search-sweep" for row in summaries)
 
 
+MISS_NEEDLE = "Kzq@no-such"
+
+
+def test_search_latency_takes_a_needle_that_runs_the_pattern_tier_and_records_it_in_every_row(mixed_file: Path, tmp_path: Path) -> None:
+    extra = ["--needle", MISS_NEEDLE, "--case", "insensitive", "--wrap", "off", "--steps", "2", "--chunk", "64"]
+    rows = _run_search("search-latency", mixed_file, tmp_path, *extra, *SEARCH_SMALL)
+    assert any(row["state"] == "searching" for row in rows)
+    assert {row["needle"] for row in rows} == {MISS_NEEDLE}
+    summary = next(row for row in rows if row["op"] == "summary")
+    assert summary["case_sensitive"] is False
+
+
+def test_search_sweep_takes_a_needle_and_records_it_in_every_row(mixed_file: Path, tmp_path: Path) -> None:
+    extra = ["--needle", MISS_NEEDLE, "--case", "insensitive", "--chunks", "64,256", "--steps", "1"]
+    rows = _run_search("search-sweep", mixed_file, tmp_path, *extra, *SEARCH_SMALL)
+    assert {row["needle"] for row in rows} == {MISS_NEEDLE}
+    idle = [row for row in rows if row["state"] == "idle" and row["op"] == "search"]
+    assert [row["terminal"] for row in idle] == ["not_found", "not_found"]
+    assert {row["case_sensitive"] for row in idle} == {False}
+
+
+def test_search_cancel_takes_a_needle_and_reads_escapes_on_request(mixed_file: Path, tmp_path: Path) -> None:
+    extra = ["--needle", "Kzq\\u00e9x", "--escapes", "--case", "insensitive", "--cancel-at", "0.5", "--chunk", "8"]
+    rows = _run_search("search-cancel", mixed_file, tmp_path, *extra, *SEARCH_SMALL)
+    search = next(row for row in rows if row["op"] == "search")
+    assert search["terminal"] == "cancelled"
+    assert {row["needle"] for row in rows} == {"Kzqéx"}
+
+
+def test_search_latency_default_needle_is_unchanged_and_recorded(mixed_file: Path, tmp_path: Path) -> None:
+    rows = _run_search("search-latency", mixed_file, tmp_path, "--wrap", "off", "--steps", "1", "--chunk", "64", *SEARCH_SMALL)
+    assert {row["needle"] for row in rows} == {"@@no-such-needle@@"}
+
+
 def test_search_fold_records_the_class_count_build_time_and_memory(tmp_path: Path) -> None:
     out = tmp_path / "fold.jsonl"
     assert main(["search-fold", "--runs", "1", "--out", str(out)]) == 0
