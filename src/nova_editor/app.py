@@ -1,7 +1,7 @@
 """Standalone Nova Editor application.
 
 Provides a minimal Textual app that uses NovaTextArea to edit text files.
-Supports Ctrl+S to save (streaming, atomic), F2 to save as, F5 to reload, Ctrl+Q to quit, and shows file path in footer.
+Supports Ctrl+S to save (streaming, atomic), F2 to save as, F5 to reload, Ctrl+Q to quit, and shows the file path in the header; the footer lists the keys.
 Supports lazy loading for large files with Ctrl+G goto navigation and F4 wrap toggle.
 A status bar shows the progress and the result of a save; a key driven bar asks before overwriting or discarding.
 A background poll notices when the file changed on disk.
@@ -29,7 +29,7 @@ from textual.binding import Binding
 from textual.content import Content
 from textual.message import Message
 from textual.strip import Strip
-from textual.widgets import Header, Input, Static
+from textual.widgets import Footer, Header, Input, Static
 
 from nova_editor.core import ByteSource
 from nova_editor.core.byte_source import ChangeKind
@@ -422,34 +422,22 @@ def _column_kind(state: CursorState) -> Literal["exact", "provisional", "pending
     return "pending"
 
 
-class EditorFooter(Static):
-    """Custom footer showing file information."""
-
-    def __init__(self, file_path: Path | None = None) -> None:
-        super().__init__()
-        self.file_path = file_path
-
-    def render(self) -> str:
-        base = "Ctrl+S: Save | F2 Save as | F5 Reload | Ctrl+Q: Quit | F4 Wrap | Ctrl+G Goto | F7 Search | F3 Next"
-        if self.file_path:
-            return f"File: {self.file_path} | {base}"
-        return base
-
-
 class NovaEditApp(App[None]):
     """A minimal text editor application using NovaTextArea."""
 
-    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
-        ("ctrl+s", "save", "Save"),
-        ("ctrl+q", "quit", "Quit"),
-        ("f2", "show_path_bar", "Save as"),
-        ("f4", "toggle_wrap", "Toggle wrap"),
-        ("f5", "reload", "Reload"),
-        ("ctrl+g", "show_goto", "Show goto"),
-        ("f7", "show_search", "Search"),
-        ("f3", "search_next", "Next"),
-        ("shift+f3", "search_prev", "Previous"),
-        ("escape", "cancel_save", "Cancel save"),
+    TITLE: ClassVar[str] = "nova_edit"
+
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("ctrl+s", "save", "Save"),
+        Binding("f2", "show_path_bar", "SaveAs"),
+        Binding("f5", "reload", "Reload"),
+        Binding("ctrl+g", "show_goto", "Goto"),
+        Binding("f7", "show_search", "Find"),
+        Binding("f3", "search_next", "Next"),
+        Binding("shift+f3", "search_prev", "Prev", key_display="S-F3"),
+        Binding("f4", "toggle_wrap", "Wrap"),
+        Binding("ctrl+q", "quit", "Quit"),
+        Binding("escape", "cancel_save", "Cancel save", show=False),
     ]
 
     CSS: ClassVar[str] = """
@@ -504,11 +492,6 @@ class NovaEditApp(App[None]):
     #confirm_bar {
         background: $warning;
         color: $text;
-    }
-
-    #footer {
-        height: 1;
-        dock: bottom;
     }
     """
 
@@ -568,11 +551,12 @@ class NovaEditApp(App[None]):
         yield SearchBar()
         yield SearchStatus()
         yield StatusLine(self._status_state)
-
-        yield EditorFooter(self.file_path)
+        yield Footer(compact=True, show_command_palette=False)
 
     def on_mount(self) -> None:
-        """Start the poll for external changes."""
+        """Show the path in the header and start the poll for external changes."""
+        if self.file_path is not None:
+            self.sub_title = str(self.file_path)
         self.set_interval(self.POLL_SECONDS, self._poll)
         if self.editor is not None:
             self.watch(self.editor, "pending_progress", self._on_editor_state, init=False)
@@ -839,9 +823,7 @@ class NovaEditApp(App[None]):
         """Show the result and follow the file the document is bound to now."""
         self._load_state = "loaded"
         self.file_path = message.path
-        footer = self.query_one(EditorFooter)
-        footer.file_path = message.path
-        footer.refresh()
+        self.sub_title = str(message.path)
         self._request_status()
         self._save_bar.show_result(f"Saved  {message.path.name}  {format_sizes(message.length, message.length)}")
         self._deferred_change = None
