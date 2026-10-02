@@ -411,6 +411,43 @@ async def test_reload_discards_edits_and_clears_the_stale_state(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_reload_that_fails_after_the_document_was_assigned_still_ends_consistently(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = _file(tmp_path)
+    area = NovaTextArea.open(path)
+    host = ChangeHost(area)
+    async with host.run_test() as pilot:
+        await _opened(pilot, area)
+        area.focus()
+        await pilot.press("x")
+        _append(path)
+        assert area.check_external_change() is ChangeKind.MODIFIED
+        old = area.document
+
+        def broken(_self: NovaTextArea) -> None:
+            msg = "wiring failed"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(NovaTextArea, "_wire_scan", broken)
+        with pytest.raises(RuntimeError, match="wiring failed"):
+            area.reload()
+        monkeypatch.undo()
+        assert area.document is not old  # the new document is in place, so the rest of the state must follow it
+        assert area.document.length == len(BODY) + len(b"appended\n")
+        assert not area.history.undo_stack
+        assert not area.history.redo_stack
+        assert not area.modified
+        assert area._stale_kind is None
+        source = area.document._source
+        assert isinstance(source, PreadSource)
+        assert area._held_identity == source.identity()
+        assert area.check_external_change() is ChangeKind.UNCHANGED
+        refused = len(host.refused)
+        await pilot.press("y")
+        assert len(host.refused) == refused  # the stale lock is gone
+        assert old.wait_closed(10.0)
+
+
+@pytest.mark.asyncio
 async def test_reload_moves_the_cursor_to_the_last_row_when_its_row_is_gone(tmp_path: Path) -> None:
     path = _file(tmp_path)
     area = NovaTextArea.open(path)
