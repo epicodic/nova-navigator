@@ -411,11 +411,18 @@ def settings_of(spec: Spec) -> SaveSettings:
     )
 
 
+def line_scan_complete(area: NovaTextArea) -> bool:
+    """Whether the line scan of the lazy document is complete (creates nothing; a long-row scan is not looked at)."""
+    document = lazy_document(area)
+    return document is not None and document.snapshot().complete
+
+
 @contextlib.asynccontextmanager
-async def open_session(spec: Spec, app_factory: Callable[[NovaTextArea], SaveApp] = SaveApp) -> AsyncIterator[SaveSession]:
+async def open_session(spec: Spec, app_factory: Callable[[NovaTextArea], SaveApp] = SaveApp, *, wait_long_scans: bool = True) -> AsyncIterator[SaveSession]:
     """Open the file of `spec` in a headless app, wait until it is indexed and yield the session; the model reads `spec["origin"]` (default the file).
 
     `app_factory` builds the app that hosts the widget (a subclass of `SaveApp` that records more messages, as the search scenarios do).
+    With `wait_long_scans` false the open waits for the line scan only: it neither waits for a long-row scan nor settles, so a long index the widget started stays as far as it got.
     """
     _plain, area = _open(spec)
     app = app_factory(area)
@@ -426,8 +433,11 @@ async def open_session(spec: Spec, app_factory: Callable[[NovaTextArea], SaveApp
         async with app.run_test(size=SIZE):
             await _first_content(area)
             emit(f"PHASE open {time.perf_counter_ns()}")
-            await wait_until(lambda: not scan_busy(area), float(spec.get("timeout", 900)))
-            await settle(0.2)
+            if wait_long_scans:
+                await wait_until(lambda: not scan_busy(area), float(spec.get("timeout", 900)))
+                await settle(0.2)
+            else:
+                await wait_until(lambda: line_scan_complete(area), float(spec.get("timeout", 900)))
             document = lazy_document(area)
             if document is None:
                 msg = "the file did not open lazily"

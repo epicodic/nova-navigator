@@ -66,7 +66,9 @@ Methods:
         the 200 MB line) mark the search, and the rows that name that window carry `rss_anon_mib_max` and `rss_anon_mib_delta` (peak minus the last sample before the search). Every row carries
         the machine facts and `file_kind`: `stand-in` for a file made by `search-gen` (its sidecar `<file>.search-gen.json` names kind and seed), `reference` for any other file. The steps of
         `search-latency` are the ACT5 steps except the refused typing key (typing is an edit, an edit cancels the search) and count only while the widget is searching; a finished search is
-        started again until `--steps` rounds ran. `search-longline` plants the marker in the COPY `--copy` (never in the reference) and checks the exact selected text. `search-edited`
+        started again until `--steps` rounds ran. `search-longline` plants the marker in the COPY `--copy` (never in the reference), searches it against a COLD long index
+        (`index_state` `cold`: the long row is not touched after the open) and again against a WARM one (`warm`), and checks the exact selected text; `pending_ms` is the time from
+        the hand-over of the result to the exact selection. `search-edited`
         checks offsets against the `ByteModel` of the scripted edits. `--out`, `--copy` and `search-gen --out` equal to a reference file, and any write under `$REFS` outside
         `results/act6`, are refused. `search-5g`, `search-latency`, `search-sweep` and `search-cancel` take `--needle N` (default `@@no-such-needle@@`, a needle that cannot occur) and
         `--escapes` (read backslash escapes such as the one for a newline in N); every row of those scenarios records the needle in `needle`.

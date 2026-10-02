@@ -32,7 +32,7 @@ from typing import Any, NamedTuple
 from nova_editor.core.casefold import ascii_table, build_variant_table
 from nova_editor.core.search import CHUNK, PROGRESS_INTERVAL, SearchSettings
 from nova_editor.widget import NovaTextArea
-from tools._view_app import ProbeTextArea, emit, settle, wait_until
+from tools._view_app import ProbeTextArea, emit, scan_busy, settle, wait_until
 from tools._view_edit import place_at
 from tools._view_procmem import KIB_PER_MIB, Supervised, median, percentile, read_mem
 from tools._view_save import LATENCY_OPS, SLOW_STEP_MS, ByteModel, SaveApp, SaveSession, edit_row, literal, measure_op, open_session, paste_block, scatter, settle_edits
@@ -237,12 +237,18 @@ class SearchApp(SaveApp):
     def __init__(self, widget: NovaTextArea) -> None:
         super().__init__(widget)
         self.search_progress: list[tuple[float, int, int, str]] = []
+        self.jump_progress: list[tuple[float, float]] = []
         self.ends: list[SearchEnd] = []
 
     def reset_search(self) -> None:
         """Forget the messages of an earlier search."""
         self.search_progress = []
+        self.jump_progress = []
         self.ends = []
+
+    def on_nova_text_area_jump_progress(self, message: NovaTextArea.JumpProgress) -> None:
+        """Record a progress message of a pending jump (a search placement waiting for the long index posts these)."""
+        self.jump_progress.append((time.perf_counter(), message.fraction))
 
     def on_nova_text_area_search_progress(self, message: NovaTextArea.SearchProgress) -> None:
         """Record a progress message."""
@@ -271,11 +277,14 @@ def search_settings_of(spec: Spec) -> SearchSettings:
 
 
 @contextlib.asynccontextmanager
-async def open_search(spec: Spec) -> AsyncIterator[SaveSession]:
-    """Open the file of `spec` in a headless app that records search messages, wait until the line scan is complete and yield the session."""
+async def open_search(spec: Spec, *, cold_long: bool = False) -> AsyncIterator[SaveSession]:
+    """Open the file of `spec` in a headless app that records search messages, wait until the line scan is complete and yield the session.
+
+    Without `cold_long` the open also waits for every long-row scan; with it the open waits for the line scan only (a cold long index).
+    """
     ProbeTextArea.search_settings = search_settings_of(spec)
     try:
-        async with open_session(spec, SearchApp) as session:
+        async with open_session(spec, SearchApp, wait_long_scans=not cold_long) as session:
             yield session
     finally:
         ProbeTextArea.search_settings = SearchSettings()
@@ -669,43 +678,78 @@ def plant_marker(path: Path, column: int, marker: str) -> Row:
     return {"expected_start": at + start, "expected_end": at + start + len(data), "planted_bytes": len(payload)}
 
 
-async def longline_scenario(spec: Spec) -> list[Row]:
-    """`search-longline` child, on a copy that has the marker planted: search for the marker from the start and measure the time from the result to the resolved selection.
+async def marker_row(session: SaveSession, spec: Spec, hooks: list[float], *, index_state: str, mark: str | None) -> Row:
+    """One search of the planted marker as a `search` row: the first window, the pending phase of the placement and the exact selection.
 
-    The row records the exact selected text, the found range against the planted one and `result_to_selection_ms` (the search thread hands over its result, the widget posts `SearchFound` once
-    both ends of the match are exact). Then the latency steps run with the cursor at the match (column `column`) while a miss search runs, one `summary` row (the wrap mode is the spec's).
+    `search_ms` is the time to the terminal `SearchFound` (it includes the pending phase); `pending_ms` is the time from the instant the search thread hands over its result
+    (the placement starts) until the widget posts `SearchFound`, which it does once both ends of the match are exact (`result_to_selection_ms` is the same figure under its old name);
+    `search_first_window_ms` is the time to the hand-over (the search itself). `jump_progress_samples` counts the `JumpProgress` messages of the placement.
+    `index_state` labels the row `cold` (the long row was not touched since the open) or `warm` (the index was resolved before the search).
     """
-    async with open_search(spec) as session:
-        area, app = session.area, app_of(session)
-        marker = str(spec["marker"])
-        handed: list[float] = []
+    area, app = session.area, app_of(session)
+    marker = str(spec["marker"])
+    busy = scan_busy(area)
+    row = await search_once(session, {**spec, "expect": "found"}, case="search-longline", state=f"marker-{index_state}", mark=mark, needle=marker)
+    end = app.ends[-1]
+    found = end.kind == "found"
+    handed = hooks[-1] if hooks else None
+    started = end.at - float(row["search_ms"]) / 1000
+    pending_ms = (end.at - handed) * 1000 if found and handed is not None else None
+    selected = area.selected_text if found else None
+    start_ok = row.get("found_start") == spec["expected_start"] and row.get("found_end") == spec["expected_end"]
+    placement = [(stamp, fraction) for stamp, fraction in app.jump_progress if handed is None or stamp >= handed]
+    row.update(
+        index_state=index_state,
+        harness_touched_long_row=False,
+        long_scan_running_at_search=busy,
+        search_first_window_ms=(handed - started) * 1000 if handed is not None else None,
+        pending_ms=pending_ms,
+        result_to_selection_ms=pending_ms,
+        jump_progress_samples=len(app.jump_progress),
+        placement_progress_samples=len(placement),
+        jump_progress_max=max((fraction for _stamp, fraction in app.jump_progress), default=None),
+        expected_start=spec["expected_start"],
+        expected_end=spec["expected_end"],
+        start_ok=start_ok,
+        selected_text=selected,
+        selection_ok=selected == marker,
+        planted=True,
+        column=int(spec["column"]),
+        cursor_state=area.cursor_state.name,
+        ok=bool(row["ok"] and start_ok and selected == marker),
+    )
+    return row
+
+
+async def longline_scenario(spec: Spec) -> list[Row]:
+    """`search-longline` child, on a copy that has the marker planted: search for the marker against a COLD long index, then again against a WARM one.
+
+    The file is opened waiting for the line scan only; the long row is not touched before the first search (no cursor move into it, no oracle read of its offsets, nothing that asks
+    for its long or anchor index), so that search meets the pending placement at real scale (`index_state` `cold`, row `state` `marker-cold`). The widget may itself have started a long scan
+    for the cursor row at the open; `long_scan_running_at_search` says whether one still ran at the start. Then the harness waits until no scan runs, puts the cursor at the start and
+    searches again (`index_state` `warm`, `state` `marker-warm`). Each row records the exact selected text, the found range against the planted one, `search_ms`, `pending_ms` and the
+    `JumpProgress` count. Then the latency steps run while a miss search runs, one `summary` row (the wrap mode is the spec's).
+    """
+    async with open_search(spec, cold_long=True) as session:
+        area = session.area
+        hooks: list[float] = []
         original = area._post_search_outcome
 
         def post(run: Any, outcome: Any) -> None:
-            handed.append(time.perf_counter())
+            hooks.append(time.perf_counter())
             original(run, outcome)
 
         vars(area)["_post_search_outcome"] = post
-        row = await search_once(session, {**spec, "expect": "found"}, case="search-longline", state="marker", mark="search", needle=marker)
-        end = app.ends[-1]
-        selected = area.selected_text if end.kind == "found" else None
-        start_ok = row.get("found_start") == spec["expected_start"] and row.get("found_end") == spec["expected_end"]
-        row.update(
-            expected_start=spec["expected_start"],
-            expected_end=spec["expected_end"],
-            start_ok=start_ok,
-            selected_text=selected,
-            selection_ok=selected == marker,
-            result_to_selection_ms=(end.at - handed[-1]) * 1000 if end.kind == "found" and handed else None,
-            planted=True,
-            column=int(spec["column"]),
-            cursor_state=area.cursor_state.name,
-            ok=bool(row["ok"] and start_ok and selected == marker),
-        )
+        cold = await marker_row(session, spec, hooks, index_state="cold", mark="search")
+        await wait_until(lambda: not scan_busy(area), session.limit)
+        await settle(0.2)
+        area.move_cursor((0, 0))
+        await settle(0.2)
+        warm = await marker_row(session, spec, hooks, index_state="warm", mark=None)
         await settle(0.5)
         matrix = await search_matrix(session, {**spec, "needle": NO_NEEDLE}, case="search-longline", mark="matrix")
         emit("DONE")
-        return [row, *matrix]
+        return [cold, warm, *matrix]
 
 
 # -- the fold table -----------------------------------------------------------------------------------------------------------------
