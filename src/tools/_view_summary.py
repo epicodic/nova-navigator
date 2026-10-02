@@ -27,6 +27,20 @@ METRIC_KEYS = (
     "vm_rss_mib_max",
     "rss_file_mib_max",
     "mismatches",
+    "action_ms",
+    "reindexed_ms",
+    "splice_ms",
+    "row_range_ms",
+    "clipboard_ms",
+    "reestimate_ms",
+    "reconcile_ms",
+    "measure_ms",
+    "bytes_per_piece_tracemalloc",
+    "peak_bytes_per_piece_tracemalloc",
+    "bytes_per_piece_rss",
+    "bytes_per_record",
+    "bytes_per_record_tracemalloc",
+    "bytes_per_operation",
 )
 """Numeric fields that `summarise` turns into table rows, in this order."""
 SLOW_MS = 50.0
@@ -84,7 +98,7 @@ def summarise_rows(rows: Sequence[dict[str, Any]], source: str) -> str:
             unverified = sum(1 for row in first_screen if row.get("cold_verified") is False)
             lines.append(f"first-screen runs: {len(first_screen)}, failed: {failed}, cold_verified=false: {unverified} (failed runs are not in the table)")
             lines.append("")
-        lines.append("p95 is the nearest-rank value of the n samples of the row (column n); with n of at most 20 it equals the max.")
+        lines.append("p95 is the nearest-rank value of the n samples of the row (column n); with n of at most 19 it equals the max.")
         lines.append("")
         lines.append("| file | wrap | state | op | variant | metric | n | median | p95 | max | count over 50 ms | n scan_running | n completing |")
         lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|")

@@ -371,3 +371,45 @@ def test_byte_to_char_approx_clamps_negative_offsets() -> None:
     index = build(("é" * 30).encode(), checkpoint=8, block=16)
     assert index.byte_to_char_approx(-5) == 0
     assert index.byte_to_char_approx(-(10**9)) == 0
+
+
+def test_quiescent_is_true_only_after_the_scan_thread_has_ended() -> None:
+    data = b"x" * 100
+    gate = threading.Event()
+    index = LongLineIndex(MemorySource(data, gate=gate), 0, len(data), checkpoint_chars=10, scan_block=25, autostart=False)
+    assert not index.quiescent()  # not started: a start may still follow
+    index.start()
+    assert not index.quiescent()  # stalled in a read, thread alive
+    index.cancel()
+    assert not index.quiescent()  # cancelled, but the read in flight has not returned
+    gate.set()
+    index.join(10)
+    assert index.quiescent()
+
+
+def test_quiescent_is_false_while_the_thread_is_being_started(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Inside `start`, before the thread runs, a started-but-not-yet-alive thread must not count as finished."""
+    seen: list[bool] = []
+    holder: list[LongLineIndex] = []
+    real_start = threading.Thread.start
+
+    def spying_start(thread: threading.Thread) -> None:
+        if thread.name == "long-line-scan":
+            seen.append(holder[0].quiescent())
+        real_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", spying_start)
+    data = b"x" * 100
+    index = LongLineIndex(MemorySource(data), 0, len(data), checkpoint_chars=10, scan_block=25, autostart=False)
+    holder.append(index)
+    index.start()
+    assert seen == [False]
+    assert index.join(10)
+    assert index.quiescent()
+
+
+def test_quiescent_after_a_completed_scan() -> None:
+    data = b"x" * 100
+    index = LongLineIndex(MemorySource(data), 0, len(data), checkpoint_chars=10, scan_block=25)
+    assert index.join(10)
+    assert index.quiescent()

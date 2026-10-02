@@ -24,3 +24,4 @@ class LazyConfig:
     scan_block: int = DEFAULT_SCAN_BLOCK  # bytes per read of the background scans
     max_long_indexes: int = 8
     text_cache_rows: int = 256
+    sync_scan_limit: int = 1_048_576  # sources up to this size are scanned on the constructing thread

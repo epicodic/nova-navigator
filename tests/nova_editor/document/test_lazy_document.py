@@ -186,13 +186,6 @@ def test_line_count_is_lower_bound_until_complete(tmp_path: Path) -> None:
     doc.close()
 
 
-def test_replace_range_is_read_only(tmp_path: Path) -> None:
-    doc = _open(make_mixed(tmp_path / "m.txt"))
-    with pytest.raises(NotImplementedError, match="ACT4"):
-        doc.replace_range((0, 0), (0, 0), "x")
-    doc.close()
-
-
 def test_get_text_range_matches_oracle_and_refuses_long_rows(tmp_path: Path) -> None:
     path = make_mixed(tmp_path / "m.txt", long_chars=3000)
     doc = _open(path)
@@ -348,7 +341,7 @@ def test_close_during_line_scan(tmp_path: Path) -> None:
     path = make_mixed(tmp_path / "m.txt", long_chars=200_000)
     source = CountingSource(path)
     source.scan_delay = 0.3
-    doc = LazyDocument(source, _config(yield_seconds=0.001))
+    doc = LazyDocument(source, LazyConfig(**LOWERED_OPTIONS, yield_seconds=0.001, sync_scan_limit=0))  # needs the background scan of this small file
     doc.close()
     doc.close()
     assert doc.snapshot().complete is False
@@ -478,3 +471,41 @@ def test_retired_scans_are_joined_off_the_caller_thread(tmp_path: Path) -> None:
     source.gate.set()
     doc.close()
     assert doc.wait_closed(20.0)
+
+
+def _long_file(tmp_path: Path) -> Path:
+    path = tmp_path / "row.txt"
+    path.write_bytes(b"0123456789" * 200)
+    return path
+
+
+def test_replaced_long_indexes_whose_scan_ended_are_not_retained(tmp_path: Path) -> None:
+    doc = _open(_long_file(tmp_path))
+    held: list[object] = []
+    for k in range(10):
+        index = doc.long_index(0)
+        assert index.join(10.0)
+        held.append(index)
+        doc.replace_range((0, 5 + k), (0, 5 + k), "e")
+        assert not doc._retired
+    assert doc.long_index(0) not in held
+    doc.close()
+    assert doc.wait_closed(10.0)
+
+
+def test_a_retired_index_with_a_live_scan_is_kept_and_joined_on_close(tmp_path: Path) -> None:
+    from tests.nova_editor.helpers_view import GateSource
+
+    source = GateSource(_long_file(tmp_path))
+    doc = LazyDocument(source, _config())
+    assert doc.wait_indexed(10.0)
+    source.gate.clear()  # the scan of the long row blocks in its first read
+    old = doc.long_index(0)
+    doc.replace_range((0, 0), (0, 0), "e")  # column 0 needs no scanned prefix
+    assert doc.long_index(0) is not old
+    assert old in doc._retired
+    assert not old.quiescent()
+    source.gate.set()
+    doc.close()
+    assert doc.wait_closed(20.0)
+    assert old.quiescent()

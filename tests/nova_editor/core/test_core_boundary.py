@@ -56,3 +56,31 @@ def test_core_modules_load_without_textual() -> None:
     result = subprocess.run([sys.executable, "-c", STUB_IMPORT, str(root)], capture_output=True, text=True, check=False, cwd=root)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "OK", result.stdout
+
+
+PACKAGE = Path(__file__).parents[3] / "src" / "nova_editor"
+FORBIDDEN = ("textual.widgets._text_area", "textual.document")
+
+
+def test_package_never_imports_private_textual_text_area_modules() -> None:
+    """Static scan: the vendored layers replace `textual.widgets._text_area` and `textual.document`, so nothing imports them."""
+    files = sorted(PACKAGE.rglob("*.py"))
+    assert files
+    for path in files:
+        for module in imported_modules(path):
+            for forbidden in FORBIDDEN:
+                hit = module == forbidden or module.startswith(forbidden + ".")
+                assert not hit, f"{path.relative_to(PACKAGE)} imports {module}"
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.ImportFrom) and node.module == "textual.widgets":
+                assert all(alias.name != "_text_area" for alias in node.names), f"{path.relative_to(PACKAGE)} imports textual.widgets._text_area"
+            if isinstance(node, ast.ImportFrom) and node.module == "textual":
+                assert all(alias.name != "document" for alias in node.names), f"{path.relative_to(PACKAGE)} imports textual.document"
+
+
+def test_core_text_never_mentions_a_textual_import() -> None:
+    """Static text scan of `core`: no `import textual` or `from textual` line, however it is nested."""
+    for path in sorted(CORE.glob("*.py")):
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            stripped = line.strip()
+            assert not stripped.startswith(("import textual", "from textual")), f"{path.name}:{number}"
