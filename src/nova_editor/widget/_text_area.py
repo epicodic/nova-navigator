@@ -570,7 +570,7 @@ NovaTextArea {
             show=False,
         ),
         Binding(
-            "f7",
+            "ctrl+shift+a,f8",
             "select_all",
             "Select all",
             show=False,
@@ -678,7 +678,7 @@ NovaTextArea {
     | ctrl+u,super+backspace | Delete from cursor to the start of the line. |
     | ctrl+k                 | Delete from cursor to the end of the line.   |
     | f6                     | Select the current line.                     |
-    | f7                     | Select all text in the document.             |
+    | ctrl+shift+a,f8        | Select all text in the document.             |
     | ctrl+z,super+z         | Undo.                                        |
     | ctrl+y,super+y         | Redo.                                        |
     | ctrl+x,super+x         | Cut selection or line if no selection.       |
