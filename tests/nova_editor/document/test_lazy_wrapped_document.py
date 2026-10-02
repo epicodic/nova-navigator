@@ -527,3 +527,53 @@ def test_edit_at_the_end_does_not_move_the_estimate_of_the_blocks_above() -> Non
     assert lazy._y_of_block(middle) == top
     assert lazy.row_of_y(top)[0] == middle * BLOCK_ROWS
     assert set(lazy._blocks) - measured <= {middle - 1, middle, middle + 1}
+
+
+def _wrapped_rows(blocks: int) -> tuple[LazyDocument, LazyWrappedDocument]:
+    doc = LazyDocument.from_text("\n".join(f"row {i} " + "word " * 4 for i in range(BLOCK_ROWS * blocks)), _config())
+    _OPEN.append(doc)
+    return doc, LazyWrappedDocument(doc, 12, TAB)
+
+
+def test_edit_in_block_zero_does_not_pin_the_mean() -> None:
+    """With nothing measured above the edit there is no estimate to keep stable: the mean follows the new measurements."""
+    doc, lazy = _wrapped_rows(50)
+    lazy.y_of_row(doc.line_count - 1)
+    doc.replace_range((0, 0), (0, 0), "word " * 4)
+    lazy.wrap_range((0, 0), (0, 0), (0, 20))
+    assert lazy._pinned_mean is None
+
+
+def test_edit_before_anything_was_measured_does_not_pin_a_zero_mean() -> None:
+    doc, lazy = _wrapped_rows(50)
+    doc.replace_range((BLOCK_ROWS * 3, 0), (BLOCK_ROWS * 3, 0), "word " * 4)
+    lazy.wrap_range((BLOCK_ROWS * 3, 0), (BLOCK_ROWS * 3, 0), (BLOCK_ROWS * 3, 20))
+    assert lazy._pinned_mean is None
+    doc.replace_range((BLOCK_ROWS * 5, 0), (BLOCK_ROWS * 5, 0), "word " * 4)
+    lazy.wrap_range((BLOCK_ROWS * 5, 0), (BLOCK_ROWS * 5, 0), (BLOCK_ROWS * 5, 20))
+    lazy.y_of_row(doc.line_count - 1)
+    assert lazy.height > 2 * doc.line_count  # estimates use the measured mean, not a pinned 0
+
+
+def test_edit_pins_the_mean_while_blocks_above_are_unmeasured_and_releases_it_when_they_are_measured() -> None:
+    doc, lazy = _wrapped_rows(50)
+    lazy.y_of_row(doc.line_count - 1)
+    row = BLOCK_ROWS * 40
+    doc.replace_range((row, 0), (row, 0), "word " * 4)
+    lazy.wrap_range((row, 0), (row, 0), (row, 20))
+    assert lazy._pinned_mean is not None
+    lazy.y_of_row(row)
+    assert lazy._pinned_mean is not None
+    lazy.y_of_row(BLOCK_ROWS * 2)
+    assert lazy._pinned_mean is None
+
+
+def test_edit_with_every_block_above_measured_does_not_pin_the_mean() -> None:
+    doc, lazy = _wrapped_rows(50)
+    lazy.y_of_row(BLOCK_ROWS * 2)
+    assert set(range(3)) <= set(lazy._blocks)
+    row = BLOCK_ROWS * 2 + 1
+    doc.replace_range((row, 0), (row, 0), "word " * 4)
+    lazy.wrap_range((row, 0), (row, 0), (row, 20))
+    # blocks 0 and 1 are measured and nothing unmeasured lies above block 2
+    assert lazy._pinned_mean is None

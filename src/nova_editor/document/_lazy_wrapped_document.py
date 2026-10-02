@@ -222,22 +222,26 @@ class LazyWrappedDocument(WrappedDocument):
 
         Rows shift after an edit, so every cache keyed by row is dropped; the blocks above the start row keep their measurements.
         `old_end` and `new_end` are not needed because everything below the start is re-measured on demand.
-        The mean extra height of the unmeasured rows is pinned while only blocks from the edit on are measured again: the re-measured blocks
+        The mean extra height of the unmeasured rows is pinned (only when something was measured, and only while a block above the edit is not measured)
+        while blocks from the edit on are measured again: the re-measured blocks
         would otherwise change the mean and shift the estimated y of every unmeasured block above the edit (the view would jump and re-measure).
         """
         del old_end, new_end
         self._short_rows.clear()
         self._disp_cache.clear()
         first = max(start[0], 0) // BLOCK_ROWS
-        if self._pinned_mean is None:
-            self._pinned_mean = self._total_extra / self._total_rows if self._total_rows else 0.0
+        measured_rows = sum(block.rows for block in self._blocks.values())
+        if self._pinned_mean is None and measured_rows:
+            self._pinned_mean = sum(block.extra for block in self._blocks.values()) / measured_rows
             self._pin_floor = first
-        else:
+        elif self._pinned_mean is not None:
             self._pin_floor = min(self._pin_floor, first)
         stale = [block for block in self._blocks if block >= first]
         for block in stale:
             del self._blocks[block]
             self._keys.remove(block)
+        if sum(1 for block in self._keys if block < first) == first:
+            self._pinned_mean = None  # every block above the edit is measured (or there is none): no estimate up there needs to stay put
         self._anchor = min(self._anchor, first)
         self._min_height = 0
         self._count_seen = -1
