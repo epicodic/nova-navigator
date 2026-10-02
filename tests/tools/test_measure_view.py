@@ -571,6 +571,19 @@ def test_save_latency_steps_and_times_the_plan_calls(mixed_file: Path, tmp_path:
     assert main(["summarise", str(tmp_path / "save-latency.jsonl")]) == 0
 
 
+def test_save_latency_vscroll_always_scrolls_and_never_records_a_noop_as_latency(tmp_path: Path) -> None:
+    tall_file = tmp_path / "tall.txt"
+    tall_file.write_text("".join(f"row {i} " + "x" * 40 + "\n" for i in range(300)))
+    rows = _run_save("save-latency", tall_file, tmp_path, "--target", str(tmp_path / "t.txt"), "--steps", "4", *SAVE_SMALL)
+    scrolls = [row for row in rows if row["op"] == "vscroll"]
+    assert len(scrolls) >= 4
+    assert all(row.get("scroll_y_after") != row.get("scroll_y_before") for row in scrolls), [(row["step"], row.get("scroll_y_before"), row.get("scroll_y_after")) for row in scrolls]
+    assert not any(row.get("noop") for row in scrolls)
+    assert all(row["latency_ms"] is not None for row in scrolls)
+    summary = [row for row in rows if row["op"] == "summary"]
+    assert all(row["steps_noop"] == 0 for row in summary)
+
+
 def test_save_sweep_runs_every_combination_and_the_no_index_baseline(mixed_file: Path, tmp_path: Path) -> None:
     grid = ["--chunks", "512,2048", "--fsync-every", "4096,65536", "--scatter", "5", "--delete-bytes", "2000", "--paste-bytes", "500", "--min-free-gib", "0"]
     rows = _run_save("save-sweep", mixed_file, tmp_path, "--target", str(tmp_path / "t.txt"), *grid)
