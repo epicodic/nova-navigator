@@ -33,7 +33,7 @@ from nova_editor.core.byte_source import ByteSource
 from nova_editor.core.line_index import DEFAULT_MAX_LINES_PER_CALL, LineIndex, LineSnapshot, RowRange
 from nova_editor.core.original_source import OriginalSource, RowNotIndexed
 from nova_editor.core.piece_tree import PieceTree
-from nova_editor.core.pieces import Content, Piece, PieceSource, make_piece
+from nova_editor.core.pieces import MAX_GENERATION, Content, Piece, PieceSource, generation_of, make_piece, segment_of
 from nova_editor.core.row_source import RowSource
 
 _CRLF = b"\r\n"
@@ -90,6 +90,7 @@ class PieceTable:
         self._add_store = add_store
         self._original = OriginalSource(line_index, source)
         self._segments: dict[int, PieceSource] = {}
+        self._legacy: list[tuple[OriginalSource, AddStore]] = []  # generation g is _legacy[g - 1]
         self._orig_length = source.length()
         self._tree = PieceTree(self._source_of, fanout)
         first_is_lf = self._orig_length > 0 and source.read(0, 1) == b"\n"
@@ -103,9 +104,28 @@ class PieceTable:
             return self._original
         found = self._segments.get(src)
         if found is None:
-            found = self._add_store.segment(src)
+            generation = generation_of(src)
+            segment = segment_of(src)
+            if generation == 0:
+                found = self._add_store.segment(segment)
+            else:
+                original, store = self._legacy[generation - 1]
+                found = original if segment == 0 else store.segment(segment)
             self._segments[src] = found
         return found
+
+    def register_legacy(self, original: OriginalSource, add_store: AddStore) -> int:
+        """Keep an old original and add store as a legacy generation and return its number (1 to 255).
+
+        Pieces with `src = make_src(generation, k)` then resolve `k = 0` to `original` and `k >= 1` to a segment of `add_store`.
+
+        Raises:
+            ValueError: when 255 generations are registered already.
+        """
+        if len(self._legacy) >= MAX_GENERATION:
+            raise ValueError(f"no free legacy generation (maximum {MAX_GENERATION})")
+        self._legacy.append((original, add_store))
+        return len(self._legacy)
 
     @property
     def tree(self) -> PieceTree:
@@ -220,6 +240,26 @@ class PieceTable:
             last_is_cr = self._source.read(self._orig_length - 1, 1) == b"\r"
             piece = Piece(0, tail.a, self._orig_length, 0, tail.row0, tail.first_is_lf, last_is_cr)
             yield piece, max(start - tree_length, 0), end - tree_length
+
+    def layout_range(self, start: int, end: int) -> list[tuple[int, int, int]]:
+        """Return the runs `(src, a, b)` that make up the document bytes `[start, end)`, in document order.
+
+        No source is read and `SourceChanged` is never raised; the open tail is its own run of the original.
+
+        Raises:
+            ValueError: when the range is invalid.
+        """
+        self._refresh()
+        if not 0 <= start <= end <= self.length:
+            raise ValueError(f"range [{start}, {end}) outside 0..{self.length}")
+        tree_length = self._tree.length
+        runs: list[tuple[int, int, int]] = []
+        if start < min(end, tree_length):
+            runs.extend((piece.src, piece.a + lo, piece.a + hi) for piece, lo, hi in self._tree.iter_range(start, min(end, tree_length)))
+        tail = self._tail
+        if tail is not None and end > tree_length and end > start:
+            runs.append((0, tail.a + max(start - tree_length, 0), tail.a + end - tree_length))
+        return runs
 
     def row_source(self, start: int, end: int) -> RowSource:
         """Return a snapshot `ByteSource` of the document bytes `[start, end)`, with offsets relative to `start`.
