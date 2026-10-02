@@ -971,6 +971,9 @@ NovaTextArea {
     save_io: ClassVar[SaveIo | None] = None
     """File operations of a save; `None` uses `os`. Used by tests only, to inject failures."""
 
+    save_clock: Callable[[], float] = time.monotonic
+    """Time source of the throttle of `SaveProgress` messages; tests replace it by a fake clock."""
+
     clipboard_cap: int = 2_097_152
     """Largest selection (in bytes) that is also written to the system clipboard; a larger copy stays inside the editor (ACT4 design 10)."""
 
@@ -3261,7 +3264,7 @@ NovaTextArea {
         with run.lock:
             run.progress_outstanding = False
             report = run.progress
-        now = time.monotonic()
+        now = self.save_clock()
         if report is None or self._save_run is not run or now - run.last_message < _MESSAGE_INTERVAL:
             return
         run.last_message = now

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from textual import events
+from textual.pilot import Pilot
 
 from nova_editor.app import ConfirmBar, NovaEditApp, PathBar, SaveBar, main
 from nova_editor.core.byte_source import ChangeKind
@@ -36,6 +37,24 @@ def make_file(tmp_path: Path, text: str = "one\n") -> Path:
 
 def bars(app: NovaEditApp) -> tuple[SaveBar, ConfirmBar, PathBar]:
     return app.query_one(SaveBar), app.query_one(ConfirmBar), app.query_one(PathBar)
+
+
+def counting_clock(save_bar: SaveBar, now: list[float]) -> list[int]:
+    """Give `save_bar` a clock that reads `now[0]` and counts its readings (the bar reads it once per tick while a result line waits to expire)."""
+    reads = [0]
+
+    def clock() -> float:
+        reads[0] += 1
+        return now[0]
+
+    save_bar.clock = clock
+    return reads
+
+
+async def ticks_pass(pilot: Pilot[None], reads: list[int], count: int = 3) -> None:
+    """Wait until the bar ticked `count` more times, i.e. until it had the chance to expire its line."""
+    target = reads[0] + count
+    await wait_until(pilot, lambda: reads[0] >= target)
 
 
 @pytest.mark.asyncio
@@ -229,11 +248,11 @@ async def test_result_line_disappears_after_four_seconds(tmp_path: Path) -> None
         await pilot.pause()
         now = [1000.0]
         save_bar, _, _ = bars(app)
-        save_bar.clock = lambda: now[0]
+        reads = counting_clock(save_bar, now)
         await pilot.press("x", "ctrl+s")
         await wait_until(pilot, lambda: save_bar.line.startswith("Saved"))
         now[0] += 3.9
-        await pilot.pause(0.3)
+        await ticks_pass(pilot, reads)
         assert save_bar.display
         now[0] += 0.2
         await wait_until(pilot, lambda: not save_bar.display)
@@ -258,7 +277,8 @@ async def test_failure_stays_until_a_key_is_pressed(tmp_path: Path, monkeypatch:
         assert "no way" in save_bar.line
         assert "replace" in save_bar.line
         now[0] += 60
-        await pilot.pause(0.3)
+        save_bar.tick()  # the timer's own call: a failure line has no expiry
+        save_bar.tick()
         assert save_bar.display
         await pilot.press("y")
         await pilot.pause()
@@ -283,10 +303,9 @@ async def test_unreadable_file_refuses_plain_save(tmp_path: Path) -> None:
     try:
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("x", "ctrl+s")
-            await pilot.pause(0.2)
             _, _, path_bar = bars(app)
-            assert path_bar.display  # only a save as is offered
+            await pilot.press("x", "ctrl+s")
+            await wait_until(pilot, lambda: path_bar.display)  # only a save as is offered
             assert any("Not saved" in n.message for n in app._notifications)
     finally:
         path.chmod(0o644)
@@ -300,10 +319,9 @@ async def test_new_file_that_exists_at_save_time_asks_for_confirmation(tmp_path:
     async with app.run_test() as pilot:
         await pilot.pause()
         path.write_text("from elsewhere")
-        await pilot.press("h", "i", "ctrl+s")
-        await pilot.pause(0.2)
         _, confirm, _ = bars(app)
-        assert confirm.display
+        await pilot.press("h", "i", "ctrl+s")
+        await wait_until(pilot, lambda: confirm.display)
         assert confirm.kind is ChangeKind.CREATED
         assert path.read_text() == "from elsewhere"
         await pilot.press("o")
@@ -323,10 +341,9 @@ async def test_confirm_bar_keys_for_an_external_change(tmp_path: Path) -> None:
         assert app.editor is not None
         await pilot.press("x")
         path.write_text("changed on disk, longer\n")
-        await pilot.press("ctrl+s")
-        await pilot.pause(0.2)
         _, confirm, path_bar = bars(app)
-        assert confirm.display
+        await pilot.press("ctrl+s")
+        await wait_until(pilot, lambda: confirm.display)
         assert path.read_text() == "changed on disk, longer\n"
         # Esc keeps
         await pilot.press("escape")
@@ -335,8 +352,7 @@ async def test_confirm_bar_keys_for_an_external_change(tmp_path: Path) -> None:
         assert path.read_text() == "changed on disk, longer\n"
         # A: save as
         await pilot.press("ctrl+s")
-        await pilot.pause(0.2)
-        assert confirm.display
+        await wait_until(pilot, lambda: confirm.display)
         await pilot.press("a")
         await pilot.pause()
         assert path_bar.display
@@ -357,10 +373,9 @@ async def test_confirm_bar_overwrite_key(tmp_path: Path) -> None:
         assert app.editor is not None
         await pilot.press("x")
         path.write_text("changed on disk, longer\n")
-        await pilot.press("ctrl+s")
-        await pilot.pause(0.2)
         _, confirm, _ = bars(app)
-        assert confirm.display
+        await pilot.press("ctrl+s")
+        await wait_until(pilot, lambda: confirm.display)
         await pilot.press("o")
         await wait_until(pilot, lambda: path.read_text() == "xone\n")
         await wait_saved(pilot, app.editor)
@@ -376,10 +391,9 @@ async def test_confirm_bar_reload_key(tmp_path: Path) -> None:
         assert app.editor is not None
         await pilot.press("x")
         path.write_text("changed on disk, longer\n")
-        await pilot.press("ctrl+s")
-        await pilot.pause(0.2)
         _, confirm, _ = bars(app)
-        assert confirm.display
+        await pilot.press("ctrl+s")
+        await wait_until(pilot, lambda: confirm.display)
         await pilot.press("r")
         await wait_until(pilot, lambda: app.editor is not None and app.editor.text == "changed on disk, longer\n")
         assert not confirm.display
