@@ -17,6 +17,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, ClassVar, Literal, cast
 
@@ -35,7 +36,7 @@ from nova_editor.core.byte_source import ChangeKind
 from nova_editor.core.save import check_path
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.document._lazy_document import LazyDocument
-from nova_editor.widget import NovaTextArea
+from nova_editor.widget import ExternalCheck, NovaTextArea
 
 
 @dataclass
@@ -497,6 +498,8 @@ class NovaEditApp(App[None]):
         self._timing_file: str | None = os.environ.get("NOVA_EDIT_TIMING_FILE")
         self._timing_first_content_written = False
         self._polling = False
+        self._deferred_change: ChangeKind | None = None
+        """A change that `SourceChanged` reported while a save ran: announced after the save when it did not rebase the document."""
 
     def _empty_editor(self) -> TimedNovaTextArea:
         return TimedNovaTextArea(id="editor", text="", soft_wrap=False, timing_file=self._timing_file)
@@ -554,20 +557,39 @@ class NovaEditApp(App[None]):
     # Polling
 
     def _poll(self) -> None:
-        """Timer: start one check of the file on a thread, unless one still runs or a save is under way."""
+        """Timer or app focus: start one check of the file on a thread, unless one still runs or a save is under way."""
         editor = self.editor
-        if editor is None or editor.saving or self._polling:
+        if editor is None or self._polling:
+            return
+        check = editor.begin_external_check()
+        if check is None:
             return
         self._polling = True
-        self.run_worker(self._poll_check, thread=True, group="poll", exit_on_error=False)
+        self.run_worker(partial(self._poll_check, check), thread=True, group="poll", exit_on_error=False)
 
-    def _poll_check(self) -> None:
-        """Worker thread: the `stat` calls of the check may block (a network file system); the widget posts `SourceChanged`."""
+    def _poll_check(self, check: ExternalCheck) -> None:
+        """Worker thread: only the `stat` calls of the check (they may block on a network file system); the UI thread applies the result."""
+        kind = ChangeKind.UNCHANGED
         try:
-            if self.editor is not None:
-                self.editor.check_external_change()
+            kind = check.run()
         finally:
-            self._polling = False
+            try:
+                posted = self.post_message(events.Callback(partial(self._poll_done, check, kind)))
+            except RuntimeError:  # the app is closing
+                posted = False
+            if not posted:
+                self._polling = False
+
+    def _poll_done(self, check: ExternalCheck, kind: ChangeKind) -> None:
+        """UI thread: the poll ended; apply its result (the widget ignores one that a save made out of date)."""
+        self._polling = False
+        editor = self.editor
+        if editor is not None:
+            editor.apply_external_check(check, kind)
+
+    def on_app_focus(self, event: events.AppFocus) -> None:
+        """The terminal got the focus back: the file may have changed meanwhile, so run the same check as the poll."""
+        self._poll()
 
     # Keys
 
@@ -716,16 +738,19 @@ class NovaEditApp(App[None]):
         footer.file_path = message.path
         footer.refresh()
         self._save_bar.show_result(f"Saved  {message.path.name}  {format_sizes(message.length, message.length)}")
+        self._deferred_change = None
 
     def on_nova_text_area_save_failed(self, message: NovaTextArea.SaveFailed) -> None:
         """Show the failure with its stage; it stays until a key is pressed."""
         reason = message.error.strerror or str(message.error)
         written = "  The file was written; press F5 to reload." if message.committed else ""
         self._save_bar.show_failure(f"Save failed ({message.stage}): {reason}{written}  Press a key")
+        self._recheck_deferred_change(committed=message.committed)
 
     def on_nova_text_area_save_cancelled(self, message: NovaTextArea.SaveCancelled) -> None:
         """Show that the save was cancelled."""
         self._save_bar.show_result("Save cancelled")
+        self._recheck_deferred_change()
 
     def on_nova_text_area_save_needs_confirmation(self, message: NovaTextArea.SaveNeedsConfirmation) -> None:
         """Ask before overwriting."""
@@ -736,9 +761,28 @@ class NovaEditApp(App[None]):
     def on_nova_text_area_source_changed(self, message: NovaTextArea.SourceChanged) -> None:
         """Ask what to do about a file that changed on disk."""
         editor = self.editor
-        if editor is None or editor.saving:  # a poll that overlapped the replace of a save sees the new file: the save lifts the state
+        if editor is None:
             return
-        self._confirm_bar.ask(message.kind, editor.file_path, overwrite=editor.modified, save_as=True, reload=editor.file_path is not None)
+        if editor.saving:  # asking now would compete with the save: remember it, the end of the save decides (a commit lifts the state)
+            self._deferred_change = message.kind
+            return
+        self._announce_change(message.kind)
+
+    def _announce_change(self, kind: ChangeKind) -> None:
+        """Ask what to do about a file that changed on disk."""
+        editor = self.editor
+        if editor is not None:
+            self._confirm_bar.ask(kind, editor.file_path, overwrite=editor.modified, save_as=True, reload=editor.file_path is not None)
+
+    def _recheck_deferred_change(self, *, committed: bool = False) -> None:
+        """After a save: announce the change that was seen while it ran unless the save rebased the document (the file is then the app's own)."""
+        deferred, self._deferred_change = self._deferred_change, None
+        editor = self.editor
+        if deferred is None or committed or editor is None or editor.saving:
+            return
+        kind = editor.check_external_change()  # still stale, or changed again: either way the current kind
+        if kind is not ChangeKind.UNCHANGED:
+            self._announce_change(kind)
 
     def on_nova_text_area_reloaded(self, message: NovaTextArea.Reloaded) -> None:
         """Show that the file was reloaded."""

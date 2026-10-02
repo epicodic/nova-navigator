@@ -9,12 +9,13 @@ import time
 from pathlib import Path
 
 import pytest
+from textual import events
 
 from nova_editor.app import ConfirmBar, NovaEditApp, PathBar, SaveBar, main
 from nova_editor.core.byte_source import ChangeKind
 from nova_editor.core.save import SaveIo
 from nova_editor.document._lazy_document import LazyDocument
-from nova_editor.widget import NovaTextArea
+from nova_editor.widget import ExternalCheck, NovaTextArea
 from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.save_widget_helpers import SETTINGS, Gate, wait_saved
 
@@ -434,7 +435,7 @@ async def test_poll_runs_in_a_thread_and_does_not_delay_keys(tmp_path: Path, mon
     release = threading.Event()
     threads: list[int] = []
 
-    def slow_check() -> ChangeKind:
+    def slow_check(_check: ExternalCheck) -> ChangeKind:
         threads.append(threading.get_ident())
         entered.set()
         release.wait(1.0)  # a stat that blocks
@@ -448,7 +449,7 @@ async def test_poll_runs_in_a_thread_and_does_not_delay_keys(tmp_path: Path, mon
             started = time.monotonic()
             await pilot.press("left")
             baseline = max(baseline, time.monotonic() - started)
-        monkeypatch.setattr(app.editor, "check_external_change", slow_check)
+        monkeypatch.setattr(ExternalCheck, "run", slow_check)
         await wait_until(pilot, entered.is_set)
         started = time.monotonic()
         await pilot.press("x")
@@ -476,3 +477,93 @@ async def test_committed_failure_tells_the_file_was_written(tmp_path: Path, monk
         await wait_until(pilot, lambda: "failed" in save_bar.line.lower())
         assert "The file was written; press F5 to reload" in save_bar.line
     assert path.read_text() == "xone\n"
+
+
+@pytest.mark.asyncio
+async def test_poll_applies_its_result_on_the_ui_thread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = make_file(tmp_path)
+    app = NovaEditApp(file_path=path)
+    app.POLL_SECONDS = 0.05
+    threads: list[int] = []
+    real = NovaTextArea._fail_source
+
+    def recording(self: NovaTextArea, reason: str, kind: ChangeKind = ChangeKind.MODIFIED) -> None:
+        threads.append(threading.get_ident())
+        real(self, reason, kind)
+
+    monkeypatch.setattr(NovaTextArea, "_fail_source", recording)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _, confirm, _ = bars(app)
+        path.write_text("changed on disk, longer\n")
+        await wait_until(pilot, lambda: confirm.display)
+        assert confirm.kind is not ChangeKind.UNCHANGED
+    assert threads == [threading.get_ident()]
+
+
+@pytest.mark.asyncio
+async def test_app_focus_runs_the_check(tmp_path: Path) -> None:
+    path = make_file(tmp_path)
+    app = NovaEditApp(file_path=path)
+    app.POLL_SECONDS = 1000.0
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _, confirm, _ = bars(app)
+        path.write_text("changed on disk, longer\n")
+        await pilot.pause(0.1)
+        assert not confirm.display
+        app.post_message(events.AppFocus())
+        await wait_until(pilot, lambda: confirm.display)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("how", ["cancel", "fail"])
+async def test_a_change_seen_during_a_save_is_announced_when_the_save_does_not_commit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, how: str) -> None:
+    gate = Gate()
+    real = gate.io()
+
+    def refuse(_source: str, _target: str) -> None:
+        raise PermissionError(13, "no way")
+
+    monkeypatch.setattr(NovaTextArea, "save_io", real if how == "cancel" else SaveIo(write=real.write, replace=refuse))
+    path = make_file(tmp_path)
+    app = NovaEditApp(file_path=path)
+    app.POLL_SECONDS = 1000.0
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        editor = app.editor
+        assert editor is not None
+        _, confirm, _ = bars(app)
+        await pilot.press("x", "ctrl+s")
+        assert gate.reached.wait(10.0)
+        editor._fail_source("the file changed on disk (modified)", ChangeKind.MODIFIED)  # a read of the stale file during the save
+        await pilot.pause(0.1)
+        assert not confirm.display, "the question waits for the end of the save"
+        if how == "cancel":
+            editor.cancel_save()
+        gate.release()
+        await wait_saved(pilot, editor)
+        await wait_until(pilot, lambda: confirm.display)
+        assert confirm.kind is ChangeKind.MODIFIED
+
+
+@pytest.mark.asyncio
+async def test_a_change_seen_during_a_save_is_dropped_when_the_save_commits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    gate = Gate()
+    monkeypatch.setattr(NovaTextArea, "save_io", gate.io())
+    path = make_file(tmp_path)
+    app = NovaEditApp(file_path=path)
+    app.POLL_SECONDS = 1000.0
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        editor = app.editor
+        assert editor is not None
+        _, confirm, _ = bars(app)
+        await pilot.press("x", "ctrl+s")
+        assert gate.reached.wait(10.0)
+        editor._fail_source("the file changed on disk (modified)", ChangeKind.MODIFIED)
+        gate.release()
+        await wait_saved(pilot, editor)
+        await pilot.pause(0.1)
+        assert not confirm.display
+        assert editor.check_external_change() is ChangeKind.UNCHANGED
