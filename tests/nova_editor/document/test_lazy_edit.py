@@ -10,7 +10,7 @@ from nova_editor.document._document import EditResult
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.document._lazy_document import LazyDocument, RowUnavailable
 from nova_editor.document._syntax_aware_document import SyntaxAwareDocument
-from tests.nova_editor.core.reference import ALPHABET, Rng
+from tests.nova_editor.core.reference import ALPHABET, Rng, break_ends, rows
 from tests.nova_editor.document.reference_text import RefText, decode
 
 SMALL = LazyConfig(stride=4, index_long_line_threshold=64, long_row_threshold=512, word_wrap_limit=128, checkpoint_chars=64)
@@ -336,6 +336,81 @@ def test_splice_inserts_content_and_computes_the_end_location() -> None:
     assert result.removed.length == 0
     assert doc.read_all(100) == "abc\ndef\nghi"
     doc.close()
+
+
+def test_splice_lf_leading_content_after_a_lone_cr_reports_the_row_after_the_joined_crlf() -> None:
+    doc = open_doc("ab\rcd\nxx\nfoo")
+    removed = doc.replace_range((2, 2), (3, 3), "").removed
+    assert removed is not None
+    assert doc.read_all(100) == "ab\rcd\nxx"
+    result = doc.splice((1, 0), (1, 0), removed)
+    assert doc._table.read(0, doc.length) == b"ab\r\nfoocd\nxx"
+    assert result.end_location == (1, 3)
+    assert doc.line_count == 3
+    assert doc.get_line(1) == "foocd"
+    doc.close()
+
+
+def test_splice_lf_only_content_after_a_lone_cr_ends_at_the_start_of_the_row() -> None:
+    doc = open_doc("ab\rcd\n\nx")
+    removed = doc.replace_range((2, 0), (3, 0), "").removed
+    assert removed is not None
+    result = doc.splice((1, 0), (1, 0), removed)
+    assert result.end_location == (1, 0)
+    assert doc.get_line(1) == "cd"
+    doc.close()
+
+
+def _offset_of(data: bytes, location: tuple[int, int]) -> int:
+    starts = [0, *break_ends(data)]
+    row = data[starts[location[0]] :].split(b"\n", 1)[0].split(b"\r", 1)[0]
+    return starts[location[0]] + len(decode(row)[: location[1]].encode("utf-8", "surrogateescape"))
+
+
+def _location_of(data: bytes, offset: int) -> tuple[int, int] | None:
+    """Row and column of a byte offset; `None` inside a CRLF (the row there is a matter of convention)."""
+    if data[offset - 1 : offset] == b"\r" and data[offset : offset + 1] == b"\n":
+        return None
+    prefix = data[:offset]
+    pieces = rows(prefix)
+    return (len(pieces) - 1, len(decode(pieces[-1])))
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_fuzz_splice_of_removed_content_matches_a_byte_model(seed: int) -> None:
+    """Remove a range and splice the removed bytes back in somewhere else; text, row count and end location must match a plain bytes model."""
+    rng = Rng(seed + 200)
+    data = b"".join(rng.choice(ALPHABET) for _ in range(rng.randint(5, 40)))
+    doc = open_doc(decode(data))
+    try:
+        for _ in range(30):
+            lines = [len(decode(row)) for row in rows(data)]
+            locations = [(rng.randint(0, len(lines) - 1), 0) for _ in range(3)]
+            locations = [(row, rng.randint(0, lines[row])) for row, _ in locations]
+            start, end = sorted(locations[:2])
+            removed = doc.replace_range(start, end, "").removed
+            assert removed is not None
+            first, last = _offset_of(data, start), _offset_of(data, end)
+            chunk = data[first:last]
+            data = data[:first] + data[last:]
+            lines = [len(decode(row)) for row in rows(data)]
+            row = locations[2][0] % len(lines)
+            target = (row, min(locations[2][1], lines[row]))
+            at = _offset_of(data, target)
+            result = doc.splice(target, target, removed)
+            data = data[:at] + chunk + data[at:]
+            assert doc._table.read(0, doc.length) == data
+            assert doc.line_count == len(rows(data))
+            expected = _location_of(data, at + len(chunk))
+            if expected is not None and not _inside_utf8_merge(data, at, len(chunk)):
+                assert result.end_location == expected, (seed, target, chunk)
+    finally:
+        doc.close()
+
+
+def _inside_utf8_merge(data: bytes, at: int, length: int) -> bool:
+    """True when the bytes around the inserted chunk are not a clean character boundary (the end column is approximate then)."""
+    return decode(data[:at] + data[at + length :]) != decode(data[:at]) + decode(data[at + length :]) or decode(data[: at + length]) != decode(data[:at]) + decode(data[at : at + length])
 
 
 def test_splice_replaced_text_limit() -> None:
