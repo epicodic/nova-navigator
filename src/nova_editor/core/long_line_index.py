@@ -180,6 +180,27 @@ class LongLineIndex:
             index.start()
         return index
 
+    @classmethod
+    def rebased(
+        cls,
+        old: LongLineIndex,
+        new_source: ByteSource,
+        *,
+        autostart: bool = True,
+        scan_block: int | None = None,
+    ) -> LongLineIndex | None:
+        """Move the index onto `new_source`, which holds the same row bytes as the source of `old` (design 7.3); `None` when the lengths differ.
+
+        This is `spliced` with an identity edit at the end of the row: every checkpoint is kept, an incomplete scan resumes from the old frontier
+        on `new_source`, and a complete index only scans the part behind its last checkpoint (nothing, as the last checkpoint is the row end).
+        `old` is left untouched; the caller cancels and joins it.
+        The caller guarantees that the bytes are identical; only the length is checked here.
+        """
+        length = old.end_offset - old.start_offset
+        if new_source.length() != length:
+            return None
+        return cls.spliced(old, new_source, Edit(length, 0, 0, 0, 0, 0, 0), autostart=autostart, scan_block=scan_block)
+
     def _adopt(self, old: LongLineIndex, edit: Edit, sync_bytes: int) -> None:
         """Take over the checkpoints of `old` around `edit` (see `spliced`); runs before the scan thread starts."""
         with old._cond:
