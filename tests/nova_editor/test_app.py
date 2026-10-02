@@ -1,5 +1,6 @@
 """Tests for nova_editor app functionality."""
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -130,25 +131,131 @@ async def test_ctrl_q_key_quits() -> None:
 
 @pytest.mark.asyncio
 async def test_save_small_file_with_invalid_bytes(tmp_path: Path) -> None:
-    """Test that saving a small edited document with invalid bytes writes them exactly."""
+    """Saving an edited document with invalid UTF-8 writes those bytes exactly."""
     path = tmp_path / "invalid.txt"
-    # Write a file with invalid UTF-8 bytes
-    original_bytes = b"hello"
-    path.write_bytes(original_bytes)
+    path.write_bytes(b"a\xffb\xe2\x82\nc\n")
 
     app = NovaEditApp(file_path=path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app.editor is not None
-
-        # Just save it as is first, then verify bytes are preserved
-        app.action_save()
+        await pilot.press("x")
+        await pilot.press("ctrl+s")
         await pilot.pause()
 
-    # Verify file was saved with correct bytes
-    saved_bytes = path.read_bytes()
-    # Should contain the original content
-    assert saved_bytes == b"hello"
+    assert path.read_bytes() == b"xa\xffb\xe2\x82\nc\n"
+
+
+@pytest.mark.asyncio
+async def test_save_leaves_an_unrelated_tmp_named_file_alone(tmp_path: Path) -> None:
+    """The temp file has a unique name: a file called `a.tmp.txt` is not overwritten, and no temp file is left."""
+    path = tmp_path / "a.txt"
+    path.write_text("one")
+    neighbour = tmp_path / "a.tmp.txt"
+    neighbour.write_text("precious")
+
+    app = NovaEditApp(file_path=path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    assert path.read_text() == "xone"
+    assert neighbour.read_text() == "precious"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.tmp.txt", "a.txt"]
+
+
+@pytest.mark.asyncio
+async def test_save_keeps_the_permissions(tmp_path: Path) -> None:
+    path = tmp_path / "p.txt"
+    path.write_text("one")
+    path.chmod(0o640)
+
+    app = NovaEditApp(file_path=path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    assert path.stat().st_mode & 0o777 == 0o640
+
+
+@pytest.mark.asyncio
+async def test_save_through_a_symlink_writes_the_target_and_keeps_the_link(tmp_path: Path) -> None:
+    target = tmp_path / "real.txt"
+    target.write_text("one")
+    link = tmp_path / "link.txt"
+    link.symlink_to(target)
+
+    app = NovaEditApp(file_path=link)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    assert link.is_symlink()
+    assert link.resolve() == target.resolve()
+    assert target.read_text() == "xone"
+
+
+@pytest.mark.asyncio
+async def test_save_after_a_load_failure_refuses_and_keeps_the_file(tmp_path: Path) -> None:
+    path = tmp_path / "locked.txt"
+    path.write_text("precious")
+    path.chmod(0)
+    if os.access(path, os.R_OK):
+        path.chmod(0o644)
+        pytest.skip("permissions are not enforced for this user")
+
+    app = NovaEditApp(file_path=path)
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+    finally:
+        path.chmod(0o644)
+
+    assert path.read_text() == "precious"
+    assert any("Not saved" in n.message for n in app._notifications)
+    assert not any("Interim save" in n.message for n in app._notifications)
+
+
+@pytest.mark.asyncio
+async def test_save_of_a_new_file_creates_it(tmp_path: Path) -> None:
+    path = tmp_path / "new.txt"
+
+    app = NovaEditApp(file_path=path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("h", "i")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    assert path.read_text() == "hi"
+
+
+@pytest.mark.asyncio
+async def test_failed_save_removes_the_temp_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "f.txt"
+    path.write_text("one")
+
+    def refuse(*_args: object) -> None:
+        raise PermissionError("no")
+
+    app = NovaEditApp(file_path=path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("x")
+        monkeypatch.setattr(os, "replace", refuse)
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    assert path.read_text() == "one"
+    assert [p.name for p in tmp_path.iterdir()] == ["f.txt"]
+    assert any("Error saving" in n.message for n in app._notifications)
 
 
 @pytest.mark.asyncio
