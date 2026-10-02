@@ -12,9 +12,11 @@ from nova_editor.core.original_source import OriginalSource, RowNotIndexed
 from nova_editor.core.piece_table import PieceTable
 from nova_editor.core.piece_tree import Location, PieceTree
 from nova_editor.core.pieces import Aggregate, Content, Piece, PieceSource, combine, make_piece, merge_pieces
+from nova_editor.core.rebase import RebasePlan, Rebaser
 from nova_editor.core.row_scanner import RowScanner
 from nova_editor.core.row_source import RowSource
 from nova_editor.core.save import check_path
+from nova_editor.core.save_layout import SaveLayout
 
 __all__ = [
     "AddSegment",
@@ -36,10 +38,13 @@ __all__ = [
     "PieceTable",
     "PieceTree",
     "PreadSource",
+    "RebasePlan",
+    "Rebaser",
     "RowNotIndexed",
     "RowRange",
     "RowScanner",
     "RowSource",
+    "SaveLayout",
     "SourceChanged",
     "check_path",
     "combine",
