@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from nova_editor.core.search import compile_matcher
-from tests.nova_editor.core.search_reference import all_matches
+from nova_editor.core.byte_source import ByteSource
+from nova_editor.core.memory_source import BytesSource
+from nova_editor.core.search import SearchJob, SearchResult, SearchSettings, SearchSpec, compile_matcher
+from tests.nova_editor.core.fake_planner import FakePlanner, whole_file_planner
+from tests.nova_editor.core.search_reference import all_matches, boundaries, reference_search
 
 EXAMPLES = 300
+JOB_EXAMPLES = 200
+LARGE_CHUNK = 1 << 20
+MAX_CHUNK = 17
+SWEEP_CHUNKS = range(1, 9)
 SEED_SETTINGS = settings(max_examples=EXAMPLES, deadline=None, derandomize=True)
+JOB_SETTINGS = settings(max_examples=JOB_EXAMPLES, deadline=None, derandomize=True)
 KELVIN = chr(0x212A)
 LONG_S = chr(0x17F)
 SWEEP_DOCUMENT = b"a\r\n\xc3\xa9\xa9\xe2\x82\xac\r\nc"
@@ -144,3 +154,114 @@ def test_owned_range_sweep_over_every_split(needle: str, case_sensitive: bool) -
             backward_expected = _last([m for m in found if lo < m[1] <= hi])
             assert matcher.find(data, lo, hi) == forward_expected, (lo, hi)
             assert matcher.rfind(data, lo, hi) == backward_expected, (lo, hi)
+
+
+def layout_planner(data: bytes, draw: st.DataObject) -> FakePlanner:
+    """Cut `data` at drawn points and lay the pieces out over an original and an add buffer, in document order."""
+    cuts = sorted(draw.draw(st.sets(st.integers(0, len(data)), max_size=8)) | {0, len(data)})
+    buffers = [bytearray(), bytearray()]
+    runs: list[tuple[int, int, int]] = []
+    for lo, hi in pairwise(cuts):
+        if lo == hi:
+            continue
+        src = draw.draw(st.integers(0, 1))
+        start = len(buffers[src])
+        buffers[src].extend(data[lo:hi])
+        runs.append((src, start, start + (hi - lo)))
+    sources: dict[int, ByteSource] = {0: BytesSource(bytes(buffers[0])), 1: BytesSource(bytes(buffers[1]))}
+    return FakePlanner(runs, sources)
+
+
+def _expected(data: bytes, spec: SearchSpec, origin: int) -> SearchResult | None:
+    found = reference_search(data, spec.needle, case_sensitive=spec.case_sensitive, backward=spec.backward, wrap=spec.wrap, origin=origin)
+    return None if found is None else SearchResult(*found)
+
+
+@JOB_SETTINGS
+@given(
+    st.data(),
+    needle_and_data(),
+    st.booleans(),
+    st.booleans(),
+    st.booleans(),
+    st.one_of(st.integers(1, MAX_CHUNK), st.just(LARGE_CHUNK)),
+)
+def test_job_matches_the_reference(draw: st.DataObject, case: tuple[str, bytes], case_sensitive: bool, backward: bool, wrap: bool, chunk: int) -> None:
+    needle, data = case
+    origin = draw.draw(st.sampled_from(boundaries(data)))
+    planner = layout_planner(data, draw)
+    spec = SearchSpec(needle, case_sensitive=case_sensitive, backward=backward, wrap=wrap)
+    assert SearchJob(planner, spec, origin, SearchSettings(chunk=chunk)).run() == _expected(data, spec, origin)
+
+
+@JOB_SETTINGS
+@given(
+    st.data(),
+    needle_and_data(),
+    st.booleans(),
+    st.booleans(),
+    st.booleans(),
+    st.integers(1, MAX_CHUNK),
+    st.sampled_from(["auto", "pattern"]),
+)
+def test_job_over_one_piece_and_the_pattern_tier(draw: st.DataObject, case: tuple[str, bytes], case_sensitive: bool, backward: bool, wrap: bool, chunk: int, tier: str) -> None:
+    needle, data = case
+    origin = draw.draw(st.sampled_from(boundaries(data)))
+    spec = SearchSpec(needle, case_sensitive=case_sensitive, backward=backward, wrap=wrap)
+    planner = whole_file_planner(BytesSource(data))
+    assert SearchJob(planner, spec, origin, SearchSettings(chunk=chunk, tier=tier)).run() == _expected(data, spec, origin)
+
+
+@pytest.mark.parametrize("wrap", [True, False])
+@pytest.mark.parametrize("backward", [False, True])
+@pytest.mark.parametrize(
+    ("needle", "data"),
+    [
+        ("\n", b"aa\r\nbb"),
+        ("\r", b"aa\r\nbb"),
+        ("a\r\nb", b"aa\r\nbb"),
+        (chr(0xE9), b"a" + chr(0xE9).encode() * 2 + b"b"),
+        (chr(0xE9) + "b", b"a" + chr(0xE9).encode() * 2 + b"b"),
+        (chr(0x1F600), b"x" + chr(0x1F600).encode() + chr(0x1F600).encode() + b"y"),
+        (chr(0x1F600) + "y", b"x" + chr(0x1F600).encode() + chr(0x1F600).encode() + b"y"),
+    ],
+)
+def test_window_boundary_sweep(needle: str, data: bytes, backward: bool, wrap: bool) -> None:
+    spec = SearchSpec(needle, backward=backward, wrap=wrap)
+    for chunk in SWEEP_CHUNKS:
+        for origin in boundaries(data):
+            got = SearchJob(whole_file_planner(BytesSource(data)), spec, origin, SearchSettings(chunk=chunk)).run()
+            assert got == _expected(data, spec, origin), (chunk, origin)
+
+
+@JOB_SETTINGS
+@given(st.data(), needle_and_data(), st.booleans(), st.booleans(), st.integers(1, MAX_CHUNK))
+def test_repeated_search_never_overlaps_the_previous_match(draw: st.DataObject, case: tuple[str, bytes], case_sensitive: bool, backward: bool, chunk: int) -> None:
+    needle, data = case
+    origin = draw.draw(st.sampled_from(boundaries(data)))
+    spec = SearchSpec(needle, case_sensitive=case_sensitive, backward=backward)
+    settings_ = SearchSettings(chunk=chunk)
+    old = SearchJob(layout_planner(data, draw), spec, origin, settings_).run()
+    if old is None:
+        return
+    again = old.start if backward else old.end
+    new = SearchJob(layout_planner(data, draw), spec, again, settings_).run()
+    assert new is not None
+    if not new.wrapped:
+        assert new.end <= old.start if backward else new.start >= old.end
+
+
+@pytest.mark.parametrize("chunk", [1, 2, 3, LARGE_CHUNK])
+def test_aa_in_aaaa_is_found_twice(chunk: int) -> None:
+    settings_ = SearchSettings(chunk=chunk)
+    spec = SearchSpec("aa", wrap=False)
+    planner = whole_file_planner(BytesSource(b"aaaa"))
+    first = SearchJob(planner, spec, 0, settings_).run()
+    assert first == SearchResult(0, 2, False)
+    second = SearchJob(planner, spec, 2, settings_).run()
+    assert second == SearchResult(2, 4, False)
+    assert SearchJob(planner, spec, 4, settings_).run() is None
+    back = SearchSpec("aa", backward=True, wrap=False)
+    assert SearchJob(planner, back, 4, settings_).run() == SearchResult(2, 4, False)
+    assert SearchJob(planner, back, 2, settings_).run() == SearchResult(0, 2, False)
+    assert SearchJob(planner, back, 0, settings_).run() is None

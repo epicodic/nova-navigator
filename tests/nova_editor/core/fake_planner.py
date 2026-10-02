@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 from nova_editor.core.byte_source import ByteSource
 from nova_editor.core.save import PlanPart
+from nova_editor.core.search import SearchPlan
 
 
 class FakePlanner:
@@ -39,6 +40,10 @@ class FakePlanner:
                 parts.append(PlanPart(src, self._sources[src], a + (lo - pos), a + (hi - pos)))
             pos = run_end
         return parts
+
+    def search_plan(self, offset: int, limit: int) -> SearchPlan:
+        """Return the plan of `[offset, offset + limit)` with the current `revision` and the document length."""
+        return SearchPlan(self.revision, self.length(), self.plan(offset, limit, False))
 
 
 def whole_file_planner(source: ByteSource) -> FakePlanner:
