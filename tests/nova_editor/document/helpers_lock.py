@@ -8,7 +8,7 @@ from typing import Any, Self
 from nova_editor.core import PieceTable
 from nova_editor.document._lazy_document import LazyDocument
 
-_GUARDED_PROPERTIES = frozenset({"length", "tree", "is_identity", "has_open_tail"})
+_GUARDED_PROPERTIES = frozenset({"length", "tree", "is_identity", "has_open_tail", "legacy"})
 
 
 class TrackedLock:
@@ -39,10 +39,10 @@ class TrackedLock:
 class GuardedTable:
     """Proxy of a `PieceTable` that records (and raises) every access made without the document lock."""
 
-    def __init__(self, table: PieceTable, lock: TrackedLock) -> None:
+    def __init__(self, table: PieceTable, lock: TrackedLock, violations: list[str] | None = None) -> None:
         self._table = table
         self._lock = lock
-        self.violations: list[str] = []
+        self.violations: list[str] = violations if violations is not None else []
 
     def _check(self, what: str) -> None:
         if not self._lock.held():
@@ -68,5 +68,10 @@ def install_guards(doc: LazyDocument) -> tuple[TrackedLock, GuardedTable]:
     """Replace the lock and the table of `doc` by tracking doubles and return them."""
     lock = TrackedLock()
     guarded = GuardedTable(doc._table, lock)
-    vars(doc).update(_lock=lock, _table=guarded)  # the proxies duck-type the two members
+
+    def build_table(*args: Any) -> GuardedTable:
+        """The table that `apply_rebase` builds is guarded as well, and reports to the same list."""
+        return GuardedTable(PieceTable(*args), lock, guarded.violations)
+
+    vars(doc).update(_lock=lock, _table=guarded, _build_table=build_table)  # the proxies duck-type the two members
     return lock, guarded

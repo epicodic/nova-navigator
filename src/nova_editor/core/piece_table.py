@@ -128,6 +128,11 @@ class PieceTable:
         return len(self._legacy)
 
     @property
+    def legacy(self) -> tuple[tuple[OriginalSource, AddStore], ...]:
+        """The registered legacy generations in order (generation `g` is element `g - 1`)."""
+        return tuple(self._legacy)
+
+    @property
     def tree(self) -> PieceTree:
         """The tree of the pieces before the open tail (read access for tests and diagnostics)."""
         return self._tree

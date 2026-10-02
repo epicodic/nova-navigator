@@ -2181,7 +2181,12 @@ NovaTextArea {
 
         Args:
             text: The text to load into the NovaTextArea.
+
+        Raises:
+            RuntimeError: A save of the lazy document is running (it would be replaced under the save).
         """
+        if isinstance(self.document, LazyDocument):
+            self.document.require_not_saving("load_text")
         self.history.clear()
         self._set_document(text, self.language)
         self.post_message(self.Changed(self).set_sender(self))
