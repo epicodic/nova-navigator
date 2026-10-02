@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
+import stat
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -260,6 +262,8 @@ class NovaEditApp(App[None]):
         super().__init__()
         self.file_path = file_path
         self.editor: NovaTextArea | None = None
+        # "loaded": the editor shows the file; "new": the file did not exist at start; "failed": it exists but could not be read
+        self._load_state: Literal["loaded", "new", "failed"] = "loaded"
         self.goto_bar: GotoBar | None = None
         self._timing_file: str | None = os.environ.get("NOVA_EDIT_TIMING_FILE")
         self._timing_first_content_written = False
@@ -278,6 +282,7 @@ class NovaEditApp(App[None]):
                     timing_file=self._timing_file,
                 )
             except OSError as e:
+                self._load_state = "new" if isinstance(e, FileNotFoundError) else "failed"
                 self.notify(f"Error loading file: {e}", severity="error")
                 self.editor = TimedNovaTextArea(
                     id="editor",
@@ -315,41 +320,38 @@ class NovaEditApp(App[None]):
             self.notify("Saving large files arrives with ACT5", severity="warning")
             return
 
-        # Write interim save to temp file and os.replace
+        if self._load_state == "failed":
+            self.notify("Not saved: the file could not be loaded, saving would replace it with an empty document", severity="error")
+            return
+
+        # Follow symlinks: the target is replaced, the link stays
+        target = Path(os.path.realpath(self.file_path))
+        if self._load_state == "new" and target.exists():
+            self.notify("Not saved: the file was created after the editor started", severity="error")
+            return
+
+        temp_name: str | None = None
         try:
-            text = self.editor.text
-            text_bytes = text.encode("utf-8", "surrogateescape")
-
-            # Create temp file in the same directory as the target
-            temp_path = self.file_path.with_stem(f"{self.file_path.stem}.tmp")
-            try:
-                # Get original file permissions if it exists
-                original_stat = None
-                if self.file_path.exists():
-                    with contextlib.suppress(OSError):
-                        original_stat = self.file_path.stat()
-
-                # Write to temp file
-                with open(temp_path, "wb") as f:
-                    f.write(text_bytes)
-
-                # Set permissions if original file existed
-                if original_stat is not None:
-                    with contextlib.suppress(OSError):
-                        os.chmod(temp_path, original_stat.st_mode)
-
-                # Replace original with temp
-                os.replace(temp_path, self.file_path)
-
-                self.notify("Interim save (replaced by streaming save in ACT5)", severity="information")
-            except OSError:
-                # Clean up temp file if it was created
-                with contextlib.suppress(OSError):
-                    temp_path.unlink()
-                raise
-
+            text_bytes = self.editor.text.encode("utf-8", "surrogateescape")
+            mode = 0o644
+            with contextlib.suppress(OSError):
+                mode = stat.S_IMODE(target.stat().st_mode)
+            # A temp file with a unique name next to the target: it cannot collide with another file
+            fd, temp_name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(text_bytes)
+                handle.flush()
+                os.fsync(handle.fileno())
+                os.fchmod(handle.fileno(), mode)
+            os.replace(temp_name, target)
+            temp_name = None
+            self.notify("Interim save (replaced by streaming save in ACT5)", severity="information")
         except OSError as e:
             self.notify(f"Error saving file: {e}", severity="error")
+        finally:
+            if temp_name is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(temp_name)
 
     async def action_quit(self) -> None:
         """Quit the application."""
