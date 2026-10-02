@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from array import array
-from bisect import bisect_right
+from heapq import heappop, heappush
+from itertools import pairwise
 
 
 class SaveLayout:
@@ -30,25 +31,28 @@ class SaveLayout:
 
         A source range written several times (an internal copy-paste) keeps its first occurrence, the one with the lowest output offset.
         """
-        starts: list[int] = []
-        ends: list[int] = []
-        outs: list[int] = []
-        for k in range(len(self._src)):
-            if self._src[k] != src:
+        rows = [k for k in range(len(self._src)) if self._src[k] == src]  # in add order, i.e. ascending output offset
+        starts = self._a
+        by_start = sorted(rows, key=lambda k: starts[k])
+        bounds = sorted({value for k in rows for value in (self._a[k], self._b[k])})
+        heap: list[tuple[int, int]] = []  # (rank = add order, end) of the runs that cover the sweep position
+        result: list[tuple[int, int, int]] = []
+        owner = -1  # the run the last result interval came from
+        cursor = 0
+        for x, next_x in pairwise(bounds):
+            while cursor < len(by_start) and self._a[by_start[cursor]] <= x:
+                k = by_start[cursor]
+                heappush(heap, (k, self._b[k]))
+                cursor += 1
+            while heap and heap[0][1] <= x:
+                heappop(heap)
+            if not heap:
                 continue
-            a, b, out = self._a[k], self._b[k], self._out[k]
-            index = bisect_right(ends, a)
-            cursor = a
-            gaps: list[tuple[int, int, int, int]] = []  # (insert position, a, b, out)
-            while index < len(starts) and starts[index] < b:
-                if starts[index] > cursor:
-                    gaps.append((index, cursor, starts[index], out + cursor - a))
-                cursor = max(cursor, ends[index])
-                index += 1
-            if cursor < b:
-                gaps.append((index, cursor, b, out + cursor - a))
-            for position, gap_a, gap_b, gap_out in reversed(gaps):
-                starts.insert(position, gap_a)
-                ends.insert(position, gap_b)
-                outs.insert(position, gap_out)
-        return list(zip(starts, ends, outs, strict=True))
+            k = heap[0][0]
+            out = self._out[k] + x - self._a[k]
+            if k == owner and result[-1][1] == x:
+                result[-1] = (result[-1][0], next_x, result[-1][2])
+            else:
+                result.append((x, next_x, out))
+                owner = k
+        return result
