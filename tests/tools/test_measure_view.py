@@ -880,6 +880,14 @@ def test_search_edited_finds_a_needle_in_the_paste_and_one_across_a_piece_bounda
     edits = [row for row in rows if row["state"] == "edit"]
     assert {row["op"] for row in edits} >= {"scatter", "paste", "boundary"}
     assert all(row["case"] == "search-edited" for row in rows if row["op"] != "phase")
+    for row in searches:
+        assert row["rss_anon_mib_baseline"] > 0
+        assert row["rss_anon_mib_max"] >= row["rss_anon_mib_baseline"]
+        assert row["rss_anon_mib_delta"] == row["rss_anon_mib_max"] - row["rss_anon_mib_baseline"]
+        assert row["rss_anon_mib_session_max"] >= row["rss_anon_mib_max"]
+    phases = [row["state"] for row in rows if row["op"] == "phase"]
+    assert "edits" in phases
+    assert phases.count("search_end") == 2
 
 
 def test_search_longline_plants_a_marker_in_a_copy_and_selects_it_exactly(mixed_file: Path, tmp_path: Path) -> None:

@@ -872,7 +872,7 @@ def _annotate_search(spec: dict[str, Any], rows: list[Row], result: Supervised, 
     for row in rows:
         window = row.pop("memory_window", None)
         if window:
-            row.update(_view_search.search_memory(result, marks, window))
+            row.update(_view_search.search_memory(result, marks, window, int(row.pop("memory_occurrence", 0))))
         _announce(row)
 
 
