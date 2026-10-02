@@ -33,13 +33,17 @@ def test_new_bindings_do_not_collide() -> None:
             out.extend(k.strip() for k in spec.split(","))
         return out
 
-    existing = keys(NovaTextArea.BINDINGS) + [k for k in keys(NovaEditApp.BINDINGS) if k not in ("f4", "ctrl+g")] + keys(App.BINDINGS)
-    # Check that f4 and ctrl+g don't collide (escape is already in widget)
-    for new in ("f4", "ctrl+g"):
+    new_keys = ("f4", "ctrl+g", "f2", "f5")
+    existing = keys(NovaTextArea.BINDINGS) + [k for k in keys(NovaEditApp.BINDINGS) if k not in (*new_keys, "escape")] + keys(App.BINDINGS)
+    for new in new_keys:
         assert new not in existing, new
     app_keys = keys(NovaEditApp.BINDINGS)
-    assert app_keys.count("f4") == 1
-    assert app_keys.count("ctrl+g") == 1
+    for new in new_keys:
+        assert app_keys.count(new) == 1, new
+    # Escape: the widget cancels a pending jump (active only then), the app cancels a running save (active only then)
+    assert keys(NovaTextArea.BINDINGS).count("escape") == 1
+    assert app_keys.count("escape") == 1
+    assert NovaEditApp.check_action is not App.check_action
 
 
 def test_app_bindings_name_existing_actions() -> None:

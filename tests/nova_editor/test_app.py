@@ -5,8 +5,18 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from textual.pilot import Pilot
 
-from nova_editor.app import NovaEditApp
+from nova_editor.app import ConfirmBar, NovaEditApp
+from nova_editor.core.save import SaveIo
+from nova_editor.widget import NovaTextArea
+from tests.nova_editor.save_widget_helpers import wait_saved
+
+
+async def settle(pilot: Pilot[None], app: NovaEditApp) -> None:
+    """Let a started save end and its messages arrive."""
+    assert app.editor is not None
+    await wait_saved(pilot, app.editor)
 
 
 @pytest.mark.asyncio
@@ -56,7 +66,7 @@ async def test_app_saves_file() -> None:
 
             # Save
             app.action_save()
-            await pilot.pause()
+            await settle(pilot, app)
 
         # Verify file was saved
         saved_content = temp_path.read_text()
@@ -114,7 +124,7 @@ async def test_ctrl_s_key_saves_eager_file(tmp_path: Path) -> None:
         await pilot.pause()
         await pilot.press("x")
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await settle(pilot, app)
     assert path.read_text() == "xinitial"
 
 
@@ -140,7 +150,7 @@ async def test_save_small_file_with_invalid_bytes(tmp_path: Path) -> None:
         await pilot.pause()
         await pilot.press("x")
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await settle(pilot, app)
 
     assert path.read_bytes() == b"xa\xffb\xe2\x82\nc\n"
 
@@ -158,7 +168,7 @@ async def test_save_leaves_an_unrelated_tmp_named_file_alone(tmp_path: Path) -> 
         await pilot.pause()
         await pilot.press("x")
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await settle(pilot, app)
 
     assert path.read_text() == "xone"
     assert neighbour.read_text() == "precious"
@@ -176,7 +186,7 @@ async def test_save_keeps_the_permissions(tmp_path: Path) -> None:
         await pilot.pause()
         await pilot.press("x")
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await settle(pilot, app)
 
     assert path.stat().st_mode & 0o777 == 0o640
 
@@ -193,7 +203,7 @@ async def test_save_through_a_symlink_writes_the_target_and_keeps_the_link(tmp_p
         await pilot.pause()
         await pilot.press("x")
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await settle(pilot, app)
 
     assert link.is_symlink()
     assert link.resolve() == target.resolve()
@@ -214,7 +224,7 @@ async def test_save_after_a_load_failure_refuses_and_keeps_the_file(tmp_path: Pa
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("ctrl+s")
-            await pilot.pause()
+            await settle(pilot, app)
     finally:
         path.chmod(0o644)
 
@@ -232,7 +242,7 @@ async def test_save_of_a_new_file_creates_it(tmp_path: Path) -> None:
         await pilot.pause()
         await pilot.press("h", "i")
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await settle(pilot, app)
 
     assert path.read_text() == "hi"
 
@@ -246,11 +256,11 @@ async def test_second_save_of_a_new_file_writes_the_later_edit(tmp_path: Path) -
         await pilot.pause()
         await pilot.press("h", "i")
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await settle(pilot, app)
         assert path.read_text() == "hi"
         await pilot.press("!")
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await settle(pilot, app)
 
     assert path.read_text() == "hi!"
     assert not any("Not saved" in n.message for n in app._notifications)
@@ -266,10 +276,11 @@ async def test_save_refuses_a_file_that_appeared_before_the_first_save(tmp_path:
         path.write_text("from elsewhere")
         await pilot.press("h", "i")
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await settle(pilot, app)
+
+        assert app.query_one(ConfirmBar).display  # the file is not overwritten without consent
 
     assert path.read_text() == "from elsewhere"
-    assert any("Not saved" in n.message for n in app._notifications)
 
 
 @pytest.mark.asyncio
@@ -283,7 +294,7 @@ async def test_new_file_mode_follows_the_umask(tmp_path: Path) -> None:
             await pilot.pause()
             await pilot.press("h", "i")
             await pilot.press("ctrl+s")
-            await pilot.pause()
+            await settle(pilot, app)
     finally:
         os.umask(old)
 
@@ -295,47 +306,37 @@ async def test_failed_save_removes_the_temp_file(tmp_path: Path, monkeypatch: py
     path = tmp_path / "f.txt"
     path.write_text("one")
 
-    def refuse(*_args: object) -> None:
+    def refuse(_source: str, _target: str) -> None:
         raise PermissionError("no")
 
+    monkeypatch.setattr(NovaTextArea, "save_io", SaveIo(replace=refuse))
     app = NovaEditApp(file_path=path)
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("x")
-        monkeypatch.setattr(os, "replace", refuse)
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await settle(pilot, app)
+        assert app.query_one("#save_bar").display
 
     assert path.read_text() == "one"
     assert [p.name for p in tmp_path.iterdir()] == ["f.txt"]
-    assert any("Error saving" in n.message for n in app._notifications)
 
 
 @pytest.mark.asyncio
-async def test_save_small_file_notifies_interim_save(tmp_path: Path) -> None:
-    """Test that saving notifies 'Interim save (replaced by streaming save in ACT5)'."""
+async def test_save_small_file_shows_the_result_line(tmp_path: Path) -> None:
+    """A save shows a result line in the save bar and no notification about an interim save."""
     path = tmp_path / "save_notify.txt"
     path.write_text("initial")
 
     app = NovaEditApp(file_path=path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app.editor is not None
-
-        # Edit the document
-        await pilot.press("ctrl+a")
-        await pilot.pause()
-        await pilot.press("delete")
-        await pilot.pause()
         await pilot.press("n", "e", "w")
-        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await settle(pilot, app)
+        assert app.query_one("#save_bar").display
 
-        # Save
-        app.action_save()
-        await pilot.pause()
-
-    # Check that the interim save message was notified
-    assert any("Interim save" in n.message and "ACT5" in n.message for n in app._notifications)
+    assert path.read_text() == "newinitial"
 
 
 def test_lazy_flag_is_rejected_by_argparse(capsys: pytest.CaptureFixture[str]) -> None:

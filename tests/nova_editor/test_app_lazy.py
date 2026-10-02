@@ -9,6 +9,7 @@ import pytest
 from nova_editor.app import NovaEditApp
 from nova_editor.document._lazy_document import LazyDocument
 from tests.nova_editor.helpers_view import make_mixed
+from tests.nova_editor.save_widget_helpers import wait_saved
 
 
 @pytest.mark.asyncio
@@ -151,12 +152,8 @@ async def test_goto_byte_navigation(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ctrl_s_above_the_text_limit_refuses_and_keeps_the_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Test that Ctrl+S on a document above the text limit does not write (`text` is empty there)."""
-    from nova_editor import app as app_module
-
-    monkeypatch.setattr(app_module, "TEXT_LIMIT", 50)
-
+async def test_ctrl_s_saves_a_lazy_document(tmp_path: Path) -> None:
+    """Ctrl+S of a lazily opened file streams it out: the edit is in the file and the rest is unchanged."""
     path = make_mixed(tmp_path / "m.txt")
     app = NovaEditApp(file_path=path)
     async with app.run_test() as pilot:
@@ -165,11 +162,11 @@ async def test_ctrl_s_above_the_text_limit_refuses_and_keeps_the_file(tmp_path: 
         assert isinstance(app.editor.document, LazyDocument)
 
         before = path.read_bytes()
+        await pilot.press("x")
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await wait_saved(pilot, app.editor)
 
-        assert path.read_bytes() == before
-        assert any("Saving large files" in n.message for n in app._notifications)
+        assert path.read_bytes() == b"x" + before
 
 
 @pytest.mark.asyncio
