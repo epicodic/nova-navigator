@@ -624,6 +624,10 @@ class NovaEditApp(App[None]):
         """Refresh the status line."""
         self._request_status()
 
+    def on_nova_text_area_jump_rejected(self, message: NovaTextArea.JumpRejected) -> None:
+        """Show why a goto was rejected; the cursor did not move."""
+        self.notify(message.reason, severity="warning")
+
     @property
     def _save_bar(self) -> SaveBar:
         return self.query_one(SaveBar)
