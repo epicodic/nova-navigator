@@ -36,6 +36,8 @@ from nova_editor.core.save import PlanPart, SaveIo, SaveJob, SaveResult, SaveSet
 from nova_editor.core.save import SaveCancelled as CoreSaveCancelled
 from nova_editor.core.save import SaveFailed as CoreSaveFailed
 from nova_editor.core.save import SaveProgress as CoreSaveProgress
+from nova_editor.core.search import SearchError, SearchJob, SearchPlan, SearchSettings, SearchSpec
+from nova_editor.core.search import SearchProgress as CoreSearchProgress
 from nova_editor.core.text_width import SURROGATE_ESCAPE, utf8_len
 from nova_editor.document._cursor_anchor import CursorMachine, CursorState, Op, Verdict
 from nova_editor.document._document import (
@@ -56,6 +58,7 @@ from nova_editor.document._syntax_aware_document import (
 )
 from nova_editor.widget._lazy_window import WindowText, section_window, window_text
 from nova_editor.widget._long_row_cursor import PROGRESS_BELOW_ONE, LongRowCursor
+from nova_editor.widget._search_run import SearchOutcome, SearchRun, run_search_thread
 from nova_editor.widget._text_area_theme import TextAreaTheme
 
 if TYPE_CHECKING:
@@ -244,6 +247,16 @@ class _DocumentPlanner:
 
     def plan(self, offset: int, limit: int, unverified: bool) -> list[PlanPart]:
         return self._document.plan(offset, limit, unverified)
+
+
+class _DocumentSearchPlanner:
+    """`SearchPlanner` over a `LazyDocument`."""
+
+    def __init__(self, document: LazyDocument) -> None:
+        self._document = document
+
+    def search_plan(self, offset: int, limit: int) -> SearchPlan:
+        return self._document.search_plan(offset, limit)
 
 
 @dataclass(frozen=True)
@@ -962,6 +975,83 @@ NovaTextArea {
         def control(self) -> NovaTextArea:
             return self.text_area
 
+    @dataclass
+    class SearchProgress(Message):
+        """Posted (at most 10 times per second, `done` never decreasing) while a search runs; `phase` is `forward` or `wrapped`."""
+
+        done: int
+        """Owned bytes searched so far."""
+        total: int
+        """Owned bytes to search."""
+        phase: str
+        """The region being searched: `forward` (from the origin) or `wrapped` (after wrapping around)."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
+    class SearchFound(Message):
+        """Posted once when a search found a match and the selection covers it; `row` and `column` are the cursor location (the end that holds the cursor)."""
+
+        start: int
+        """Byte offset of the start of the match."""
+        end: int
+        """Byte offset of the end of the match."""
+        row: int
+        """Row of the cursor after the match was selected."""
+        column: int
+        """Column of the cursor after the match was selected."""
+        wrapped: bool
+        """True when the match was found after wrapping around the document."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
+    class SearchNotFound(Message):
+        """Posted once when a search found no match; the cursor and the selection are unchanged."""
+
+        needle: str
+        """The text that was searched for."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
+    class SearchCancelled(Message):
+        """Posted once when a search was cancelled; `reason` is `cancelled`, `replaced`, `text changed` or `reloaded`."""
+
+        reason: str
+        """Why the search was cancelled."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
+    @dataclass
+    class SearchFailed(Message):
+        """Posted once when a search could not run or failed (an invalid needle, a changed source or a defect)."""
+
+        error: Exception
+        """The error."""
+        text_area: NovaTextArea
+        """The `text_area` that sent this message."""
+
+        @property
+        def control(self) -> NovaTextArea:
+            return self.text_area
+
     save_settings: ClassVar[SaveSettings] = SaveSettings()
     """Chunk size, fsync interval and index settings of a save (tests lower them)."""
 
@@ -970,6 +1060,12 @@ NovaTextArea {
 
     save_clock: Callable[[], float] = time.monotonic
     """Time source of the throttle of `SaveProgress` messages; tests replace it by a fake clock."""
+
+    search_settings: ClassVar[SearchSettings] = SearchSettings()
+    """Chunk size, progress interval and tier of a search (tests lower them)."""
+
+    search_clock: Callable[[], float] = time.monotonic
+    """Time source of the throttle of `SearchProgress` messages; tests replace it by a fake clock."""
 
     clipboard_cap: int = 2_097_152
     """Largest selection (in bytes) that is also written to the system clipboard; a larger copy stays inside the editor (ACT4 design 10)."""
@@ -1090,6 +1186,9 @@ NovaTextArea {
 
         self._save_run: _SaveRun | None = None
         """The running save (at most one), else `None`."""
+
+        self._search_run: SearchRun | None = None
+        """The running search (at most one), else `None`."""
 
         self._save_epoch = 0
         """Counts the starts and ends of saves: an external check that began in another epoch compared with a file the save was about to replace."""
@@ -1237,6 +1336,7 @@ NovaTextArea {
             return
         self._lazy_closed = True
         self._abandon_save()
+        self._abandon_search()
         self._estimating = False
         self._jump = None
         timer = self._estimate_timer
@@ -1418,11 +1518,13 @@ NovaTextArea {
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Make `escape` (`cancel_pending`) active only while a jump is pending, so it never shadows another use of the key."""
         if action == "cancel_pending":
-            return self._has_pending()
+            return self._has_pending() or self.searching
         return super().check_action(action, parameters)
 
     def action_cancel_pending(self) -> None:
-        """Cancel the pending jump (bound to escape)."""
+        """Cancel the running search and the pending jump (bound to escape)."""
+        if self.searching:
+            self.cancel_search()
         self.cancel_pending()
 
     def _cursor_unresolved(self) -> bool:
@@ -3273,6 +3375,187 @@ NovaTextArea {
             return
         run.last_message = now
         self.post_message(self.SaveProgress(report.phase, report.done, report.total, self).set_sender(self))
+
+    # --- Search (ACT6 design 6, 7)
+    @property
+    def searching(self) -> bool:
+        """True from the start of a search until its terminal message is posted."""
+        return self._search_run is not None
+
+    def search(self, needle: str, *, backward: bool = False, case_sensitive: bool = True, wrap: bool = True) -> bool:
+        """Search for `needle` off the UI thread and select the match.
+
+        A forward search starts at the end of the selection (the cursor when empty), a backward one at its start; a match is selected with the
+        cursor at its end (forward) or its start (backward), so a repeat continues from it. A running search is cancelled (`SearchCancelled`
+        with reason `replaced`). Exactly one of `SearchFound`, `SearchNotFound`, `SearchCancelled` and `SearchFailed` is posted per search.
+
+        Returns:
+            True when a search started; False for a closed widget, or for a needle that cannot be searched (`SearchFailed` is posted).
+        """
+        if self._lazy_closed:
+            return False
+        document = self.document
+
+        def report(progress: CoreSearchProgress) -> None:
+            self._on_search_report(run, progress)
+
+        try:
+            spec = SearchSpec(needle, case_sensitive, backward, wrap)
+            job = SearchJob(_DocumentSearchPlanner(document), spec, self._search_origin(backward), self.search_settings, report, document.foreground)
+        except SearchError as error:
+            self.post_message(self.SearchFailed(error, self).set_sender(self))
+            return False
+        self._replace_search()
+        run = SearchRun(job, needle, backward)
+        self._search_run = run
+        thread = threading.Thread(target=run_search_thread, args=(run, functools.partial(self._post_search_outcome, run)), name="nova-search", daemon=True)
+        thread.start()
+        document.join_on_close(thread)
+        return True
+
+    def cancel_search(self) -> None:
+        """Ask the running search to stop; it ends with `SearchCancelled` (reason `cancelled`) unless it finished first."""
+        run = self._search_run
+        if run is not None:
+            run.job.cancel()
+
+    def _replace_search(self) -> None:
+        """UI thread: drop the running search for a new one and post its `SearchCancelled` (reason `replaced`)."""
+        run = self._search_run
+        if run is None:
+            return
+        run.reason = "replaced"
+        run.job.cancel()
+        self._search_run = None
+        self.post_message(self.SearchCancelled("replaced", self).set_sender(self))
+
+    def _abandon_search(self) -> None:
+        """UI thread: the widget closes; the search is cancelled and its outcome (and every message) discarded."""
+        run = self._search_run
+        if run is None:
+            return
+        self._search_run = None
+        with run.lock:
+            run.abandoned = True
+        run.job.cancel()
+
+    def _search_origin(self, backward: bool) -> int:
+        """UI thread: the byte offset a search starts from: the start of the selection (backward) or its end (forward)."""
+        selection = self.selection
+        start, end = selection.start, selection.end
+        first, last = (start, end) if start <= end else (end, start)
+        return self._byte_of_location(first if backward else last)
+
+    def _byte_of_location(self, location: tuple[int, int]) -> int:
+        """UI thread: the byte offset of a location; for an unresolved column of a long row the cursor anchor (or the row start)."""
+        document = self.document
+        row, column = location
+        offset = document.byte_offset(row, column)
+        if offset is not None:
+            return offset
+        start = document.byte_offset(row, 0) or 0
+        machine = self._long_cursor.machine
+        if machine is not None and machine.anchor.row == row and location == self.cursor_location:
+            return start + machine.anchor.byte_rel
+        return start
+
+    def _post_search_outcome(self, run: SearchRun, outcome: SearchOutcome) -> None:
+        """Search thread: hand the outcome to the UI thread (exactly once), unless the widget was closed."""
+        with run.lock:
+            if run.abandoned:
+                return
+        try:
+            self.post_message(events.Callback(functools.partial(self._finish_search, run, outcome)))
+        except RuntimeError:  # the app is closing
+            return
+
+    def _on_search_report(self, run: SearchRun, report: CoreSearchProgress) -> None:
+        """Search thread: publish the latest progress; at most one call to the UI thread is outstanding (coalescing)."""
+        with run.lock:
+            run.progress = report
+            if run.progress_outstanding or run.abandoned:
+                return
+            run.progress_outstanding = True
+        try:
+            posted = self.post_message(events.Callback(functools.partial(self._announce_search_progress, run)))
+        except RuntimeError:
+            posted = False
+        if not posted:
+            with run.lock:
+                run.progress_outstanding = False
+
+    def _announce_search_progress(self, run: SearchRun) -> None:
+        """UI thread: turn the latest progress into a `SearchProgress` message, at most 10 per second and never after the terminal message."""
+        with run.lock:
+            run.progress_outstanding = False
+            report = run.progress
+        now = self.search_clock()
+        if report is None or self._search_run is not run or now - run.last_message < _MESSAGE_INTERVAL:
+            return
+        run.last_message = now
+        self.post_message(self.SearchProgress(report.done, report.total, report.phase, self).set_sender(self))
+
+    def _finish_search(self, run: SearchRun, outcome: SearchOutcome) -> None:
+        """UI thread: the one terminal handler of a search; posts exactly one of `SearchFound`, `SearchNotFound`, `SearchCancelled` and `SearchFailed`.
+
+        A run that is no longer current (replaced or closed) is ignored: its terminal message was posted when it was dropped.
+        """
+        if self._search_run is not run:
+            return
+        self._search_run = None
+        try:
+            message = self._conclude_search(run, outcome)
+        except Exception as failure:
+            logging.getLogger(__name__).exception("the finish of a search failed")
+            message = self.SearchFailed(failure, self)
+        self.post_message(message.set_sender(self))
+
+    def _conclude_search(self, run: SearchRun, outcome: SearchOutcome) -> Message:
+        """UI thread: apply the outcome of the search thread and return its terminal message."""
+        error = outcome.error
+        if error is not None:
+            if isinstance(error, CoreSourceChanged):
+                self._fail_source(str(error), error.kind)
+            return self.SearchFailed(error, self)
+        if outcome.cancelled:
+            return self.SearchCancelled(run.reason, self)
+        result = outcome.result
+        if result is None:
+            return self.SearchNotFound(run.needle, self)
+        if run.job.revision != self.document.revision:
+            return self.SearchCancelled("text changed", self)
+        return self._select_match(result.start, result.end, run.backward, wrapped=result.wrapped)
+
+    def _select_match(self, start: int, end: int, backward: bool, *, wrapped: bool) -> Message:
+        """UI thread: select the match `[start, end)` (the cursor at `end`, or at `start` for a backward search) and return `SearchFound`.
+
+        Exact when both ends lie below the frontier of the line index in rows that are not long. Otherwise the cursor is sent to `start` with
+        `goto_byte` (a provisional or pending jump, no selection); ACT6 task 10 replaces this by the pending exact selection.
+        """
+        first = self._exact_location(start)
+        last = self._exact_location(end)
+        if first is None or last is None:
+            self.goto_byte(start)
+        else:
+            self.selection = Selection(last, first) if backward else Selection(first, last)
+            self.scroll_cursor_visible()
+        row, column = self.cursor_location
+        return self.SearchFound(start, end, row, column, wrapped, self)
+
+    def _exact_location(self, offset: int) -> tuple[int, int] | None:
+        """UI thread: the exact `(row, column)` of a byte offset, or `None` beyond the line frontier or in a long row."""
+        document = self.document
+        found = document.row_at_offset(offset)
+        if found is None:
+            return None
+        row, span = found
+        try:
+            if document.is_long(row):
+                return None
+            line = document.get_line(row)
+        except RowUnavailable:
+            return None
+        return row, _column_of_byte(line, offset - span.start)
 
     def _end_save(self, run: _SaveRun) -> None:
         """UI thread: forget the run, lift the save registration and the edit lock."""
