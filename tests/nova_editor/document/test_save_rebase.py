@@ -381,6 +381,8 @@ def test_a_failure_after_the_install_keeps_the_swap_consistent(tmp_path: Path, m
         doc.join_on_close(holder)
         owner, name, replacement = _tail_patch(step, monkeypatch)
         monkeypatch.setattr(owner, name, replacement)
+        if step != "closer_start":
+            monkeypatch.setattr(threading.Thread, "start", recording_start)  # keeps the unregistered closer reachable for the final join
         old_source = doc._source
         target = tmp_path / "doc.bin"
         plan = session.save(target)  # the real apply_rebase: it must not raise
@@ -403,6 +405,9 @@ def test_a_failure_after_the_install_keeps_the_swap_consistent(tmp_path: Path, m
         holder.join(JOIN_SECONDS)
         _finish(session)
     assert doc.wait_rebased(JOIN_SECONDS)
+    for closer in closers:
+        closer.join(JOIN_SECONDS)
+        assert not closer.is_alive()
     assert open_files(tmp_path) == []
 
 
