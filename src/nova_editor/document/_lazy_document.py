@@ -377,15 +377,18 @@ class LazyDocument(DocumentBase):
                 self._edit_locks.remove(reason)
 
     def check_source(self) -> ChangeKind:
-        """Check the descriptor of a large original without reading content: `UNCHANGED`, or why a read would fail. A source in memory is `UNCHANGED`."""
+        """Check the descriptor of a large original without reading content: `UNCHANGED`, or why a read would fail. A source in memory and a closed document are `UNCHANGED`."""
         with self._lock:
             source = self._source
-        if not isinstance(source, PreadSource):
+            closed = self._closed
+        if closed or not isinstance(source, PreadSource):
             return ChangeKind.UNCHANGED
         try:
             source.check()
         except SourceChanged as error:
             return error.kind
+        except ValueError:  # the closer thread closed the source after the check of `_closed`
+            return ChangeKind.UNCHANGED
         return ChangeKind.UNCHANGED
 
     def begin_save(self) -> None:
@@ -434,7 +437,7 @@ class LazyDocument(DocumentBase):
             original: ByteSource = self._source
             if unverified and isinstance(original, PreadSource):
                 original = original.unverified_reader()
-            return [PlanPart(src, original if src == 0 else _SegmentBytes(self._table._source_of(src)), a, b) for src, a, b in runs]
+            return [PlanPart(src, original if src == 0 else _SegmentBytes(self._table.source_of(src)), a, b) for src, a, b in runs]
 
     def prepare_rebase(self, result: SaveResult, contents: Sequence[Content]) -> RebasePlan:
         """Translate `contents` (every piece reference the undo and redo stacks and the clipboard hold) onto the saved file (design 7.3 and 8).
@@ -601,7 +604,8 @@ class LazyDocument(DocumentBase):
         with self._lock:
             self._subscribers.append(callback)
             existing = list(self._long.values())
-        self._line_index.subscribe(callback)
+            line_index = self._line_index
+        line_index.subscribe(callback)
         for index in existing:
             index.subscribe(callback)
 
@@ -831,15 +835,19 @@ class LazyDocument(DocumentBase):
     @property
     def newline(self) -> Newline:
         """The terminator of the first row (LF until it is known)."""
-        if self._newline is not None:
-            return self._newline
+        with self._lock:
+            cached = self._newline
+        if cached is not None:
+            return cached
         try:
             found = self._range(0)
         except (IndexError, RowUnavailable):
             return "\n"
         terminator = self.read_bytes(found.content_end, found.end - found.content_end)
-        self._newline = "\r\n" if terminator == b"\r\n" else "\r" if terminator == b"\r" else "\n"
-        return self._newline
+        found_newline: Newline = "\r\n" if terminator == b"\r\n" else "\r" if terminator == b"\r" else "\n"
+        with self._lock:
+            self._newline = found_newline
+        return found_newline
 
     @property
     def start(self) -> Location:
