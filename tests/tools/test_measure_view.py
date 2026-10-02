@@ -903,9 +903,19 @@ def test_search_longline_plants_a_marker_in_a_copy_and_selects_it_exactly(mixed_
     for row in found:
         assert (row["terminal"], row["start_ok"], row["selected_text"], row["selection_ok"], row["ok"]) == ("found", True, MARKER.decode(), True, True)
         assert row["result_to_selection_ms"] >= 0
+        assert row["pending_ms"] >= 0
+        assert isinstance(row["jump_progress_samples"], int)
+        assert row["search_ms"] > 0
         assert row["found_start"] >= 3000
         assert row["file_kind"] == "reference"
         assert row["planted"] is True
+    for wrap in ("off", "on"):
+        states = [row["index_state"] for row in found if row["wrap"] == wrap]
+        assert states == ["cold", "warm"]
+        cold = next(row for row in found if row["wrap"] == wrap and row["index_state"] == "cold")
+        assert cold["harness_touched_long_row"] is False
+        assert isinstance(cold["long_scan_running_at_search"], bool)
+        assert cold["state"] == "marker-cold"
     assert {row["wrap"] for row in rows if row["op"] == "summary"} == {"off", "on"}
     assert any(row["state"] == "searching" for row in rows)
 
