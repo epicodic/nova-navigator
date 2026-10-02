@@ -4,18 +4,21 @@ from __future__ import annotations
 
 import dataclasses
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from nova_editor.core import Content, PreadSource
+from nova_editor.core import ByteSource, Content, LineIndex, LongLineIndex, PreadSource
 from nova_editor.core.pieces import generation_of
+from nova_editor.core.rebase import RebasePlan
 from nova_editor.core.save import SaveJob
 from nova_editor.document import _lazy_document
 from nova_editor.document._edit import Edit
 from nova_editor.document._lazy_document import LazyDocument
 from nova_editor.widget import NovaTextArea
 from tests.nova_editor.document.helpers_save import JOIN_SECONDS, SAVE_SETTINGS, SMALL, DocPlanner, Session, open_pread_document, run_save, save_result
+from tests.nova_editor.save_widget_helpers import open_files
 
 ORIGINAL = b"alpha\nbeta\r\ngamma\rdelta\n" + b"0123456789" * 8 + b"\nend"
 
@@ -313,3 +316,98 @@ def test_edit_contents_and_rewrite_use_one_order() -> None:
     finally:
         doc.close()
         assert doc.wait_closed(JOIN_SECONDS)
+
+
+TAIL_STEPS = ["line_subscribe", "replacement_subscribe", "replacement_start", "closer_start", "bookkeeping"]
+
+
+def _tail_patch(step: str, monkeypatch: pytest.MonkeyPatch) -> tuple[type, str, Callable[..., object]]:
+    """What to replace so that `step` of the tail of `apply_rebase` fails (the flag that arms the `bookkeeping` failure is set once `_install` returned)."""
+    armed = threading.Event()
+    real_install = LazyDocument._install
+    real_start = threading.Thread.start
+    real_alive = threading.Thread.is_alive
+
+    def install(self: LazyDocument, plan: RebasePlan, source: ByteSource, line_index: LineIndex) -> object:
+        swap = real_install(self, plan, source, line_index)
+        armed.set()
+        return swap
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError(step)
+
+    def start(self: threading.Thread) -> None:
+        if self.name == "lazy-rebase-closer":
+            raise RuntimeError(step)
+        real_start(self)
+
+    def alive(self: threading.Thread) -> bool:
+        if self.name == "holder" and armed.is_set():
+            raise RuntimeError(step)
+        return real_alive(self)
+
+    monkeypatch.setattr(LazyDocument, "_install", install)
+    patches: dict[str, tuple[type, str, Callable[..., object]]] = {
+        "line_subscribe": (LineIndex, "subscribe", boom),
+        "replacement_subscribe": (LongLineIndex, "subscribe", boom),
+        "replacement_start": (LongLineIndex, "start", boom),
+        "closer_start": (threading.Thread, "start", start),
+        "bookkeeping": (threading.Thread, "is_alive", alive),
+    }
+    return patches[step]
+
+
+@pytest.mark.parametrize("step", TAIL_STEPS)
+def test_a_failure_after_the_install_keeps_the_swap_consistent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str) -> None:
+    row = "é" * 300 + "\t" + "x" * 300
+    session = _session(tmp_path, ("top\n" + row + "\nbottom").encode())
+    doc = session.doc
+    release = threading.Event()
+    holder = threading.Thread(target=release.wait, args=(JOIN_SECONDS,), name="holder")
+    holder.start()
+    try:
+        session.edit((0, 0), (0, 3), "TOPTOP")
+        session.edit((2, 0), (2, 0), "new ")
+        assert doc.long_index(1).join(JOIN_SECONDS)
+        doc.subscribe(lambda: None)
+        doc.join_on_close(holder)
+        owner, name, replacement = _tail_patch(step, monkeypatch)
+        monkeypatch.setattr(owner, name, replacement)
+        old_source = doc._source
+        target = tmp_path / "doc.bin"
+        plan = session.save(target)  # the real apply_rebase: it must not raise
+        monkeypatch.undo()
+        assert doc.rebase_installed
+        assert doc.rebase_problems
+        assert doc._source is plan.source
+        session.check_saved(target)
+        session.check_records()
+        assert isinstance(old_source, PreadSource)
+        assert doc.long_index(1).join(JOIN_SECONDS)  # a long index that could not start is built again
+        assert doc.line_length(1) == len(row)
+        assert session.undo()
+        session.check_document()
+        assert session.undo()
+        session.check_document()
+        assert doc.read_bytes(0, doc.length) == ("top\n" + row + "\nbottom").encode()
+    finally:
+        release.set()
+        holder.join(JOIN_SECONDS)
+        _finish(session)
+    assert doc.wait_rebased(JOIN_SECONDS)
+    assert open_files(tmp_path) == []
+
+
+def test_a_failure_before_the_install_leaves_the_flag_down(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _session(tmp_path)
+    try:
+        session.edit((0, 0), (0, 0), "x")
+        monkeypatch.setattr(LazyDocument, "_build_table", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError(5, "boom")))
+        with pytest.raises(OSError, match="boom"):
+            session.save(tmp_path / "doc.bin")
+        monkeypatch.undo()
+        assert not session.doc.rebase_installed
+        assert session.doc.rebase_problems == []
+    finally:
+        _finish(session)
+    assert open_files(tmp_path) == []

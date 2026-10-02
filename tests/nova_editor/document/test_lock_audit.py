@@ -160,8 +160,8 @@ CALLS: dict[str, Call] = {
     "require_not_saving": _gated(lambda d, _: d.require_not_saving("audit")),
     "saving": lambda d, _: d.saving,
 }
-ATTRIBUTES = frozenset({"attach_syntax", "call_log", "foreground", "from_bytes", "from_path", "from_text"})
-"""Public members that are not driven: constructors, plain attributes and the syntax mirror hook (it touches no table)."""
+ATTRIBUTES = frozenset({"attach_syntax", "call_log", "foreground", "from_bytes", "from_path", "from_text", "rebase_installed", "rebase_problems"})
+"""Public members that are not driven: constructors, plain attributes and the syntax mirror hook and the diagnostics of the last rebase (none touches the table)."""
 
 
 def _public_members(doc: LazyDocument) -> set[str]:
