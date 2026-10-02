@@ -17,6 +17,7 @@ from tools._view_app import LOWERED
 from tools._view_edit_latency import GcTimer
 from tools._view_procmem import median, percentile
 from tools._view_save import ByteModel, literal, verify_file
+from tools._view_search import SearchEnd, finished_search_seconds
 from tools.measure_view import main
 
 MAX_TEST_FILE_BYTES = 1 << 20
@@ -974,3 +975,10 @@ def test_search_fold_records_the_class_count_build_time_and_memory(tmp_path: Pat
     assert isinstance(row["rss_anon_mib_delta"], float)
     assert set(row) >= SEARCH_FACTS
     assert main(["summarise", str(out)]) == 0
+
+
+def test_search_durations_pair_each_start_with_its_own_terminal_message() -> None:
+    starts = [0.0, 10.0, 20.0, 30.0]
+    ends = [SearchEnd("found", 1.0, None), SearchEnd("not_found", 12.0, "x"), SearchEnd("cancelled", 21.0, "cancelled"), SearchEnd("not_found", 34.0, "x")]
+    assert finished_search_seconds(starts, ends) == [2.0, 4.0]
+    assert finished_search_seconds(starts[:1], ends) == []
