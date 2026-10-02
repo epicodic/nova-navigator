@@ -23,6 +23,7 @@ from nova_editor.core import (
     LineIndex,
     LineSnapshot,
     LongLineIndex,
+    PieceSource,
     PieceTable,
     PreadSource,
     RowNotIndexed,
@@ -33,6 +34,7 @@ from nova_editor.core.foreground import Foreground
 from nova_editor.core.line_index import call_subscriber
 from nova_editor.core.long_line_index import SPLICE_SYNC_BYTES
 from nova_editor.core.long_line_index import Edit as LongEdit
+from nova_editor.core.save import PlanPart
 from nova_editor.core.text_width import SURROGATE_ESCAPE, advance_disp, locate_cover, utf8_len
 from nova_editor.document._document import DocumentBase, EditResult, Location, Newline
 from nova_editor.document._lazy_config import LazyConfig
@@ -67,6 +69,29 @@ class WholeLineAccess(AssertionError):
 
 class RowUnavailable(RuntimeError):
     """The row exists but its byte range is not resolvable yet: the scan has not reached its end, or the read budget was exceeded."""
+
+
+class EditsLocked(RowUnavailable):
+    """The document refuses edits at the moment (`LazyDocument.lock_edits`); the message holds the reason."""
+
+
+class _SegmentBytes:
+    """`ByteSource` view of a piece source (an add segment or a legacy original) for a save plan: `read(offset, size)` instead of `read(a, b)`."""
+
+    def __init__(self, source: PieceSource) -> None:
+        self._source = source
+
+    def length(self) -> int:
+        """Return an upper bound; the plan never reads beyond the pieces it names."""
+        return 1 << 62
+
+    def read(self, offset: int, size: int, *, cache: bool = True) -> bytes:
+        """Return the bytes `[offset, offset + size)` of the piece source; `cache` is accepted for the protocol."""
+        del cache
+        return self._source.read(offset, offset + size)
+
+    def close(self) -> None:
+        """Do nothing: the piece source belongs to the table."""
 
 
 _EMPTY = Content.from_pieces([], 0)
@@ -149,6 +174,8 @@ class LazyDocument(DocumentBase):
         self._source = source
         self._lock = threading.RLock()
         self._closed = False
+        self._edit_lock_reason: str | None = None
+        self._saving = False
         self._close_done = threading.Event()
         self._reapers: list[threading.Thread] = []
         self._started = False
@@ -255,6 +282,67 @@ class LazyDocument(DocumentBase):
     def wait_closed(self, timeout: float) -> bool:
         """Wait until `close` has joined every scan and closed the source; return whether that happened within `timeout` seconds."""
         return self._close_done.wait(timeout)
+
+    def lock_edits(self, reason: str) -> None:
+        """Refuse `replace_range`, `splice` and `splice_bytes` with `EditsLocked(reason)` until `unlock_edits`."""
+        with self._lock:
+            self._edit_lock_reason = reason
+
+    def unlock_edits(self) -> None:
+        """Accept edits again."""
+        with self._lock:
+            self._edit_lock_reason = None
+
+    def begin_save(self) -> None:
+        """Register a running save: `require_not_saving` refuses until `end_save`."""
+        with self._lock:
+            self._saving = True
+
+    def end_save(self) -> None:
+        """Clear the registration of a save."""
+        with self._lock:
+            self._saving = False
+
+    @property
+    def saving(self) -> bool:
+        """Whether a save is registered (`begin_save` without `end_save`)."""
+        with self._lock:
+            return self._saving
+
+    def require_not_saving(self, operation: str) -> None:
+        """Guard for `load_text`, `reload` and `open` of the widget.
+
+        Raises:
+            RuntimeError: A save is registered; `operation` names the refused call.
+        """
+        if self.saving:
+            msg = f"{operation} is not allowed while a save runs"
+            raise RuntimeError(msg)
+
+    def plan(self, offset: int, limit: int, unverified: bool) -> list[PlanPart]:
+        """Return the parts that make up the document bytes `[offset, offset + limit)` (clamped to the document), in order, for the save job.
+
+        The lock is held for this call only, never across I/O: no byte is read here.
+        Parts of the original (`src` 0) carry the document's source, or with `unverified` a reader of its descriptor that skips the size and mtime
+        check; the other parts carry a view of their add segment or legacy original with `read(offset, size)` semantics.
+
+        Raises:
+            RowUnavailable: The document is closed.
+        """
+        with self._lock:
+            self._require_open()
+            end = min(offset + limit, self._table.length)
+            start = min(offset, end)
+            runs = self._table.layout_range(start, end)
+            original: ByteSource = self._source
+            if unverified and isinstance(original, PreadSource):
+                original = original.unverified_reader()
+            return [PlanPart(src, original if src == 0 else _SegmentBytes(self._table._source_of(src)), a, b) for src, a, b in runs]
+
+    def _require_editable(self) -> None:
+        """Raise `EditsLocked` while edits are locked; the caller holds the lock."""
+        if self._edit_lock_reason is not None:
+            raise EditsLocked(self._edit_lock_reason)
 
     def subscribe(self, callback: Callable[[], None]) -> None:
         """Call `callback` (on a scan thread) on progress of the line index and of every long index, including later ones."""
@@ -544,6 +632,7 @@ class LazyDocument(DocumentBase):
         top, bottom = sorted((start, end))
         with self._lock:
             self._require_open()
+            self._require_editable()
             first = self._locate(top)
             last = self._locate(bottom)
             if _NEWLINE.search(text):
@@ -571,6 +660,7 @@ class LazyDocument(DocumentBase):
         top, bottom = sorted((start, end))
         with self._lock:
             self._require_open()
+            self._require_editable()
             first = self._locate(top)
             last = self._locate(bottom)
         return self._splice_located(first, last, content)
@@ -606,6 +696,7 @@ class LazyDocument(DocumentBase):
             raise ValueError(msg)
         with self._lock:
             self._require_open()
+            self._require_editable()
             if end_byte > self._table.length:
                 msg = f"byte {end_byte} is beyond the document"
                 raise ValueError(msg)
@@ -625,6 +716,7 @@ class LazyDocument(DocumentBase):
     def _splice_located(self, first: _Located, last: _Located, content: Content) -> EditResult:
         with self._lock:
             self._require_open()
+            self._require_editable()
             result = self._commit(first, last, content)
             mirror = self._syntax
             inserted = self._table.content_bytes(content, 0, content.length) if mirror is not None else b""
