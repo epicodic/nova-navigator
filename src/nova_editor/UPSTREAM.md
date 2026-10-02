@@ -176,9 +176,11 @@ The widget has one document type, `LazyDocument`.
 `_drive_lazy` sends a jump with `select_to` to the new `_drive_search`, which selects the match exactly and posts `SearchFound`, and `_resolve_exact` waits for the long index.
 `_resolve_byte` gained `allow_end` (a match may end at the document length).
 `_drop_jump` posts the `SearchCancelled` of a dropped search placement, and `_abort_jump` posts `SearchFailed` for a search placement.
+**New private types:** the frozen dataclasses `_Pending` (a byte that cannot be placed yet), `_Rejection` (a byte that cannot be placed at all) and `_LongRowTarget` (a byte inside a long row); `_resolve_byte` and `_resolve_exact` return them.
+**New private methods:** `_end_search_placement` (ends a pending search placement with `SearchFailed`; `_fail_source` calls it) and `_after_text_change` (the one hook after every edit, undo, redo and roll back).
 **`check_action`:** `cancel_pending` is also active while a search runs, and `action_cancel_pending` cancels the search first.
 **Cancel hooks:** `_after_text_change` (every edit, undo, redo and roll back) cancels the search with the reason `text changed`; `_replace_document` cancels it with the reason `reloaded`; `close` calls `_abandon_search`.
-**Key binding:** `select_all` is bound to `ctrl+shift+a,f8` instead of upstream's `ctrl+shift+a,f7`, so that F7 opens the search in `nova_edit`; the binding table in the docstring says the same.
+**Key binding:** `select_all` is bound to `ctrl+shift+a,f8` instead of upstream's `f7` only (`ctrl+shift+a` is a new key), so that F7 opens the search in `nova_edit`; the binding table in the docstring says the same.
 
 ### `document/_edit.py` (ACT5)
 

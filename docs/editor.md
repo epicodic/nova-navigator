@@ -264,7 +264,7 @@ Textual widget and lazy rendering support.
 - `cancel_search()` — ask a running search to stop; nothing happens when none runs.
 - `searching` (read-only) — whether a search runs.
 - `search_settings` (class attribute) — `SearchSettings` (chunk, progress interval, tier switch); tests lower it.
-- `select_all` is bound to `ctrl+shift+a` and `f8`; F7 belongs to the search of `nova_edit`.
+- `select_all` is bound to `ctrl+shift+a` and `f8`; the stock binding was `f7` only, `ctrl+shift+a` is new, and F7 belongs to the search of `nova_edit`.
 
 **Message classes (posted by the widget):**
 - `IndexProgress(count, complete)` — posted at most 10 times per second while the line scan grows, and once at completion.
@@ -765,7 +765,7 @@ The layers are `core/casefold.py` and `core/search.py` (Textual-free), `LazyDocu
 ### The Key Move
 
 `F7` opens the search, as in Midnight Commander.
-The stock binding of `select_all` was `ctrl+shift+a,f7`; it is now `ctrl+shift+a,f8`.
+The stock binding of `select_all` was `f7` only; it is now `ctrl+shift+a,f8`, and `ctrl+shift+a` is a new key.
 `Ctrl+F` stays the stock cursor-right binding.
 
 ### Needle Model
@@ -893,6 +893,29 @@ Then it shows `Found`, `Wrapped to the top`, `Wrapped to the bottom`, `Not found
 A needle is shown at most 40 characters in `Not found`.
 The bar and the status line are plain widgets, so they have no entry in `src/tools/dialog_tester.py`.
 
+### Known Limit: Pattern Tier Cap
+
+A unit that may use the pattern tier owns at most `PATTERN_WORK_BUDGET // token_count` bytes (budget 4,000,000, minimum 256 bytes), where `token_count` is the number of needle characters.
+The cap keeps a repetitive needle from holding the GIL for long in one `re.search` call (about 22 ms per unit in the worst case).
+A long needle therefore reads smaller windows than `CHUNK`.
+A case-sensitive needle without a line break uses the plain `find` tier and is not cut.
+
+### Known Limit: Needle Validation and Compilation
+
+`SearchJob` validates the needle in its constructor, which the widget calls on the UI thread, so a needle that cannot be searched fails at once with `SearchFailed`.
+The compilation (the fold table and the regexes) runs on the search thread, at the start of `run`.
+
+### Known Limit: Search Start in an Unindexed Long Row
+
+In a long row whose index does not yet resolve the column, the exact byte of the column is unknown.
+The cursor end of the selection uses the anchor of the long cursor.
+A search whose start is the other end of the selection starts at column 0 of that row, because the exact byte needs the long-index scan.
+
+### Known Limit: A Pending Placement and a Failing Source
+
+A match that waits to be placed (beyond the frontier or in a long row) keeps the jump pending.
+When the source fails in that time, the pending search placement ends with `SearchFailed`, and the cursor and the selection stay unchanged.
+
 ### Search Measurements
 
 All numbers are from the development machine (i5-14600K, 62 GiB, Linux 7.0.0, Python 3.12, Textual 8.2.8), on the 5 GB file `normal-5g.txt` (5,368,709,120 bytes), warm cache, unless a line says stand-in.
@@ -913,9 +936,13 @@ All numbers are from the development machine (i5-14600K, 62 GiB, Linux 7.0.0, Py
 | Long index resolves byte 100,000,000 / 199,000,000 | 1.09 s / 2.19 s |
 
 UI steps during a search on the 5 GB file stay under 50 ms with wrap off (maximum 36.6 ms sensitive, 30.2 ms pattern).
-With wrap on, no step exceeds 50 ms except the first `ctrl+end` of a run (about 360 to 480 ms, with and without a search) and one `up` step of 53.6 ms in one of 4 pattern-tier runs.
-The first `ctrl+end` is the cold layout of the wrapped end of the 5 GB document, which exists without a search.
-The `up` step of 53.6 ms did not reproduce in 5 further runs.
+With wrap on, no step exceeds 50 ms except the first `ctrl+end` of a run and one `up` step of 53.6 ms.
+The `up` step happened in one of 8 pattern-tier wrap-on runs on the 5 GB file.
+It did not reproduce in the 7 other runs, nor in 2 further runs after the fix loop.
+With wrap on the first `ctrl+end` of a run costs 360 to 480 ms, with and without a search.
+That step is the cold layout of the wrapped end of the 5 GB document, which exists without a search.
+With wrap on, `RssAnon` rises by about 9 MiB over the session baseline in runs that include that first `ctrl+end`, and stays under 52 MiB.
+The rise is the wrapped end layout, also seen without a search in the cold jump, and it is not attributed to the search.
 On the 200 MB line the steps during the search peak at 28.8 ms.
 
 The chunk sweep (one run each) measured 2.9, 3.6 and 4.4 GB/s for the find tier and 404, 425 and 422 MB/s for the pattern tier at 64 KiB, 256 KiB and 1 MiB.
