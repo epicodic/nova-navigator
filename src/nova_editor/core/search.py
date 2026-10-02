@@ -44,6 +44,7 @@ _BREAK_FORWARD = rb"(?:\r\n|(?<!\r)\n|\r(?!\n))"
 _BREAK_REVERSED = rb"(?:\n\r|\n(?!\r)|(?<!\n)\r)"
 _BREAK_LENGTH = 2
 _ASCII_LIMIT = 0x80
+_NON_ASCII = re.compile("[^\\x00-\\x7f]")
 _CONTINUATION = range(0x80, 0xC0)
 _LEAD_2 = range(0xC2, 0xE0)
 _LEAD_3 = range(0xE0, 0xF0)
@@ -342,11 +343,15 @@ def _tokenize(needle: str, *, case_sensitive: bool) -> list[tuple[bytes, ...]]:
     return tokens
 
 
-def compile_matcher(needle: str, *, case_sensitive: bool, tier: Tier = "auto") -> Matcher:
-    """Compile `needle` into a `Matcher`.
+def _folds_to_ascii(needle: str) -> bool:
+    """True when every character of `needle` folds to ASCII; stops at the first character that does not."""
+    if needle.isascii():
+        return True
+    return all(fold1(match.group()).isascii() for match in _NON_ASCII.finditer(needle))
 
-    `tier` is a test switch: `"auto"` picks per window, `"find"`, `"ascii"` and `"pattern"` force a tier; a forced tier
-    that cannot apply to the needle raises `SearchError`.
+
+def validate_needle(needle: str, *, tier: Tier = "auto", case_sensitive: bool = True) -> None:
+    """Check `needle` and `tier` without building any table or pattern (cheap, safe on the UI thread).
 
     Raises:
         SearchError: the needle is empty, has a lone surrogate outside U+DC80 to U+DCFF, is too long, or `tier` is
@@ -362,6 +367,27 @@ def compile_matcher(needle: str, *, case_sensitive: bool, tier: Tier = "auto") -
         raise SearchError("the needle contains a character that cannot be encoded") from error
     if len(encoded) > MAX_NEEDLE_BYTES:
         raise SearchError("the needle is too long")
+    has_break = "\r" in needle or "\n" in needle
+    plain = case_sensitive and not has_break
+    if (not plain or tier == "pattern") and len(needle) - needle.count("\r\n") > MAX_PATTERN_CHARS:
+        raise SearchError("the needle is too long for a case-insensitive or line break search")
+    if tier == "find" and not plain:
+        raise SearchError("the find tier needs a case-sensitive needle without a line break")
+    if tier == "ascii" and (case_sensitive or has_break or not _folds_to_ascii(needle)):
+        raise SearchError("the ascii tier needs a case-insensitive needle whose folded form is ASCII")
+
+
+def compile_matcher(needle: str, *, case_sensitive: bool, tier: Tier = "auto") -> Matcher:
+    """Compile `needle` into a `Matcher`.
+
+    `tier` is a test switch: `"auto"` picks per window, `"find"`, `"ascii"` and `"pattern"` force a tier; a forced tier
+    that cannot apply to the needle raises `SearchError`.
+
+    Raises:
+        SearchError: see `validate_needle`.
+    """
+    validate_needle(needle, tier=tier, case_sensitive=case_sensitive)
+    encoded = needle.encode("utf-8", "surrogateescape")
     tokens = _tokenize(needle, case_sensitive=case_sensitive)
     has_break = any(not token for token in tokens)
     plain = encoded if case_sensitive and not has_break else None
@@ -370,12 +396,6 @@ def compile_matcher(needle: str, *, case_sensitive: bool, tier: Tier = "auto") -
         folded = "".join(fold1(char) for char in needle)
         if folded.isascii():
             ascii_fold = folded.encode()
-    if (plain is None or tier == "pattern") and len(tokens) > MAX_PATTERN_CHARS:
-        raise SearchError("the needle is too long for a case-insensitive or line break search")
-    if tier == "find" and plain is None:
-        raise SearchError("the find tier needs a case-sensitive needle without a line break")
-    if tier == "ascii" and ascii_fold is None:
-        raise SearchError("the ascii tier needs a case-insensitive needle whose folded form is ASCII")
     return Matcher(tokens, case_sensitive=case_sensitive, ascii_fold=ascii_fold, plain=plain, forced=tier)
 
 
@@ -410,7 +430,7 @@ class SearchJob:
             sleep: Sleep function used for the gate.
 
         Raises:
-            SearchError: the needle cannot be searched.
+            SearchError: the needle cannot be searched (checked cheaply here; the matcher is compiled by `run`).
         """
         self._planner = planner
         self._spec = spec
@@ -420,7 +440,7 @@ class SearchJob:
         self._foreground = foreground
         self._clock = clock
         self._sleep = sleep
-        self._matcher = compile_matcher(spec.needle, case_sensitive=spec.case_sensitive, tier=self._settings.tier)
+        validate_needle(spec.needle, tier=self._settings.tier, case_sensitive=spec.case_sensitive)
         self._cancelled = threading.Event()
         self._revision: int | None = None
         self._last_report: float | None = None
@@ -443,13 +463,15 @@ class SearchJob:
             SourceChanged: the source changed or was released while the search read it.
         """
         self._check_cancel()
+        spec = self._spec
+        matcher = compile_matcher(spec.needle, case_sensitive=spec.case_sensitive, tier=self._settings.tier)
+        self._check_cancel()
         first = self._planner.search_plan(0, 0)
         self._revision = first.revision
         length = first.length
         if length == 0:
             return None
         origin = max(0, min(self._origin, length))
-        spec = self._spec
         if not spec.backward:
             regions = [("forward", origin, length)] + ([("wrapped", 0, origin)] if spec.wrap else [])
         else:
@@ -458,18 +480,18 @@ class SearchJob:
         total = length if spec.wrap else sum(hi - lo for _, lo, hi in regions)
         done = 0
         for phase, lo, hi in regions:
-            for a, b in self._windows(lo, hi, backward=spec.backward):
+            for a, b in self._windows(matcher, lo, hi, backward=spec.backward):
                 self._check_cancel()
                 self._give_way()
-                hit = self._unit(a, b, length)
+                hit = self._unit(matcher, a, b, length)
                 done += b - a
                 self._report(phase, done, total)
                 if hit is not None:
                     return SearchResult(hit[0], hit[1], phase == "wrapped")
         return None
 
-    def _windows(self, lo: int, hi: int, *, backward: bool) -> Iterator[tuple[int, int]]:
-        chunk = self._span()
+    def _windows(self, matcher: Matcher, lo: int, hi: int, *, backward: bool) -> Iterator[tuple[int, int]]:
+        chunk = self._span(matcher)
         if not backward:
             for a in range(lo, hi, chunk):
                 yield a, min(a + chunk, hi)
@@ -477,26 +499,26 @@ class SearchJob:
             for b in range(hi, lo, -chunk):
                 yield max(lo, b - chunk), b
 
-    def _span(self) -> int:
+    def _span(self, matcher: Matcher) -> int:
         """Bytes one unit owns: the chunk, cut down for long needles that may use the pattern tier."""
         chunk = max(1, self._settings.chunk)
-        if not self._matcher.may_use_pattern:
+        if not matcher.may_use_pattern:
             return chunk
         settings = self._settings
-        span = max(1, settings.min_pattern_span, settings.pattern_work_budget // self._matcher.token_count)
+        span = max(1, settings.min_pattern_span, settings.pattern_work_budget // matcher.token_count)
         return min(chunk, span)
 
-    def _unit(self, a: int, b: int, length: int) -> tuple[int, int] | None:
+    def _unit(self, matcher: Matcher, a: int, b: int, length: int) -> tuple[int, int] | None:
         """Search the window owning `[a, b)`; return the match in document offsets."""
-        lmax = self._matcher.max_length
+        lmax = matcher.max_length
         if not self._spec.backward:
             read_lo, read_hi = max(0, a - CONTEXT_BEFORE), min(length, b + lmax - 1 + CONTEXT_AFTER)
             window = self._read(read_lo, read_hi)
-            hit = self._matcher.find(window, a - read_lo, b - read_lo)
+            hit = matcher.find(window, a - read_lo, b - read_lo)
         else:
             read_lo, read_hi = max(0, a - (lmax - 1) - CONTEXT_BEFORE), min(length, b + CONTEXT_AFTER)
             window = self._read(read_lo, read_hi)
-            hit = self._matcher.rfind(window, a - read_lo, b - read_lo)
+            hit = matcher.rfind(window, a - read_lo, b - read_lo)
         return None if hit is None else (read_lo + hit[0], read_lo + hit[1])
 
     def _read(self, lo: int, hi: int) -> bytes:
