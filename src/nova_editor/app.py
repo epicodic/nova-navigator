@@ -34,9 +34,11 @@ from textual.widgets import Header, Input, Static
 from nova_editor.core import ByteSource
 from nova_editor.core.byte_source import ChangeKind
 from nova_editor.core.save import check_path
+from nova_editor.document._cursor_anchor import CursorState
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.document._lazy_document import LazyDocument
 from nova_editor.search_bar import SearchBar, SearchStatus
+from nova_editor.status_line import StatusLine, StatusState
 from nova_editor.widget import ExternalCheck, NovaTextArea
 
 
@@ -412,6 +414,14 @@ class TimedNovaTextArea(NovaTextArea):
         return result
 
 
+def _column_kind(state: CursorState) -> Literal["exact", "provisional", "pending"]:
+    if state is CursorState.RESOLVED:
+        return "exact"
+    if state is CursorState.PROVISIONAL:
+        return "provisional"
+    return "pending"
+
+
 class EditorFooter(Static):
     """Custom footer showing file information."""
 
@@ -455,6 +465,13 @@ class NovaEditApp(App[None]):
     #editor {
         width: 1fr;
         height: 1fr;
+    }
+
+    #status_line {
+        width: 100%;
+        height: 1;
+        background: $panel;
+        color: $text;
     }
 
     #goto_bar {
@@ -550,12 +567,66 @@ class NovaEditApp(App[None]):
         yield ConfirmBar()
         yield SearchBar()
         yield SearchStatus()
+        yield StatusLine(self._status_state)
 
         yield EditorFooter(self.file_path)
 
     def on_mount(self) -> None:
         """Start the poll for external changes."""
         self.set_interval(self.POLL_SECONDS, self._poll)
+        if self.editor is not None:
+            self.watch(self.editor, "pending_progress", self._on_editor_state, init=False)
+            self.watch(self.editor, "soft_wrap", self._on_editor_state, init=False)
+
+    def _on_editor_state(self, _value: object) -> None:
+        self._request_status()
+
+    def _request_status(self) -> None:
+        for status in self.query(StatusLine):
+            status.request()
+
+    def _status_state(self) -> StatusState | None:
+        editor = self.editor
+        if editor is None:
+            return None
+        row, column = editor.cursor_location
+        cursor_state, _ = editor.peek_cursor_state()
+        exact = editor.line_count_exact
+        progress = editor.pending_progress
+        return StatusState(
+            line=row + 1,
+            column=column + 1,
+            column_kind=_column_kind(cursor_state),
+            byte_offset=editor.cursor_byte_offset,
+            line_count=editor.line_count,
+            line_count_exact=exact,
+            indexing_percent=100 if exact else min(99, int(editor.indexing_progress * 100)),
+            line_ending=editor.line_ending,
+            modified=editor.modified,
+            new_file=self._load_state == "new",
+            wrap=editor.soft_wrap,
+            goto_percent=None if progress is None else int(progress * 100),
+        )
+
+    def on_nova_text_area_selection_changed(self, message: NovaTextArea.SelectionChanged) -> None:
+        """Refresh the status line."""
+        self._request_status()
+
+    def on_nova_text_area_changed(self, message: NovaTextArea.Changed) -> None:
+        """Refresh the status line."""
+        self._request_status()
+
+    def on_nova_text_area_index_progress(self, message: NovaTextArea.IndexProgress) -> None:
+        """Refresh the status line."""
+        self._request_status()
+
+    def on_nova_text_area_indexing_complete(self, message: NovaTextArea.IndexingComplete) -> None:
+        """Refresh the status line."""
+        self._request_status()
+
+    def on_nova_text_area_jump_completed(self, message: NovaTextArea.JumpCompleted) -> None:
+        """Refresh the status line."""
+        self._request_status()
 
     @property
     def _save_bar(self) -> SaveBar:
@@ -771,6 +842,7 @@ class NovaEditApp(App[None]):
         footer = self.query_one(EditorFooter)
         footer.file_path = message.path
         footer.refresh()
+        self._request_status()
         self._save_bar.show_result(f"Saved  {message.path.name}  {format_sizes(message.length, message.length)}")
         self._deferred_change = None
 
@@ -828,6 +900,7 @@ class NovaEditApp(App[None]):
 
     def on_nova_text_area_reloaded(self, message: NovaTextArea.Reloaded) -> None:
         """Show that the file was reloaded."""
+        self._request_status()
         self._save_bar.show_result("Reloaded")
 
     def on_nova_text_area_reload_failed(self, message: NovaTextArea.ReloadFailed) -> None:
