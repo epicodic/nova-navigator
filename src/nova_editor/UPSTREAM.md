@@ -13,17 +13,17 @@ This file documents the vendored code from upstream Textual and how to manage up
 ## Vendored Files
 
 The following files are vendored from Textual 8.2.8.
-The Notes column says what differs from upstream, and what ACT3 changed on top of the ACT2 state.
+The Notes column says what differs from upstream, and what ACT3 and ACT4 changed on top of the ACT2 state.
 
 | Vendored Path | Upstream Path | Notes |
 |---|---|---|
-| `widget/_text_area.py` | `src/textual/widgets/_text_area.py` | Class renamed `TextArea` to `NovaTextArea`; imports updated; lazy document support, cursor state machine, long-row handling and new messages added (see below) |
+| `widget/_text_area.py` | `src/textual/widgets/_text_area.py` | Class renamed `TextArea` to `NovaTextArea`; imports updated; lazy document support, cursor state machine, long-row handling and new messages added; ACT4 removed the stock `Document` path and added editing on piece tables, refusal and the clipboard (see below) |
 | `widget/_text_area_theme.py` | `src/textual/_text_area_theme.py` | Imports updated to reference `NovaTextArea`; unchanged by ACT3 |
-| `document/_document.py` | `src/textual/document/_document.py` | Capability methods added; `cell_len` now comes from `rich.cells` |
+| `document/_document.py` | `src/textual/document/_document.py` | Capability methods added; `cell_len` now comes from `rich.cells`; `EditResult` gained `removed`, `start_byte` and `inserted` (ACT4) |
 | `document/_document_navigator.py` | `src/textual/document/_document_navigator.py` | Lazy-document branches added (see below); `cell_len` now comes from `rich.cells` |
-| `document/_edit.py` | `src/textual/document/_edit.py` | Imports updated to reference `NovaTextArea`; unchanged by ACT3 |
-| `document/_history.py` | `src/textual/document/_history.py` | Imports updated to use the vendored document package; unchanged by ACT3 |
-| `document/_syntax_aware_document.py` | `src/textual/document/_syntax_aware_document.py` | Imports updated to use the vendored document package; unchanged by ACT3 |
+| `document/_edit.py` | `src/textual/document/_edit.py` | Imports updated to reference `NovaTextArea`; ACT4 made `Edit` record piece references and added coalescing (see below) |
+| `document/_history.py` | `src/textual/document/_history.py` | Imports updated to use the vendored document package; ACT4 changed the batching defaults, `record` and added restore helpers (see below) |
+| `document/_syntax_aware_document.py` | `src/textual/document/_syntax_aware_document.py` | Imports updated to use the vendored document package; unchanged by ACT3 and ACT4; now only the highlighting mirror of a lazy document |
 | `document/_wrapped_document.py` | `src/textual/document/_wrapped_document.py` | Imports use the vendored document package; unchanged by ACT3 |
 | `document/__init__.py` | `src/textual/document/__init__.py` | No changes |
 
@@ -35,8 +35,15 @@ The following modules are native to `nova_editor` and are not copies of upstream
 |---|---|
 | `core/` | Textual-free byte source, line index, long-line index and width helpers (see `docs/editor.md`). |
 | `core/foreground.py` | `Foreground` gate that lets the background scans give way to the UI thread (ACT3). |
+| `core/pieces.py` | `Piece`, `Aggregate`, `Content`, the `PieceSource` protocol and the junction rules (ACT4). |
+| `core/piece_tree.py` | `PieceTree`, the counted B+ tree of pieces (ACT4). |
+| `core/add_store.py` | `AddStore` and `AddSegment`, the append-only store of added bytes (ACT4). |
+| `core/original_source.py` | `OriginalSource` and `RowNotIndexed`, the row oracle of the original file on top of `LineIndex` (ACT4). |
+| `core/piece_table.py` | `PieceTable`, the editable document with row queries and the open tail (ACT4). |
+| `core/row_source.py` | `RowSource`, a `ByteSource` over the pieces of one row (ACT4). |
+| `core/memory_source.py` | `BytesSource`, a `ByteSource` over bytes in memory (ACT4). |
 | `document/_lazy_config.py` | Tunable thresholds for lazy documents (`LazyConfig` dataclass). |
-| `document/_lazy_document.py` | Read-only document backed by `ByteSource` and `LineIndex`. |
+| `document/_lazy_document.py` | Editable document over `PieceTable` (read-only in ACT3). |
 | `document/_lazy_wrapped_document.py` | Wrapping layer for lazy documents with grid wrap and a sparse height estimate. |
 | `document/_cursor_anchor.py` | Cursor state machine for long rows (`RESOLVED`, `PROVISIONAL`, `PENDING`). |
 | `document/_long_row_anchor.py` | Adapter from a long-line index to the cursor machine. |
@@ -47,6 +54,11 @@ ACT3 also extended the core, which stays Textual-free:
 - `LineSnapshot.scanned_bytes` and `LineIndex.row_at_offset`.
 - The `Foreground` gate and its `foreground=` argument on both indexes.
 - Width helpers in `core/text_width.py`: `locate_cover` and the ASCII/non-ASCII run splitting in `_cells`.
+
+ACT4 extended the core, which stays Textual-free:
+- The piece table modules listed above.
+- `LineIndex.scan_now()`, which runs the scan on the calling thread.
+- `LongLineIndex.spliced`, the `Edit` tuple, the `resume=` argument, `byte_to_char`, `quiescent` and `SPLICE_SYNC_BYTES`.
 
 ## Nova Editor Changes to Vendored Code
 
@@ -76,7 +88,7 @@ ACT3 also extended the core, which stays Textual-free:
 
 **New members:**
 - Reactive `pending_progress`.
-- Classmethod `open()` and the properties `is_lazy`, `is_estimating`, `cursor_state`, `column_exact`, `cursor_byte_offset`, `line_count`, `line_count_exact`, `indexing_complete`, `highlight_active`.
+- Classmethod `open()` and the properties `is_estimating`, `cursor_state`, `column_exact`, `cursor_byte_offset`, `line_count`, `line_count_exact`, `indexing_complete`, `highlight_active`.
 - Methods `close`, `peek_cursor_state`, `toggle_wrap`, `cancel_pending`, `goto_line`, `goto_byte`, `check_action`, `action_cancel_pending`, `on_event`, `validate_read_only`, `_on_unmount`, and the private helpers of the jump, estimate, cursor and mouse code.
 - Messages `SourceChanged`, `JumpProgress`, `IndexProgress`, `IndexingComplete`, `JumpCompleted`, `JumpRejected`.
 - Decorator `_guard_source`, which turns a core `SourceChanged` into the failed state of the widget.
@@ -93,6 +105,29 @@ ACT3 also extended the core, which stays Textual-free:
 - Also changed: `_TREE_SITTER_PATH` (see below).
 
 Together these routes cursor moves, rendering and row access for lazy documents through the capability methods and the cursor machine.
+
+**ACT4: removal of the stock widget path.**
+The widget has one document type, `LazyDocument`.
+- Removed imports: `Document`, `DocumentBase` and `WrappedDocument`.
+- Removed members: `is_lazy`, `validate_read_only` (a lazy document is no longer read-only), `_drive_stock` and `_enable_lazy_highlighting` (replaced by `_attach_highlighting`).
+- `text=`, `load_text` and the `text` setter build a lazy document over a `BytesSource` through `_text_document` and `_replace_document`.
+  `_finish_document` applies the language and resets the layout, and `_wire_scan` observes the scan of the current document.
+
+**ACT4: new imports, constants and members.**
+- Added imports: `stat`, `BytesSource`, `PreadSource`, `Content` (as `PieceContent`), `SURROGATE_ESCAPE`, `WholeLineAccess`.
+- New constants: `SMALL_FILE_LIMIT = 1_048_576` (`open()` reads a file up to this size into memory), `TEXT_LIMIT = 8 MiB` (the `text` property returns `""` above it), `BRACKET_SEARCH_LIMIT = 1_048_576`, `_INVALID_BYTE_TABLE` (U+DC80 to U+DCFF to U+FFFD for rendering and the system clipboard) and `_PAD_SLACK_CELLS = 1024` (a rendered line is padded at most this far beyond the region width).
+- New function `_open_source(path)`, which returns a `BytesSource` up to `SMALL_FILE_LIMIT` and a `PreadSource` otherwise.
+- New message `EditRefused`.
+- New class attribute `clipboard_cap = 4_194_304` and the dataclass `_ClipboardRecord`.
+- New members: `_unresolved_reason`, `_refuse_edit`, `_reset_cursor_machine`, `_roll_back`, `_store_clipboard`, `_internal_clipboard`, `_search_matching_bracket`.
+- New attributes: `_clipboard_record` and `_edit_refused`.
+
+**ACT4: edited upstream members.**
+- Edit paths: `edit` (refusal, cursor machine reset, `wrap_range`), `undo`, `redo`, `_undo_batch`, `_redo_batch` (both return whether the batch was applied; a refused batch is restored in the history), `_replace_via_keyboard`, `_delete_via_keyboard`.
+- Clipboard: `action_cut`, `action_copy`, `action_paste`.
+- Documents and text: `__init__`, `code_editor`, `_set_document`, `load_text`, `text`, `open` (small files in memory, scan on the calling thread), `close`, `find_matching_bracket` (bounded by `BRACKET_SEARCH_LIMIT`).
+- Rendering: `render_line`, `_render_line`, `get_line` (invalid bytes are drawn as U+FFFD in the strip text only).
+- Lazy machinery that lost its stock branch: `_drive_lazy`, `_run_jump`, `_lazy_move`, `_reconcile_cursor`, `_track_cursor`, `_refresh_size`, `_estimate_tick`, `_reestimate` and the other cursor and estimate helpers.
 
 ### `document/_document.py`
 
@@ -123,6 +158,28 @@ Together these routes cursor moves, rendering and row access for lazy documents 
 - `get_location_left`, `get_location_above`, `get_location_below`, `get_location_end`, `get_location_home`, `get_location_at_y_offset`, `clamp_reachable`.
 - Module function `index` (lazy branch).
 
+### `document/_edit.py`
+
+**Import:** `Content` and `merge_pieces` from `core/pieces`, and `LazyDocument`.
+
+**New fields:** `insert_content` (insert piece references byte for byte, used by paste of internal content), `start_byte`, `removed`, `inserted` and `end_location`.
+**New members:** `coalesce(later)` merges adjacent insertions and adjacent backspace or delete runs, `characters` is the size the history counts for batching, and the module helpers `_has_escape` and `_join`.
+**Modified members:** `do` splices piece references for a lazy document (redo uses `splice_bytes`) and records them; `undo` replaces the inserted span by the removed pieces without reading text.
+
+### `document/_history.py`
+
+**Defaults:** `max_checkpoints` is `int | None = None` (keep every batch; upstream required it), and `checkpoint_timer` (2.0) and `checkpoint_max_characters` (100) have defaults.
+**Modified member:** `record` decides replacement and newline from the piece lengths and break counts when the edit has pieces, and tries `Edit.coalesce` before it appends to the latest batch.
+**New members:** `_restore_undo` and `_restore_redo`, which put back a batch that the widget refused.
+
+### `document/_document.py` (ACT4)
+
+`EditResult` gained `removed`, `start_byte` and `inserted`, and `replaced_text` is empty above 64 KiB for a lazy document.
+
+### `document/_lazy_wrapped_document.py` (ACT4)
+
+`wrap_range(start, old_end, new_end)` is implemented: it drops the row caches and the measured blocks from the block of the start row.
+
 ## Additional Changes
 
 ### `_TREE_SITTER_PATH` Fix
@@ -147,6 +204,10 @@ textual._wrap (compute_wrap_offsets) — used by the untouched _wrapped_document
 textual._cells (cell_len, cell_width_to_column_index) — used only by the untouched _wrapped_document.py
 textual._tree_sitter (TREE_SITTER, get_language) — used by widget/_text_area.py
 ```
+
+ACT4 added and removed none of them: the list is the same four imports as at the start of the activity.
+No file imports `textual.widgets._text_area` or a private `textual.document` module.
+`document/_wrapped_document.py` stays vendored and unchanged: the navigator imports `WrappedDocument` for its type, while the widget wraps through `LazyWrappedDocument`.
 
 The other document classes use `rich.cells.cell_len`.
 Re-derive this list with `git grep -nE "from textual\._|import textual\._" -- src/nova_editor` after every upgrade.
