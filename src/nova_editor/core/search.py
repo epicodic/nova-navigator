@@ -2,7 +2,7 @@
 
 The needle is a `str`, encoded as UTF-8 with `surrogateescape`; a match is a byte range that starts and ends on a
 character boundary of the document and treats a line break of the needle as exactly one document terminator.
-The matcher works on one contiguous window of bytes; the windows, regions and the search loop come in the job part.
+The matcher works on one contiguous window of bytes; `SearchJob` cuts the document into windows, owns regions and wrap.
 
 The compiled byte pattern of the pattern tier is an implementation device built from escaped bytes only: no user text
 is ever interpreted as pattern syntax (DEC-29 note 1), and no pattern feature is exposed.
@@ -11,10 +11,21 @@ is ever interpreted as pattern syntax (DEC-29 note 1), and no pattern feature is
 from __future__ import annotations
 
 import re
+import threading
+import time
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from itertools import pairwise
+from typing import Protocol
 
+from nova_editor.core.byte_source import ChangeKind, SourceChanged
 from nova_editor.core.casefold import fold1, variants
+from nova_editor.core.save import PauseGate, PlanPart
 
+CHUNK = 256 * 1024
+"""Default bytes of document a search window owns."""
+PROGRESS_INTERVAL = 0.05
+"""Shortest time between two progress reports, in seconds."""
 MAX_NEEDLE_BYTES = 1 << 20
 """Longest plain needle, in bytes."""
 MAX_PATTERN_CHARS = 4096
@@ -46,6 +57,61 @@ class SearchCancelled(Exception):
 
 class SearchStale(Exception):
     """The document changed while the search ran."""
+
+
+@dataclass(frozen=True)
+class SearchSpec:
+    """What to search for: the needle and the direction, case and wrap options."""
+
+    needle: str
+    case_sensitive: bool = True
+    backward: bool = False
+    wrap: bool = True
+
+
+@dataclass(frozen=True)
+class SearchSettings:
+    """Tuning of a search job; the defaults are the production values."""
+
+    chunk: int = CHUNK
+    progress_interval: float = PROGRESS_INTERVAL
+    tier: str = "auto"
+    """Test switch passed to `compile_matcher`."""
+
+
+@dataclass(frozen=True)
+class SearchPlan:
+    """The revision and length of the document and the parts that cover a requested byte range."""
+
+    revision: int
+    length: int
+    parts: list[PlanPart]
+
+
+class SearchPlanner(Protocol):
+    """What the job needs from the document."""
+
+    def search_plan(self, offset: int, limit: int) -> SearchPlan:
+        """Return the revision, the document length and the parts covering `[offset, offset + limit)`."""
+        ...
+
+
+@dataclass(frozen=True)
+class SearchResult:
+    """A match as a byte range; `wrapped` is true when it was found after wrapping around."""
+
+    start: int
+    end: int
+    wrapped: bool
+
+
+@dataclass(frozen=True)
+class SearchProgress:
+    """Owned bytes processed so far out of the total; `phase` is `forward` (region 1) or `wrapped` (region 2)."""
+
+    done: int
+    total: int
+    phase: str
 
 
 def _inside_character(window: bytes, index: int) -> bool:
@@ -291,3 +357,156 @@ def compile_matcher(needle: str, *, case_sensitive: bool, tier: str = "auto") ->
     if tier == "ascii" and ascii_fold is None:
         raise SearchError("the ascii tier needs a case-insensitive needle whose folded form is ASCII")
     return Matcher(tokens, case_sensitive=case_sensitive, ascii_fold=ascii_fold, plain=plain, forced=tier)
+
+
+class SearchJob:
+    """Search a document window by window; one thread runs `run`, any thread may call `cancel`.
+
+    A forward window owns match starts in `[a, b)` and a backward window owns match ends in `(a, b]`; the window reads
+    the bytes around the owned range that every owned match needs, so no match is found twice and none is lost.
+    """
+
+    def __init__(
+        self,
+        planner: SearchPlanner,
+        spec: SearchSpec,
+        origin: int,
+        settings: SearchSettings | None = None,
+        progress: Callable[[SearchProgress], None] | None = None,
+        foreground: PauseGate | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        """Create the job.
+
+        Args:
+            planner: The document.
+            spec: What to search for.
+            origin: Byte offset (a character boundary) the search starts from.
+            settings: Chunk size, progress interval and tier switch.
+            progress: Called from the running thread at most once per progress interval.
+            foreground: Gate asked before every unit; the job sleeps its `pause_seconds()`.
+            clock: Time source of the progress throttle.
+            sleep: Sleep function used for the gate.
+
+        Raises:
+            SearchError: the needle cannot be searched.
+        """
+        self._planner = planner
+        self._spec = spec
+        self._origin = origin
+        self._settings = settings or SearchSettings()
+        self._progress = progress
+        self._foreground = foreground
+        self._clock = clock
+        self._sleep = sleep
+        self._matcher = compile_matcher(spec.needle, case_sensitive=spec.case_sensitive, tier=self._settings.tier)
+        self._cancelled = threading.Event()
+        self._revision: int | None = None
+        self._last_report: float | None = None
+
+    @property
+    def revision(self) -> int | None:
+        """The revision of the first plan, or `None` before `run` planned."""
+        return self._revision
+
+    def cancel(self) -> None:
+        """Ask the job to stop before its next unit."""
+        self._cancelled.set()
+
+    def run(self) -> SearchResult | None:
+        """Search and return the match, or `None` when there is none.
+
+        Raises:
+            SearchCancelled: `cancel` was called.
+            SearchStale: the document changed while the search ran.
+            SourceChanged: the source changed or was released while the search read it.
+        """
+        self._check_cancel()
+        first = self._planner.search_plan(0, 0)
+        self._revision = first.revision
+        length = first.length
+        if length == 0:
+            return None
+        origin = max(0, min(self._origin, length))
+        spec = self._spec
+        if not spec.backward:
+            regions = [("forward", origin, length)] + ([("wrapped", 0, origin)] if spec.wrap else [])
+        else:
+            regions = [("forward", 0, origin)] + ([("wrapped", origin, length)] if spec.wrap else [])
+        regions = [region for region in regions if region[1] < region[2]]
+        total = length if spec.wrap else sum(hi - lo for _, lo, hi in regions)
+        done = 0
+        for phase, lo, hi in regions:
+            for a, b in self._windows(lo, hi, backward=spec.backward):
+                self._check_cancel()
+                self._give_way()
+                hit = self._unit(a, b, length)
+                done += b - a
+                self._report(phase, done, total)
+                if hit is not None:
+                    return SearchResult(hit[0], hit[1], phase == "wrapped")
+        return None
+
+    def _windows(self, lo: int, hi: int, *, backward: bool) -> Iterator[tuple[int, int]]:
+        chunk = max(1, self._settings.chunk)
+        if not backward:
+            for a in range(lo, hi, chunk):
+                yield a, min(a + chunk, hi)
+        else:
+            for b in range(hi, lo, -chunk):
+                yield max(lo, b - chunk), b
+
+    def _unit(self, a: int, b: int, length: int) -> tuple[int, int] | None:
+        """Search the window owning `[a, b)`; return the match in document offsets."""
+        lmax = self._matcher.max_length
+        if not self._spec.backward:
+            read_lo, read_hi = max(0, a - CONTEXT_BEFORE), min(length, b + lmax - 1 + CONTEXT_AFTER)
+            window = self._read(read_lo, read_hi)
+            hit = self._matcher.find(window, a - read_lo, b - read_lo)
+        else:
+            read_lo, read_hi = max(0, a - (lmax - 1) - CONTEXT_BEFORE), min(length, b + CONTEXT_AFTER)
+            window = self._read(read_lo, read_hi)
+            hit = self._matcher.rfind(window, a - read_lo, b - read_lo)
+        return None if hit is None else (read_lo + hit[0], read_lo + hit[1])
+
+    def _read(self, lo: int, hi: int) -> bytes:
+        """Return the document bytes `[lo, hi)`; plan again once when a source was released in between."""
+        try:
+            data = self._fetch(lo, hi)
+        except ValueError:
+            try:
+                data = self._fetch(lo, hi)
+            except ValueError:
+                raise SourceChanged("the source was released while searching", ChangeKind.UNREADABLE) from None
+        if len(data) != hi - lo:
+            raise SourceChanged("short read while searching", ChangeKind.TRUNCATED)
+        return data
+
+    def _fetch(self, lo: int, hi: int) -> bytes:
+        """Plan `[lo, hi)` and read its parts; a `ValueError` means a source was released after the plan."""
+        plan = self._planner.search_plan(lo, hi - lo)
+        if plan.revision != self._revision:
+            raise SearchStale
+        parts = [part.source.read(part.a, part.b - part.a, cache=False) if part.src == 0 else part.source.read(part.a, part.b - part.a) for part in plan.parts]
+        return parts[0] if len(parts) == 1 else b"".join(parts)
+
+    def _check_cancel(self) -> None:
+        if self._cancelled.is_set():
+            raise SearchCancelled
+
+    def _give_way(self) -> None:
+        if self._foreground is None:
+            return
+        seconds = self._foreground.pause_seconds()
+        if seconds > 0:
+            self._sleep(seconds)
+
+    def _report(self, phase: str, done: int, total: int) -> None:
+        if self._progress is None:
+            return
+        now = self._clock()
+        if self._last_report is not None and now - self._last_report < self._settings.progress_interval:
+            return
+        self._last_report = now
+        self._progress(SearchProgress(done, total, phase))
