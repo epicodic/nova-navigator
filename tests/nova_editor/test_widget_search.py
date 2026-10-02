@@ -7,6 +7,7 @@ from itertools import pairwise
 from pathlib import Path
 
 import pytest
+from textual import events
 from textual.message import Message
 from textual.pilot import Pilot
 from textual.widgets.text_area import Selection
@@ -336,3 +337,41 @@ async def test_search_in_a_file_backed_document(tmp_path: Path) -> None:
         await settle(pilot, area)
         assert area.selection == Selection((61, 0), (61, 11))
         assert isinstance(host.terminals()[-1], NovaTextArea.SearchFound)
+
+
+@pytest.mark.asyncio
+async def test_an_outcome_that_cannot_be_posted_does_not_leave_the_widget_searching(monkeypatch: pytest.MonkeyPatch) -> None:
+    area = NovaTextArea(text=BODY)
+    host = SearchHost(area)
+    async with host.run_test(size=(40, 10)) as pilot:
+        await pilot.pause()
+        real_post = area.post_message
+
+        def post(message: Message) -> bool:
+            if isinstance(message, events.Callback):
+                return False
+            return real_post(message)
+
+        monkeypatch.setattr(area, "post_message", post)
+        assert area.search("needle") is True
+        await wait_until(pilot, lambda: not area.searching)
+        assert host.terminals() == []
+
+
+@pytest.mark.asyncio
+async def test_a_thread_that_cannot_start_ends_the_search_with_search_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    area = NovaTextArea(text=BODY)
+    host = SearchHost(area)
+    async with host.run_test(size=(40, 10)) as pilot:
+        await pilot.pause()
+
+        def refuse(*_args: object) -> None:
+            raise RuntimeError("no more threads")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(threading.Thread, "start", refuse)
+            assert area.search("needle") is False
+        assert not area.searching
+        await pilot.pause()
+        (done,) = host.terminals()
+        assert isinstance(done, NovaTextArea.SearchFailed)
