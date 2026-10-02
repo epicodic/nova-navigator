@@ -128,14 +128,18 @@ class PauseGate(Protocol):
 
 
 class SaveFailed(OSError):
-    """The save failed at `stage` (`prepare`, `write`, `flush`, `replace` or `internal`); the errno of the cause is kept."""
+    """The save failed at `stage` (`prepare`, `write`, `flush`, `replace` or `internal`); the errno of the cause is kept.
 
-    def __init__(self, stage: str, error: OSError | str) -> None:
+    `committed` is true when the replace already happened: the target holds the new bytes but the editor could not switch to the new file.
+    """
+
+    def __init__(self, stage: str, error: OSError | str, *, committed: bool = False) -> None:
         if isinstance(error, OSError):
             super().__init__(error.errno, error.strerror or str(error))
         else:
             super().__init__(error)
         self.stage = stage
+        self.committed = committed
 
 
 class SaveCancelled(Exception):
@@ -277,13 +281,10 @@ class SaveJob:
             self._check_cancel()  # the last cancel point
             self._replace(name, target)
             renamed = True
+            adopted, reader = reader, None  # the finish step owns the descriptor from here on
             with contextlib.suppress(OSError):
                 self._io.fsync_dir(str(target.parent))
-            self._report("finishing", total, total)
-            source = PreadSource.from_fd(reader, identity=FileIdentity.from_stat(info))
-            reader = None  # owned by the source now
-            line_index = self._build_index(source, scanner, entries, longs, total)
-            return SaveResult(target, total, source, line_index, self._layout, mode)
+            return self._finish(adopted, info, target, scanner, entries, longs, total, mode)
         finally:
             with contextlib.suppress(OSError):
                 os.close(fd)
@@ -292,6 +293,34 @@ class SaveJob:
                     os.close(reader)
             if renamed or self._remove_temp(name):
                 _TEMP_NAMES.discard(name)
+
+    def _finish(
+        self,
+        reader: int,
+        info: os.stat_result,
+        target: Path,
+        scanner: RowScanner | None,
+        entries: list[int],
+        longs: list[LongRow],
+        total: int,
+        mode: int,
+    ) -> SaveResult:
+        """Switch to the new file after the replace; any failure is reported as `committed` and releases the descriptor."""
+        source: PreadSource | None = None
+        try:
+            self._report("finishing", total, total)
+            source = PreadSource.from_fd(reader, identity=FileIdentity.from_stat(info))
+            line_index = self._build_index(source, scanner, entries, longs, total)
+        except Exception as error:
+            if source is not None:
+                source.close()
+            else:
+                with contextlib.suppress(OSError):
+                    os.close(reader)
+            detail = str(error) if isinstance(error, OSError) else f"{type(error).__name__}: {error}"
+            message = f"the file was written but the editor could not switch to it: {detail}"
+            raise SaveFailed("internal", OSError(error.errno, message) if isinstance(error, OSError) and error.errno else message, committed=True) from error
+        return SaveResult(target, total, source, line_index, self._layout, mode)
 
     def _stream(self, fd: int, total: int) -> tuple[RowScanner | None, list[int], list[LongRow], int]:
         """Write the document chunk by chunk; return the scanner (or `None`), its entries and long rows, and the bytes written."""
