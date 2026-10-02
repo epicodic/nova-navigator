@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -535,17 +536,26 @@ async def test_covered_click_moves_the_cursor_and_a_provisional_row_ignores_clic
 
 @pytest.mark.asyncio
 async def test_scan_completion_is_one_pass_and_the_replay_follows_the_resolving_paint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The progress callback that resolves a provisional cursor clears the line cache and refreshes once; the deferred op runs after the paint."""
+    """The progress callback that resolves a provisional cursor clears the line cache and refreshes once; the deferred op runs after the paint.
+
+    The scan may announce its progress in several callbacks (a coalesced tick can follow the resolving one), so the callback under test is the
+    one that moves the cursor from pending to resolved, not merely the last one before the replay. Textual reactives (`virtual_size`,
+    `selection`, `scroll_x`) request their own repaints during that callback; the repaint flag coalesces them, so the callback itself must issue
+    exactly one `refresh` of its own.
+    """
     rig = _Rig(_mixed(tmp_path))
     area = rig.area
     log: list[str] = []
 
     def spy(name: str, original: Callable[..., object], *, bracket: bool = False) -> Callable[..., object]:
         def wrapper(*args: object, **kwargs: object) -> object:
-            log.append(name)
+            log.append(f"{name} (own)" if name == "refresh" and sys._getframe(1).f_code.co_name == "_on_index_progress" else name)
+            before = area.cursor_state
             try:
                 return original(*args, **kwargs)
             finally:
+                if name == "_reconcile_cursor" and before is not _RESOLVED and area.cursor_state is _RESOLVED:
+                    log.append("resolved")
                 if bracket:
                     log.append(f"end {name}")
 
@@ -568,14 +578,16 @@ async def test_scan_completion_is_one_pass_and_the_replay_follows_the_resolving_
         rig.source.release()
         await _until(pilot, lambda: area.cursor_location[0] == _MEDIUM_ROW)
         await pilot.pause()
-    replay = log.index("_replay")
-    start = max(i for i in range(replay) if log[i] == "progress")
-    end = log.index("end progress", start)
+    resolved = log.index("resolved")
+    start = max(i for i in range(resolved) if log[i] == "progress")
+    end = log.index("end progress", resolved)
     call = log[start:end]
+    replay = log.index("_replay")
     assert call.count("clear") == 1, call
-    assert call.count("refresh") == 1, call
+    assert call.count("refresh (own)") == 1, call
     assert call.count("_reconcile_cursor") == 1, call
     assert call.count("_refresh_size") <= 1, call
+    assert "render_line" not in call, "nothing paints inside the resolving callback"
     assert replay > end, "the deferred operation must not run inside the resolving callback"
     assert "render_line" in log[end:replay], "the resolving paint comes before the replay"
 

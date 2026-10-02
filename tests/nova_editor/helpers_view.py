@@ -11,6 +11,7 @@ import threading
 import time
 import weakref
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import NamedTuple
 
@@ -34,6 +35,9 @@ LOWERED_OPTIONS = {
     "word_wrap_limit": 128,
     "checkpoint_chars": 64,
 }
+
+
+_INVALID_BYTE_TABLE = str.maketrans(dict.fromkeys(range(0xDC80, 0xDD00), 0xFFFD))
 
 
 class RowRange(NamedTuple):
@@ -213,7 +217,7 @@ def oracle_cells(text: str, tab_width: int = 4) -> list[str]:
     A zero-width character is appended to the cell of the character before it (dropped at the start of the text).
     """
     cells: list[str] = []
-    for char in text:
+    for char in text.translate(_INVALID_BYTE_TABLE):  # the widget shows an escaped invalid byte as U+FFFD
         if char == "\t":
             cells.extend(" " * (tab_width - len(cells) % tab_width))
             continue
@@ -459,7 +463,7 @@ def open_with_gated_line_scan(tmp_path: Path, rows: int = 3000, *, threshold: in
     path = tmp_path / "rows.txt"
     path.write_bytes("".join(f"row {i}\n" for i in range(rows)).encode())
     source = GatedLineSource(path, threshold=threshold, delay=delay)
-    area = NovaTextArea.open(source, config=config or LazyConfig(**LOWERED_OPTIONS))
+    area = NovaTextArea.open(source, config=replace(config or LazyConfig(**LOWERED_OPTIONS), sync_scan_limit=0))  # a gated scan needs the background thread
     _GATES[area] = source
     return area, path
 

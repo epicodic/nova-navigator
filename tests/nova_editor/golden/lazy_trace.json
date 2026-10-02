@@ -1,0 +1,211 @@
+{
+  "trace": [
+    {
+      "step": "start state",
+      "cursor": [
+        0,
+        0
+      ],
+      "selection": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "line_count": 5,
+      "current_line": "hello",
+      "end_location": [
+        4,
+        0
+      ]
+    },
+    {
+      "step": "cursor down",
+      "cursor": [
+        1,
+        0
+      ],
+      "selection": [
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          0
+        ]
+      ],
+      "line_count": 5,
+      "current_line": "world",
+      "end_location": [
+        4,
+        0
+      ]
+    },
+    {
+      "step": "cursor down",
+      "cursor": [
+        2,
+        0
+      ],
+      "selection": [
+        [
+          2,
+          0
+        ],
+        [
+          2,
+          0
+        ]
+      ],
+      "line_count": 5,
+      "current_line": "this is a test",
+      "end_location": [
+        4,
+        0
+      ]
+    },
+    {
+      "step": "cursor right",
+      "cursor": [
+        2,
+        1
+      ],
+      "selection": [
+        [
+          2,
+          1
+        ],
+        [
+          2,
+          1
+        ]
+      ],
+      "line_count": 5,
+      "current_line": "this is a test",
+      "end_location": [
+        4,
+        0
+      ]
+    },
+    {
+      "step": "cursor end",
+      "cursor": [
+        2,
+        14
+      ],
+      "selection": [
+        [
+          2,
+          14
+        ],
+        [
+          2,
+          14
+        ]
+      ],
+      "line_count": 5,
+      "current_line": "this is a test",
+      "end_location": [
+        4,
+        0
+      ]
+    },
+    {
+      "step": "cursor home",
+      "cursor": [
+        2,
+        0
+      ],
+      "selection": [
+        [
+          2,
+          0
+        ],
+        [
+          2,
+          0
+        ]
+      ],
+      "line_count": 5,
+      "current_line": "this is a test",
+      "end_location": [
+        4,
+        0
+      ]
+    },
+    {
+      "step": "shift right",
+      "cursor": [
+        2,
+        1
+      ],
+      "selection": [
+        [
+          2,
+          0
+        ],
+        [
+          2,
+          1
+        ]
+      ],
+      "line_count": 5,
+      "current_line": "this is a test",
+      "end_location": [
+        4,
+        0
+      ]
+    },
+    {
+      "step": "shift down",
+      "cursor": [
+        3,
+        1
+      ],
+      "selection": [
+        [
+          2,
+          0
+        ],
+        [
+          3,
+          1
+        ]
+      ],
+      "line_count": 5,
+      "current_line": "with multiple lines",
+      "end_location": [
+        4,
+        0
+      ]
+    },
+    {
+      "step": "shift end",
+      "cursor": [
+        3,
+        19
+      ],
+      "selection": [
+        [
+          2,
+          0
+        ],
+        [
+          3,
+          19
+        ]
+      ],
+      "line_count": 5,
+      "current_line": "with multiple lines",
+      "end_location": [
+        4,
+        0
+      ]
+    }
+  ]
+}

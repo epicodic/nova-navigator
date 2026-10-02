@@ -174,14 +174,21 @@ class Timing:
         return self.handler_ms is not None
 
 
-async def timed(area: ProbeTextArea, action: Callable[[], None], *, limit: float = 0.5, require_change: bool = True) -> Timing:
+async def timed(
+    area: ProbeTextArea,
+    action: Callable[[], None],
+    *,
+    limit: float = 0.5,
+    require_change: bool = True,
+    state: Callable[[ProbeTextArea], tuple[object, ...]] = _view_state,
+) -> Timing:
     """Run `action` and time key-to-render.
 
-    The state change is a new cursor location or scroll offset. `latency_ms` is the time until, after the change, the widget's
+    The state change is a new cursor location or scroll offset (or whatever `state` returns; edits add the document length). `latency_ms` is the time until, after the change, the widget's
     `render_line` ran at least once since before the action (the spike rule); with `require_change=False` any `render_line` counts.
     """
     seq0 = area.render_seq
-    state0 = _view_state(area)
+    state0 = state(area)
     t0 = time.perf_counter()
     action()
     handler: float | None = None
@@ -190,7 +197,7 @@ async def timed(area: ProbeTextArea, action: Callable[[], None], *, limit: float
         now = time.perf_counter()
         if now - t0 >= limit:
             break
-        if handler is None and _view_state(area) != state0:
+        if handler is None and state(area) != state0:
             handler = now
         if (handler is not None or not require_change) and area.render_seq > seq0:
             render = now

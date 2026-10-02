@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ import pytest
 
 from tests.nova_editor.helpers_view import make_mixed
 from tools._view_app import LOWERED
+from tools._view_edit_latency import GcTimer
 from tools._view_procmem import median, percentile
 from tools.measure_view import main
 
@@ -154,6 +156,8 @@ def test_percentile_is_nearest_rank() -> None:
     assert median([5, 1, 3]) == 3
     assert percentile(list(range(1, 101)), 0.95) == 95
     assert percentile([7], 0.95) == 7
+    assert percentile(list(range(1, 20)), 0.95) == 19
+    assert percentile(list(range(1, 21)), 0.95) == 19  # n = 20: the second largest, not the max
 
 
 def test_summarise_prints_percentiles(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -201,6 +205,7 @@ def test_summarise_counts_direct_steps_issued_during_a_scan(tmp_path: Path, caps
     assert "n scan_running" in text
     assert "n completing" in text
     assert "p95 is the nearest-rank value of the n samples" in text
+    assert "with n of at most 19 it equals the max" in text
     assert "| a | off | indexing | pagedown | - | latency_ms | 3 | 6.00 | 7.00 | 7.00 | 0 | 2 | 1 |" in text
     assert "| a | off | indexing | pagedown | - | pilot_ms | 1 | 3000.00 | 3000.00 | 3000.00 | 1 | - | - |" in text
 
@@ -248,3 +253,248 @@ def test_first_screen_closes_the_pty_when_the_window_size_cannot_be_set(mixed_fi
     with pytest.raises(OSError, match="ioctl"):
         measure_view.first_screen_once(mixed_file, cold=False, timeout=1.0)
     assert len(os.listdir("/proc/self/fd")) == before
+
+
+# -- ACT4 edit subcommands -----------------------------------------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def long_file(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    path = tmp_path_factory.mktemp("view_long") / "long.txt"
+    path.write_bytes(("abc\t日é😀 " * 600).encode())
+    assert path.stat().st_size <= MAX_TEST_FILE_BYTES
+    return path
+
+
+def _verify_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row for row in rows if row["case"] == "verify"]
+
+
+@pytest.mark.parametrize(("name", "wrap"), [("mixed_file", "off"), ("long_file", "on")])
+def test_edit_memory_script_matches_the_file_after_every_step(name: str, wrap: str, request: pytest.FixtureRequest, tmp_path: Path) -> None:
+    path: Path = request.getfixturevalue(name)
+    out = tmp_path / "out.jsonl"
+    assert main(["edit-memory", "--file", str(path), "--wrap", wrap, "--runs", "1", "--out", str(out)]) == 0
+    rows = _rows(out)
+    steps = ["select", "delete", "undo", "redo", "select_copy", "copy", "goto_paste", "paste", "undo_paste"]
+    done = [row for row in rows if row["case"] == "edit-memory" and row["op"] == row["state"] != "session"]
+    assert [row["state"] for row in done] == steps
+    assert [row["state"] for row in _verify_rows(rows)] == ["indexing", *steps]
+    assert all(row["mismatches"] == 0 and row["windows"] > 0 for row in _verify_rows(rows))
+    lengths = {row["state"]: row["doc_length"] for row in done}
+    assert lengths["delete"] < lengths["undo"] == path.stat().st_size
+    assert lengths["redo"] == lengths["delete"]
+    assert lengths["paste"] > lengths["redo"] == lengths["undo_paste"]
+    phases = [row["state"] for row in rows if row["op"] == "phase"]
+    assert phases == ["open", "indexing", *steps]
+    session = next(row for row in rows if row["state"] == "session")
+    assert session["rss_anon_kb_max"] > 0
+    assert session["phases"] == phases
+    samples = _rows(Path(f"{out}.samples.jsonl"))
+    assert samples
+    assert {sample["phase"] for sample in samples} <= set(phases)
+
+
+def test_verify_subcommand_reports_zero_mismatches(long_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    out = tmp_path / "out.jsonl"
+    assert main(["verify", "--file", str(long_file), "--wrap", "off", "--variant", "longline", "--select-bytes", "1000", "--out", str(out)]) == 0
+    assert "mismatches=0 (expected 0)" in capsys.readouterr().out
+    rows = _rows(out)
+    assert len(rows) == 10
+    assert {row["case"] for row in rows} == {"verify"}
+    assert next(row for row in rows if row["state"] == "delete")["doc_length"] in range(long_file.stat().st_size - 1010, long_file.stat().st_size - 989)
+
+
+def test_verify_detects_a_document_that_differs_from_the_model(tmp_path: Path) -> None:
+    from nova_editor.document._lazy_document import LazyDocument
+    from tools._view_edit import FileModel, verify_row
+
+    path = tmp_path / "a.txt"
+    path.write_bytes(b"alpha\nbeta\ngamma\n" * 400)
+    document = LazyDocument.from_path(path)
+    model = FileModel(path)
+    try:
+        spec = {"file": str(path), "wrap": "off", "run": 1}
+        assert verify_row(spec, "same", document, model, [100])["mismatches"] == 0
+        model.delete(10, 7)
+        bad = verify_row(spec, "different", document, model, [100])
+        assert bad["mismatches"] > 0
+        assert bad["doc_length"] == bad["model_length"] + 7
+    finally:
+        model.close()
+        document.close()
+
+
+def test_file_model_follows_the_offset_arithmetic(tmp_path: Path) -> None:
+    from tools._view_edit import FileModel
+
+    data = bytes(range(256)) * 8
+    path = tmp_path / "b.bin"
+    path.write_bytes(data)
+    model = FileModel(path)
+    try:
+        removed = model.delete(100, 300)
+        expected = data[:100] + data[400:]
+        assert model.length == len(expected)
+        assert model.read(0, model.length) == expected
+        model.insert(100, removed)
+        assert model.read(0, model.length) == data
+        model.insert(50, model.slice(1000, 64))
+        grown = data[:50] + data[1000:1064] + data[50:]
+        assert model.read(0, model.length) == grown
+        assert model.read(model.length - 10, 100) == grown[-10:]
+    finally:
+        model.close()
+
+
+def test_edit_latency_in_both_wrap_modes_and_both_states(mixed_file: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out.jsonl"
+    common = ["--file", str(mixed_file), "--wrap", "both", "--ops", "type,backspace,delete,enter", "--steps", "3", "--runs", "1", "--out", str(out)]
+    assert main(["edit-latency", *common, "--state", "indexed"]) == 0
+    assert main(["edit-latency", *common, "--state", "indexing"]) == 0
+    rows = _rows(out)
+    assert {(row["wrap"], row["state"], row["op"]) for row in rows} == {
+        (wrap, state, op) for wrap in ("off", "on") for state in ("indexed", "indexing") for op in ("type", "backspace", "delete", "enter")
+    }
+    assert all(row["phase"] == "direct" and row["case"] == "edit-latency" for row in rows)
+    assert all(row["changed"] and row["latency_ms"] is not None for row in rows)
+    deltas = {op: {row["doc_delta"] for row in rows if row["op"] == op} for op in ("type", "backspace", "delete", "enter")}
+    assert deltas == {"type": {1}, "backspace": {-1}, "delete": {-1}, "enter": {1}}
+    assert {row["place"] for row in rows if row["state"] == "indexed"} == {"end"}
+    assert {row["place"] for row in rows if row["state"] == "indexing"} == {"start"}
+
+
+def test_edit_latency_at_the_far_column_of_a_long_row(long_file: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out.jsonl"
+    assert main(["edit-latency", "--file", str(long_file), "--wrap", "on", "--ops", "type,delete", "--steps", "3", "--runs", "1", "--out", str(out)]) == 0
+    rows = _rows(out)
+    assert {row["place"] for row in rows} == {"far"}
+    assert all(row["changed"] for row in rows)
+
+
+def test_edit_scatter_builds_the_pieces_before_the_steps(long_file: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out.jsonl"
+    assert main(["edit-scatter", "--file", str(long_file), "--wrap", "off", "--scatter", "25", "--ops", "type,right", "--steps", "2", "--runs", "1", "--out", str(out)]) == 0
+    rows = _rows(out)
+    build = [row for row in rows if row["op"] == "scatter"]
+    assert len(build) == 25
+    assert all(row["action_ms"] > 0 for row in build)
+    assert [row["pieces"] for row in build] == sorted(row["pieces"] for row in build)
+    steps = [row for row in rows if row["op"] != "scatter"]
+    assert {row["variant"] for row in steps} == {"scatter-25"}
+    assert min(row["pieces"] for row in steps) >= build[-1]["pieces"]
+    assert all(row["rss_anon_kb"] > 0 for row in rows)
+    assert all(row["gc_ms"] >= 0 and row["gc_longest_ms"] >= 0 and row["gc_longest_ms"] <= row["gc_ms"] for row in rows)
+
+
+def test_gc_timer_counts_the_collections_since_a_snapshot() -> None:
+    timer = GcTimer()
+    timer.install()
+    try:
+        before = timer.snapshot()
+        assert timer.since(before) == {"gc_ms": 0.0, "gc_longest_ms": 0.0}
+        gc.collect()
+        gc.collect()
+        fields = timer.since(before)
+        assert fields["gc_ms"] > 0
+        assert 0 < fields["gc_longest_ms"] <= fields["gc_ms"]
+    finally:
+        timer.uninstall()
+    assert timer.since(timer.snapshot()) == {"gc_ms": 0.0, "gc_longest_ms": 0.0}
+
+
+def test_segments_logs_the_three_segment_times_beside_every_step(long_file: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out.jsonl"
+    assert main(["segments", "--file", str(long_file), "--ops", "type,enter", "--cursor-ops", "left", "--scatter", "10", "--steps", "3", "--runs", "1", "--out", str(out)]) == 0
+    rows = _rows(out)
+    steps = [row for row in rows if row["op"] != "scatter"]
+    assert {row["variant"] for row in steps} == {"clean", "typed", "scattered-10"}
+    assert all({"reestimate_ms", "reconcile_ms", "measure_ms", "reestimate_calls", "measure_calls"} <= set(row) for row in steps)
+    typed = [row for row in steps if row["variant"] == "typed" and row["op"] == "type"]
+    assert all(row["reestimate_calls"] >= 1 and row["reestimate_ms"] > 0 for row in typed)
+    assert all(row["wrap_on"] is True and row["long_row"] is True for row in steps)
+
+
+def test_segments_install_no_production_code(long_file: Path) -> None:
+    from nova_editor.document._lazy_wrapped_document import LazyWrappedDocument
+    from tools._view_app import ProbeTextArea, open_probe
+    from tools._view_edit_latency import install_clock
+
+    area = open_probe(long_file, wrap=True, config=LOWERED)
+    try:
+        before = (ProbeTextArea._reestimate, LazyWrappedDocument._measure)
+        clock = install_clock(area)
+        assert (ProbeTextArea._reestimate, LazyWrappedDocument._measure) == before
+        area._reestimate(area.document)
+        assert clock.calls["reestimate"] == 1
+    finally:
+        area.close()
+
+
+def test_pieces_measures_cost_and_memory_per_piece(tmp_path: Path) -> None:
+    out = tmp_path / "out.jsonl"
+    assert main(["pieces", "--sizes", "200,400", "--calls", "5", "--memory-size", "2000", "--runs", "1", "--out", str(out)]) == 0
+    rows = _rows(out)
+    for size in (200, 400):
+        for op, metric in (("splice_insert", "splice_ms"), ("splice_delete", "splice_ms"), ("row_range", "row_range_ms")):
+            samples = [row[metric] for row in rows if row["state"] == f"pieces={size}" and row["op"] == op]
+            assert len(samples) == 5
+            assert all(value > 0 for value in samples)
+    assert all(row["resolved"] for row in rows if row["op"] == "row_range")
+    memory = {row["method"]: row for row in rows if row["op"] == "memory"}
+    assert memory["tracemalloc"]["pieces"] == 2000
+    assert 20 < memory["tracemalloc"]["bytes_per_piece_tracemalloc"] < 1000
+    assert memory["rss"]["bytes_per_piece_rss"] > 0
+
+
+def test_undo_record_reports_bytes_per_record_for_every_kind(tmp_path: Path) -> None:
+    out = tmp_path / "out.jsonl"
+    assert main(["undo-record", "--count", "30", "--out", str(out)]) == 0
+    rows = {row["state"]: row for row in _rows(out)}
+    assert set(rows) == {"typing", "backspace", "paste", "delete"}
+    assert all(row["operations"] == 30 and row["bytes_per_record"] > 0 for row in rows.values())
+    assert rows["typing"]["records"] < 30  # typing is coalesced
+    assert rows["paste"]["records"] == 30
+    assert rows["delete"]["records"] > 1
+
+
+def test_clipboard_times_the_copy_with_and_without_the_terminal_write(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    out = tmp_path / "out.jsonl"
+    assert main(["clipboard", "--sizes", "2048,8192", "--calls", "4", "--out", str(out)]) == 0
+    rows = _rows(out)
+    for size in (2048, 8192):
+        for op in ("copy_only", "copy_write"):
+            samples = [row for row in rows if row["state"] == str(size) and row["op"] == op]
+            assert len(samples) == 4
+            assert all(row["clipboard_ms"] > 0 and row["size_bytes"] == size for row in samples)
+    text = capsys.readouterr().out
+    assert "clipboard: 2048 bytes copy_write: n=4 p50=" in text
+    assert "p95=" in text
+
+
+def test_edit_output_goes_under_the_results_directory_by_default(mixed_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RESULTS", str(tmp_path / "results"))
+    assert main(["edit-latency", "--file", str(mixed_file), "--wrap", "off", "--ops", "type", "--steps", "2", "--runs", "1"]) == 0
+    assert (tmp_path / "results" / "edit-latency-indexed-m-off.jsonl").exists()
+    other = tmp_path / "elsewhere"
+    assert main(["edit-latency", "--file", str(mixed_file), "--wrap", "off", "--ops", "type", "--steps", "2", "--runs", "1", "--results", str(other)]) == 0
+    assert (other / "edit-latency-indexed-m-off.jsonl").exists()
+
+
+def test_edit_ops_are_validated(mixed_file: Path, tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        main(["edit-latency", "--file", str(mixed_file), "--ops", "type,nonsense", "--out", str(tmp_path / "o.jsonl")])
+
+
+def test_summarise_tables_of_the_edit_metrics(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    out = tmp_path / "out.jsonl"
+    rows = [
+        {"case": "segments", "file": "a", "wrap": "on", "state": "indexed", "op": "type", "variant": "clean", "latency_ms": 10, "reestimate_ms": 3, "reconcile_ms": 1, "measure_ms": 2},
+        {"case": "segments", "file": "a", "wrap": "on", "state": "indexed", "op": "type", "variant": "clean", "latency_ms": 12, "reestimate_ms": 25, "reconcile_ms": 2, "measure_ms": 4},
+        {"case": "pieces", "file": "s", "wrap": "off", "state": "pieces=1000", "op": "memory", "bytes_per_piece_rss": 101.5},
+        {"case": "clipboard", "file": "s", "wrap": "off", "state": "65536", "op": "copy_write", "clipboard_ms": 0.5},
+    ]
+    out.write_text("\n".join(json.dumps(row) for row in rows))
+    assert main(["summarise", str(out)]) == 0
+    text = capsys.readouterr().out
+    assert "| a | on | indexed | type | clean | reestimate_ms | 2 | 3.00 | 25.00 | 25.00 | 0 | - | - |" in text
+    assert "bytes_per_piece_rss" in text
+    assert "clipboard_ms" in text

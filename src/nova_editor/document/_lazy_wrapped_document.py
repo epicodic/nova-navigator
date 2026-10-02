@@ -170,6 +170,8 @@ class LazyWrappedDocument(WrappedDocument):
         self._rows_prefix: list[int] = [0]
         self._total_extra = 0
         self._total_rows = 0
+        self._pinned_mean: float | None = None
+        self._pin_floor = 0
         self._dirty = False
         self._count_seen = -1
         self._anchor = 0
@@ -193,6 +195,7 @@ class LazyWrappedDocument(WrappedDocument):
         self._rows_prefix = [0]
         self._total_extra = 0
         self._total_rows = 0
+        self._pinned_mean = None
         self._dirty = False
         self._count_seen = -1
         self._anchor = 0
@@ -215,9 +218,34 @@ class LazyWrappedDocument(WrappedDocument):
         raise NotImplementedError(msg)
 
     def wrap_range(self, start: Location, old_end: Location, new_end: Location) -> None:
-        """Not available: lazy documents are read-only."""
-        msg = "read-only until ACT4"
-        raise NotImplementedError(msg)
+        """Forget what an edit at `start` may have changed: drop the row caches and the measured blocks from the block of the start row on.
+
+        Rows shift after an edit, so every cache keyed by row is dropped; the blocks above the start row keep their measurements.
+        `old_end` and `new_end` are not needed because everything below the start is re-measured on demand.
+        The mean extra height of the unmeasured rows is pinned (only when something was measured, and only while a block above the edit is not measured)
+        while blocks from the edit on are measured again: the re-measured blocks
+        would otherwise change the mean and shift the estimated y of every unmeasured block above the edit (the view would jump and re-measure).
+        """
+        del old_end, new_end
+        self._short_rows.clear()
+        self._disp_cache.clear()
+        first = max(start[0], 0) // BLOCK_ROWS
+        measured_rows = sum(block.rows for block in self._blocks.values())
+        if self._pinned_mean is None and measured_rows:
+            self._pinned_mean = sum(block.extra for block in self._blocks.values()) / measured_rows
+            self._pin_floor = first
+        elif self._pinned_mean is not None:
+            self._pin_floor = min(self._pin_floor, first)
+        stale = [block for block in self._blocks if block >= first]
+        for block in stale:
+            del self._blocks[block]
+            self._keys.remove(block)
+        if sum(1 for block in self._keys if block < first) == first:
+            self._pinned_mean = None  # every block above the edit is measured (or there is none): no estimate up there needs to stay put
+        self._anchor = min(self._anchor, first)
+        self._min_height = 0
+        self._count_seen = -1
+        self._dirty = True
 
     # -- per-row wrapping ---------------------------------------------------------------------
     def _short_row(self, row: int) -> _ShortRow:
@@ -491,6 +519,8 @@ class LazyWrappedDocument(WrappedDocument):
             provisional = provisional or unsure
             limited = limited or spent
         measured = _Block(heights, provisional=provisional, limited=limited)
+        if self._pinned_mean is not None and block < self._pin_floor:
+            self._pinned_mean = None
         if block not in self._blocks:
             insort(self._keys, block)
         self._blocks[block] = measured
@@ -533,6 +563,8 @@ class LazyWrappedDocument(WrappedDocument):
         rows = min(block * BLOCK_ROWS, self._lazy.line_count)
         i = bisect_left(self._keys, block)
         mean = self._total_extra / self._total_rows if self._total_rows else 0.0
+        if self._pinned_mean is not None:
+            mean = self._pinned_mean
         return rows + self._extra_prefix[i] + round(mean * (rows - self._rows_prefix[i]))
 
     def _block_at(self, y: int) -> int:

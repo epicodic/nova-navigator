@@ -191,13 +191,29 @@ class LineIndex:
         self._cancelled = threading.Event()
         self._subscribers: list[Callable[[], None]] = []
         self._thread: threading.Thread | None = None
+        self._inline = False
 
     # -- public -------------------------------------------------------------------------------
     def start(self) -> None:
-        if self._thread is not None:
+        if self._thread is not None or self._inline:
             raise RuntimeError("scan already started")
         self._thread = threading.Thread(target=self._run, name="line-index-scan", daemon=True)
         self._thread.start()
+
+    def scan_now(self) -> None:
+        """Run the whole scan inline on the calling thread; the results equal those of the threaded scan.
+
+        Meant for small sources (the document layer uses it up to 1 MiB).
+        Subscribers are notified as after a threaded scan.
+        A `SourceChanged` is recorded in the snapshot as for the thread; any other exception is recorded and raised.
+
+        Raises:
+            RuntimeError: when the scan was already started, threaded or inline.
+        """
+        if self._thread is not None or self._inline:
+            raise RuntimeError("scan already started")
+        self._inline = True
+        self._run()
 
     def cancel(self) -> None:
         self._cancelled.set()
