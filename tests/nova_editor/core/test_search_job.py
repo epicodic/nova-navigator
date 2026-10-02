@@ -12,6 +12,8 @@ from nova_editor.core.memory_source import BytesSource
 from nova_editor.core.search import (
     CONTEXT_AFTER,
     CONTEXT_BEFORE,
+    MIN_PATTERN_SPAN,
+    PATTERN_WORK_BUDGET,
     SearchCancelled,
     SearchJob,
     SearchPlan,
@@ -243,3 +245,29 @@ def test_tiny_chunks_agree_with_a_large_one(chunk: int, backward: bool) -> None:
         small = SearchJob(_planner(data), spec, origin, SearchSettings(chunk=chunk)).run()
         large = SearchJob(_planner(data), spec, origin, SearchSettings(chunk=1 << 20)).run()
         assert small == large
+
+
+def test_a_long_case_insensitive_needle_caps_the_owned_span_of_a_unit() -> None:
+    needle = "k" * 2000
+    data = b"a" * 60_000
+    source = RecordingSource(data)
+    planner = whole_file_planner(source)
+    matcher = compile_matcher(needle, case_sensitive=False)
+    assert matcher.may_use_pattern
+    assert matcher.token_count == 2000
+    span = max(MIN_PATTERN_SPAN, PATTERN_WORK_BUDGET // matcher.token_count)
+    assert span < 60_000
+    limit = span + matcher.max_length - 1 + CONTEXT_BEFORE + CONTEXT_AFTER
+    job = SearchJob(planner, SearchSpec(needle, case_sensitive=False), 0, SearchSettings(chunk=1 << 20))
+    assert job.run() is None
+    sizes = [size for _, size, _ in source.reads]
+    assert len(sizes) >= 60_000 // span
+    assert max(sizes) <= limit
+
+
+def test_a_plain_find_needle_keeps_the_full_chunk() -> None:
+    compiled = compile_matcher("needle", case_sensitive=True)
+    assert not compiled.may_use_pattern
+    source = RecordingSource(b"a" * 5000)
+    SearchJob(whole_file_planner(source), SearchSpec("needle"), 0, SearchSettings(chunk=4000)).run()
+    assert max(size for _, size, _ in source.reads) >= 4000
