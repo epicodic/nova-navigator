@@ -7,7 +7,7 @@ from typing import Literal
 from textual.app import ComposeResult
 from textual.widgets import Label
 
-from nova_widgets import ButtonSpec, DefaultButton, Dialog
+from .dialog import ButtonSpec, DefaultButton, Dialog
 
 MessageBoxVariant = Literal["default", "success", "warning", "error"]
 

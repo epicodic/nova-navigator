@@ -31,7 +31,7 @@ async def test_enter_accepts_with_default_ok_button() -> None:
 
 
 @pytest.mark.asyncio
-async def test_enter_accepts_with_first_accepting_button() -> None:
+async def test_enter_accepts_with_accepting_button() -> None:
     app = _HostApp(Dialog("Title", buttons=[DefaultButton.YES, DefaultButton.NO]))
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
