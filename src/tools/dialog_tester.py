@@ -42,7 +42,17 @@ from nova_navigator.vfs.change_detector import ChangeDetector
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_navigator.vfs.local_copy import Baseline, LocalCopy, SourceFingerprint
 from nova_navigator.vfs.vpath import VPath
-from nova_widgets import Dialog, FileDialog, FileDialogMode, FileTypeFilter, KeybindingsConfig, KeybindingsDialog, KeyCaptureDialog, MessageBox, Response
+from nova_widgets import (
+    Dialog,
+    FileDialog,
+    FileDialogMode,
+    FileTypeFilter,
+    KeybindingsConfig,
+    KeybindingsDialog,
+    KeyCaptureDialog,
+    MessageBox,
+    Response,
+)
 from nova_widgets.action import Action as NavAction
 
 _fs = LocalFilesystem.singleton()

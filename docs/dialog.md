@@ -196,7 +196,8 @@ To use a custom filesystem backend, pass a `provider` that implements `FileProvi
 from nova_widgets import FileDialog, FileDialogMode, InMemoryFileProvider
 from pathlib import PurePath
 
-provider = InMemoryFileProvider(root="/")
+provider = InMemoryFileProvider()
+provider.add_dir("/")
 provider.add_dir("/home/user")
 provider.add_file("/home/user/config.txt")
 
