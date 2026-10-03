@@ -16,7 +16,7 @@ from nova_widgets.keybindings_config import KeybindingsConfig
 from nova_widgets.keymap import HintBar, KeymapRegistry
 from nova_widgets.menu import MenuBar
 
-from .bars import ConfirmBar, GotoBar, PathBar, SaveBar
+from .bars import ConfirmBar, GotoBar, PathBar, SaveBar, parse_goto
 from .document._lazy_config import LazyConfig
 from .document_view import DocumentView
 from .editor_actions import build_editor_actions
@@ -160,6 +160,12 @@ class EditorScreen(Screen[None]):
 
         # Set up status state
         self._status_state: StatusState | None = None
+
+        # Search and goto state
+        self._search_term: str | None = None
+        """The last search term, repeated by Find Next and Find Previous."""
+        self._last_backward: bool = False
+        """Direction of the last search (used for wrap messages)."""
 
         # Show load error as notification
         if self._load_error:
@@ -325,23 +331,47 @@ class EditorScreen(Screen[None]):
         """Select the whole document."""
         self.document.editor.action_select_all()
 
+    def search(self, needle: str, *, backward: bool = False, case_sensitive: bool | None = None) -> None:
+        """Search the editor for `needle` and remember it for Find Next and Find Previous.
+
+        Args:
+            needle: The text to find.
+            backward: Search towards the start of the document.
+            case_sensitive: Distinguish case; the case state of the search bar when `None`.
+        """
+        editor = self.document.editor
+        if not needle:
+            return
+        if case_sensitive is None:
+            search_bar = self.query_one(SearchBar)
+            case_sensitive = search_bar.case_sensitive
+        self._search_term = needle
+        self._last_backward = backward
+        editor.search(needle, backward=backward, case_sensitive=case_sensitive)
+
+    def _repeat_search(self, *, backward: bool) -> None:
+        """Repeat the last search in the given direction, or show the search bar if no term yet."""
+        if self._search_term is None:
+            self.action_find()
+            return
+        self.search(self._search_term, backward=backward)
+
     def action_find(self) -> None:
         """Show the search bar."""
-        search_bar = self.query_one("#search_bar")
-        search_bar.display = True
-        search_bar.focus()
+        search_bar = self.query_one(SearchBar)
+        search_bar.open()
 
     def action_find_next(self) -> None:
         """Repeat the search forward."""
-        # Placeholder: will be implemented in later tasks
+        self._repeat_search(backward=False)
 
     def action_find_previous(self) -> None:
         """Repeat the search backward."""
-        # Placeholder: will be implemented in later tasks
+        self._repeat_search(backward=True)
 
     def action_goto(self) -> None:
         """Show the goto bar."""
-        goto_bar = self.query_one("#goto_bar")
+        goto_bar = self.query_one(GotoBar)
         goto_bar.display = True
         goto_bar.focus()
 
@@ -354,7 +384,7 @@ class EditorScreen(Screen[None]):
         self.document.editor.soft_wrap = not self.document.editor.soft_wrap
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Handle input submission from path bar and search bar."""
+        """Handle input submission from path bar, search bar, and goto bar."""
         if event.input.id == "path_bar":
             text = event.value.strip()
             if not text:
@@ -366,7 +396,23 @@ class EditorScreen(Screen[None]):
             self.document.editor.save(path)
             return
         if event.input.id == "search_bar":
-            # Search bar handling (not implemented yet)
+            needle = event.value.strip()
+            if needle:
+                self.search(needle, backward=False)
+            search_bar = self.query_one(SearchBar)
+            search_bar.display = False
+            self.document.editor.focus()
+            return
+        if event.input.id == "goto_bar":
+            text = event.value.strip()
+            target = parse_goto(text)
+            if target is not None:
+                if target.kind == "line":
+                    self.document.editor.goto_line(target.value)
+                elif target.kind == "byte":
+                    self.document.editor.goto_byte(target.value)
+            goto_bar = self.query_one(GotoBar)
+            goto_bar.action_close()
             return
 
     def on_confirm_bar_chosen(self, message: ConfirmBar.Chosen) -> None:

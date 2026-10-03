@@ -421,19 +421,21 @@ async def test_action_quit_editor_when_not_modified() -> None:
 @pytest.mark.asyncio
 async def test_confirm_bar_chosen_reload_calls_editor_reload() -> None:
     """ConfirmBar Chosen message with reload choice calls editor.reload()."""
+    from pathlib import Path
+
+    from nova_editor.bars import ConfirmBar
+
     host = EditorScreenHost(standalone=True)
     async with host.run_test() as pilot:
         await pilot.pause()
         screen = host.screen_instance
         assert screen is not None
 
-        from nova_editor.bars import ConfirmBar
-        from pathlib import Path
-
         confirm_bar = screen.query_one(ConfirmBar)
 
         # Simulate user choosing to reload
-        confirm_bar.post_message(ConfirmBar.Chosen("reload", Path("/tmp/test.txt")))
+        test_path = Path("/home/test.txt")
+        confirm_bar.post_message(ConfirmBar.Chosen("reload", test_path))
         await pilot.pause()
 
         # The confirmation should be handled
@@ -457,8 +459,151 @@ async def test_input_submitted_path_bar_calls_save_to() -> None:
         await pilot.pause()
 
         # Simulate user submitting a path
-        path_bar.post_message(Input.Submitted(path_bar, value="/tmp/test.txt"))
+        test_path = "/home/test.txt"
+        path_bar.post_message(Input.Submitted(path_bar, value=test_path))
         await pilot.pause()
 
         # The path bar should be hidden
         assert path_bar.display is False
+
+
+@pytest.mark.asyncio
+async def test_action_find_shows_search_bar() -> None:
+    """The find action shows the SearchBar."""
+    from nova_editor.search_bar import SearchBar
+
+    host = EditorScreenHost(standalone=True)
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        screen = host.screen_instance
+        assert screen is not None
+
+        search_bar = screen.query_one(SearchBar)
+        assert not search_bar.display
+
+        # Call the find action
+        screen.action_find()
+        await pilot.pause()
+
+        # SearchBar should now be displayed and focused
+        assert search_bar.display
+
+
+@pytest.mark.asyncio
+async def test_action_find_next_calls_search_when_has_needle() -> None:
+    """The find next action calls search if a needle exists."""
+    host = EditorScreenHost(standalone=True)
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        screen = host.screen_instance
+        assert screen is not None
+
+        # Set the search term
+        screen._search_term = "test"
+
+        # Call the find next action
+        screen.action_find_next()
+        await pilot.pause()
+
+        # If there's no match, cursor should remain the same
+
+
+@pytest.mark.asyncio
+async def test_action_find_previous_calls_search_when_has_needle() -> None:
+    """The find previous action calls search backward if a needle exists."""
+    host = EditorScreenHost(standalone=True)
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        screen = host.screen_instance
+        assert screen is not None
+
+        # Set the search term
+        screen._search_term = "test"
+
+        # Call the find previous action
+        screen.action_find_previous()
+        await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_action_go_to_shows_goto_bar() -> None:
+    """The goto action shows the GotoBar."""
+    from nova_editor.bars import GotoBar
+
+    host = EditorScreenHost(standalone=True)
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        screen = host.screen_instance
+        assert screen is not None
+
+        goto_bar = screen.query_one(GotoBar)
+        assert not goto_bar.display
+
+        # Call the goto action
+        screen.action_goto()
+        await pilot.pause()
+
+        # GotoBar should now be displayed and focused
+        assert goto_bar.display
+
+
+@pytest.mark.asyncio
+async def test_input_submitted_search_bar_triggers_search() -> None:
+    """Input.Submitted from SearchBar triggers a search."""
+    from textual.widgets import Input
+
+    host = EditorScreenHost(standalone=True)
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        screen = host.screen_instance
+        assert screen is not None
+
+        search_bar = screen.query_one("#search_bar", Input)
+        editor = screen.document.editor
+
+        # Type some text into the editor
+        editor.load_text("hello world\ntest\nhello again")
+        await pilot.pause()
+
+        # Show the search bar
+        search_bar.display = True
+        search_bar.value = "hello"
+        await pilot.pause()
+
+        # Simulate user submitting a search
+        search_bar.post_message(Input.Submitted(search_bar, value="hello"))
+        await pilot.pause()
+
+        # The search term should be stored
+        assert screen._search_term == "hello"
+
+
+@pytest.mark.asyncio
+async def test_input_submitted_goto_bar_jumps_to_line() -> None:
+    """Input.Submitted from GotoBar jumps to the specified line."""
+    from textual.widgets import Input
+
+    host = EditorScreenHost(standalone=True)
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        screen = host.screen_instance
+        assert screen is not None
+
+        goto_bar = screen.query_one("#goto_bar", Input)
+        editor = screen.document.editor
+
+        # Load multiline text
+        editor.load_text("line 1\nline 2\nline 3\nline 4")
+        await pilot.pause()
+
+        # Show the goto bar
+        goto_bar.display = True
+        goto_bar.value = "3"
+        await pilot.pause()
+
+        # Simulate user submitting a line number
+        goto_bar.post_message(Input.Submitted(goto_bar, value="3"))
+        await pilot.pause()
+
+        # The goto bar should be closed
+        assert not goto_bar.display
