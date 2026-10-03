@@ -1,7 +1,12 @@
 # Dialog Base Class
 
-`Dialog` (`nova_navigator.dialogs.dialog`) is the standard base class for all modal dialogs in Nova Navigator.
+`Dialog` is the standard base class for all modal dialogs in Nova Navigator.
+It lives in `nova_widgets/dialog.py` and is imported with `from nova_widgets import Dialog, ButtonSpec, DefaultButton, Response`.
 It is a `ModalScreen[Response | None]` that provides a titled bordered box, a configurable button row, keyboard shortcuts, and a `run()` helper.
+
+`Response` is defined in `nova_widgets/response.py`.
+`nova_widgets` never imports `nova_navigator`.
+`MessageBox` (with `MessageDialog` as alias) lives in `nova_widgets/message_box.py` and is the generic confirmation and message dialog.
 
 ## Anatomy
 
@@ -70,7 +75,7 @@ Common combinations:
 Use a `ButtonSpec` when you need a custom label or variant on an existing `Response`:
 
 ```python
-from .dialog import ButtonSpec, DefaultButton
+from nova_widgets import ButtonSpec, Response
 
 buttons=[
     ButtonSpec(Response.OK, label="Save", variant="primary"),

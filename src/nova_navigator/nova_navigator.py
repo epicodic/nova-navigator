@@ -42,10 +42,8 @@ from nova_navigator.dialogs import (
     InputNameDialog,
     JobsDialog,
     LocalCopiesDialog,
-    MessageBox,
 )
 from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
-from nova_navigator.dialogs.dialog import ButtonSpec
 from nova_navigator.dialogs.keybindings_dialog import KeybindingsDialog
 from nova_navigator.dialogs.response_dialog import make_response_dialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
@@ -63,7 +61,6 @@ from nova_navigator.plugins import PluginRegistry
 from nova_navigator.remotes.azure import AZURE_PLUGIN
 from nova_navigator.remotes.remote import RemoteConnector, register_remote_scheme
 from nova_navigator.remotes.ssh import SSH_PLUGIN
-from nova_navigator.response import Response
 from nova_navigator.runtime_patches import apply_runtime_patches
 from nova_navigator.scheduler import Job, ResponseRequest
 from nova_navigator.terminal import Terminal, TerminalPool
@@ -86,6 +83,7 @@ from nova_navigator.vfs.process_root import find_orphans
 from nova_navigator.vfs.scheme_registry import SCHEME_REGISTRY, vfspath_from_uri
 from nova_navigator.widgets import DirectoryBrowser, JobStatusIcon
 from nova_navigator.widgets.directory_browser import GoToPathWidget, UpPath
+from nova_widgets import ButtonSpec, MessageBox, Response
 from nova_widgets.actions_support import ActionsSupport
 from nova_widgets.keymap import HintBar, HintsChanged, KeymapRegistry
 from nova_widgets.menu import Action, Menu, MenuBar

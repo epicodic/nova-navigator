@@ -150,6 +150,11 @@ The `TaskScheduler` in `task.py` bridges between worker threads and the Textual 
 A separate package in `src/nova_widgets/` providing:
 - `menu/` — `MenuBar`, `Menu`, `Action` widgets with keyboard shortcuts and checkable items
 - `icon.py` — icon rendering with NerdFont support
+- `dialog.py` — the `Dialog` base class with `ButtonSpec` and `DefaultButton`
+- `message_box.py` — `MessageBox` (alias `MessageDialog`), the generic confirmation and message dialog
+- `response.py` — the `Response` type
+- `popup_widget.py` — `PopupWidget`, the base class for floating popup panels
+- The package must not import `nova_navigator` (enforced by `tests/test_package_independence.py`)
 - Used in `main.py` via `from nova_widgets.menu import ...`
 
 ---

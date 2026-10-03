@@ -12,12 +12,10 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Label, ListItem, ListView
 
 from nova_navigator.config.remotes import AzureSettings, ProxySettings, RemoteConfig, RemoteConnection, SshSettings
-from nova_navigator.dialogs.dialog import Dialog
 from nova_navigator.dialogs.file_dialog import FileDialog, FileDialogMode
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.icons import ICONS
-from nova_navigator.response import Response
-from nova_widgets import Button, Checkbox, Input, Select
+from nova_widgets import Button, Checkbox, Dialog, Input, Response, Select
 
 _PROTOCOL_OPTIONS: list[tuple[str, str]] = [("SSH", "ssh"), ("Azure Blob", "azure")]
 

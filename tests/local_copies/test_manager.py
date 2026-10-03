@@ -12,10 +12,10 @@ from pathlib import Path
 import pytest
 
 from nova_navigator.local_copies.manager import CopyStatus, JobStarter, LocalCopyManager
-from nova_navigator.response import Response
 from nova_navigator.scheduler import Job
 from nova_navigator.vfs.filesystem import FilesystemCapabilities, StreamWriterLike
 from nova_navigator.vfs.vpath import VPath
+from nova_widgets import Response
 from tests._utils.local_copy_helpers import SchemeFs, overwrite
 
 

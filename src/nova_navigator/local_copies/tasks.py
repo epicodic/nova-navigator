@@ -11,10 +11,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from nova_navigator.response import Response
 from nova_navigator.scheduler import TaskContext
 from nova_navigator.vfs.local_copy import LocalCopy, ReuseAction
 from nova_navigator.vfs.vpath import VPath
+from nova_widgets import Response
 
 
 @dataclass

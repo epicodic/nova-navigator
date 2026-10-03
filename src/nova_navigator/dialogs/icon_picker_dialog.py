@@ -5,9 +5,9 @@ from textual.app import ComposeResult
 from textual.containers import ScrollableContainer
 from textual.message import Message
 
+from nova_widgets import Dialog, Response
+
 from ..icons import ICONS
-from ..response import Response
-from .dialog import Dialog
 
 
 class _IconCell(widgets.Static, can_focus=False):

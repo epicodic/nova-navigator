@@ -5,7 +5,7 @@ from __future__ import annotations
 from textual.app import ComposeResult
 from textual.widgets import Input, Label
 
-from .dialog import DefaultButton, Dialog
+from nova_widgets import DefaultButton, Dialog
 
 
 class InputNameDialog(Dialog):

@@ -11,14 +11,13 @@ from textual.app import App, ComposeResult
 
 from nova_navigator.dialogs.local_copies_dialog import LocalCopiesDialog
 from nova_navigator.local_copies import CopyEntry, CopyStatus, LocalCopyManager
-from nova_navigator.response import Response
 from nova_navigator.scheduler import Job
 from nova_navigator.vfs.change_detector import ChangeDetector
 from nova_navigator.vfs.filesystems.archive import ArchiveFilesystem
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_navigator.vfs.local_copy import Baseline, LocalCopy, SourceFingerprint
 from nova_navigator.vfs.vpath import VPath
-from nova_widgets import Button, DataTable
+from nova_widgets import Button, DataTable, Response
 
 _fs = LocalFilesystem.singleton()
 

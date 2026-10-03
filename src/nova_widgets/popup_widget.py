@@ -10,7 +10,7 @@ from textual.binding import Binding, BindingType
 from textual.strip import Strip
 from textual.widget import Widget
 
-from nova_widgets.custom_border import CustomBorderMixin
+from .custom_border import CustomBorderMixin
 
 _CLOSE_GLYPH = "🗙"  # cross, 1 cell wide
 
