@@ -4,13 +4,22 @@ from __future__ import annotations
 
 import fnmatch
 import pathlib
+from pathlib import Path, PurePath
+from typing import cast
 
 import pytest
 from textual.app import App, ComposeResult
 from textual.css.query import NoMatches
 from textual.widgets import Input, Static
 
-from nova_widgets import FileDialog, FileDialogMode, FileTypeFilter, Select
+from nova_widgets import (
+    FileDialog,
+    FileDialogMode,
+    FileTypeFilter,
+    Icon,
+    InMemoryFileProvider,
+    Select,
+)
 from nova_widgets.file_dialog import _FileListing
 from nova_widgets.file_provider import default_file_provider
 
@@ -43,10 +52,10 @@ class _ListingApp(App[None]):
         yield self._listing
 
     def on__file_listing_path_navigated(self, event: _FileListing.PathNavigated) -> None:
-        self.navigated.append(event.path)
+        self.navigated.append(cast("pathlib.Path", event.path))
 
     def on__file_listing_file_confirmed(self, event: _FileListing.FileConfirmed) -> None:
-        self.confirmed.append(event.path)
+        self.confirmed.append(cast("pathlib.Path", event.path))
 
 
 class _DialogApp(App[str]):
@@ -104,7 +113,7 @@ def test_file_type_filter_matches() -> None:
 
 @pytest.mark.asyncio
 async def test_listing_shows_parent_entry(tmp_path: pathlib.Path) -> None:
-    listing = _FileListing(current_path=tmp_path)
+    listing = _FileListing(current_path=tmp_path, provider=default_file_provider())
     app = _ListingApp(listing)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -115,21 +124,21 @@ async def test_listing_shows_parent_entry(tmp_path: pathlib.Path) -> None:
 async def test_listing_dirs_before_files(tmp_path: pathlib.Path) -> None:
     (tmp_path / "aaa").mkdir()
     (tmp_path / "bbb.txt").write_text("x")
-    listing = _FileListing(current_path=tmp_path)
+    listing = _FileListing(current_path=tmp_path, provider=default_file_provider())
     app = _ListingApp(listing)
     async with app.run_test() as pilot:
         await pilot.pause()
         assert listing._items[1] is not None
-        assert listing._items[1].is_dir()
+        assert cast("pathlib.Path", listing._items[1]).is_dir()
         assert listing._items[2] is not None
-        assert listing._items[2].is_file()
+        assert cast("pathlib.Path", listing._items[2]).is_file()
 
 
 @pytest.mark.asyncio
 async def test_listing_excludes_dotfiles(tmp_path: pathlib.Path) -> None:
     (tmp_path / ".hidden").write_text("x")
     (tmp_path / "visible.txt").write_text("y")
-    listing = _FileListing(current_path=tmp_path)
+    listing = _FileListing(current_path=tmp_path, provider=default_file_provider())
     app = _ListingApp(listing)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -144,7 +153,7 @@ async def test_listing_excludes_dotfiles(tmp_path: pathlib.Path) -> None:
 @pytest.mark.asyncio
 async def test_cursor_down_moves_cursor(tmp_path: pathlib.Path) -> None:
     (tmp_path / "alpha").mkdir()
-    listing = _FileListing(current_path=tmp_path)
+    listing = _FileListing(current_path=tmp_path, provider=default_file_provider())
     app = _ListingApp(listing)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -156,7 +165,7 @@ async def test_cursor_down_moves_cursor(tmp_path: pathlib.Path) -> None:
 
 @pytest.mark.asyncio
 async def test_cursor_up_does_not_go_below_zero(tmp_path: pathlib.Path) -> None:
-    listing = _FileListing(current_path=tmp_path)
+    listing = _FileListing(current_path=tmp_path, provider=default_file_provider())
     app = _ListingApp(listing)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -170,7 +179,7 @@ async def test_cursor_up_does_not_go_below_zero(tmp_path: pathlib.Path) -> None:
 async def test_enter_on_dotdot_navigates_to_parent(tmp_path: pathlib.Path) -> None:
     subdir = tmp_path / "sub"
     subdir.mkdir()
-    listing = _FileListing(current_path=subdir)
+    listing = _FileListing(current_path=subdir, provider=default_file_provider())
     app = _ListingApp(listing)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -184,7 +193,7 @@ async def test_enter_on_dotdot_navigates_to_parent(tmp_path: pathlib.Path) -> No
 async def test_enter_on_file_emits_file_confirmed(tmp_path: pathlib.Path) -> None:
     f = tmp_path / "report.txt"
     f.write_text("hello")
-    listing = _FileListing(current_path=tmp_path)
+    listing = _FileListing(current_path=tmp_path, provider=default_file_provider())
     app = _ListingApp(listing)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -366,7 +375,7 @@ async def test_permission_denied_directory_stays_put(tmp_path: pathlib.Path) -> 
     restricted = tmp_path / "restricted"
     restricted.mkdir(mode=0o000)
     try:
-        listing = _FileListing(current_path=tmp_path)
+        listing = _FileListing(current_path=tmp_path, provider=default_file_provider())
         app = _ListingApp(listing)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -383,7 +392,7 @@ async def test_filter_hides_non_matching_files(tmp_path: pathlib.Path) -> None:
     (tmp_path / "script.py").write_text("")
     (tmp_path / "readme.md").write_text("")
     py_filter = FileTypeFilter("Python", ["*.py"])
-    listing = _FileListing(current_path=tmp_path, active_filter=py_filter)
+    listing = _FileListing(current_path=tmp_path, provider=default_file_provider(), active_filter=py_filter)
     app = _ListingApp(listing)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -423,3 +432,68 @@ async def test_navigation_updates_path_bar(tmp_path: pathlib.Path) -> None:
         await pilot.pause()
         path_bar = app.screen.query_one("#path_bar", Static)
         assert str(subdir) in str(path_bar.content)
+
+
+# ── New tests for nova_widgets refactoring ─────────────────────────────────────
+
+
+def test_file_dialog_imports() -> None:
+    """Verify FileDialog can be imported from nova_widgets."""
+    assert FileDialog is not None
+    assert FileDialogMode.OPEN is FileDialogMode.OPEN
+    assert FileDialogMode.SAVE is FileDialogMode.SAVE
+    assert FileDialogMode.DIR is FileDialogMode.DIR
+
+
+def test_file_type_filter_matches_with_new_api() -> None:
+    """Verify FileTypeFilter pattern matching."""
+    f = FileTypeFilter("Text Files", ["*.txt", "*.md"])
+    assert f.matches("readme.txt")
+    assert f.matches("document.md")
+    assert not f.matches("image.png")
+
+
+def test_file_dialog_with_custom_provider() -> None:
+    """Verify FileDialog accepts a custom provider."""
+    provider = InMemoryFileProvider()
+    provider.add_dir("/home/user")
+    provider.add_file("/home/user/test.txt")
+
+    # Verify we can construct the dialog with a custom provider
+    dialog = FileDialog(
+        mode=FileDialogMode.OPEN,
+        start_path=Path.home(),
+        title="Test",
+        provider=provider,
+    )
+    assert dialog is not None
+
+
+def test_file_dialog_with_icon_provider() -> None:
+    """Verify FileDialog accepts an icon_provider callback."""
+
+    def custom_icon_provider(name: str) -> Icon:
+        return Icon.of(">") if name == "folder" else Icon.of("-")
+
+    dialog = FileDialog(
+        mode=FileDialogMode.OPEN,
+        start_path=Path.home(),
+        title="Test",
+        icon_provider=custom_icon_provider,
+    )
+    assert dialog is not None
+
+
+def test_file_dialog_with_filters() -> None:
+    """Verify FileDialog accepts file type filters."""
+    filters = [
+        FileTypeFilter("Text", ["*.txt"]),
+        FileTypeFilter("Images", ["*.png", "*.jpg"]),
+    ]
+    dialog = FileDialog(
+        mode=FileDialogMode.OPEN,
+        start_path=Path.home(),
+        title="Test",
+        filters=filters,
+    )
+    assert dialog is not None
