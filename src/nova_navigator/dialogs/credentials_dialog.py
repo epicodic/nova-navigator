@@ -8,9 +8,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Label
 
-from nova_widgets import Input
-
-from .dialog import DefaultButton, Dialog
+from nova_widgets import DefaultButton, Dialog, Input
 
 
 @dataclass

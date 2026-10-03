@@ -12,8 +12,7 @@ from nova_navigator.config.model import BaseModel
 from nova_navigator.config.settings import Settings
 from nova_navigator.widgets._utils import _title_case
 from nova_navigator.widgets.model_editor import ModelEditor
-
-from .dialog import DefaultButton, Dialog
+from nova_widgets import DefaultButton, Dialog
 
 
 class SettingsDialog(Dialog):

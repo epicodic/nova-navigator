@@ -10,11 +10,9 @@ from textual.widgets import Label
 
 from nova_navigator.config import conf_
 from nova_navigator.keymap.config import KeybindingsConfig
-from nova_widgets import DataTable
+from nova_widgets import DataTable, DefaultButton, Dialog
 from nova_widgets.action import Action
 from nova_widgets.keymap.key_sequence import KeyChord, KeyFormatStyle, KeySequence
-
-from .dialog import DefaultButton, Dialog
 
 _HINT_NORMAL = "Assign key: double-click / space | Clear binding: delete"
 _KEY_CHORD_BADGE_STYLE = "bold white on grey30"

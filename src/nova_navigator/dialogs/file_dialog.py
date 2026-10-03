@@ -17,10 +17,9 @@ from textual.css.query import NoMatches
 from textual.message import Message
 from textual.widgets import Input, Label, ListItem, ListView, Static
 
-from nova_widgets import Checkbox, Select
+from nova_widgets import Checkbox, DefaultButton, Dialog, Select
 
 from ..icons import ico_
-from .dialog import DefaultButton, Dialog
 
 
 class FileDialogMode(Enum):
