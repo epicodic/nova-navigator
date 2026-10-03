@@ -44,7 +44,6 @@ from nova_navigator.dialogs import (
     LocalCopiesDialog,
 )
 from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
-from nova_navigator.dialogs.keybindings_dialog import KeybindingsDialog
 from nova_navigator.dialogs.response_dialog import make_response_dialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
 from nova_navigator.dialogs.user_menu_input_dialog import InputField, UserMenuInputDialog
@@ -52,7 +51,6 @@ from nova_navigator.editor import Editor
 from nova_navigator.filemanager.compare import CompareMode, compare_directories
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
 from nova_navigator.filemanager.tasks import dummy_task
-from nova_navigator.keymap import KeybindingsConfig
 from nova_navigator.nova_navigator_core import (
     NovaNavigatorCore,
     PanelRef,
@@ -83,7 +81,7 @@ from nova_navigator.vfs.process_root import find_orphans
 from nova_navigator.vfs.scheme_registry import SCHEME_REGISTRY, vfspath_from_uri
 from nova_navigator.widgets import DirectoryBrowser, JobStatusIcon
 from nova_navigator.widgets.directory_browser import GoToPathWidget, UpPath
-from nova_widgets import ButtonSpec, MessageBox, Response
+from nova_widgets import ButtonSpec, KeybindingsConfig, KeybindingsDialog, MessageBox, Response
 from nova_widgets.actions_support import ActionsSupport
 from nova_widgets.keymap import HintBar, HintsChanged, KeymapRegistry
 from nova_widgets.menu import Action, Menu, MenuBar
@@ -211,10 +209,11 @@ class MainScreen(ActionsSupport, Screen[None]):
         self._compare_config = None
         self._terminal_pool = TerminalPool()
         self._provisioning: set[int] = set()
-        self._keymap_config = KeybindingsConfig(config_dir=config_dir)
+        _config_dir = config_dir if config_dir is not None else app_config_dir()
+        self._keymap_config = KeybindingsConfig(_config_dir)
         self._keymap_registry: KeymapRegistry | None = None
         self._hint_bar = HintBar()
-        self._user_menu_store = UserMenuStore((config_dir if config_dir is not None else app_config_dir()) / USER_MENU_FILENAME)
+        self._user_menu_store = UserMenuStore(_config_dir / USER_MENU_FILENAME)
         self._command_runner: CommandRunner | None = None
 
     @property
@@ -1101,6 +1100,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         dialog = KeybindingsDialog(
             actions=list(type(self).ACTIONS),
             config=self._keymap_config,
+            key_display_style=conf_.settings.general.key_display_style,
         )
         result = await self.app.push_screen_wait(dialog)
         if result is not None:
