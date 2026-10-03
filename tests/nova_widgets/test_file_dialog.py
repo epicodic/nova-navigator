@@ -5,7 +5,6 @@ from __future__ import annotations
 import fnmatch
 import pathlib
 from pathlib import Path, PurePath
-from typing import cast
 
 import pytest
 from textual.app import App, ComposeResult
@@ -45,17 +44,17 @@ class _ListingApp(App[None]):
     def __init__(self, listing: _FileListing) -> None:
         super().__init__()
         self._listing = listing
-        self.navigated: list[pathlib.Path] = []
-        self.confirmed: list[pathlib.Path] = []
+        self.navigated: list[PurePath] = []
+        self.confirmed: list[PurePath] = []
 
     def compose(self) -> ComposeResult:
         yield self._listing
 
     def on__file_listing_path_navigated(self, event: _FileListing.PathNavigated) -> None:
-        self.navigated.append(cast("pathlib.Path", event.path))
+        self.navigated.append(event.path)
 
     def on__file_listing_file_confirmed(self, event: _FileListing.FileConfirmed) -> None:
-        self.confirmed.append(cast("pathlib.Path", event.path))
+        self.confirmed.append(event.path)
 
 
 class _DialogApp(App[str]):
@@ -129,9 +128,9 @@ async def test_listing_dirs_before_files(tmp_path: pathlib.Path) -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         assert listing._items[1] is not None
-        assert cast("pathlib.Path", listing._items[1]).is_dir()
+        assert pathlib.Path(listing._items[1]).is_dir()
         assert listing._items[2] is not None
-        assert cast("pathlib.Path", listing._items[2]).is_file()
+        assert pathlib.Path(listing._items[2]).is_file()
 
 
 @pytest.mark.asyncio
