@@ -47,7 +47,8 @@ def test_edit_menu_items() -> None:
 def test_search_menu_items() -> None:
     actions = {a.id: a for a in build_editor_actions() if a.id is not None}
     menu_bar = build_menu_bar(actions, standalone=True)
-    search_menu: Menu = list(menu_bar.actions)[2]
+    menus = list(menu_bar.actions)
+    search_menu: Menu = menus[2]
     items = list(search_menu.actions)
     ids = [a.id for a in items if a.id]
     assert ids == ["editor.find", "editor.find_next", "editor.find_previous", "editor.goto"]
@@ -56,7 +57,8 @@ def test_search_menu_items() -> None:
 def test_view_menu_items() -> None:
     actions = {a.id: a for a in build_editor_actions() if a.id is not None}
     menu_bar = build_menu_bar(actions, standalone=True)
-    view_menu: Menu = list(menu_bar.actions)[3]
+    menus = list(menu_bar.actions)
+    view_menu: Menu = menus[3]
     items = list(view_menu.actions)
     ids = [a.id for a in items if a.id]
     assert ids == ["editor.line_numbers", "editor.wrap_mode"]
@@ -66,6 +68,6 @@ def test_menu_items_are_the_very_action_objects_passed_in() -> None:
     """Critical test (DEC-20): menu items must be the same objects, not copies."""
     actions = {a.id: a for a in build_editor_actions() if a.id is not None}
     menu_bar = build_menu_bar(actions, standalone=True)
-    file_menu: Menu = list(menu_bar.actions)[0]
-    save_item = [a for a in file_menu.actions if a.id == "editor.save"][0]
+    file_menu: Menu = next(iter(menu_bar.actions))
+    save_item = next(a for a in file_menu.actions if a.id == "editor.save")
     assert save_item is actions["editor.save"]
