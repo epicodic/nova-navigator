@@ -162,5 +162,7 @@ It takes three parameters:
 
 `KeyCaptureDialog` is a helper modal that opens when the user edits a binding.
 It captures a key sequence (supporting multi-chord sequences) and returns the captured sequence or `None` if dismissed.
+It takes two parameters:
 
-Both dialogs are moved to `nova_widgets` to be app-agnostic and reusable.
+- `action: Action` — the action being edited.
+- `key_display_style: KeyFormatStyle | None = None` — optional style for formatting keys (defaults to `KeyFormatStyle.CLASSIC`).

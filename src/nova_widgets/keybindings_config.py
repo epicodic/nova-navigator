@@ -6,8 +6,8 @@ from pathlib import Path
 
 import tomlkit
 
-from nova_widgets.action import Action
-from nova_widgets.keymap.key_sequence import KeySequence
+from .action import Action
+from .keymap.key_sequence import KeySequence
 
 _FILENAME = "keybindings.toml"
 
