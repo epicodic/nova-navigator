@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,13 +17,26 @@ LoadState = Literal["loaded", "new", "failed"]
 
 
 def not_regular_reason(path: Path) -> str | None:
-    """Return why `path` cannot be opened (it exists but is a FIFO, a device, a directory, ...), or `None`."""
+    """Check if the path is a regular file; return a reason if it's not (or None if it is).
+
+    Opening a FIFO would block; same for sockets and character devices. Directories, block devices, and symlinks (even broken ones) have different errors.
+    """
     try:
-        mode = os.stat(path).st_mode
-    except OSError:
+        st = path.lstat()
+    except OSError as error:
+        if isinstance(error, FileNotFoundError):
+            return None
+        return str(error)
+    if stat.S_ISREG(st.st_mode):
         return None
-    if stat.S_ISREG(mode):
-        return None
+    if stat.S_ISDIR(st.st_mode):
+        return f"{path}: not a regular file"
+    if stat.S_ISFIFO(st.st_mode):
+        return f"{path}: not a regular file"
+    if stat.S_ISSOCK(st.st_mode):
+        return f"{path}: not a regular file"
+    if stat.S_ISCHR(st.st_mode):
+        return f"{path}: not a regular file"
     return f"{path}: not a regular file"
 
 
