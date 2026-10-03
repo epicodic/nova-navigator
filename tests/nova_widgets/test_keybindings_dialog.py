@@ -6,8 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from nova_navigator.dialogs.keybindings_dialog import KeybindingsDialog
-from nova_navigator.keymap.config import KeybindingsConfig
+from nova_widgets import KeybindingsConfig, KeybindingsDialog
 from nova_widgets.action import Action
 
 
@@ -45,7 +44,7 @@ async def test_keybindings_dialog_opens(tmp_path: Path) -> None:
     from textual.app import App, ComposeResult
 
     actions = _make_actions()
-    cfg = KeybindingsConfig(config_dir=tmp_path)
+    cfg = KeybindingsConfig(tmp_path)
     dialog = KeybindingsDialog(actions=actions, config=cfg)
 
     class TestApp(App[None]):
@@ -68,7 +67,7 @@ async def test_keybindings_dialog_shows_actions(tmp_path: Path) -> None:
     from textual.widgets import DataTable
 
     actions = _make_actions()
-    cfg = KeybindingsConfig(config_dir=tmp_path)
+    cfg = KeybindingsConfig(tmp_path)
     dialog = KeybindingsDialog(actions=actions, config=cfg)
 
     class TestApp(App[None]):
