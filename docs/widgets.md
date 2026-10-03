@@ -59,7 +59,7 @@ def compose(self) -> ComposeResult:
 
 ## PopupWidget
 
-**File:** `nova_navigator/widgets/popup_widget.py`
+**File:** `nova_widgets/popup_widget.py`
 
 `PopupWidget` is a base class for popup panels that float over the screen.
 It uses Textual's `overlay: screen` CSS property to position itself in front of all other content.
@@ -122,7 +122,7 @@ This allows popups that contain focusable children (e.g. input fields) to stay o
 Subclass `PopupWidget`, set class variables to configure behaviour, and implement `compose()` to add content.
 
 ```python
-from nova_navigator.widgets.popup_widget import PopupWidget
+from nova_widgets import PopupWidget
 
 class MyPopup(PopupWidget):
     CLOSE_ACTION = PopupWidget.CloseAction.REMOVE
