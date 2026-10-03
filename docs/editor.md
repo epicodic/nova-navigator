@@ -1281,10 +1281,10 @@ Copy plus terminal write, p95 over three runs: 2 MiB at most 14.1 ms, 3 MiB up t
 
 | Case | Result |
 |---|---|
-| Case-sensitive (find tier) | 1.36 to 1.37 s, about 3.9 GB/s, 12 to 14 progress messages |
+| Case-sensitive (find tier) | Median 1.37 s, about 3.9 GB/s, 12 to 14 progress messages |
 | Ignore case, needle with a literal prefix | 1.6 s, 3.3 GB/s; backward 2.7 s, 2.0 GB/s |
 | Ignore case, first character with variants (pattern tier) | 12.8 s, 419 MB/s |
-| Generated ASCII 1 GiB (stand-in), ignore case (ascii tier) | 0.51 to 0.53 s, about 2.1 GB/s |
+| Generated ASCII 1 GiB (stand-in), ignore case (ascii tier) | Median 0.514 s, about 2.1 GB/s |
 | Generated non-ASCII 1 GiB (stand-in), pattern tier | 430 to 435 MB/s; with a line break in the needle 400 MB/s |
 | Match in the first block, to the terminal message | 1.4 to 2.0 ms |
 | Match in the last block | 1.87 to 2.0 s (it scans the file) |
@@ -1307,6 +1307,9 @@ With wrap on, the earlier code measured 360 to 480 ms for the first `ctrl+end` o
 
 **Harness:**
 `uv run python -m tools.measure_view` has the subcommands `first-screen`, `memory`, `latency`, `jump`, `oracle`, `calllog`, `sweep-yield`, `thresholds`, `summarise`, `edit-memory`, `verify`, `edit-latency`, `edit-scatter`, `segments`, `pieces`, `undo-record` and `clipboard`.
+Four more subcommands exist: `first-end` (the first `ctrl+end`, `ctrl+home`, a second `ctrl+end` and two gotos in a fresh process), `app-latency` (the step latency in the real `nova_edit` app with its status line and footer), `wrap-blocks` (the time of `wrap_range` and `RssAnon` for a number of measured blocks) and `reload` (the time of `reload()`, warm and after dropping the page cache).
+Some subcommands take options: `pieces --delete-pieces` (pieces removed by one splice) and `pieces --checkpoints` (checkpoints of a long-row index whose splice and adopt are timed), `save-fulldisk --real-error efbig` (a real `EFBIG` through `RLIMIT_FSIZE`), and `latency --instrument` and `latency --no-pilot` (per-step garbage collection and segment times, and no Pilot phase).
+These scenarios exist and are covered by smoke tests, but they were never run on the reference files.
 The search subcommands are `search-5g`, `search-latency`, `search-cancel`, `search-edited`, `search-longline`, `search-sweep`, `search-gen` and `search-fold`.
 The save subcommands are `save-5g`, `save-latency`, `save-sweep`, `save-longline`, `save-retention`, `save-records`, `save-cancel` and `save-fulldisk`.
 See `src/tools/measure_view.py` for usage.
@@ -1323,6 +1326,8 @@ See `src/tools/measure_view.py` for usage.
 | `text` above 8 MiB is `""` | Reading costs O(size) | `TEXT_LIMIT` = 8 MiB | Not applicable |
 | Memory per piece | `Piece` object and tree nodes | About 99 bytes against the 80-byte design target | Measured on earlier code (98.2 and 99.4 bytes) |
 | `wrap_range` is O(measured blocks) | Measured blocks are never evicted | Grows with the number of blocks scrolled through | Unmeasured |
+| `LongLineIndex` adopt and splice copy the checkpoints | Both copy the checkpoint arrays of the row | Grows with the number of checkpoints | Not measured at scale; only the 200 MB line was measured |
+| `apply_rebase` lock time grows with cached long indexes | It rebases every cached long-row index under the document lock | Grows with the number of cached long-row indexes | 1.13 to 1.75 ms with 8 cached indexes, 2.29 ms on the 200 MB line, measured on earlier code |
 | Widget save has no `Foreground` gate | The save thread does not give way to the UI | No step over 50 ms during a measured 5 GB save | Measured on earlier code |
 | `reload()` waits on the UI thread | It waits for row 0 of the new document | At most 1 s (`_FIRST_ROW_WAIT`) | Unmeasured |
 | ENOSPC proven by injection | No privileges for a real full disk | Fault injection plus a real EFBIG error | Tests |
@@ -1358,6 +1363,7 @@ The following five items are UNMEASURED on the final code and must not be read a
 4. **The app-level latency of `nova_edit`.**
    Every latency number above was measured on the widget without the status line and the footer.
    The step latency of the real app with both, in both wrap modes, is not measured.
+The design target that `cursor_byte_offset`, which the status line reads on its timer, stays under 2 ms is not measured either.
 5. **The bulk-delete target.**
    The design target is 10,000 pieces deleted in under 20 ms.
    The bulk delete is implemented and tested for correctness and call count only.
@@ -1414,6 +1420,18 @@ The earlier evidence matrices never exceeded 2,006 pieces.
 `LazyWrappedDocument.wrap_range` runs after every edit and walks the measured blocks (it sums over all of them and drops those from the edit on).
 Blocks are measured as the user scrolls and are never evicted, so the cost grows with the number of blocks scrolled through.
 The cost and the memory slope per block are not measured.
+
+### `LongLineIndex` Adopt and Splice Grow with the Checkpoints
+
+`LongLineIndex.spliced` and the adopt step copy the checkpoint arrays of the row, so their cost is proportional to the number of checkpoints behind the edit.
+A longer row or a smaller checkpoint step means more checkpoints.
+Only the 200 MB line was measured, and the cost at a much larger number of checkpoints is not measured.
+
+### `apply_rebase` Lock Time Grows with the Cached Long Indexes
+
+`apply_rebase` rebases every cached long-row index while it holds the document lock on the UI thread.
+The measured time was 1.13 to 1.75 ms with 8 cached indexes for 1 to 10,000 undo records, and 2.29 ms on the 200 MB line.
+Those numbers are from earlier code, and the time grows with the number of cached long-row indexes.
 
 ### The Widget Save Has No `Foreground` Gate
 
