@@ -2,41 +2,29 @@
 
 from __future__ import annotations
 
+import os
 import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from .core.byte_source import ChangeKind
-from .document._lazy_config import LazyConfig
-from .timed_text_area import TimedNovaTextArea
-from .widget import NovaTextArea
+from nova_editor.core.byte_source import ChangeKind
+from nova_editor.document._lazy_config import LazyConfig
+from nova_editor.timed_text_area import TimedNovaTextArea
+from nova_editor.widget import NovaTextArea
 
 LoadState = Literal["loaded", "new", "failed"]
 """`loaded`: the editor shows the file; `new`: the file did not exist at start; `failed`: it exists but could not be read."""
 
 
 def not_regular_reason(path: Path) -> str | None:
-    """Check if the path is a regular file; return a reason if it's not (or None if it is).
-
-    Opening a FIFO would block; same for sockets and character devices. Directories, block devices, and symlinks (even broken ones) have different errors.
-    """
+    """Return why `path` cannot be opened (it exists but is a FIFO, a device, a directory, ...), or `None`."""
     try:
-        st = path.lstat()
-    except OSError as error:
-        if isinstance(error, FileNotFoundError):
-            return None
-        return str(error)
-    if stat.S_ISREG(st.st_mode):
+        mode = os.stat(path).st_mode
+    except OSError:
         return None
-    if stat.S_ISDIR(st.st_mode):
-        return f"{path}: not a regular file"
-    if stat.S_ISFIFO(st.st_mode):
-        return f"{path}: not a regular file"
-    if stat.S_ISSOCK(st.st_mode):
-        return f"{path}: not a regular file"
-    if stat.S_ISCHR(st.st_mode):
-        return f"{path}: not a regular file"
+    if stat.S_ISREG(mode):
+        return None
     return f"{path}: not a regular file"
 
 
