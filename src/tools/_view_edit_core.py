@@ -1,6 +1,7 @@
 """Core-level edit measurements of the view benchmark harness (ACT4 design 15): pieces, undo records and the system clipboard.
 
-`pieces_scenario`: memory per piece (`tracemalloc` and `RssAnon`, one process each) and the cost of one splice and one `row_range` at several piece counts.
+`pieces_scenario`: memory per piece (`tracemalloc` and `RssAnon`, one process each, the tracemalloc row with the bytes per piece of the leaves, the inner nodes and a materialized `Piece`),
+the cost of one splice, one `row_range` and the delete of N pieces at once at several piece counts, and the splice and adopt of a long row index with N checkpoints.
 `undo_record_scenario`: bytes per undo record for typing, Backspace, paste and delete.
 `clipboard_scenario`: time of `app.copy_to_clipboard`, with the terminal write going to a pty that a thread drains.
 """
@@ -18,9 +19,11 @@ import tracemalloc
 import tty
 import types
 from collections import deque
+from itertools import islice
 from typing import Any
 
-from nova_editor.core import AddStore, BytesSource, Content, LineIndex, Piece, PieceTable
+from nova_editor.core import AddStore, BytesSource, Content, LineIndex, LongLineIndex, Piece, PieceTable
+from nova_editor.core.long_line_index import Edit as LongEdit
 from nova_editor.document._edit import Edit
 from tools._view_app import SIZE, ProbeTextArea, settle
 from tools._view_edit import piece_count
@@ -33,6 +36,13 @@ _LCG_MUL = 6364136223846793005
 _LCG_ADD = 1442695040888963407
 _MASK64 = (1 << 64) - 1
 _CHUNK = 1000
+_DELETE_CALLS = 3
+_PIECE_BYTES = 4
+"""Bytes one piece of `fill_table` adds to the document."""
+_PIECE_SAMPLE = 1000
+_CHECKPOINT_STEP = 64
+"""Characters between two checkpoints of the long row of the `checkpoints` method (one ASCII byte each)."""
+_STEP_PRIME = 7919
 _PASTE_CHARS = 20
 _CLIPBOARD_LINE = "clipboard text with an accent é and a wide character 日 \n"
 _ATOMIC_TYPES = (str, bytes, int, float, bool, type(None))
@@ -90,13 +100,103 @@ def _memory_row(spec: Spec, method: str, count: int) -> Row:
         gc.collect()
         current, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
-        fields = {"bytes_per_piece_tracemalloc": (current - base) / count, "peak_bytes_per_piece_tracemalloc": (peak - base) / count}
+        fields = {
+            "bytes_per_piece_tracemalloc": (current - base) / count,
+            "peak_bytes_per_piece_tracemalloc": (peak - base) / count,
+            **_component_bytes(table, count),
+        }
     else:
         before = read_mem().rss_anon_kb
         fill_table(table, count)
         gc.collect()
         fields = {"bytes_per_piece_rss": (read_mem().rss_anon_kb - before) * 1024 / count}
     return base_row(spec, case="pieces", state=f"pieces={count}", op="memory", pieces=table.tree.piece_count, method=method, **fields)
+
+
+def _node_bytes(node: object) -> tuple[int, int]:
+    """Return `(leaf bytes, inner bytes)` of the subtree of `node`: a leaf is measured with `deep_size`, an inner node by its own object, its list of children and its aggregate."""
+    children = getattr(node, "children", None)
+    if children is None:
+        return deep_size(node), 0
+    leaves, inner = 0, sys.getsizeof(node) + sys.getsizeof(children) + deep_size(getattr(node, "agg", None))
+    for child in children:
+        more_leaves, more_inner = _node_bytes(child)
+        leaves += more_leaves
+        inner += more_inner
+    return leaves, inner
+
+
+def _component_bytes(table: PieceTable, count: int) -> Row:
+    """Bytes per piece of the leaves and the inner nodes of the tree (what it retains), and of one materialized `Piece` (made on demand by `pieces()`, never retained)."""
+    leaves, inner = _node_bytes(getattr(table.tree, "_root", None))
+    sample = list(islice(table.tree.pieces(), _PIECE_SAMPLE))
+    objects = sum(deep_size(piece) for piece in sample) / max(1, len(sample))
+    return {
+        "leaf_bytes_per_piece": leaves / count,
+        "inner_bytes_per_piece": inner / count,
+        "piece_objects_bytes_per_piece": objects,
+        "retained_bytes_per_piece": (leaves + inner) / count,
+    }
+
+
+def _delete_many_rows(spec: Spec, count: int, piece_counts: list[int]) -> list[Row]:
+    """Time the delete of `n` neighbouring pieces in one splice for every `n` not above `count` (three calls from distinct start offsets; the table shrinks between calls)."""
+    rows: list[Row] = []
+    nothing = Content.from_pieces((), 0)
+    for n in piece_counts:
+        if n > count:
+            continue
+        table = build_table(count)
+        for k in range(_DELETE_CALLS):
+            remaining = table.tree.piece_count
+            if remaining < n:
+                table = build_table(count)
+                remaining = count
+            first = (k * _STEP_PRIME) % (remaining - n + 1)
+            start = _PIECE_BYTES * first
+            started = time.perf_counter_ns()
+            table.splice(start, start + _PIECE_BYTES * n, nothing)
+            elapsed = (time.perf_counter_ns() - started) / 1e6
+            rows.append(base_row(spec, case="pieces", state=f"pieces={count}", op="splice_delete_many", step=k, delete_pieces=n, splice_ms=elapsed, pieces=table.tree.piece_count))
+    return rows
+
+
+def _checkpoint_rows(spec: Spec, checkpoints: int, calls: int) -> list[Row]:
+    """Time `LongLineIndex.spliced` (one inserted character in the middle) and `rebased` (the adopt of every checkpoint after a save) on an index with `checkpoints` checkpoints."""
+    data = b"a" * (checkpoints * _CHECKPOINT_STEP)
+    old = LongLineIndex(BytesSource(data), 0, len(data), checkpoint_chars=_CHECKPOINT_STEP, autostart=False)
+    old.start()
+    if not old.join(float(spec.get("timeout", 900))):
+        msg = "the scan of the long row did not finish"
+        raise RuntimeError(msg)
+    middle = len(data) // 2
+    edited = BytesSource(data[:middle] + b"x" + data[middle:])
+    same = BytesSource(data)
+    edit = LongEdit(middle, 0, 0, 0, 1, 1, 1)
+    rows: list[Row] = []
+    for k in range(calls):
+        started = time.perf_counter_ns()
+        spliced = LongLineIndex.spliced(old, edited, edit, autostart=False)
+        splice_ms = (time.perf_counter_ns() - started) / 1e6
+        started = time.perf_counter_ns()
+        rebased = LongLineIndex.rebased(old, same, autostart=False)
+        adopt_ms = (time.perf_counter_ns() - started) / 1e6
+        rows.append(
+            base_row(
+                spec,
+                case="pieces",
+                state=f"checkpoints={checkpoints}",
+                op="long_splice",
+                step=k,
+                checkpoints=checkpoints,
+                checkpoint_count=old.checkpoint_count,
+                spliced_checkpoints=spliced.checkpoint_count,
+                rebased_checkpoints=None if rebased is None else rebased.checkpoint_count,
+                splice_ms=splice_ms,
+                adopt_ms=adopt_ms,
+            )
+        )
+    return rows
 
 
 def _cost_rows(spec: Spec, count: int, calls: int) -> list[Row]:
@@ -130,13 +230,19 @@ def _cost_rows(spec: Spec, count: int, calls: int) -> list[Row]:
 
 
 async def pieces_scenario(spec: Spec) -> list[Row]:
-    """`pieces` child: `method` `cost` (splice and row_range at every size of `sizes`), `tracemalloc` or `rss` (bytes per piece at `memory_size`)."""
+    """`pieces` child: the measurement of `spec["method"]`.
+
+    `cost`: splice, row_range and the delete of `delete_pieces` pieces at every size of `sizes`; `tracemalloc` or `rss`: bytes per piece at `memory_size`; `checkpoints`: the long row index.
+    """
     method = str(spec["method"])
     if method == "cost":
         rows: list[Row] = []
         for count in spec["sizes"]:
             rows += _cost_rows(spec, int(count), int(spec["calls"]))
+            rows += _delete_many_rows(spec, int(count), [int(n) for n in spec.get("delete_pieces", [])])
         return rows
+    if method == "checkpoints":
+        return _checkpoint_rows(spec, int(spec["checkpoints"]), int(spec["calls"]))
     return [_memory_row(spec, method, int(spec["memory_size"]))]
 
 
