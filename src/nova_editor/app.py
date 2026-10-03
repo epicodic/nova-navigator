@@ -22,16 +22,16 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Footer, Header, Input
 
-from nova_editor.bars import ConfirmBar, GotoBar, PathBar, SaveBar, format_sizes, parse_goto
-from nova_editor.core.byte_source import ChangeKind
-from nova_editor.core.save import check_path
-from nova_editor.document._cursor_anchor import CursorState
-from nova_editor.document._lazy_config import LazyConfig
-from nova_editor.document_view import not_regular_reason
-from nova_editor.search_bar import SearchBar, SearchStatus
-from nova_editor.status_line import StatusLine, StatusState
-from nova_editor.timed_text_area import TimedNovaTextArea
-from nova_editor.widget import ExternalCheck, NovaTextArea
+from .bars import ConfirmBar, GotoBar, PathBar, SaveBar, format_sizes, parse_goto
+from .core.byte_source import ChangeKind
+from .core.save import check_path
+from .document._cursor_anchor import CursorState
+from .document._lazy_config import LazyConfig
+from .document_view import not_regular_reason
+from .search_bar import SearchBar, SearchStatus
+from .status_line import StatusLine, StatusState
+from .timed_text_area import TimedNovaTextArea
+from .widget import ExternalCheck, NovaTextArea
 
 QUIT_POLL_SECONDS = 0.02
 NEEDLE_SHOWN = 40
