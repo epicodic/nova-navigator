@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from nova_navigator.dialogs.keybindings_dialog import KeybindingsDialog
-from nova_navigator.keymap.config import KeybindingsConfig
+from nova_widgets import KeybindingsConfig, KeybindingsDialog
 from nova_widgets.action import Action
+from nova_widgets.keymap.key_sequence import KeyFormatStyle
 
 
 def _make_actions() -> list[Action]:
@@ -45,7 +45,7 @@ async def test_keybindings_dialog_opens(tmp_path: Path) -> None:
     from textual.app import App, ComposeResult
 
     actions = _make_actions()
-    cfg = KeybindingsConfig(config_dir=tmp_path)
+    cfg = KeybindingsConfig(tmp_path)
     dialog = KeybindingsDialog(actions=actions, config=cfg)
 
     class TestApp(App[None]):
@@ -68,7 +68,7 @@ async def test_keybindings_dialog_shows_actions(tmp_path: Path) -> None:
     from textual.widgets import DataTable
 
     actions = _make_actions()
-    cfg = KeybindingsConfig(config_dir=tmp_path)
+    cfg = KeybindingsConfig(tmp_path)
     dialog = KeybindingsDialog(actions=actions, config=cfg)
 
     class TestApp(App[None]):
@@ -86,3 +86,21 @@ async def test_keybindings_dialog_shows_actions(tmp_path: Path) -> None:
         # The table should have rows for each action
         table = tables[0]
         assert table.row_count == len(actions)
+
+
+def test_keybindings_dialog_default_key_display_style(tmp_path: Path) -> None:
+    actions = _make_actions()
+    cfg = KeybindingsConfig(tmp_path)
+    dialog = KeybindingsDialog(actions=actions, config=cfg, key_display_style=None)
+    assert dialog._key_display_style == KeyFormatStyle.CLASSIC
+
+
+def test_keybindings_dialog_forwards_key_display_style(tmp_path: Path) -> None:
+    actions = _make_actions()
+    cfg = KeybindingsConfig(tmp_path)
+    dialog = KeybindingsDialog(
+        actions=actions,
+        config=cfg,
+        key_display_style=KeyFormatStyle.EMACS,
+    )
+    assert dialog._key_display_style == KeyFormatStyle.EMACS

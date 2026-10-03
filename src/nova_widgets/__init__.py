@@ -7,6 +7,8 @@ from .data_table import DataTable
 from .dialog import ButtonSpec, DefaultButton, Dialog
 from .flat_widgets import Button, Checkbox, Input, Select
 from .icon import Icon
+from .keybindings_config import KeybindingsConfig
+from .keybindings_dialog import KeybindingsDialog, KeyCaptureDialog
 from .menu import Menu, MenuBar
 from .message_box import MessageBox, MessageBoxVariant, MessageDialog
 from .popup_widget import PopupWidget
@@ -26,6 +28,9 @@ __all__ = [
     "Dialog",
     "Icon",
     "Input",
+    "KeyCaptureDialog",
+    "KeybindingsConfig",
+    "KeybindingsDialog",
     "Menu",
     "MenuBar",
     "MessageBox",

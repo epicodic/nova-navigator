@@ -9,20 +9,22 @@ It supports Emacs-style multi-chord sequences, user-configurable overrides, a st
 
 The implementation is split across two packages.
 
-**`nova_widgets/keymap/`** — reusable, app-agnostic layer:
+**`nova_widgets/`** — reusable, app-agnostic layer:
 
 | Module | Contents |
 |--------|----------|
-| `key_sequence.py` | `Key`, `KeyChord`, `KeySequence`, `KeyFormatStyle` |
-| `key_sequence_state_machine.py` | Trie-based `KeySequenceStateMachine` |
-| `hint_bar.py` | `HintBar` widget + `HintsChanged` message |
-| `registry.py` | `KeymapRegistry` |
+| `keymap/key_sequence.py` | `Key`, `KeyChord`, `KeySequence`, `KeyFormatStyle` |
+| `keymap/key_sequence_state_machine.py` | Trie-based `KeySequenceStateMachine` |
+| `keymap/hint_bar.py` | `HintBar` widget + `HintsChanged` message |
+| `keymap/registry.py` | `KeymapRegistry` |
+| `keybindings_config.py` | `KeybindingsConfig` (TOML persistence) |
+| `keybindings_dialog.py` | `KeybindingsDialog`, `KeyCaptureDialog` |
 
-**`nova_navigator/keymap/`** — app-specific wiring:
+**`nova_navigator/keymap/`** — app-specific context and wiring:
 
 | Module | Contents |
 |--------|----------|
-| `config.py` | `KeybindingsConfig` (TOML persistence) |
+| `context.py` | `NovaContextResolver` — resolves the active context for the app |
 
 ---
 
@@ -232,7 +234,7 @@ Post an empty dict to reset a widget's overrides to default ordering.
 
 ## Keybindings Config (`KeybindingsConfig`)
 
-`KeybindingsConfig` in `nova_navigator/keymap/config.py` loads and saves per-user overrides.
+`KeybindingsConfig` in `nova_widgets/keybindings_config.py` loads and saves per-user overrides.
 
 **File location:** `~/.config/nova-navigator/keybindings.toml`
 
@@ -313,7 +315,7 @@ Configured via `GeneralSettings.key_display_style` (`KeyDisplayStyle`):
 
 ## Keybindings Dialog
 
-`KeybindingsDialog` in `nova_navigator/dialogs/keybindings_dialog.py` lists all known actions with their current shortcut in a data table.
+`KeybindingsDialog` in `nova_widgets/keybindings_dialog.py` lists all known actions with their current shortcut in a data table.
 It is opened from the system menu under **Key Bindings…** or programmatically via `action_keybindings`.
 
 After the dialog is dismissed, `MainScreen._reload_keymap` is called to apply any changes.
@@ -464,7 +466,7 @@ class ContextResolver(Protocol):
 
 ## Keybindings Config (`KeybindingsConfig`)
 
-`KeybindingsConfig` in `nova_navigator/keymap/config.py` loads and saves per-user overrides.
+`KeybindingsConfig` in `nova_widgets/keybindings_config.py` loads and saves per-user overrides.
 
 **File location:** `~/.config/nova-navigator/keybindings.toml`
 
@@ -543,7 +545,7 @@ Configured via `GeneralSettings.key_display_style` (`KeyDisplayStyle`):
 
 ## Keybindings Dialog
 
-`KeybindingsDialog` in `nova_navigator/dialogs/keybindings_dialog.py` lists all known actions with their current shortcut in a data table.
+`KeybindingsDialog` in `nova_widgets/keybindings_dialog.py` lists all known actions with their current shortcut in a data table.
 It is opened from the `𑁔` system menu under **Key Bindings…** or programmatically via `action_keybindings`.
 
 After the dialog is dismissed, `MainScreen._reload_keymap` is called to apply any changes.
