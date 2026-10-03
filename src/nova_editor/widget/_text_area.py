@@ -4201,9 +4201,10 @@ NovaTextArea {
         if not self._has_cursor:
             return Offset(0, 0)
         self._recompute_cursor_offset()
-        if self.soft_wrap and self.wrapped_document.height > self.virtual_size.height:
-            # The estimated height of an unmeasured region follows a running mean that the measurements above move; Textual clamps the scroll offset
-            # to `virtual_size`, so the virtual height has to cover the cursor y first (ACT7 design 3.3).
+        # The estimated height of an unmeasured region follows a running mean that the measurements above move; Textual clamps the scroll offset
+        # to `virtual_size`, so the virtual height has to cover the cursor y first (ACT7 design 3.3).
+        # A cursor row inside the current virtual height scrolls correctly without a refresh, and reading `height` is only done when it could matter.
+        if self.soft_wrap and self._cursor_offset[1] >= self.virtual_size.height and self.wrapped_document.height > self.virtual_size.height:
             self._refresh_size()
 
         x, y = self._cursor_offset
