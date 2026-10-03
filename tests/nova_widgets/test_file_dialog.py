@@ -11,14 +11,7 @@ from textual.app import App, ComposeResult
 from textual.css.query import NoMatches
 from textual.widgets import Input, Static
 
-from nova_widgets import (
-    FileDialog,
-    FileDialogMode,
-    FileTypeFilter,
-    Icon,
-    InMemoryFileProvider,
-    Select,
-)
+from nova_widgets import FileDialog, FileDialogMode, FileTypeFilter, Icon, InMemoryFileProvider, Select
 from nova_widgets.file_dialog import _FileListing
 from nova_widgets.file_provider import default_file_provider
 
