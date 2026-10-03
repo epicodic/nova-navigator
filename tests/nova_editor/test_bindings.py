@@ -9,7 +9,8 @@ from textual.app import App
 from textual.widgets import Input
 
 from nova_editor import search_bar
-from nova_editor.app import GotoTarget, NovaEditApp, parse_goto
+from nova_editor.app import NovaEditApp
+from nova_editor.bars import GotoTarget, parse_goto
 from nova_editor.search_bar import SearchBar, SearchStatus
 from nova_editor.widget import NovaTextArea
 

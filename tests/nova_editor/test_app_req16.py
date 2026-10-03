@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 from textual.widgets.text_area import Selection
 
-from nova_editor.app import NovaEditApp, SaveBar
+from nova_editor.app import NovaEditApp
+from nova_editor.bars import SaveBar
 from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.save_widget_helpers import wait_saved
 

@@ -10,10 +10,11 @@ from typing import Any, ClassVar
 import pytest
 from textual.app import App, ComposeResult
 
-from nova_editor.app import NovaEditApp, TimedNovaTextArea
+from nova_editor.app import NovaEditApp
 from nova_editor.core import ByteSource
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.status_line import StatusLine, StatusState, format_status
+from nova_editor.timed_text_area import TimedNovaTextArea
 from tests.nova_editor.helpers_view import LOWERED_OPTIONS, GatedLineSource, wait_until
 from tests.nova_editor.save_widget_helpers import wait_saved
 

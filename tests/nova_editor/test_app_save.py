@@ -12,7 +12,8 @@ import pytest
 from textual import events
 from textual.pilot import Pilot
 
-from nova_editor.app import ConfirmBar, NovaEditApp, PathBar, SaveBar, main
+from nova_editor.app import NovaEditApp, main
+from nova_editor.bars import ConfirmBar, PathBar, SaveBar
 from nova_editor.core.byte_source import ChangeKind
 from nova_editor.core.save import SaveIo
 from nova_editor.document._lazy_document import LazyDocument

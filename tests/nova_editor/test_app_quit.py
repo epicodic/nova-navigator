@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 from textual.widgets import Input
 
-from nova_editor.app import ConfirmBar, NovaEditApp
+from nova_editor.app import NovaEditApp
+from nova_editor.bars import ConfirmBar
 from nova_editor.core.save import SaveIo
 from nova_editor.widget import NovaTextArea
 from tests.nova_editor.helpers_view import wait_until
