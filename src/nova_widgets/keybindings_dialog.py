@@ -8,21 +8,13 @@ from textual.app import ComposeResult
 from textual.coordinate import Coordinate
 from textual.widgets import Label
 
-from nova_navigator.config import conf_
-from nova_navigator.keymap.config import KeybindingsConfig
 from nova_widgets import DataTable, DefaultButton, Dialog
 from nova_widgets.action import Action
+from nova_widgets.keybindings_config import KeybindingsConfig
 from nova_widgets.keymap.key_sequence import KeyChord, KeyFormatStyle, KeySequence
 
 _HINT_NORMAL = "Assign key: double-click / space | Clear binding: delete"
 _KEY_CHORD_BADGE_STYLE = "bold white on grey30"
-
-
-def _get_key_display_style() -> KeyFormatStyle:
-    try:
-        return conf_.settings.general.key_display_style
-    except AttributeError:
-        return KeyFormatStyle.CLASSIC
 
 
 def _format_key_sequence_badges(sequence: KeySequence | None, style: KeyFormatStyle) -> Text | str:
@@ -51,11 +43,17 @@ class KeyCaptureDialog(Dialog):
     _action: Action
     _chords: list[KeyChord]
     _sequence_display: Label
+    _key_display_style: KeyFormatStyle
 
-    def __init__(self, action: Action) -> None:
+    def __init__(
+        self,
+        action: Action,
+        key_display_style: KeyFormatStyle | None = None,
+    ) -> None:
         super().__init__(title="Assign Key Binding", buttons=[DefaultButton.OK, DefaultButton.CANCEL])
         self._action = action
         self._chords = []
+        self._key_display_style = key_display_style or KeyFormatStyle.CLASSIC
 
     def compose_content(self) -> ComposeResult:
         self._sequence_display = Label("(none)", id="sequence_display")
@@ -78,9 +76,8 @@ class KeyCaptureDialog(Dialog):
 
     def _refresh_display(self) -> None:
         if self._chords:
-            style = _get_key_display_style()
             sequence = KeySequence(tuple(self._chords))
-            self._sequence_display.update(_format_key_sequence_badges(sequence, style))
+            self._sequence_display.update(_format_key_sequence_badges(sequence, self._key_display_style))
         else:
             self._sequence_display.update("(none)")
 
@@ -131,11 +128,13 @@ class KeybindingsDialog(Dialog):
     _key_map: dict[str, KeySequence]
     _deleted_names: set[str]
     _hovered_row: int | None
+    _key_display_style: KeyFormatStyle
 
     def __init__(
         self,
         actions: list[Action],
         config: KeybindingsConfig,
+        key_display_style: KeyFormatStyle | None = None,
     ) -> None:
         super().__init__(
             title="Key Bindings",
@@ -146,6 +145,7 @@ class KeybindingsDialog(Dialog):
         self._key_map = {}
         self._deleted_names = set()
         self._hovered_row = None
+        self._key_display_style = key_display_style or KeyFormatStyle.CLASSIC
 
     def compose_content(self) -> ComposeResult:
         self._table = DataTable(id="bindings_table", cursor_type="row", expand_column=0)
@@ -157,10 +157,9 @@ class KeybindingsDialog(Dialog):
     def on_mount(self) -> None:
         self._table.add_columns("Action", "Key Binding")
         self._key_map = self._config.resolve(self._actions)
-        style = _get_key_display_style()
         for action in self._actions:
             key = self._key_map.get(action.id or "") if action.id else None
-            self._table.add_row(action.text, _format_key_sequence_badges(key, style))
+            self._table.add_row(action.text, _format_key_sequence_badges(key, self._key_display_style))
         if self._actions:
             self._description_label.update(self._actions[0].description or "")
 
@@ -209,13 +208,12 @@ class KeybindingsDialog(Dialog):
         action = self._actions[idx]
         if not action.id:
             return
-        dialog = KeyCaptureDialog(action)
+        dialog = KeyCaptureDialog(action, key_display_style=self._key_display_style)
         response = await dialog.run()
         if response == DefaultButton.OK and dialog.value is not None:
             self._key_map[action.id] = dialog.value
             self._deleted_names.discard(action.id)
-            style = _get_key_display_style()
-            self._table.update_cell_at(Coordinate(idx, 1), _format_key_sequence_badges(dialog.value, style))
+            self._table.update_cell_at(Coordinate(idx, 1), _format_key_sequence_badges(dialog.value, self._key_display_style))
 
     def action_accept_dialog(self) -> None:
         to_save: dict[str, KeySequence | None] = {**self._key_map}
