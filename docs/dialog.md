@@ -166,3 +166,76 @@ It takes two parameters:
 
 - `action: Action` — the action being edited.
 - `key_display_style: KeyFormatStyle | None = None` — optional style for formatting keys (defaults to `KeyFormatStyle.CLASSIC`).
+
+## File Dialog
+
+`FileDialog` is a modal dialog for selecting files or directories.
+
+It is importable from `nova_widgets`.
+
+### Usage
+
+```python
+from nova_widgets import FileDialog, FileDialogMode
+from pathlib import Path
+
+dialog = FileDialog(
+    mode=FileDialogMode.OPEN,
+    start_path=Path.home(),
+    title="Select a file",
+)
+```
+
+### Provider protocol
+
+By default, `FileDialog` browses the local filesystem via `LocalFileProvider`.
+
+To use a custom filesystem backend, pass a `provider` that implements `FileProvider` protocol:
+
+```python
+from nova_widgets import FileDialog, FileDialogMode, InMemoryFileProvider
+from pathlib import PurePath
+
+provider = InMemoryFileProvider(root="/")
+provider.add_dir("/home/user")
+provider.add_file("/home/user/config.txt")
+
+dialog = FileDialog(
+    mode=FileDialogMode.OPEN,
+    start_path=PurePath("/home/user"),
+    provider=provider,
+)
+```
+
+### Icon provider
+
+The dialog renders folder and file icons via an `icon_provider` callback.
+
+By default (None), the dialog renders blank placeholders.
+
+To use custom icons, pass a callable `Callable[[str], Icon]`:
+
+```python
+from nova_navigator.icons import ico_
+from nova_widgets import FileDialog, FileDialogMode
+
+dialog = FileDialog(
+    mode=FileDialogMode.OPEN,
+    icon_provider=ico_,  # Use navigator icons
+)
+```
+
+### File selection modes
+
+- `FileDialogMode.OPEN`: Select an existing file.
+- `FileDialogMode.SAVE`: Select or create a file (accepts non-existent files in existing directories).
+- `FileDialogMode.DIR`: Select a directory.
+
+### Result
+
+After dismissal, check `dialog.selected_path`:
+
+```python
+if dialog.selected_path:
+    print(f"Selected: {dialog.selected_path}")
+```
