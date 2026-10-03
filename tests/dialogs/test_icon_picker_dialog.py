@@ -171,7 +171,7 @@ async def test_hovering_cell_updates_status_label() -> None:
 
 @pytest.mark.asyncio
 async def test_action_accept_dismisses_with_response_ok() -> None:
-    from nova_navigator.response import Response
+    from nova_widgets import Response
 
     dialog, _App = _make_dialog_app(initial_icon="home")
     dismissed_with: list[Response | None] = []

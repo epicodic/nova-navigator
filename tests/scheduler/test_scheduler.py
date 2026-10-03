@@ -4,8 +4,8 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
-from nova_navigator.response import Response
 from nova_navigator.scheduler import AsyncTaskScheduler, ResponseRequest, TaskCancelled, TaskContext, TaskStatus
+from nova_widgets import Response
 
 
 def _make_status() -> TaskStatus:

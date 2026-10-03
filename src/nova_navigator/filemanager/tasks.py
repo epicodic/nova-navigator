@@ -4,8 +4,8 @@ import logging
 from dataclasses import dataclass
 from typing import Literal
 
-from nova_navigator.response import Response
 from nova_navigator.scheduler import TaskContext
+from nova_widgets import Response
 
 from ..file_filter import FileFilter
 from ..vfs import VPath

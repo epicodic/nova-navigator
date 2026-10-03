@@ -320,5 +320,5 @@ async def long_operation(ctx: TaskContext) -> None:
 - **`AsyncTaskScheduler`:** `nova_navigator/scheduler/scheduler.py`
 - **`TaskContext`, `TaskStatus`:** `nova_navigator/scheduler/context.py`
 - **Task implementations:** `nova_navigator/filemanager/tasks.py`
-- **Response enum:** `nova_navigator/response.py`
+- **Response enum:** `nova_widgets/response.py`
 - **Architecture guide:** See `AGENTS.md` for the broader threading model and async architecture

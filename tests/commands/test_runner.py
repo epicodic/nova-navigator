@@ -14,10 +14,10 @@ from nova_navigator.commands import (
     TerminalBusyError,
     terminal_line,
 )
-from nova_navigator.response import Response
 from nova_navigator.scheduler import Job, ResponseRequest
 from nova_navigator.vfs import Filesystem
 from nova_navigator.vfs.filesystems import LocalFilesystem
+from nova_widgets import Response
 from tests._utils.mock_filesystem import MockFilesystem
 
 _fs = LocalFilesystem.singleton()

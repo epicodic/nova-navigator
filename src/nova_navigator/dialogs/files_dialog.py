@@ -1,13 +1,13 @@
 from textual import events
+from textual.app import ComposeResult
 from textual.css.query import NoMatches
 from textual.widgets import Collapsible, Static
 
 from nova_navigator.file_filter import FileFilter, FilenamePatternFilter
 from nova_navigator.vfs.filesystem import VPath
-from nova_widgets import Input
+from nova_widgets import DefaultButton, Dialog, Input
 
 from ..widgets import NoSelectListView
-from .dialog import ComposeResult, DefaultButton, Dialog
 
 
 class CopyMoveFilesDialog(Dialog):

@@ -7,13 +7,13 @@ import logging
 
 from nova_navigator.config import conf_
 from nova_navigator.config.remotes import RemoteConnection
-from nova_navigator.dialogs import MessageBox
 from nova_navigator.plugins import FilesystemPlugin
 from nova_navigator.terminal.terminal import Terminal
 from nova_navigator.terminal.vfs_shell import VfsShellDriver, VirtualPtyBackend
 from nova_navigator.vfs.filesystem import Filesystem
 from nova_navigator.vfs.filesystems import AzureFilesystem
 from nova_navigator.vfs.vpath import VPath
+from nova_widgets import MessageBox
 
 _logger = logging.getLogger(__name__)
 

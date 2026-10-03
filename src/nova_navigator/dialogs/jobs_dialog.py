@@ -13,9 +13,8 @@ from textual.scroll_view import ScrollView
 from textual.strip import Strip
 
 from nova_navigator.scheduler import Job
-from nova_widgets import Button
+from nova_widgets import Button, PopupWidget
 
-from ..widgets.popup_widget import PopupWidget
 from .job_registry import JobRegistry
 
 
