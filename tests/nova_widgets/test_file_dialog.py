@@ -10,13 +10,9 @@ from textual.app import App, ComposeResult
 from textual.css.query import NoMatches
 from textual.widgets import Input, Static
 
-from nova_navigator.dialogs.file_dialog import (
-    FileDialog,
-    FileDialogMode,
-    FileTypeFilter,
-    _FileListing,
-)
-from nova_widgets import Select
+from nova_widgets import FileDialog, FileDialogMode, FileTypeFilter, Select
+from nova_widgets.file_dialog import _FileListing
+from nova_widgets.file_provider import default_file_provider
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 

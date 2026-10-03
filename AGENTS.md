@@ -157,6 +157,8 @@ A separate package in `src/nova_widgets/` providing:
 - `popup_widget.py` — `PopupWidget`, the base class for floating popup panels
 - `keybindings_config.py` — `KeybindingsConfig` for loading/saving user key binding overrides
 - `keybindings_dialog.py` — `KeybindingsDialog` and `KeyCaptureDialog` for editing keybindings
+- `file_provider.py` — `FileProvider` protocol and `LocalFileProvider`, `InMemoryFileProvider` implementations
+- `file_dialog.py` — `FileDialog` for selecting files or directories with pluggable filesystem provider
 - The package must not import `nova_navigator` (enforced by `tests/test_package_independence.py`)
 - Used in `main.py` via `from nova_widgets.menu import ...`
 
