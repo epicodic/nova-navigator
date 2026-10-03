@@ -13,11 +13,11 @@ This file documents the vendored code from upstream Textual and how to manage up
 ## Vendored Files
 
 The following files are vendored from Textual 8.2.8.
-The Notes column says what differs from upstream, and what ACT3, ACT4, ACT5 and ACT6 changed on top of the ACT2 state.
+The Notes column says what differs from upstream, and what ACT3, ACT4, ACT5, ACT6 and ACT7 changed on top of the ACT2 state.
 
 | Vendored Path | Upstream Path | Notes |
 |---|---|---|
-| `widget/_text_area.py` | `src/textual/widgets/_text_area.py` | Class renamed `TextArea` to `NovaTextArea`; imports updated; lazy document support, cursor state machine, long-row handling and new messages added; ACT4 removed the stock `Document` path and added editing on piece tables, refusal and the clipboard; ACT5 added saving, reload, external change detection and the save messages; ACT6 added the search glue, its messages and the select-all key move (see below) |
+| `widget/_text_area.py` | `src/textual/widgets/_text_area.py` | Class renamed `TextArea` to `NovaTextArea`; imports updated; lazy document support, cursor state machine, long-row handling and new messages added; ACT4 removed the stock `Document` path and added editing on piece tables, refusal and the clipboard; ACT5 added saving, reload, external change detection and the save messages; ACT6 added the search glue, its messages and the select-all key move; ACT7 imports `TREE_SITTER` and `get_language` from `widget/_tree_sitter.py`, guards `_refresh_size` in `scroll_cursor_visible`, added `line_ending` and `indexing_progress`, and made `cursor_byte_offset` return `None` while the row is unresolved (see below) |
 | `widget/_text_area_theme.py` | `src/textual/_text_area_theme.py` | Imports updated to reference `NovaTextArea`; unchanged by ACT3 |
 | `document/_document.py` | `src/textual/document/_document.py` | Capability methods added; `cell_len` now comes from `rich.cells`; `EditResult` gained `removed`, `start_byte` and `inserted` (ACT4); unchanged by ACT5 |
 | `document/_document_navigator.py` | `src/textual/document/_document_navigator.py` | Lazy-document branches added (see below); `cell_len` now comes from `rich.cells` |
@@ -25,8 +25,9 @@ The Notes column says what differs from upstream, and what ACT3, ACT4, ACT5 and 
 | `document/_history.py` | `src/textual/document/_history.py` | Imports updated to use the vendored document package; ACT4 changed the batching defaults, `record` and added restore helpers; ACT5 added revisions, branches and the modified state (see below) |
 | `document/_syntax_aware_document.py` | `src/textual/document/_syntax_aware_document.py` | Imports updated to use the vendored document package; unchanged by ACT3 and ACT4; now only the highlighting mirror of a lazy document |
 | `document/_wrapped_document.py` | `src/textual/document/_wrapped_document.py` | Imports use the vendored document package; ACT7 took `cell_len` from `rich.cells` and the wrap helpers from `document/_wrap.py` |
-| `document/_wrap.py` | `src/textual/_wrap.py`, `src/textual/_cells.py::cell_width_to_column_index`, `src/textual/_loop.py::loop_last` | Docstrings rewritten, `cell_len` from `rich.cells`, `loop_last` inlined as `_loop_last` (ACT7) |
-| `widget/_tree_sitter.py` | `src/textual/_tree_sitter.py` | Optional import expressed through `import_module` (ACT7) |
+| `document/_wrap.py` | `src/textual/_wrap.py`, `src/textual/_cells.py::cell_width_to_column_index`, `src/textual/_loop.py::loop_last` | Carries `chunks`, `compute_wrap_offsets` and the `cell_width_to_column_index` helper; docstrings written for ruff, `cell_len` and `get_character_cell_size` from `rich.cells`, `loop_last` inlined as `_loop_last`, and the prefix sum and the folding of an over-wide chunk split out of `compute_wrap_offsets` as `_cumulative_tab_widths` and `_fold_chunk` (ACT7) |
+| `widget/_tree_sitter.py` | `src/textual/_tree_sitter.py` | Provides `TREE_SITTER` and `get_language`; the optional `tree_sitter` import goes through `import_module` behind a guard (so ty needs no suppression), and the module and `TREE_SITTER` docstrings were added (ACT7) |
+| `__init__.py` (package root) | none | Native: exports `NovaTextArea`, `LazyConfig` and `DEFAULT_HIGHLIGHT_LIMIT` lazily through PEP 562 `__getattr__` and `__dir__`, so importing `nova_editor.core` does not load Textual (ACT7) |
 | `document/__init__.py` | `src/textual/document/__init__.py` | Empty at the end of ACT4; ACT5 exports `EditsLocked`, `LazyDocument` and `RowUnavailable` (not upstream's exports); unchanged by ACT6 |
 
 ## New Files (Not Vendored)
@@ -38,7 +39,8 @@ The following modules are native to `nova_editor` and are not copies of upstream
 | `core/` | Textual-free byte source, line index, long-line index and width helpers (see `docs/editor.md`). |
 | `core/foreground.py` | `Foreground` gate that lets the background scans give way to the UI thread (ACT3). |
 | `core/pieces.py` | `Piece`, `Aggregate`, `Content`, the `PieceSource` protocol and the junction rules (ACT4). |
-| `core/piece_tree.py` | `PieceTree`, the counted B+ tree of pieces (ACT4). |
+| `core/piece_tree.py` | `PieceTree`, the counted B+ tree of pieces (ACT4); a replace deletes its piece range in one pass through `_delete_pieces`, `_delete_range` and `_repair_children` (ACT7). |
+| `status_line.py` | `StatusState`, `format_status` and `StatusLine`, the one-row status line of `nova_edit` (ACT7). |
 | `core/add_store.py` | `AddStore` and `AddSegment`, the append-only store of added bytes (ACT4). |
 | `core/original_source.py` | `OriginalSource` and `RowNotIndexed`, the row oracle of the original file on top of `LineIndex` (ACT4). |
 | `core/piece_table.py` | `PieceTable`, the editable document with row queries and the open tail (ACT4). |
@@ -54,7 +56,7 @@ The following modules are native to `nova_editor` and are not copies of upstream
 | `search_bar.py` | `SearchBar` and `SearchStatus`, the inline widgets of the `nova_edit` search (ACT6). |
 | `document/_lazy_config.py` | Tunable thresholds for lazy documents (`LazyConfig` dataclass). |
 | `document/_lazy_document.py` | Editable document over `PieceTable` (read-only in ACT3); ACT5 added the edit lock, `plan`, `prepare_rebase`, `apply_rebase` and the save registration; ACT6 added `search_plan` and `revision`. |
-| `document/_lazy_wrapped_document.py` | Wrapping layer for lazy documents with grid wrap and a sparse height estimate. |
+| `document/_lazy_wrapped_document.py` | Wrapping layer for lazy documents with grid wrap and a sparse height estimate; imports `compute_wrap_offsets` from `document/_wrap.py` (ACT7). |
 | `document/_cursor_anchor.py` | Cursor state machine for long rows (`RESOLVED`, `PROVISIONAL`, `PENDING`). |
 | `document/_long_row_anchor.py` | Adapter from a long-line index to the cursor machine; ACT5 added `rebind`. |
 | `widget/_lazy_window.py` | Windowed text of medium and long rows. |
@@ -88,6 +90,47 @@ ACT6 extended the core, which stays Textual-free:
 - `LazyDocument.search_plan` and `LazyDocument.revision` in the document layer.
 
 ## Nova Editor Changes to Vendored Code
+
+### `widget/_text_area.py` (status line and import changes)
+
+**Imports:** `TREE_SITTER` and `get_language` come from `widget/_tree_sitter.py` instead of `textual._tree_sitter`.
+**`scroll_cursor_visible`:** when `soft_wrap` is on and `wrapped_document.height` exceeds `virtual_size.height`, it calls `_refresh_size()` first, because the estimated height of an unmeasured region moves with the measurements and Textual clamps the scroll offset to `virtual_size`.
+**New properties:** `line_ending` (`"LF"`, `"CRLF"` or `"CR"`, from the newline of the document) and `indexing_progress` (the fraction of the document that the line scan covered, exactly 1.0 when indexing is complete or the document is empty).
+**`cursor_byte_offset`:** the `_track_cursor()` call moved inside the `try`, and `RowUnavailable` and `IndexError` give `None`, so the status line shows `Byte ?` while the row cannot be resolved.
+
+### `document/_wrapped_document.py` and `document/_lazy_wrapped_document.py`
+
+`cell_len` comes from `rich.cells`.
+`cell_width_to_column_index` and `compute_wrap_offsets` come from `document/_wrap.py`, which replaces the imports of `textual._cells` and `textual._wrap`.
+
+### `document/_wrap.py` and `widget/_tree_sitter.py`
+
+Both are vendored from Textual 8.2.8 (see the file table) so that no private Textual module is imported.
+`cell_width_to_column_index` is the helper that was imported from `textual._cells`.
+In `_wrap.py`, every function has a docstring, `cell_len` and `get_character_cell_size` come from `rich.cells`, and `loop_last` is the private `_loop_last`.
+In `_tree_sitter.py`, the optional `tree_sitter` package is imported with `import_module` inside `try`, and the module keeps `TREE_SITTER` and a cache of loaded languages.
+
+### `__init__.py`
+
+The public names are resolved on first access by a module `__getattr__`, and `__dir__` lists them.
+`TYPE_CHECKING` imports keep the type checkers working.
+
+### `core/piece_tree.py`
+
+Replacing a range no longer calls `_delete_at` once per piece.
+`_delete_pieces(index, count)` clears the tree when it holds exactly those pieces.
+Otherwise `_delete_range` slices the boundary leaves, drops the nodes that lie wholly inside the range and lets `_repair_children` rebalance each cut node.
+This is native code, not vendored.
+
+### `app.py`
+
+- `NovaEditApp` yields `Footer(compact=True, show_command_palette=False)` instead of the removed `EditorFooter`, and its bindings are `Binding` objects (Escape for `cancel_save` is hidden).
+- It yields a `StatusLine` built from `_status_state()` and refreshes it on selection, text, index progress, indexing complete, jump completed and reload messages, and on changes of `pending_progress` and `soft_wrap`.
+- `JumpRejected` is shown as a warning notification.
+- The header sub title holds the file path, and a save to a new path updates it.
+- `action_quit` cancels a search, a pending jump and a running save, then asks through `ConfirmBar.ask_quit` when a save still runs or the document is modified.
+- The new `quit` choice of the confirm bar (key `Q`) exits.
+- The constructor takes the keywords `soft_wrap`, `config` (a `LazyConfig`) and `editor_class` (a `TimedNovaTextArea` subclass, used by the benchmark probe).
 
 ### `widget/_text_area.py`
 
@@ -269,7 +312,8 @@ The batching rules are unchanged.
 None remain.
 ACT7 vendored `textual._wrap`, `textual._cells.cell_width_to_column_index` and `textual._tree_sitter` as `document/_wrap.py` and `widget/_tree_sitter.py`.
 No file in `src/nova_editor` or `src/tools` imports a private Textual module, `textual.document` or `textual.widgets._text_area`.
-Re-derive this with `grep -rnE "^\s*(from|import) +textual\.(_|document|widgets\._text_area)" src/nova_editor src/tools` after every upgrade, which must print nothing.
+Re-derive this with `git grep -nE "^\s*(from|import) +textual\.(_|document|widgets\._text_area)" -- src/nova_editor src/tools` after every upgrade, which must print nothing.
+The drift test is `tests/nova_editor/document/test_wrap_parity.py`.
 After a Textual upgrade run `uv run pytest tests/nova_editor/document/test_wrap_parity.py -q`.
 The test skips when upstream removes a module.
 When it fails, diff the upstream file against the vendored one and merge the change.
@@ -299,7 +343,7 @@ To upgrade from a newer version of Textual:
    - All import paths pointing to `nova_editor` packages.
    - All capability method additions (on `DocumentBase` and `DocumentNavigator`).
 4. Re-apply the lazy branches guarded by `is_long` and the capability method calls listed in "Nova Editor Changes to Vendored Code" above.
-5. Test thoroughly using `uv run qa` and manual testing.
+5. Test thoroughly using `uv run qa`, `uv run pytest tests/nova_editor/document/test_wrap_parity.py -q` (merge any drift into `document/_wrap.py` and `widget/_tree_sitter.py`) and manual testing.
 6. Update the version reference at the top of this file.
 
 ## License
