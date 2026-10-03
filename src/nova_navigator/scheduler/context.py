@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
 
-from nova_navigator.response import Response
+from nova_widgets import Response
 
 
 @dataclass(init=False)

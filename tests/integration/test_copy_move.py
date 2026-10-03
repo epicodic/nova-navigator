@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from nova_navigator.response import Response
+from nova_widgets import Response
 from tests.integration.conftest import (
     AppCtx,
     auto_cancel_dialog,

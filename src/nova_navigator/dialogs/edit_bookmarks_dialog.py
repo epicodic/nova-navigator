@@ -16,9 +16,8 @@ from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
 from nova_navigator.dialogs.dialog import Dialog
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.icons import ICONS
-from nova_navigator.response import Response
 from nova_navigator.widgets.popup_widget import PopupWidget
-from nova_widgets import Button, ButtonBox, Input
+from nova_widgets import Button, ButtonBox, Input, Response
 
 # Tag types stored in tree node data
 _GroupTag = tuple[str, int]  # ("group", group_index)

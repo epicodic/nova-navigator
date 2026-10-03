@@ -9,10 +9,9 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widget import Widget
 
-from nova_widgets import ButtonBox
+from nova_widgets import ButtonBox, Response
 
 from ..format_utils import format_size
-from ..response import Response
 from ..scheduler import ResponseRequest
 
 _logger = logging.getLogger(__name__)

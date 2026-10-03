@@ -11,7 +11,7 @@ from textual.widgets import Label, ListItem, ListView
 
 from nova_navigator.config.remotes import RemoteConfig, RemoteConnection
 from nova_navigator.icons import ico_
-from nova_navigator.response import Response
+from nova_widgets import Response
 
 from .dialog import DefaultButton, Dialog
 

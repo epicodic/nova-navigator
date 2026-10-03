@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import pytest
 
 from nova_navigator.commands import Command, CommandMode
-from nova_navigator.response import Response
 from nova_navigator.usermenu.context import FileInfo
 from nova_navigator.usermenu.popup import UserMenuPopup
+from nova_widgets import Response
 from nova_widgets.key_types import KeySequence
 from nova_widgets.menu import Action
 from tests.integration.conftest import AppCtx, poll_until, set_panels

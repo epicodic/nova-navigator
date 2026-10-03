@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
-from nova_navigator.response import Response
 from nova_navigator.scheduler import Job
 from nova_navigator.vfs import VPath
+from nova_widgets import Response
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 

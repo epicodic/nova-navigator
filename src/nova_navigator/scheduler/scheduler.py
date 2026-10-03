@@ -2,7 +2,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any, cast
 
-from nova_navigator.response import Response
+from nova_widgets import Response
 
 from .context import GuiRequestCallback, ResponseRequest, TaskContext, TaskStatus, _SubtaskTracker
 

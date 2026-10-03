@@ -5,7 +5,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Button
 
 from nova_navigator.dialogs.dialog import ButtonSpec, DefaultButton, Dialog
-from nova_navigator.response import Response
+from nova_widgets import Response
 
 
 class _HostApp(App[None]):

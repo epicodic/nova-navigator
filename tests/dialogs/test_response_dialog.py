@@ -14,8 +14,8 @@ from nova_navigator.dialogs.response_dialog import (
     ResponseDialog,
     make_response_dialog,
 )
-from nova_navigator.response import Response
 from nova_navigator.scheduler import ResponseRequest
+from nova_widgets import Response
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
 

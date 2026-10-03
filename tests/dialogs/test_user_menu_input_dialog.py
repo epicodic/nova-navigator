@@ -5,7 +5,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Input
 
 from nova_navigator.dialogs.user_menu_input_dialog import InputField, UserMenuInputDialog
-from nova_navigator.response import Response
+from nova_widgets import Response
 
 _FIELDS = [InputField("archive", "Archive name", "p.tar.gz"), InputField("level", "Level", "6")]
 

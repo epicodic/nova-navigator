@@ -1,6 +1,6 @@
 import pytest
 
-from nova_navigator.response import Response, ResponseRole
+from nova_widgets import Response, ResponseRole
 
 # --- is_accepted ---
 
