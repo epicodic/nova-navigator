@@ -3,7 +3,6 @@ from .connect_to_dialog import ConnectToDialog
 from .credentials_dialog import Credentials, CredentialsDialog
 from .edit_bookmarks_dialog import EditBookmarksDialog
 from .edit_remotes_dialog import EditRemotesDialog
-from .file_dialog import FileDialog, FileDialogMode, FileTypeFilter
 from .files_dialog import CopyMoveFilesDialog, DeleteFilesDialog
 from .icon_picker_dialog import IconPickerDialog
 from .input_name_dialog import InputNameDialog
@@ -23,9 +22,6 @@ __all__ = [
     "DeleteFilesDialog",
     "EditBookmarksDialog",
     "EditRemotesDialog",
-    "FileDialog",
-    "FileDialogMode",
-    "FileTypeFilter",
     "IconPickerDialog",
     "InputField",
     "InputNameDialog",

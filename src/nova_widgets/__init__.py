@@ -5,6 +5,14 @@ from .button_box import ButtonBox
 from .custom_border import CustomBorderMixin
 from .data_table import DataTable
 from .dialog import ButtonSpec, DefaultButton, Dialog
+from .file_dialog import FileDialog, FileDialogMode, FileTypeFilter
+from .file_provider import (
+    FileProvider,
+    FileStat,
+    InMemoryFileProvider,
+    LocalFileProvider,
+    default_file_provider,
+)
 from .flat_widgets import Button, Checkbox, Input, Select
 from .icon import Icon
 from .keybindings_config import KeybindingsConfig
@@ -26,11 +34,18 @@ __all__ = [
     "DataTable",
     "DefaultButton",
     "Dialog",
+    "FileDialog",
+    "FileDialogMode",
+    "FileProvider",
+    "FileStat",
+    "FileTypeFilter",
     "Icon",
+    "InMemoryFileProvider",
     "Input",
     "KeyCaptureDialog",
     "KeybindingsConfig",
     "KeybindingsDialog",
+    "LocalFileProvider",
     "Menu",
     "MenuBar",
     "MessageBox",
@@ -40,4 +55,5 @@ __all__ = [
     "Response",
     "ResponseRole",
     "Select",
+    "default_file_provider",
 ]

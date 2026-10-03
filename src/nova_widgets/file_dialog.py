@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import contextlib
 import fnmatch
-import pathlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path, PurePath
 from typing import ClassVar
 
 from textual import events
@@ -17,9 +18,10 @@ from textual.css.query import NoMatches
 from textual.message import Message
 from textual.widgets import Input, Label, ListItem, ListView, Static
 
-from nova_widgets import Checkbox, DefaultButton, Dialog, Select
-
-from ..icons import ico_
+from .dialog import DefaultButton, Dialog
+from .file_provider import FileProvider, default_file_provider
+from .flat_widgets import Checkbox, Select
+from .icon import Icon
 
 
 class FileDialogMode(Enum):
@@ -45,9 +47,18 @@ class FileTypeFilter:
 class _FileListItem(ListItem):
     """A list item representing a filesystem entry."""
 
-    def __init__(self, path: pathlib.Path | None) -> None:
-        is_dir = path is None or path.is_dir()
-        icon = ico_("folder").glyph if is_dir else ico_("file").glyph
+    def __init__(
+        self,
+        path: PurePath | None,
+        is_dir: bool = False,
+        icon_provider: Callable[[str], Icon] | None = None,
+    ) -> None:
+        # Render icon
+        if icon_provider is not None:
+            icon = icon_provider("folder" if is_dir else "file").glyph
+        else:
+            icon = Icon.of().glyph
+
         name = ".." if path is None else path.name
         super().__init__(Label(f"{icon} {name}"))
         self.path = path
@@ -62,19 +73,25 @@ class _FileListing(ListView):
         Binding("pagedown", "page_down", "Page Down", show=False),
     ]
 
-    _current_path: pathlib.Path
+    _current_path: PurePath
     _active_filter: FileTypeFilter | None
+    _provider: FileProvider
+    _icon_provider: Callable[[str], Icon] | None
     _DOUBLE_CLICK: ClassVar[int] = 2
 
     def __init__(
         self,
-        current_path: pathlib.Path,
+        current_path: PurePath,
+        provider: FileProvider,
         active_filter: FileTypeFilter | None = None,
+        icon_provider: Callable[[str], Icon] | None = None,
         id: str | None = None,
     ) -> None:
         super().__init__(id=id)
         self._current_path = current_path
+        self._provider = provider
         self._active_filter = active_filter
+        self._icon_provider = icon_provider
         self._click_is_double: bool = False
         self._last_event_was_click: bool = False
         self._show_hidden: bool = False
@@ -84,21 +101,21 @@ class _FileListing(ListView):
     class CursorMoved(Message):
         """Emitted when the cursor moves to a new entry."""
 
-        def __init__(self, path: pathlib.Path | None) -> None:
+        def __init__(self, path: PurePath | None) -> None:
             super().__init__()
             self.path = path
 
     class PathNavigated(Message):
         """Emitted when the user navigates into a directory."""
 
-        def __init__(self, path: pathlib.Path) -> None:
+        def __init__(self, path: PurePath) -> None:
             super().__init__()
             self.path = path
 
     class FileConfirmed(Message):
         """Emitted when the user confirms a file selection."""
 
-        def __init__(self, path: pathlib.Path) -> None:
+        def __init__(self, path: PurePath) -> None:
             super().__init__()
             self.path = path
 
@@ -117,29 +134,34 @@ class _FileListing(ListView):
             PermissionError: if the directory cannot be listed.
             OSError: if the directory cannot be listed.
         """
-        dirs: list[pathlib.Path] = []
-        files: list[pathlib.Path] = []
+        dirs: list[PurePath] = []
+        files: list[PurePath] = []
         try:
-            for entry in sorted(self._current_path.iterdir(), key=lambda p: p.name.lower()):
+            entries = list(self._provider.iterdir(self._current_path))
+            # Sort by name
+            entries.sort(key=lambda e: e.name.lower())
+
+            for entry in entries:
                 if entry.name.startswith(".") and not self._show_hidden:
                     continue
-                if entry.is_dir():
-                    dirs.append(entry)
+                if entry.is_dir:
+                    dirs.append(self._provider.joinpath(self._current_path, entry.name))
                 else:
                     if self._active_filter is None or self._active_filter.matches(entry.name):
-                        files.append(entry)
+                        files.append(self._provider.joinpath(self._current_path, entry.name))
         except (PermissionError, OSError) as exc:
             self.notify(f"Cannot open directory: {exc}", severity="error")
             raise
+
         self.clear()
-        self.append(_FileListItem(None))  # ".." entry
+        self.append(_FileListItem(None, is_dir=True, icon_provider=self._icon_provider))  # ".." entry
         for d in dirs:
-            self.append(_FileListItem(d))
+            self.append(_FileListItem(d, is_dir=True, icon_provider=self._icon_provider))
         for f in files:
-            self.append(_FileListItem(f))
+            self.append(_FileListItem(f, is_dir=False, icon_provider=self._icon_provider))
         self.index = 0
 
-    def navigate_to(self, path: pathlib.Path) -> None:
+    def navigate_to(self, path: PurePath) -> None:
         """Navigate to a new directory path, staying put on error."""
         old_path = self._current_path
         self._current_path = path
@@ -182,8 +204,8 @@ class _FileListing(ListView):
             return
         path = item.path
         if path is None:
-            self.post_message(self.PathNavigated(self._current_path.parent))
-        elif path.is_dir():
+            self.post_message(self.PathNavigated(self._provider.parent(self._current_path)))
+        elif self._provider.is_dir(path):
             self.post_message(self.PathNavigated(path))
         else:
             self.post_message(self.FileConfirmed(path))
@@ -220,7 +242,7 @@ class _FileListing(ListView):
         return self.index if self.index is not None else 0
 
     @property
-    def _items(self) -> list[pathlib.Path | None]:
+    def _items(self) -> list[PurePath | None]:
         """Ordered list of paths in the current listing."""
         return [item.path for item in self.query(_FileListItem)]
 
@@ -263,23 +285,43 @@ class FileDialog(Dialog):
     }
     """
 
-    selected_path: pathlib.Path | None
+    selected_path: Path | None
 
     def __init__(
         self,
-        mode: FileDialogMode,
-        start_path: pathlib.Path,
-        title: str,
+        mode: FileDialogMode = FileDialogMode.OPEN,
+        start_path: Path | PurePath | None = None,
+        title: str = "Select File",
         filters: list[FileTypeFilter] | None = None,
+        provider: FileProvider | None = None,
+        icon_provider: Callable[[str], Icon] | None = None,
         id: str | None = None,
     ) -> None:
         super().__init__(title=title, id=id, buttons=[DefaultButton.OK, DefaultButton.CANCEL])
         self._mode = mode
         self._filters = filters or []
         self.selected_path = None
-        if not start_path.exists() or not start_path.is_dir():
-            start_path = pathlib.Path.home()
-        self._current_path = start_path
+        self._provider = provider or default_file_provider()
+        self._icon_provider = icon_provider
+
+        # Normalize start_path to PurePath
+        if start_path is None:
+            self._current_path = self._provider.home()
+        elif isinstance(start_path, Path):
+            # Validate the Path: if it doesn't exist or is not a directory, use home()
+            if not start_path.exists() or not start_path.is_dir():
+                self._current_path = self._provider.home()
+            else:
+                # Convert valid Path to PurePath
+                self._current_path = PurePath(str(start_path))
+        else:
+            # start_path is already a PurePath - use as-is
+            self._current_path = start_path
+
+    @property
+    def mode(self) -> FileDialogMode:
+        """Return the dialog's mode (OPEN, SAVE, or DIR)."""
+        return self._mode
 
     # ── Composition ───────────────────────────────────────────────────────
 
@@ -287,7 +329,9 @@ class FileDialog(Dialog):
         yield Static(str(self._current_path), id="path_bar")
         yield _FileListing(
             current_path=self._current_path,
+            provider=self._provider,
             active_filter=self._filters[0] if self._filters else None,
+            icon_provider=self._icon_provider,
             id="listing",
         )
         yield Horizontal(
@@ -311,12 +355,12 @@ class FileDialog(Dialog):
     def on__file_listing_cursor_moved(self, event: _FileListing.CursorMoved) -> None:
         inp = self.query_one("#filename_input", Input)
         if self._mode == FileDialogMode.DIR:
-            if event.path is not None and event.path.is_dir():
+            if event.path is not None and self._provider.is_dir(event.path):
                 inp.value = event.path.name
             else:
                 inp.value = ""  # ".." or file highlighted in dir mode
         else:
-            if event.path is not None and event.path.is_file():
+            if event.path is not None and self._provider.is_file(event.path):
                 inp.value = event.path.name
             else:
                 inp.value = ""
@@ -334,7 +378,8 @@ class FileDialog(Dialog):
     def on__file_listing_file_confirmed(self, event: _FileListing.FileConfirmed) -> None:
         if self._mode == FileDialogMode.DIR:
             return
-        self.selected_path = event.path
+        # Convert PurePath to Path for backward compat
+        self.selected_path = Path(event.path) if isinstance(event.path, PurePath) else event.path
         super().action_accept_dialog()
 
     def on_select_changed(self, event: Select.Changed) -> None:
@@ -377,7 +422,7 @@ class FileDialog(Dialog):
         listing = self.query_one("#listing", _FileListing)
         if self._mode == FileDialogMode.DIR:
             hc = listing.highlighted_child
-            if isinstance(hc, _FileListItem) and hc.path is not None and hc.path.is_dir():
+            if isinstance(hc, _FileListItem) and hc.path is not None and self._provider.is_dir(hc.path):
                 candidate = hc.path
             else:
                 self.notify("Select a directory", severity="error")
@@ -387,9 +432,16 @@ class FileDialog(Dialog):
             if not filename:
                 self.notify("Enter a filename", severity="error")
                 return False
-            candidate = self._current_path / filename
-            if self._mode == FileDialogMode.OPEN and (not candidate.exists() or not candidate.is_file()):
+            candidate = self._provider.joinpath(self._current_path, filename)
+            if self._mode == FileDialogMode.OPEN and (not self._provider.is_file(candidate)):
                 self.notify("File not found", severity="error")
                 return False
-        self.selected_path = candidate
+
+        # Resolve the path and convert to Path for backward compat
+        resolved = self._provider.resolve(candidate)
+        if resolved is None:
+            self.notify("Invalid path", severity="error")
+            return False
+
+        self.selected_path = Path(resolved) if isinstance(resolved, PurePath) else resolved
         return True
