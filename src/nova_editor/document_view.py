@@ -7,10 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from nova_editor.core.byte_source import ChangeKind
-from nova_editor.document._lazy_config import LazyConfig
-from nova_editor.timed_text_area import TimedNovaTextArea
-from nova_editor.widget import NovaTextArea
+from .core.byte_source import ChangeKind
+from .document._lazy_config import LazyConfig
+from .timed_text_area import TimedNovaTextArea
+from .widget import NovaTextArea
 
 LoadState = Literal["loaded", "new", "failed"]
 """`loaded`: the editor shows the file; `new`: the file did not exist at start; `failed`: it exists but could not be read."""
