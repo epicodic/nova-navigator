@@ -513,9 +513,27 @@ class NovaEditApp(App[None]):
     QUIT_WAIT_SECONDS: ClassVar[float] = 2.0
     """Longest wait for a cancelled save before quitting."""
 
-    def __init__(self, file_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        file_path: Path | None = None,
+        *,
+        soft_wrap: bool = False,
+        config: LazyConfig | None = None,
+        editor_class: type[TimedNovaTextArea] = TimedNovaTextArea,
+    ) -> None:
+        """Create the app.
+
+        Args:
+            file_path: The file to open, or `None` for an empty buffer.
+            soft_wrap: Start with soft wrapping.
+            config: Thresholds of the lazy document (`None`: the defaults).
+            editor_class: The editor widget class; the benchmark harness passes a probe subclass.
+        """
         super().__init__()
         self.file_path = file_path
+        self._soft_wrap = soft_wrap
+        self._config = config
+        self._editor_class = editor_class
         self.editor: NovaTextArea | None = None
         # "loaded": the editor shows the file; "new": the file did not exist at start; "failed": it exists but could not be read
         self._load_state: Literal["loaded", "new", "failed"] = "loaded"
@@ -531,7 +549,7 @@ class NovaEditApp(App[None]):
         """A change that `SourceChanged` reported while a save ran: announced after the save when it did not rebase the document."""
 
     def _empty_editor(self) -> TimedNovaTextArea:
-        return TimedNovaTextArea(id="editor", text="", soft_wrap=False, timing_file=self._timing_file)
+        return self._editor_class(id="editor", text="", soft_wrap=self._soft_wrap, timing_file=self._timing_file)
 
     def _open_editor(self, path: Path) -> TimedNovaTextArea:
         """Open `path` in an editor; when it cannot be opened, notify, set the load state and return an empty editor."""
@@ -541,7 +559,7 @@ class NovaEditApp(App[None]):
             self.notify(f"Error loading file: {reason}", severity="error")
             return self._empty_editor()
         try:
-            return TimedNovaTextArea.open(path, id="editor", soft_wrap=False, timing_file=self._timing_file)
+            return self._editor_class.open(path, id="editor", soft_wrap=self._soft_wrap, config=self._config, timing_file=self._timing_file)
         except OSError as e:
             self._load_state = "new" if isinstance(e, FileNotFoundError) else "failed"
             self.notify(f"Error loading file: {e}", severity="error")
