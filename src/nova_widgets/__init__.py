@@ -9,6 +9,7 @@ from .flat_widgets import Button, Checkbox, Input, Select
 from .icon import Icon
 from .menu import Menu, MenuBar
 from .message_box import MessageBox, MessageBoxVariant, MessageDialog
+from .popup_widget import PopupWidget
 from .response import Response, ResponseRole
 
 __all__ = [
@@ -30,6 +31,7 @@ __all__ = [
     "MessageBox",
     "MessageBoxVariant",
     "MessageDialog",
+    "PopupWidget",
     "Response",
     "ResponseRole",
     "Select",

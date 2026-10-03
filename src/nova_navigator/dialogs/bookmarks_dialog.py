@@ -7,12 +7,11 @@ from textual.message import Message
 from textual.widgets import Tree
 
 from nova_navigator.dialogs.edit_bookmarks_dialog import EditBookmarksDialog
-from nova_widgets import Button, Response
+from nova_widgets import Button, PopupWidget, Response
 
 from ..config import conf_
 from ..dialogs.constants import DEFAULT_BOOKMARKS_GROUP
 from ..icons import ICONS
-from ..widgets.popup_widget import PopupWidget
 
 
 class BookmarksDialog(PopupWidget, can_focus=True):
