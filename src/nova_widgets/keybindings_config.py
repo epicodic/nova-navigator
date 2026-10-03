@@ -10,7 +10,6 @@ from nova_widgets.action import Action
 from nova_widgets.keymap.key_sequence import KeySequence
 
 _FILENAME = "keybindings.toml"
-_DEFAULT_CONFIG_DIR = Path.home() / ".config" / "nova-navigator"
 
 
 class KeybindingsConfig:
@@ -19,8 +18,8 @@ class KeybindingsConfig:
     Only deviations from defaults are stored in the file.
     """
 
-    def __init__(self, config_dir: Path | None = None) -> None:
-        self._config_dir = config_dir if config_dir is not None else _DEFAULT_CONFIG_DIR
+    def __init__(self, config_dir: Path) -> None:
+        self._config_dir = config_dir
         self._overrides: dict[str, KeySequence | None] = {}
         self._load()
 
