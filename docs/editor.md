@@ -1618,7 +1618,8 @@ Tests are located under `tests/nova_editor/` and `tests/tools/`.
 - `test_lazy_edit_widget.py`, `test_lazy_clipboard.py`, `test_lazy_edit_long_row_memory.py` — editing, refusal, undo, redo, clipboard and memory on long rows through the widget.
 - `test_widget_save.py`, `test_widget_save_rebase.py`, `test_widget_save_efbig.py`, `test_widget_external_change.py`, `test_save_long_row_cursor.py` — the widget API of saving, the rebase of the widget, a real write error, external changes and the cursor on a long row across a save.
 - `test_widget_search.py`, `test_widget_search_events.py`, `test_widget_search_long_row.py` — the widget search: selection, wrap, repeat, cancel, edits, reload, save, truncation, close, and long rows with lowered thresholds.
-- `test_lazy_exports.py`, `test_independence.py` — the lazy exports and no dependency on `nova_navigator`.
+- `test_lazy_exports.py` — the lazy exports.
+  `tests/test_package_independence.py` guards that `nova_editor` and `nova_widgets` do not depend on `nova_navigator`, and that `nova_editor` does not use the VFS.
 
 **App:**
 - `test_app.py`, `test_app_lazy.py`, `test_app_save.py`, `test_bindings.py` — the app, opening files, the save bars and key bindings (including key collisions).
