@@ -5,8 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from textual.geometry import Offset, Size
 from textual.pilot import Pilot
 
+from nova_editor.document._document import Selection
 from nova_editor.document._lazy_wrapped_document import LazyWrappedDocument
 from nova_editor.widget import NovaTextArea
 from tests.nova_editor.helpers_view import HostApp, await_first_layout, lazy_wrapped, wait_until
@@ -106,3 +108,83 @@ async def test_wrap_off_scroll_cursor_visible_does_not_refresh_the_size(tmp_path
         monkeypatch.setattr(NovaTextArea, "_refresh_size", counting)
         area.scroll_cursor_visible()
         assert refreshes == []
+
+
+def count_height_reads(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Record every read of `LazyWrappedDocument.height`."""
+    reads: list[int] = []
+    getter = LazyWrappedDocument.height.fget
+    assert getter is not None
+
+    def counting(self: LazyWrappedDocument) -> int:
+        reads.append(1)
+        return getter(self)
+
+    monkeypatch.setattr(LazyWrappedDocument, "height", property(counting))
+    return reads
+
+
+@pytest.mark.asyncio
+async def test_cursor_inside_the_virtual_size_does_not_read_the_wrapped_height(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    area = NovaTextArea.open(make_file(tmp_path), soft_wrap=True)
+    async with HostApp(area).run_test(size=(WIDTH, 10)) as pilot:
+        await settled(pilot, area)
+        area.move_cursor((3, 0))
+        await pilot.pause(0.1)
+        assert area.virtual_size.height > 10
+        reads = count_height_reads(monkeypatch)
+        area.scroll_cursor_visible()
+        assert reads == []
+
+
+@pytest.mark.asyncio
+async def test_cursor_beyond_the_virtual_size_reads_the_wrapped_height(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    area = NovaTextArea.open(make_file(tmp_path), soft_wrap=True)
+    async with HostApp(area).run_test(size=(WIDTH, 10)) as pilot:
+        await settled(pilot, area)
+        area.selection = Selection.cursor((area.line_count - 1, 0))
+        area.virtual_size = Size(0, 5)
+        reads = count_height_reads(monkeypatch)
+        area.scroll_cursor_visible()
+        assert reads != []
+
+
+@pytest.mark.asyncio
+async def test_refresh_size_does_not_scroll_the_cursor_visible(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    area = NovaTextArea.open(make_file(tmp_path), soft_wrap=True)
+    async with HostApp(area).run_test(size=(WIDTH, 10)) as pilot:
+        await settled(pilot, area)
+        scrolls: list[int] = []
+
+        original = NovaTextArea.scroll_cursor_visible
+
+        def counting(self: NovaTextArea, center: bool = False, animate: bool = False) -> Offset:
+            scrolls.append(1)
+            return original(self, center, animate)
+
+        monkeypatch.setattr(NovaTextArea, "scroll_cursor_visible", counting)
+        area._refresh_size()
+        assert scrolls == []
+
+
+@pytest.mark.asyncio
+async def test_empty_document_scroll_cursor_visible_with_wrap(tmp_path: Path) -> None:
+    path = tmp_path / "empty.txt"
+    path.write_text("")
+    area = NovaTextArea.open(path, soft_wrap=True)
+    async with HostApp(area).run_test(size=(WIDTH, 10)) as pilot:
+        await pilot.pause(0.1)
+        assert area.scroll_cursor_visible() == Offset(0, 0)
+        assert area.cursor_location == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_wrap_off_scroll_cursor_visible_does_not_read_the_wrapped_height(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    area = NovaTextArea.open(make_file(tmp_path), soft_wrap=False)
+    async with HostApp(area).run_test(size=(WIDTH, 10)) as pilot:
+        await settled(pilot, area)
+        area.move_cursor((area.line_count - 1, 0))
+        await pilot.pause(0.2)
+        reads = count_height_reads(monkeypatch)
+        area.scroll_cursor_visible()
+        assert reads == []

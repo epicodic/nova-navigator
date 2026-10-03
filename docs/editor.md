@@ -1123,11 +1123,12 @@ The estimated height of an unmeasured region is `rows x running mean`, and the m
 `_refresh_size()`, which sets `virtual_size`, runs at open and on the estimate timer, but not when the cursor moves.
 A first move far into a huge wrapped document (`ctrl+end` at the end of a 5 GB file) computed a cursor y from the new mean while Textual still clamped the scroll offset to the stale virtual height.
 The first render then asked for y values that map to blocks that are not measured, measuring moved the mean again, and the layout chased the mean through many blocks.
-`scroll_cursor_visible` now refreshes the size first: after `_recompute_cursor_offset()` and before `scroll_to_region`, when soft wrap is on and `wrapped_document.height` is larger than `virtual_size.height`, it calls `_refresh_size()`.
+`scroll_cursor_visible` now refreshes the size first: after `_recompute_cursor_offset()` and before `scroll_to_region`, when soft wrap is on and the cursor y is not above `virtual_size.height`, it reads `wrapped_document.height` and, when that is larger than `virtual_size.height`, calls `_refresh_size()`.
+A cursor inside the current virtual height scrolls correctly without a refresh, so the height is not read at all in that case, and `_refresh_size()` never calls `scroll_cursor_visible` back.
 The virtual height then covers the cursor y before Textual clamps the scroll offset.
 The same call covers goto and search placement at the end, and `pagedown` onto the last page.
 With wrap off nothing changes.
-The tests are in `tests/nova_editor/test_wrapped_cursor_end.py` (`test_move_cursor_to_the_last_row_measures_few_blocks`, `test_goto_the_last_line_measures_few_blocks`, `test_search_placement_at_the_last_row_measures_few_blocks` and `test_wrap_off_scroll_cursor_visible_does_not_refresh_the_size`).
+The tests are in `tests/nova_editor/test_wrapped_cursor_end.py` (`test_move_cursor_to_the_last_row_measures_few_blocks`, `test_goto_the_last_line_measures_few_blocks`, `test_search_placement_at_the_last_row_measures_few_blocks`, `test_wrap_off_scroll_cursor_visible_does_not_refresh_the_size` and the tests that count reads of the height).
 The time of this step on the 5 GB file with the final code is not measured (see "Unverified claims").
 
 **Wrap toggle (F4 in `nova_edit`):**

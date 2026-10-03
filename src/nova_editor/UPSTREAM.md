@@ -94,7 +94,7 @@ ACT6 extended the core, which stays Textual-free:
 ### `widget/_text_area.py` (status line and import changes)
 
 **Imports:** `TREE_SITTER` and `get_language` come from `widget/_tree_sitter.py` instead of `textual._tree_sitter`.
-**`scroll_cursor_visible`:** when `soft_wrap` is on and `wrapped_document.height` exceeds `virtual_size.height`, it calls `_refresh_size()` first, because the estimated height of an unmeasured region moves with the measurements and Textual clamps the scroll offset to `virtual_size`.
+**`scroll_cursor_visible`:** when `soft_wrap` is on and the cursor y is not above `virtual_size.height`, it reads `wrapped_document.height` and, when that exceeds `virtual_size.height`, calls `_refresh_size()` first, because the estimated height of an unmeasured region moves with the measurements and Textual clamps the scroll offset to `virtual_size`.
 **New properties:** `line_ending` (`"LF"`, `"CRLF"` or `"CR"`, from the newline of the document) and `indexing_progress` (the fraction of the document that the line scan covered, exactly 1.0 when indexing is complete or the document is empty).
 **`cursor_byte_offset`:** the `_track_cursor()` call moved inside the `try`, and `RowUnavailable` and `IndexError` give `None`, so the status line shows `Byte ?` while the row cannot be resolved.
 
