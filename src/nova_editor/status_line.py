@@ -79,6 +79,10 @@ class StatusLine(Static):
     def on_mount(self) -> None:
         self.request()
 
+    def on_resize(self) -> None:
+        """The text is fitted to the width, so a new size needs a new text (and the first layout replaces a text cut to one cell)."""
+        self.request()
+
     def request(self) -> None:
         """Ask for a refresh: set the dirty flag and start the timer when none is pending."""
         self._dirty = True
@@ -87,8 +91,6 @@ class StatusLine(Static):
 
     def _flush(self) -> None:
         self._timer = None
-        if not self._dirty:
-            return
         self._dirty = False
         self.flushes += 1
         state = self._source()

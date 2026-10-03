@@ -73,6 +73,8 @@ def test_a_goto_in_progress_comes_first() -> None:
 
 
 class StatusHost(App[None]):
+    CSS = "StatusLine { width: 100%; height: 1; }"
+
     def __init__(self) -> None:
         super().__init__()
         self.reads = 0
@@ -221,3 +223,15 @@ async def test_the_byte_offset_is_unknown_until_the_scan_resolves_the_row(tmp_pa
         gate.release()
         await wait_until(pilot, lambda: "Byte 0  " in status_text(app))
         assert "Byte ?" not in status_text(app)
+
+
+@pytest.mark.asyncio
+async def test_a_resize_refits_the_text() -> None:
+    host = StatusHost()
+    async with host.run_test(size=(100, 10)) as pilot:
+        status = host.query_one(StatusLine)
+        await wait_until(pilot, lambda: status.text.endswith("No wrap"))
+        await pilot.resize_terminal(30, 10)
+        await wait_until(pilot, lambda: status.text == "Ln 12,345  Col 17")
+        await pilot.resize_terminal(100, 10)
+        await wait_until(pilot, lambda: status.text.endswith("No wrap"))
