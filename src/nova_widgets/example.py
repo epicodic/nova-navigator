@@ -2,8 +2,9 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.widgets import Button, Footer
 
-from nova_widgets import Menu, MenuBar
 from nova_widgets.menu import constructor as mc
+
+from .menu import Menu, MenuBar
 
 
 class ExampleApp(App[None]):
