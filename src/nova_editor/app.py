@@ -17,16 +17,19 @@ from textual.binding import Binding
 from nova_widgets.file_provider import FileProvider
 from nova_widgets.keybindings_config import KeybindingsConfig
 
+from .bars import GotoBar
 from .document._lazy_config import LazyConfig
 from .document_view import not_regular_reason
 from .screen import EditorScreen
 from .timed_text_area import TimedNovaTextArea
+from .widget import NovaTextArea
 
 
 class NovaEditApp(App[None]):
     """A thin host app for the Nova Editor using EditorScreen."""
 
     TITLE: ClassVar[str] = "nova_edit"
+    POLL_SECONDS: float = 0.1  # Polling interval for save progress (can be overridden for testing)
 
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("ctrl+s", "save", "Save", show=False),
@@ -45,6 +48,7 @@ class NovaEditApp(App[None]):
         self,
         path: Path | None = None,
         *,
+        file_path: Path | None = None,
         keybindings: KeybindingsConfig | None = None,
         file_provider: FileProvider | None = None,
         soft_wrap: bool = False,
@@ -55,6 +59,7 @@ class NovaEditApp(App[None]):
 
         Args:
             path: The file to open, or `None` for an empty buffer.
+            file_path: Alias for `path` (for backward compatibility).
             keybindings: User keybinding overrides; `None` for defaults.
             file_provider: FileProvider for the file dialog; defaults to InMemoryFileProvider.
             soft_wrap: Start with soft wrapping.
@@ -62,7 +67,8 @@ class NovaEditApp(App[None]):
             editor_class: The editor widget class; the benchmark harness passes a probe subclass.
         """
         super().__init__()
-        self.path = path
+        # Support file_path as an alias for path
+        self.path = path if path is not None else file_path
         self.keybindings = keybindings
         self.file_provider = file_provider
         self._soft_wrap = soft_wrap
@@ -80,6 +86,38 @@ class NovaEditApp(App[None]):
             editor_class=self._editor_class,
             standalone=True,
         )
+
+    @property
+    def editor(self) -> NovaTextArea:
+        """Get the editor widget from the current screen.
+
+        Returns:
+            The NovaTextArea editor widget.
+
+        Raises:
+            RuntimeError: If the screen is not an EditorScreen.
+        """
+        screen = self.screen
+        if not isinstance(screen, EditorScreen):
+            msg = f"Expected EditorScreen, got {type(screen).__name__}"
+            raise RuntimeError(msg)
+        return screen.document.editor
+
+    @property
+    def goto_bar(self) -> GotoBar:
+        """Get the goto bar widget from the current screen.
+
+        Returns:
+            The GotoBar widget.
+
+        Raises:
+            RuntimeError: If the screen is not an EditorScreen.
+        """
+        screen = self.screen
+        if not isinstance(screen, EditorScreen):
+            msg = f"Expected EditorScreen, got {type(screen).__name__}"
+            raise RuntimeError(msg)
+        return screen.query_one(GotoBar)
 
     def compose(self) -> ComposeResult:
         """This app uses a single screen, so nothing to compose."""
@@ -167,6 +205,18 @@ class NovaEditApp(App[None]):
     def action_cancel_save(self) -> None:
         """Forward to the screen (Esc)."""
         # The screen should handle this via its bindings
+
+    def search(self, needle: str, *, backward: bool = False, case_sensitive: bool | None = None) -> None:
+        """Search the editor for the given text.
+
+        Args:
+            needle: The text to find.
+            backward: Search towards the start of the document.
+            case_sensitive: Distinguish case; the case state of the search bar when `None`.
+        """
+        screen = self.screen
+        if isinstance(screen, EditorScreen):
+            screen.search(needle, backward=backward, case_sensitive=case_sensitive)
 
     def on_editor_screen_closed(self, message: EditorScreen.Closed) -> None:
         """Exit when the editor screen closes."""

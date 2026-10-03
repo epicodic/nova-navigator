@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import TypeVar
 from weakref import ref
 
 from nova_widgets.icon import Icon
 from nova_widgets.key_types import KeyFormatStyle, KeySequence
+
+_T = TypeVar("_T", bound="Action")
 
 IconProvider = Callable[[str], Icon]
 
@@ -212,6 +215,7 @@ class ActionCollection:
 
     @property
     def actions(self) -> list[Action]:
+        # Return the actions list, which may contain Action objects or subclasses like Menu
         return self._actions
 
     def find_action(self, path: str | list[str]) -> Action | None:

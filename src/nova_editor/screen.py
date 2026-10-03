@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import ClassVar
 
@@ -160,7 +161,7 @@ class EditorScreen(Screen[None]):
             editor_class=self._editor_class,
             soft_wrap=self._soft_wrap,
             config=self._config,
-            timing_file=None,
+            timing_file=os.environ.get("NOVA_EDIT_TIMING_FILE"),
         )
 
         # Set up status state
@@ -462,6 +463,21 @@ class EditorScreen(Screen[None]):
         """Handle save cancellation."""
         save_bar = self.query_one("#save_bar", SaveBar)
         save_bar.clear()
+
+    def reload_keymap(self) -> None:
+        """Reload the keymap registry with the current actions.
+
+        This is called when keybindings are changed to apply them immediately.
+        """
+        # Rebuild bindings from the current keybindings config
+        if self._keybindings is None:
+            # If no keybindings config, use default shortcuts from actions
+            bindings = {a.id: a.shortcut for a in self.ACTIONS if a.id is not None and a.shortcut is not None}
+        else:
+            # Use the keybindings config to resolve effective bindings
+            bindings = self._keybindings.resolve(self.ACTIONS)
+        # Reload the keymap registry with current actions and bindings
+        self.keymap_registry.reload(bindings, self.ACTIONS)
 
     async def press_key(self, key: str) -> bool:
         """Handle a key press by matching it to an action in the keymap registry.
