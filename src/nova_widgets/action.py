@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TypeVar
 from weakref import ref
 
 from nova_widgets.icon import Icon
 from nova_widgets.key_types import KeyFormatStyle, KeySequence
-
-_T = TypeVar("_T", bound="Action")
 
 IconProvider = Callable[[str], Icon]
 

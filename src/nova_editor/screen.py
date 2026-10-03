@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Container, Vertical
 from textual.message import Message
 from textual.screen import Screen
-from textual.widgets import Input, Static
+from textual.widgets import Input
 
 from nova_widgets.action import Action
 from nova_widgets.file_provider import FileProvider, InMemoryFileProvider
@@ -19,11 +20,12 @@ from nova_widgets.keymap import HintBar, KeymapRegistry
 from nova_widgets.menu import MenuBar
 
 from .bars import ConfirmBar, GotoBar, PathBar, SaveBar, parse_goto
+from .document._cursor_anchor import CursorState
 from .document._lazy_config import LazyConfig
 from .document_view import DocumentView
 from .editor_actions import build_editor_actions
 from .editor_menus import build_menu_bar
-from .search_bar import SearchBar
+from .search_bar import SearchBar, SearchStatus
 from .status_line import StatusLine, StatusState
 from .timed_text_area import TimedNovaTextArea
 from .widget import NovaTextArea
@@ -106,6 +108,19 @@ class EditorScreen(Screen[None]):
         color: $text;
     }
     """
+
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("ctrl+s", "save", "Save"),
+        Binding("ctrl+shift+s", "save_as", "SaveAs"),
+        Binding("f5", "reload", "Reload"),
+        Binding("ctrl+g", "goto", "Goto"),
+        Binding("ctrl+f", "find", "Find"),
+        Binding("f3", "find_next", "Next"),
+        Binding("shift+f3", "find_previous", "Prev", key_display="S-F3"),
+        Binding("f10", "toggle_wrap", "Wrap"),
+        Binding("ctrl+q", "quit_editor", "Quit"),
+        Binding("escape", "escape", "Escape", show=False),
+    ]
 
     def __init__(
         self,
@@ -198,7 +213,7 @@ class EditorScreen(Screen[None]):
             SearchBar(),
             SaveBar(),
             ConfirmBar(),
-            Static(id="search_status"),
+            SearchStatus(),
         )
         yield StatusLine(self._get_status_state)
         yield self.hint_bar
@@ -206,31 +221,57 @@ class EditorScreen(Screen[None]):
     def _get_status_state(self) -> StatusState | None:
         """Return the current status state based on the editor."""
         editor = self.document.editor
-        # Placeholder: return minimal status state
-        # Full implementation in later tasks
+        row, column = editor.cursor_location
+        cursor_state, _ = editor.peek_cursor_state()
+        exact = editor.line_count_exact
+        progress = editor.pending_progress
+
+        def _column_kind(state: CursorState) -> Literal["exact", "provisional", "pending"]:
+            if state is CursorState.RESOLVED:
+                return "exact"
+            if state is CursorState.PROVISIONAL:
+                return "provisional"
+            return "pending"
+
         return StatusState(
-            line=1,
-            column=1,
-            column_kind="exact",
-            byte_offset=0,
+            line=row + 1,
+            column=column + 1,
+            column_kind=_column_kind(cursor_state),
+            byte_offset=editor.cursor_byte_offset,
             line_count=editor.line_count,
-            line_count_exact=editor.indexing_complete,
-            indexing_percent=int(editor.indexing_progress * 100),
-            line_ending="LF",
+            line_count_exact=exact,
+            indexing_percent=100 if exact else min(99, int(editor.indexing_progress * 100)),
+            line_ending=editor.line_ending,
             modified=editor.modified,
             new_file=self.document.load_state == "new",
             wrap=editor.soft_wrap,
-            goto_percent=None,
+            goto_percent=None if progress is None else int(progress * 100),
         )
 
     def on_mount(self) -> None:
         """Set up the screen after mounting."""
+        # Initialize the keymap registry with the current actions and bindings
+        self.reload_keymap()
+
         # Connect checkable items to widget state
         self._setup_checkable_items()
 
         # Watch editor reactive properties and update action state
         self.watch(self.document.editor, "soft_wrap", self._on_soft_wrap_changed, init=False)
         self.watch(self.document.editor, "show_line_numbers", self._on_show_line_numbers_changed, init=False)
+
+        # Watch editor state changes and refresh the status line
+        self.watch(self.document.editor, "pending_progress", self._on_editor_state, init=False)
+        self.watch(self.document.editor, "soft_wrap", self._on_editor_state, init=False)
+
+    def _on_editor_state(self, _value: object) -> None:
+        """Refresh the status line when editor state changes."""
+        self._request_status()
+
+    def _request_status(self) -> None:
+        """Request that the status line refresh its display."""
+        for status in self.query(StatusLine):
+            status.request()
 
     def _setup_checkable_items(self) -> None:
         """Connect checkable action items to widget reactive properties."""
@@ -389,6 +430,13 @@ class EditorScreen(Screen[None]):
         """Toggle soft wrap on/off."""
         self.document.editor.soft_wrap = not self.document.editor.soft_wrap
 
+    def action_escape(self) -> None:
+        """Handle escape key: ensure focus is on the editor."""
+        # If confirm bar is showing and has focus, it will handle escape
+        # Otherwise, ensure focus is on the editor
+        if self.focused is None or not isinstance(self.focused, (GotoBar, PathBar, SearchBar)):
+            self.document.editor.focus()
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle input submission from path bar, search bar, and goto bar."""
         if event.input.id == "path_bar":
@@ -432,6 +480,8 @@ class EditorScreen(Screen[None]):
         elif message.choice == "save_as" and message.path is not None:
             path_bar = self.query_one("#path_bar", PathBar)
             path_bar.open(message.path)
+        # Return focus to the editor for 'keep' and other choices
+        editor.focus()
 
     def on_nova_text_area_save_needs_confirmation(self, message: NovaTextArea.SaveNeedsConfirmation) -> None:
         """Handle save that needs confirmation (file exists or changed on disk)."""
