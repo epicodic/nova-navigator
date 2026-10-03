@@ -23,7 +23,7 @@ from textual.scroll_view import ScrollView
 from textual.strip import Strip
 from textual.widgets import Button, Input, Static
 
-from nova_widgets import unicode
+from nova_widgets import PopupWidget, unicode
 from nova_widgets.action import Action
 from nova_widgets.actions_support import ActionsSupport
 from nova_widgets.custom_border import CustomBorderMixin
@@ -33,7 +33,6 @@ from ..format_utils import format_size
 from ..icons import ico_
 from ..vfs import VPath
 from ..vfs.types import Stat
-from .popup_widget import PopupWidget
 
 
 class UpPath(VPath):
