@@ -31,12 +31,10 @@ from nova_navigator.dialogs.file_dialog import FileDialog, FileDialogMode, FileT
 from nova_navigator.dialogs.files_dialog import CopyMoveFilesDialog, DeleteFilesDialog
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.dialogs.input_name_dialog import InputNameDialog
-from nova_navigator.dialogs.keybindings_dialog import KeybindingsDialog, KeyCaptureDialog
 from nova_navigator.dialogs.local_copies_dialog import LocalCopiesDialog
 from nova_navigator.dialogs.response_dialog import OverwriteResponseDialog, ResponseDialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
 from nova_navigator.dialogs.user_menu_input_dialog import InputField, UserMenuInputDialog
-from nova_navigator.keymap.config import KeybindingsConfig
 from nova_navigator.local_copies import CopyEntry, CopyStatus, LocalCopyManager
 from nova_navigator.nova_navigator_core import NovaNavigatorCore
 from nova_navigator.scheduler import Job
@@ -45,7 +43,7 @@ from nova_navigator.vfs.change_detector import ChangeDetector
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_navigator.vfs.local_copy import Baseline, LocalCopy, SourceFingerprint
 from nova_navigator.vfs.vpath import VPath
-from nova_widgets import Dialog, MessageBox, Response
+from nova_widgets import Dialog, KeybindingsConfig, KeybindingsDialog, KeyCaptureDialog, MessageBox, Response
 from nova_widgets.action import Action as NavAction
 
 _fs = LocalFilesystem.singleton()
@@ -321,7 +319,7 @@ _ENTRIES: list[DialogEntry] = [
                     show=False,
                 ),
             ],
-            config=KeybindingsConfig(config_dir=Path.home() / ".config" / "nova-navigator"),
+            config=KeybindingsConfig(Path.home() / ".config" / "nova-navigator"),
         ),
     ),
     DialogEntry(
