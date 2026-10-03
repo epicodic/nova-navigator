@@ -1,7 +1,7 @@
 """Standalone Nova Editor application.
 
 Provides a minimal Textual app that uses NovaTextArea to edit text files.
-Supports Ctrl+S to save (streaming, atomic), F2 to save as, F5 to reload, Ctrl+Q to quit, and shows file path in footer.
+Supports Ctrl+S to save (streaming, atomic), F2 to save as, F5 to reload, Ctrl+Q to quit (it asks before discarding changes), and shows the file path in the header; the footer lists the keys.
 Supports lazy loading for large files with Ctrl+G goto navigation and F4 wrap toggle.
 A status bar shows the progress and the result of a save; a key driven bar asks before overwriting or discarding.
 A background poll notices when the file changed on disk.
@@ -29,14 +29,16 @@ from textual.binding import Binding
 from textual.content import Content
 from textual.message import Message
 from textual.strip import Strip
-from textual.widgets import Header, Input, Static
+from textual.widgets import Footer, Header, Input, Static
 
 from nova_editor.core import ByteSource
 from nova_editor.core.byte_source import ChangeKind
 from nova_editor.core.save import check_path
+from nova_editor.document._cursor_anchor import CursorState
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.document._lazy_document import LazyDocument
 from nova_editor.search_bar import SearchBar, SearchStatus
+from nova_editor.status_line import StatusLine, StatusState
 from nova_editor.widget import ExternalCheck, NovaTextArea
 
 
@@ -213,7 +215,7 @@ _CHANGE_TEXT: dict[ChangeKind, str] = {
 
 
 class ConfirmBar(Static):
-    """Key driven question for overwrite, reload and external change: O overwrite, A save as, R reload, Esc keep."""
+    """Key driven question for overwrite, reload, external change and quit: O overwrite, A save as, R reload, Q quit, Esc keep."""
 
     can_focus = True
 
@@ -221,6 +223,7 @@ class ConfirmBar(Static):
         Binding("o,O", "choose('overwrite')", "Overwrite", show=False),
         Binding("a,A", "choose('save_as')", "Save as", show=False),
         Binding("r,R", "choose('reload')", "Reload", show=False),
+        Binding("q,Q", "choose('quit')", "Quit", show=False),
         Binding("escape", "choose('keep')", "Keep", show=False),
     ]
 
@@ -229,7 +232,7 @@ class ConfirmBar(Static):
         """The user answered the question."""
 
         choice: str
-        """`overwrite`, `save_as`, `reload` or `keep`."""
+        """`overwrite`, `save_as`, `reload`, `quit` or `keep`."""
         path: Path | None
         """The file the question was about."""
 
@@ -267,6 +270,17 @@ class ConfirmBar(Static):
         offers.append("Esc keep")
         head = "Discard the edits and reload?" if kind is None else _CHANGE_TEXT.get(kind, "The file changed")
         self.update(f"{head}  {'  '.join(offers)}")
+        self.display = True
+        self.focus()
+
+    def ask_quit(self, *, save_running: bool) -> None:
+        """Ask whether to quit: while a save still runs, or with unsaved changes (replaces any open question)."""
+        self.kind = None
+        self.path = None
+        self._allowed = {"quit", "keep"}
+        head = "A save is still running." if save_running else "Discard the unsaved changes and quit?"
+        tail = "Q quit anyway  Esc stay" if save_running else "Q quit  Esc stay"
+        self.update(f"{head}  {tail}")
         self.display = True
         self.focus()
 
@@ -412,34 +426,30 @@ class TimedNovaTextArea(NovaTextArea):
         return result
 
 
-class EditorFooter(Static):
-    """Custom footer showing file information."""
-
-    def __init__(self, file_path: Path | None = None) -> None:
-        super().__init__()
-        self.file_path = file_path
-
-    def render(self) -> str:
-        base = "Ctrl+S: Save | F2 Save as | F5 Reload | Ctrl+Q: Quit | F4 Wrap | Ctrl+G Goto | F7 Search | F3 Next"
-        if self.file_path:
-            return f"File: {self.file_path} | {base}"
-        return base
+def _column_kind(state: CursorState) -> Literal["exact", "provisional", "pending"]:
+    if state is CursorState.RESOLVED:
+        return "exact"
+    if state is CursorState.PROVISIONAL:
+        return "provisional"
+    return "pending"
 
 
 class NovaEditApp(App[None]):
     """A minimal text editor application using NovaTextArea."""
 
-    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
-        ("ctrl+s", "save", "Save"),
-        ("ctrl+q", "quit", "Quit"),
-        ("f2", "show_path_bar", "Save as"),
-        ("f4", "toggle_wrap", "Toggle wrap"),
-        ("f5", "reload", "Reload"),
-        ("ctrl+g", "show_goto", "Show goto"),
-        ("f7", "show_search", "Search"),
-        ("f3", "search_next", "Next"),
-        ("shift+f3", "search_prev", "Previous"),
-        ("escape", "cancel_save", "Cancel save"),
+    TITLE: ClassVar[str] = "nova_edit"
+
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("ctrl+s", "save", "Save"),
+        Binding("f2", "show_path_bar", "SaveAs"),
+        Binding("f5", "reload", "Reload"),
+        Binding("ctrl+g", "show_goto", "Goto"),
+        Binding("f7", "show_search", "Find"),
+        Binding("f3", "search_next", "Next"),
+        Binding("shift+f3", "search_prev", "Prev", key_display="S-F3"),
+        Binding("f4", "toggle_wrap", "Wrap"),
+        Binding("ctrl+q", "quit", "Quit"),
+        Binding("escape", "cancel_save", "Cancel save", show=False),
     ]
 
     CSS: ClassVar[str] = """
@@ -455,6 +465,13 @@ class NovaEditApp(App[None]):
     #editor {
         width: 1fr;
         height: 1fr;
+    }
+
+    #status_line {
+        width: 100%;
+        height: 1;
+        background: $panel;
+        color: $text;
     }
 
     #goto_bar {
@@ -488,11 +505,6 @@ class NovaEditApp(App[None]):
         background: $warning;
         color: $text;
     }
-
-    #footer {
-        height: 1;
-        dock: bottom;
-    }
     """
 
     POLL_SECONDS: float = 2.0
@@ -501,9 +513,27 @@ class NovaEditApp(App[None]):
     QUIT_WAIT_SECONDS: ClassVar[float] = 2.0
     """Longest wait for a cancelled save before quitting."""
 
-    def __init__(self, file_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        file_path: Path | None = None,
+        *,
+        soft_wrap: bool = False,
+        config: LazyConfig | None = None,
+        editor_class: type[TimedNovaTextArea] = TimedNovaTextArea,
+    ) -> None:
+        """Create the app.
+
+        Args:
+            file_path: The file to open, or `None` for an empty buffer.
+            soft_wrap: Start with soft wrapping.
+            config: Thresholds of the lazy document (`None`: the defaults).
+            editor_class: The editor widget class; the benchmark harness passes a probe subclass.
+        """
         super().__init__()
         self.file_path = file_path
+        self._soft_wrap = soft_wrap
+        self._config = config
+        self._editor_class = editor_class
         self.editor: NovaTextArea | None = None
         # "loaded": the editor shows the file; "new": the file did not exist at start; "failed": it exists but could not be read
         self._load_state: Literal["loaded", "new", "failed"] = "loaded"
@@ -519,7 +549,7 @@ class NovaEditApp(App[None]):
         """A change that `SourceChanged` reported while a save ran: announced after the save when it did not rebase the document."""
 
     def _empty_editor(self) -> TimedNovaTextArea:
-        return TimedNovaTextArea(id="editor", text="", soft_wrap=False, timing_file=self._timing_file)
+        return self._editor_class(id="editor", text="", soft_wrap=self._soft_wrap, timing_file=self._timing_file)
 
     def _open_editor(self, path: Path) -> TimedNovaTextArea:
         """Open `path` in an editor; when it cannot be opened, notify, set the load state and return an empty editor."""
@@ -529,7 +559,7 @@ class NovaEditApp(App[None]):
             self.notify(f"Error loading file: {reason}", severity="error")
             return self._empty_editor()
         try:
-            return TimedNovaTextArea.open(path, id="editor", soft_wrap=False, timing_file=self._timing_file)
+            return self._editor_class.open(path, id="editor", soft_wrap=self._soft_wrap, config=self._config, timing_file=self._timing_file)
         except OSError as e:
             self._load_state = "new" if isinstance(e, FileNotFoundError) else "failed"
             self.notify(f"Error loading file: {e}", severity="error")
@@ -550,12 +580,71 @@ class NovaEditApp(App[None]):
         yield ConfirmBar()
         yield SearchBar()
         yield SearchStatus()
-
-        yield EditorFooter(self.file_path)
+        yield StatusLine(self._status_state)
+        yield Footer(compact=True, show_command_palette=False)
 
     def on_mount(self) -> None:
-        """Start the poll for external changes."""
+        """Show the path in the header and start the poll for external changes."""
+        if self.file_path is not None:
+            self.sub_title = str(self.file_path)
         self.set_interval(self.POLL_SECONDS, self._poll)
+        if self.editor is not None:
+            self.watch(self.editor, "pending_progress", self._on_editor_state, init=False)
+            self.watch(self.editor, "soft_wrap", self._on_editor_state, init=False)
+
+    def _on_editor_state(self, _value: object) -> None:
+        self._request_status()
+
+    def _request_status(self) -> None:
+        for status in self.query(StatusLine):
+            status.request()
+
+    def _status_state(self) -> StatusState | None:
+        editor = self.editor
+        if editor is None:
+            return None
+        row, column = editor.cursor_location
+        cursor_state, _ = editor.peek_cursor_state()
+        exact = editor.line_count_exact
+        progress = editor.pending_progress
+        return StatusState(
+            line=row + 1,
+            column=column + 1,
+            column_kind=_column_kind(cursor_state),
+            byte_offset=editor.cursor_byte_offset,
+            line_count=editor.line_count,
+            line_count_exact=exact,
+            indexing_percent=100 if exact else min(99, int(editor.indexing_progress * 100)),
+            line_ending=editor.line_ending,
+            modified=editor.modified,
+            new_file=self._load_state == "new",
+            wrap=editor.soft_wrap,
+            goto_percent=None if progress is None else int(progress * 100),
+        )
+
+    def on_nova_text_area_selection_changed(self, message: NovaTextArea.SelectionChanged) -> None:
+        """Refresh the status line."""
+        self._request_status()
+
+    def on_nova_text_area_changed(self, message: NovaTextArea.Changed) -> None:
+        """Refresh the status line."""
+        self._request_status()
+
+    def on_nova_text_area_index_progress(self, message: NovaTextArea.IndexProgress) -> None:
+        """Refresh the status line."""
+        self._request_status()
+
+    def on_nova_text_area_indexing_complete(self, message: NovaTextArea.IndexingComplete) -> None:
+        """Refresh the status line."""
+        self._request_status()
+
+    def on_nova_text_area_jump_completed(self, message: NovaTextArea.JumpCompleted) -> None:
+        """Refresh the status line."""
+        self._request_status()
+
+    def on_nova_text_area_jump_rejected(self, message: NovaTextArea.JumpRejected) -> None:
+        """Show why a goto was rejected; the cursor did not move."""
+        self.notify(message.reason, severity="warning")
 
     @property
     def _save_bar(self) -> SaveBar:
@@ -682,14 +771,26 @@ class NovaEditApp(App[None]):
         await super().on_event(event)
 
     async def action_quit(self) -> None:
-        """Quit the application; a running save is cancelled and given up to `QUIT_WAIT_SECONDS` to end."""
+        """Quit (Ctrl+Q): cancel a search and a save, then ask when edits would be lost or a save still runs."""
         editor = self.editor
-        if editor is not None and editor.saving:
+        if editor is None:
+            self.exit()
+            return
+        if editor.searching:
+            editor.cancel_search()
+        editor.cancel_pending()
+        if editor.saving:
             editor.cancel_save()
             for _ in range(round(self.QUIT_WAIT_SECONDS / QUIT_POLL_SECONDS)):
                 if not editor.saving:
                     break
                 await asyncio.sleep(QUIT_POLL_SECONDS)
+            if editor.saving:
+                self._confirm_bar.ask_quit(save_running=True)
+                return
+        if editor.modified:
+            self._confirm_bar.ask_quit(save_running=False)
+            return
         self.exit()
 
     # Saving
@@ -746,6 +847,9 @@ class NovaEditApp(App[None]):
 
     def on_confirm_bar_chosen(self, message: ConfirmBar.Chosen) -> None:
         """Carry out the answer of the confirm bar."""
+        if message.choice == "quit":
+            self.exit()
+            return
         self._refocus_editor()
         editor = self.editor
         if editor is None:
@@ -768,9 +872,8 @@ class NovaEditApp(App[None]):
         """Show the result and follow the file the document is bound to now."""
         self._load_state = "loaded"
         self.file_path = message.path
-        footer = self.query_one(EditorFooter)
-        footer.file_path = message.path
-        footer.refresh()
+        self.sub_title = str(message.path)
+        self._request_status()
         self._save_bar.show_result(f"Saved  {message.path.name}  {format_sizes(message.length, message.length)}")
         self._deferred_change = None
 
@@ -828,6 +931,7 @@ class NovaEditApp(App[None]):
 
     def on_nova_text_area_reloaded(self, message: NovaTextArea.Reloaded) -> None:
         """Show that the file was reloaded."""
+        self._request_status()
         self._save_bar.show_result("Reloaded")
 
     def on_nova_text_area_reload_failed(self, message: NovaTextArea.ReloadFailed) -> None:

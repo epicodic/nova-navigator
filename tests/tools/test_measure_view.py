@@ -13,12 +13,11 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from tests.nova_editor.helpers_view import make_mixed
-from tools._view_app import LOWERED
-from tools._view_edit_latency import GcTimer
+from tools._view_app import LOWERED, GcTimer
 from tools._view_procmem import median, percentile
 from tools._view_save import ByteModel, literal, verify_file
 from tools._view_search import SearchEnd, finished_search_seconds
-from tools.measure_view import main
+from tools.measure_view import _guard_write, build_parser, main
 
 MAX_TEST_FILE_BYTES = 1 << 20
 MODEL_EXAMPLES = 80
@@ -831,7 +830,7 @@ def test_search_commands_refuse_an_output_that_is_the_reference_file_or_under_re
     refs = tmp_path / "refs"
     monkeypatch.setenv("REFS", str(refs))
     with pytest.raises(SystemExit):
-        main(["search-5g", "--file", str(mixed_file), "--out", str(refs / "results" / "act5" / "x.jsonl"), "--runs", "1"])
+        main(["search-5g", "--file", str(mixed_file), "--out", str(refs / "results" / "act4" / "x.jsonl"), "--runs", "1"])
     with pytest.raises(SystemExit):
         main(["search-longline", "--file", str(mixed_file), "--copy", str(mixed_file), "--out", str(tmp_path / "o.jsonl"), "--min-free-gib", "0"])
     with pytest.raises(SystemExit):
@@ -992,3 +991,67 @@ def test_search_durations_pair_each_start_with_its_own_terminal_message() -> Non
     ends = [SearchEnd("found", 1.0, None), SearchEnd("not_found", 12.0, "x"), SearchEnd("cancelled", 21.0, "cancelled"), SearchEnd("not_found", 34.0, "x")]
     assert finished_search_seconds(starts, ends) == [2.0, 4.0]
     assert finished_search_seconds(starts[:1], ends) == []
+
+
+def test_the_write_guard_allows_the_act7_results_and_refuses_other_paths_under_refs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    refs = tmp_path / "refs"
+    (refs / "results" / "act7").mkdir(parents=True)
+    monkeypatch.setenv("REFS", str(refs))
+    assert _guard_write(refs / "results" / "act7" / "x.jsonl") == (refs / "results" / "act7" / "x.jsonl").resolve()
+    for refused in (refs / "other" / "x.jsonl", refs / "results" / "act4" / "x.jsonl"):
+        with pytest.raises(SystemExit):
+            _guard_write(refused)
+
+
+def test_smoke_first_end(mixed_file: Path, tmp_path: Path) -> None:
+    out = tmp_path / "first_end.jsonl"
+    assert main(["first-end", "--file", str(mixed_file), "--wrap", "on", "--runs", "1", "--out", str(out)]) == 0
+    rows = _rows(out)
+    assert [row["op"] for row in rows if row["case"] == "first-end"] == ["ctrl+end", "ctrl+home", "ctrl+end", "goto_middle", "goto_last"]
+    assert all(row["latency_ms"] is not None and "measured_blocks" in row and "byte_offset_ms" in row for row in rows if row["case"] == "first-end")
+
+
+def test_smoke_app_latency(mixed_file: Path, tmp_path: Path) -> None:
+    out = tmp_path / "app.jsonl"
+    assert main(["app-latency", "--file", str(mixed_file), "--wrap", "off", "--state", "indexed", "--op", "down", "--steps", "5", "--runs", "1", "--out", str(out)]) == 0
+    steps = [row for row in _rows(out) if row["case"] == "app-latency" and row["op"] == "down"]
+    assert len(steps) == 5
+    assert all(row["latency_ms"] is not None and "status_flushes" in row and "gc_ms" in row for row in steps)
+
+
+def test_smoke_wrap_blocks(tmp_path: Path) -> None:
+    path = tmp_path / "rows.txt"
+    path.write_text("".join(f"row {i} " + "word " * (i % 40) + "\n" for i in range(3_000)))
+    out = tmp_path / "blocks.jsonl"
+    assert main(["wrap-blocks", "--file", str(path), "--blocks", "10,40", "--runs", "1", "--out", str(out)]) == 0
+    rows = [row for row in _rows(out) if row["case"] == "wrap-blocks"]
+    assert [row["blocks_target"] for row in rows] == [10, 40]
+    assert all(row["wrap_range_ms"] >= 0 and row["rss_anon_mib"] > 0 and row["blocks"] >= row["blocks_target"] for row in rows)
+
+
+def test_smoke_reload(mixed_file: Path, tmp_path: Path) -> None:
+    out = tmp_path / "reload.jsonl"
+    assert main(["reload", "--file", str(mixed_file), "--repeats", "2", "--runs", "1", "--out", str(out)]) == 0
+    assert sorted({row["state"] for row in _rows(out) if row["case"] == "reload"}) == ["cold", "warm"]
+
+
+def test_smoke_pieces_has_delete_and_component_rows(tmp_path: Path) -> None:
+    out = tmp_path / "pieces.jsonl"
+    assert main(["pieces", "--sizes", "2000", "--calls", "3", "--delete-pieces", "100,1000", "--memory-size", "2000", "--out", str(out)]) == 0
+    rows = _rows(out)
+    assert {row["delete_pieces"] for row in rows if row["op"] == "splice_delete_many"} == {100, 1000}
+    assert any("leaf_bytes_per_piece" in row for row in rows)
+
+
+def test_save_fulldisk_parses_the_real_error_option() -> None:
+    args = build_parser().parse_args(["save-fulldisk", "--file", "x", "--real-error", "efbig"])
+    assert args.real_error == "efbig"
+    assert args.fsize_bytes == 1073741824
+
+
+def test_latency_instrument_and_no_pilot_add_attribution_and_skip_the_pilot_phase(mixed_file: Path, tmp_path: Path) -> None:
+    out = tmp_path / "instrumented.jsonl"
+    assert main(["latency", "--file", str(mixed_file), "--wrap", "on", "--state", "indexed", "--op", "down", "--steps", "4", "--instrument", "--no-pilot", "--out", str(out)]) == 0
+    steps = [row for row in _rows(out) if row["op"] == "down"]
+    assert [row["phase"] for row in steps] == ["direct"] * 4
+    assert all({"gc_ms", "gc_longest_ms"} <= set(row) and set(row["segments"]) == {"reestimate_ms", "reconcile_ms", "measure_ms"} for row in steps)

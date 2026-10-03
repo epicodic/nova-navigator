@@ -18,7 +18,9 @@ import errno
 import hashlib
 import math
 import os
+import resource
 import shutil
+import signal
 import tempfile
 import time
 from collections.abc import AsyncIterator, Callable
@@ -550,7 +552,7 @@ def _expected(spec: Spec) -> tuple[str, set[str]]:
     fault = spec.get("fault")
     if fault == "cancel":
         return "cancelled", {""}
-    if fault in ("enospc", "real-enospc"):
+    if fault in ("enospc", "real-enospc", "real-efbig"):
         return "failed", {"write", "prepare"}
     if not spec.get("build_index", True):
         return "failed", {"internal"}  # no line index: the rebase cannot run (Task 20 adds the fallback); the file is written
@@ -601,11 +603,37 @@ async def complete_save(session: SaveSession, target: Path, before: tuple[int, i
     return session.rows[-1]
 
 
+async def _save_under_fsize_limit(session: SaveSession, target: Path, before: tuple[int, int] | None, limit: int) -> list[Row]:
+    """The save of `real-efbig`: `SIGXFSZ` is ignored and the soft `RLIMIT_FSIZE` is `limit` from just before the save to the terminal message, so the kernel itself fails a write with `EFBIG`.
+
+    The row gets `error_errno`, `temp_removed`, `target_exists` and `original_unchanged` (the target is as it was before the save: same size and time, or still absent).
+    """
+    signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+    soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
+    try:
+        session.runner.start(target)
+        row = await complete_save(session, target, before)
+    finally:
+        resource.setrlimit(resource.RLIMIT_FSIZE, (soft, hard))
+    row.update(
+        error_errno=row["errno"],
+        error_errno_name=None if row["errno"] is None else errno.errorcode.get(row["errno"]),
+        temp_removed=temp_files_left(target) == 0,
+        target_exists=target.exists(),
+        original_unchanged=target_state(target) == before,
+        fsize_bytes=limit,
+    )
+    row["ok"] = bool(row["ok"] and row["error_errno"] == errno.EFBIG and row["temp_removed"] and row["original_unchanged"])
+    emit("DONE")
+    return session.rows
+
+
 async def save_scenario(spec: Spec) -> list[Row]:
     """`save-5g`, `save-sweep`, `save-cancel` and `save-fulldisk` child: the scripted edits, a save-as to `spec["target"]` and the verification.
 
-    `spec["fault"]` is `cancel` (cancel once `cancel_at` of the document is written), `enospc` (the write fails with `ENOSPC` there) or `real-enospc` (the target is on a
-    small tmpfs, nothing is injected).
+    `spec["fault"]` is `cancel` (cancel once `cancel_at` of the document is written), `enospc` (the write fails with `ENOSPC` there), `real-enospc` (the target is on a
+    small tmpfs, nothing is injected) or `real-efbig` (the process limit `RLIMIT_FSIZE` is `fsize_bytes` while the save runs, nothing is injected).
     """
     async with open_session(spec) as session:
         await scripted_edits(session)
@@ -615,6 +643,8 @@ async def save_scenario(spec: Spec) -> list[Row]:
         session.runner.length = session.document.length
         if fault in ("cancel", "enospc"):
             ProbeTextArea.save_io = session.runner.fault_io(fault, float(spec.get("cancel_at", 0.5)))
+        if fault == "real-efbig":
+            return await _save_under_fsize_limit(session, target, before, int(spec["fsize_bytes"]))
         session.runner.start(target)
         await complete_save(session, target, before)
         emit("DONE")

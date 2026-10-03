@@ -11,20 +11,25 @@ import cProfile
 import io
 import pstats
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from textual.app import App
 from textual.pilot import Pilot
 
 from tools._view_app import (
     FAR,
+    SEGMENT_NAMES,
     SIZE,
+    GcTimer,
     ProbeApp,
     ProbeTextArea,
     Timing,
     build_config,
     emit,
     first_row_is_long,
+    install_clock,
     lazy_document,
     open_probe,
     scan_busy,
@@ -137,7 +142,7 @@ async def _pilot_step(pilot: Pilot[None], area: ProbeTextArea, op: str, target_x
     return (time.perf_counter() - started) * 1000
 
 
-async def _direct_step(app: ProbeApp, area: ProbeTextArea, op: str, i: int, base_x: int, far_byte: int | None, steps: int) -> Timing:
+async def _direct_step(app: App[None], area: ProbeTextArea, op: str, i: int, base_x: int, far_byte: int | None, steps: int) -> Timing:
     """Issue one direct-injection step of `op` and wait for its render."""
     if op in _REPOSITION_OPS:
         await _place_settled(area, op, steps, far_byte)
@@ -155,7 +160,7 @@ async def _direct_step(app: ProbeApp, area: ProbeTextArea, op: str, i: int, base
 
 async def measure_ops(
     pilot: Pilot[None],
-    app: ProbeApp,
+    app: App[None],
     area: ProbeTextArea,
     spec: Spec,
     op: str,
@@ -165,12 +170,16 @@ async def measure_ops(
     state: str,
     with_pilot: bool,
     place_first: bool = True,
+    instrument: bool = False,
+    step_fields: Callable[[], Row] | None = None,
     **extra: object,
 ) -> list[Row]:
     """Time `steps` presses of `op` in two phases.
 
     Phase `direct`: all steps back to back by direct injection (`latency_ms`, `handler_ms`, `scan_running` before the step, `scan_completed_during_step`), each waiting only for its own render, so
     that a running scan is not over before the burst is. Phase `pilot` (with `with_pilot`): the Pilot method (`pilot_ms`), slow while a scan runs.
+    `step_fields`, when given, is called after every direct step and its fields go into that step's row.
+    With `instrument` every direct row also carries `gc_ms`, `gc_longest_ms` and `segments` (`reestimate_ms`, `reconcile_ms`, `measure_ms` of the wrapped methods, as the edit rows do).
     """
     far_byte = _far_byte(area, int(spec.get("far", FAR)))
     rows: list[Row] = []
@@ -180,9 +189,22 @@ async def measure_ops(
         await _place_settled(area, op, steps, far_byte)
         await settle(0.2)
     base_x = area.scroll_offset.x
+    gc_timer = GcTimer()
+    clock = install_clock(area) if instrument else None
+    if instrument:
+        gc_timer.install()
     for i in range(steps):
         busy = scan_busy(area)
+        gc_before = gc_timer.snapshot()
+        clock_before = None if clock is None else clock.snapshot()
         timing = await _direct_step(app, area, op, i, base_x, far_byte, steps)
+        attribution: Row = {}
+        if clock is not None and clock_before is not None:
+            fields = clock.since(clock_before)
+            attribution = {
+                **gc_timer.since(gc_before),
+                "segments": {f"{name}_ms": fields[f"{name}_ms"] for name in SEGMENT_NAMES},
+            }
         completed = busy and not scan_busy(area)
         if started_busy and scan_done_at is None and not scan_busy(area):
             scan_done_at = i
@@ -201,9 +223,13 @@ async def measure_ops(
                 scan_running=busy,
                 scan_completed_during_step=completed,
                 far_byte=far_byte,
+                **attribution,
+                **({} if step_fields is None else step_fields()),
                 **extra,
             )
         )
+    if instrument:
+        gc_timer.uninstall()
     for row in rows:
         row["scan_done_at_step"] = scan_done_at
     if with_pilot and op != "farjump":
@@ -223,7 +249,7 @@ async def measure_ops(
     return rows
 
 
-async def repeat_key(app: ProbeApp, area: ProbeTextArea, key: str, count: int, *, limit: float = 0.5) -> int:
+async def repeat_key(app: App[None], area: ProbeTextArea, key: str, count: int, *, limit: float = 0.5) -> int:
     """Press `key` up to `count` times, stop after two presses in a row that changed nothing (the end of the file); return the presses made."""
     idle = 0
     for made in range(1, count + 1):
@@ -260,25 +286,35 @@ def _write_profile(path: Path, run: int, profile: cProfile.Profile, rows: list[R
         handle.write("\n".join(lines) + "\n")
 
 
-async def latency_scenario(spec: Spec) -> list[Row]:
-    """`latency`: key-to-render per step for one op in the `indexing` or `indexed` state."""
+async def latency_steps(pilot: Pilot[None], app: App[None], area: ProbeTextArea, spec: Spec, *, case: str, with_pilot: bool, step_fields: Callable[[], Row] | None = None) -> list[Row]:
+    """The steps of `latency` and `app-latency` in an app that showed its first content: wait for the scan when the state is `indexed`, then `measure_ops`.
+
+    `spec["instrument"]` adds the garbage collection and segment attribution to every direct step.
+    """
     op, state, steps = spec["op"], spec["state"], int(spec["steps"])
+    if state == "indexed":
+        await wait_until(lambda: not scan_busy(area), float(spec.get("timeout", 900)))
+        await settle(0.2)
+    if _wrap_on(spec) and op == "hscroll":
+        return [base_row(spec, case=case, state=state, op=op, not_applicable="soft wrap has no horizontal scroll")]
+    profile = cProfile.Profile() if spec.get("profile_out") else None
+    if profile is not None:
+        profile.enable()
+    rows = await measure_ops(pilot, app, area, spec, op, steps, case=case, state=state, with_pilot=with_pilot, instrument=bool(spec.get("instrument", False)), step_fields=step_fields)
+    if profile is not None:
+        profile.disable()
+        _write_profile(Path(spec["profile_out"]), int(spec.get("run", 1)), profile, rows)
+    return rows
+
+
+async def latency_scenario(spec: Spec) -> list[Row]:
+    """`latency`: key-to-render per step for one op in the `indexing` or `indexed` state (`spec["pilot"]` false skips the Pilot phase)."""
     app, area = _open(spec)
     async with app.run_test(size=SIZE) as pilot:
         await _first_content(area)
-        if state == "indexed":
-            await wait_until(lambda: not scan_busy(area), float(spec.get("timeout", 900)))
-            await settle(0.2)
-        if _wrap_on(spec) and op == "hscroll":
-            return [base_row(spec, case="latency", state=state, op=op, not_applicable="soft wrap has no horizontal scroll")]
-        profile = cProfile.Profile() if spec.get("profile_out") else None
-        if profile is not None:
-            profile.enable()
-        rows = await measure_ops(pilot, app, area, spec, op, steps, case="latency", state=state, with_pilot=True)
-        if profile is not None:
-            profile.disable()
-            _write_profile(Path(spec["profile_out"]), int(spec.get("run", 1)), profile, rows)
-        rows.extend(await _idle_floor(pilot, area, spec, state))
+        rows = await latency_steps(pilot, app, area, spec, case="latency", with_pilot=bool(spec.get("pilot", True)))
+        if not (_wrap_on(spec) and spec["op"] == "hscroll"):
+            rows.extend(await _idle_floor(pilot, area, spec, spec["state"]))
     return rows
 
 

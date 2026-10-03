@@ -33,27 +33,19 @@ def test_core_sources_import_only_stdlib_rich_and_core() -> None:
             assert top != "textual", f"{path.name} imports Textual"
 
 
-STUB_IMPORT = """
-import importlib
-import pathlib
+PLAIN_IMPORT = """
 import sys
-import types
 
-root = pathlib.Path(sys.argv[1])
-stub = types.ModuleType("nova_editor")
-stub.__path__ = [str(root / "src" / "nova_editor")]  # a parent package whose __init__ does not run
-sys.modules["nova_editor"] = stub
-for name in ("byte_source", "text_width", "line_index", "long_line_index"):
-    importlib.import_module("nova_editor.core." + name)
-importlib.import_module("nova_editor.core")
+import nova_editor.core
+
 bad = sorted(m for m in sys.modules if m == "textual" or m.startswith("textual.") or m.startswith("nova_navigator"))
 print("BAD:" + ",".join(bad) if bad else "OK")
 """
 
 
-def test_core_modules_load_without_textual() -> None:
+def test_importing_nova_editor_core_loads_no_textual() -> None:
     root = Path(__file__).parents[3]
-    result = subprocess.run([sys.executable, "-c", STUB_IMPORT, str(root)], capture_output=True, text=True, check=False, cwd=root)
+    result = subprocess.run([sys.executable, "-c", PLAIN_IMPORT], capture_output=True, text=True, check=False, cwd=root)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "OK", result.stdout
 
