@@ -25,7 +25,6 @@ from textual.widgets import Static
 from nova_navigator.config import conf_
 from nova_navigator.dialogs.connect_to_dialog import ConnectToDialog
 from nova_navigator.dialogs.credentials_dialog import CredentialsDialog
-from nova_navigator.dialogs.dialog import Dialog
 from nova_navigator.dialogs.edit_bookmarks_dialog import EditBookmarksDialog
 from nova_navigator.dialogs.edit_remotes_dialog import EditRemotesDialog
 from nova_navigator.dialogs.file_dialog import FileDialog, FileDialogMode, FileTypeFilter
@@ -47,7 +46,7 @@ from nova_navigator.vfs.change_detector import ChangeDetector
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_navigator.vfs.local_copy import Baseline, LocalCopy, SourceFingerprint
 from nova_navigator.vfs.vpath import VPath
-from nova_widgets import Response
+from nova_widgets import Dialog, Response
 from nova_widgets.action import Action as NavAction
 
 _fs = LocalFilesystem.singleton()

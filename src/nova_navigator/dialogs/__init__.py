@@ -1,7 +1,6 @@
 from .bookmarks_dialog import BookmarksDialog
 from .connect_to_dialog import ConnectToDialog
 from .credentials_dialog import Credentials, CredentialsDialog
-from .dialog import DefaultButton
 from .edit_bookmarks_dialog import EditBookmarksDialog
 from .edit_remotes_dialog import EditRemotesDialog
 from .file_dialog import FileDialog, FileDialogMode, FileTypeFilter
@@ -22,7 +21,6 @@ __all__ = [
     "CopyMoveFilesDialog",
     "Credentials",
     "CredentialsDialog",
-    "DefaultButton",
     "DeleteFilesDialog",
     "EditBookmarksDialog",
     "EditRemotesDialog",

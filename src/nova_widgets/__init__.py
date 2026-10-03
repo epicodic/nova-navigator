@@ -4,6 +4,7 @@ from .animated_icon import AnimatedIcon
 from .button_box import ButtonBox
 from .custom_border import CustomBorderMixin
 from .data_table import DataTable
+from .dialog import ButtonSpec, DefaultButton, Dialog
 from .flat_widgets import Button, Checkbox, Input, Select
 from .icon import Icon
 from .menu import Menu, MenuBar
@@ -15,9 +16,12 @@ __all__ = [
     "AnimatedIcon",
     "Button",
     "ButtonBox",
+    "ButtonSpec",
     "Checkbox",
     "CustomBorderMixin",
     "DataTable",
+    "DefaultButton",
+    "Dialog",
     "Icon",
     "Input",
     "Menu",

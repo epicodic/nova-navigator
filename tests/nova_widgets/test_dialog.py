@@ -4,8 +4,7 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Button
 
-from nova_navigator.dialogs.dialog import ButtonSpec, DefaultButton, Dialog
-from nova_widgets import Response
+from nova_widgets import ButtonSpec, DefaultButton, Dialog, Response
 
 
 class _HostApp(App[None]):
