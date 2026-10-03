@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nova_navigator.response import Response
+from nova_widgets import Response
 from tests.integration.conftest import AppCtx, set_panels
 
 _INPUT_NAME_DIALOG_PATH = "nova_navigator.nova_navigator.InputNameDialog"

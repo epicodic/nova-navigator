@@ -2,8 +2,8 @@ import asyncio
 
 import pytest
 
-from nova_navigator.response import Response
 from nova_navigator.scheduler import Job, ResponseRequest, TaskContext
+from nova_widgets import Response
 
 
 async def _failing_task(_ctx: TaskContext) -> None:

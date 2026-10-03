@@ -1,8 +1,8 @@
 import logging
 
 from nova_navigator.dialogs import DeleteFilesDialog
-from nova_navigator.response import Response
 from nova_navigator.vfs import VPath
+from nova_widgets import Response
 
 from ..dialogs.files_dialog import CopyMoveFilesDialog
 from ..scheduler import Job

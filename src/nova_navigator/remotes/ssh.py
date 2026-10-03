@@ -12,13 +12,13 @@ from nova_navigator.config import conf_
 from nova_navigator.config.remotes import RemoteConnection, SshSettings
 from nova_navigator.dialogs import CredentialsDialog, MessageBox
 from nova_navigator.plugins import FilesystemPlugin
-from nova_navigator.response import Response
 from nova_navigator.terminal.shell_driver import detect_driver
 from nova_navigator.terminal.ssh_pty_backend import SshPtyBackend
 from nova_navigator.terminal.terminal import Terminal
 from nova_navigator.vfs.filesystem import Filesystem
 from nova_navigator.vfs.filesystems import SSHFilesystem, UnknownHostKeyError
 from nova_navigator.vfs.vpath import VPath
+from nova_widgets import Response
 
 _logger = logging.getLogger(__name__)
 

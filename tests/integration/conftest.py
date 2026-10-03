@@ -35,9 +35,9 @@ import pytest_asyncio
 from textual.pilot import Pilot
 
 from nova_navigator.nova_navigator import MainScreen, NovaNavigator
-from nova_navigator.response import Response
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
+from nova_widgets import Response
 
 # ---------------------------------------------------------------------------
 # --headed CLI option

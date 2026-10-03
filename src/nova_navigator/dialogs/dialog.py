@@ -8,9 +8,7 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets.button import ButtonVariant
 
-from nova_widgets import Button, ButtonBox
-
-from ..response import Response
+from nova_widgets import Button, ButtonBox, Response
 
 
 @dataclass

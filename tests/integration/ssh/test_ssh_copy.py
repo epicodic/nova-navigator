@@ -18,9 +18,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nova_navigator.response import Response
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
+from nova_widgets import Response
 from tests.integration.conftest import auto_confirm_copy_dialog, auto_confirm_response_dialog, poll_until
 from tests.integration.ssh.conftest import SshAppCtx, set_ssh_panels, set_ssh_panels_remote_left
 

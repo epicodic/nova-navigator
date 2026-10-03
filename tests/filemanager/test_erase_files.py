@@ -3,8 +3,8 @@ import threading
 import pytest
 
 from nova_navigator.filemanager.tasks import EraseFilesOptions, erase_files
-from nova_navigator.response import Response
 from nova_navigator.scheduler import TaskCancelled, TaskStatus
+from nova_widgets import Response
 from tests._utils.mock_filesystem import MockFilesystem
 
 from .common import make_status, run_task

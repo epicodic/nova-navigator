@@ -7,8 +7,7 @@ from textual.message import Message
 from textual.widgets import Tree
 
 from nova_navigator.dialogs.edit_bookmarks_dialog import EditBookmarksDialog
-from nova_navigator.response import Response
-from nova_widgets import Button
+from nova_widgets import Button, Response
 
 from ..config import conf_
 from ..dialogs.constants import DEFAULT_BOOKMARKS_GROUP

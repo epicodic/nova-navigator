@@ -2,8 +2,8 @@ import asyncio
 import threading
 from collections.abc import Awaitable, Callable
 
-from nova_navigator.response import Response
 from nova_navigator.scheduler import AsyncTaskScheduler, ResponseRequest, TaskContext, TaskStatus
+from nova_widgets import Response
 from tests._utils.mock_filesystem import MockFilesystem
 
 
