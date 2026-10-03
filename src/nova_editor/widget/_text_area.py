@@ -1502,13 +1502,16 @@ NovaTextArea {
 
     @property
     def cursor_byte_offset(self) -> int | None:
-        """Byte offset of the cursor from the start of the document; exact in every state (`None` only when unknown)."""
+        """Byte offset of the cursor from the start of the document; exact in every state, `None` while it is unknown.
+
+        It is unknown while the line scan has not resolved the cursor row yet (or after `close()`), and after the source changed.
+        """
         row, column = self.cursor_location
         lazy = self.document
-        machine = self._track_cursor()
-        if machine is None:
-            return lazy.byte_offset(row, column)
         try:
+            machine = self._track_cursor()
+            if machine is None:
+                return lazy.byte_offset(row, column)
             start = lazy.byte_offset(row, 0)
             if start is None:
                 return None
@@ -1516,6 +1519,8 @@ NovaTextArea {
             return start + machine.anchor.byte_rel if exact is None else exact
         except CoreSourceChanged as error:
             self._fail_source(str(error), error.kind)
+            return None
+        except (RowUnavailable, IndexError):
             return None
 
     def toggle_wrap(self) -> None:
