@@ -25,6 +25,7 @@ from .editor_menus import build_menu_bar
 from .search_bar import SearchBar
 from .status_line import StatusLine, StatusState
 from .timed_text_area import TimedNovaTextArea
+from .widget import NovaTextArea
 
 
 class EditorScreen(Screen[None]):
@@ -430,6 +431,37 @@ class EditorScreen(Screen[None]):
         elif message.choice == "save_as" and message.path is not None:
             path_bar = self.query_one("#path_bar", PathBar)
             path_bar.open(message.path)
+
+    def on_nova_text_area_save_needs_confirmation(self, message: NovaTextArea.SaveNeedsConfirmation) -> None:
+        """Handle save that needs confirmation (file exists or changed on disk)."""
+        confirm_bar = self.query_one("#confirm_bar", ConfirmBar)
+        confirm_bar.ask(
+            message.kind,
+            message.path,
+            overwrite=True,
+            save_as=True,
+            reload=False,
+        )
+
+    def on_nova_text_area_save_progress(self, message: NovaTextArea.SaveProgress) -> None:
+        """Handle save progress updates."""
+        save_bar = self.query_one("#save_bar", SaveBar)
+        save_bar.show_progress(message.phase, message.done, message.total)
+
+    def on_nova_text_area_saved(self, message: NovaTextArea.Saved) -> None:
+        """Handle successful save completion."""
+        save_bar = self.query_one("#save_bar", SaveBar)
+        save_bar.show_result(f"Saved  {message.length} B  to  {message.path.name}")
+
+    def on_nova_text_area_save_failed(self, message: NovaTextArea.SaveFailed) -> None:
+        """Handle save failure."""
+        save_bar = self.query_one("#save_bar", SaveBar)
+        save_bar.show_failure(f"Failed to save: {message.error}")
+
+    def on_nova_text_area_save_cancelled(self, message: NovaTextArea.SaveCancelled) -> None:
+        """Handle save cancellation."""
+        save_bar = self.query_one("#save_bar", SaveBar)
+        save_bar.clear()
 
     async def press_key(self, key: str) -> bool:
         """Handle a key press by matching it to an action in the keymap registry.
