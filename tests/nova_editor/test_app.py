@@ -10,14 +10,17 @@ from textual.pilot import Pilot
 from nova_editor.app import NovaEditApp
 from nova_editor.bars import ConfirmBar
 from nova_editor.core.save import SaveIo
+from nova_editor.screen import EditorScreen
 from nova_editor.widget import NovaTextArea
 from tests.nova_editor.save_widget_helpers import wait_saved
 
 
 async def settle(pilot: Pilot[None], app: NovaEditApp) -> None:
     """Let a started save end and its messages arrive."""
-    assert app.editor is not None
-    await wait_saved(pilot, app.editor)
+    screen = app.screen
+    assert isinstance(screen, EditorScreen)
+    assert screen.document.editor is not None
+    await wait_saved(pilot, screen.document.editor)
 
 
 @pytest.mark.asyncio
@@ -30,12 +33,13 @@ async def test_app_loads_file() -> None:
         temp_path = Path(f.name)
 
     try:
-        app = NovaEditApp(file_path=temp_path)
+        app = NovaEditApp(path=temp_path)
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app.editor is not None
-            assert test_content in app.editor.text
+            screen = app.screen
+            assert isinstance(screen, EditorScreen)
+            assert test_content in screen.document.editor.text
     finally:
         temp_path.unlink()
 
@@ -49,11 +53,12 @@ async def test_app_saves_file() -> None:
         temp_path = Path(f.name)
 
     try:
-        app = NovaEditApp(file_path=temp_path)
+        app = NovaEditApp(path=temp_path)
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app.editor is not None
+            screen = app.screen
+            assert isinstance(screen, EditorScreen)
 
             # Modify the editor content
             await pilot.press("ctrl+a")  # Select all
@@ -65,8 +70,8 @@ async def test_app_saves_file() -> None:
             await pilot.press("s", "a", "v", "e", "d")
             await pilot.pause()
 
-            # Save
-            app.action_save()
+            # Save using Ctrl+S
+            await pilot.press("ctrl+s")
             await settle(pilot, app)
 
         # Verify file was saved
@@ -80,13 +85,14 @@ async def test_app_saves_file() -> None:
 @pytest.mark.asyncio
 async def test_app_without_file() -> None:
     """Test that the app can run without a file."""
-    app = NovaEditApp(file_path=None)
+    app = NovaEditApp(path=None)
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app.editor is not None
+        screen = app.screen
+        assert isinstance(screen, EditorScreen)
         # Should start with empty text
-        assert app.editor.text == ""
+        assert screen.document.editor.text == ""
 
 
 @pytest.mark.asyncio
@@ -94,24 +100,28 @@ async def test_app_handles_missing_file() -> None:
     """Test that the app handles missing file gracefully."""
     nonexistent_path = Path(tempfile.gettempdir()) / "nonexistent_file_xyz_12345.txt"
 
-    app = NovaEditApp(file_path=nonexistent_path)
+    app = NovaEditApp(path=nonexistent_path)
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app.editor is not None
+        screen = app.screen
+        assert isinstance(screen, EditorScreen)
         # Should handle gracefully with empty editor
-        assert app.editor.text == ""
+        assert screen.document.editor.text == ""
 
 
 @pytest.mark.asyncio
 async def test_app_quit_action() -> None:
     """Test quit action."""
-    app = NovaEditApp(file_path=None)
+    app = NovaEditApp(path=None)
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        # The quit action calls app.exit(), which should end the test
-        await app.action_quit()
+        screen = app.screen
+        assert isinstance(screen, EditorScreen)
+        # The quit action should work via Ctrl+Q
+        await pilot.press("ctrl+q")
+        await pilot.pause()
         # If we get here without error, quit worked
 
 
@@ -120,7 +130,7 @@ async def test_ctrl_s_key_saves_eager_file(tmp_path: Path) -> None:
     """Pressing ctrl+s writes the eager document to disk."""
     path = tmp_path / "e.txt"
     path.write_text("initial")
-    app = NovaEditApp(file_path=path)
+    app = NovaEditApp(path=path)
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("x")
@@ -132,7 +142,7 @@ async def test_ctrl_s_key_saves_eager_file(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_ctrl_q_key_quits() -> None:
     """Pressing ctrl+q exits the app."""
-    app = NovaEditApp(file_path=None)
+    app = NovaEditApp(path=None)
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("ctrl+q")
@@ -146,7 +156,7 @@ async def test_save_small_file_with_invalid_bytes(tmp_path: Path) -> None:
     path = tmp_path / "invalid.txt"
     path.write_bytes(b"a\xffb\xe2\x82\nc\n")
 
-    app = NovaEditApp(file_path=path)
+    app = NovaEditApp(path=path)
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("x")
@@ -164,7 +174,7 @@ async def test_save_leaves_an_unrelated_tmp_named_file_alone(tmp_path: Path) -> 
     neighbour = tmp_path / "a.tmp.txt"
     neighbour.write_text("precious")
 
-    app = NovaEditApp(file_path=path)
+    app = NovaEditApp(path=path)
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("x")
@@ -182,7 +192,7 @@ async def test_save_keeps_the_permissions(tmp_path: Path) -> None:
     path.write_text("one")
     path.chmod(0o640)
 
-    app = NovaEditApp(file_path=path)
+    app = NovaEditApp(path=path)
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("x")
@@ -199,7 +209,7 @@ async def test_save_through_a_symlink_writes_the_target_and_keeps_the_link(tmp_p
     link = tmp_path / "link.txt"
     link.symlink_to(target)
 
-    app = NovaEditApp(file_path=link)
+    app = NovaEditApp(path=link)
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("x")
@@ -220,7 +230,7 @@ async def test_save_after_a_load_failure_refuses_and_keeps_the_file(tmp_path: Pa
         path.chmod(0o644)
         pytest.skip("permissions are not enforced for this user")
 
-    app = NovaEditApp(file_path=path)
+    app = NovaEditApp(path=path)
     try:
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -238,7 +248,7 @@ async def test_save_after_a_load_failure_refuses_and_keeps_the_file(tmp_path: Pa
 async def test_save_of_a_new_file_creates_it(tmp_path: Path) -> None:
     path = tmp_path / "new.txt"
 
-    app = NovaEditApp(file_path=path)
+    app = NovaEditApp(path=path)
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("h", "i")
@@ -252,7 +262,7 @@ async def test_save_of_a_new_file_creates_it(tmp_path: Path) -> None:
 async def test_second_save_of_a_new_file_writes_the_later_edit(tmp_path: Path) -> None:
     path = tmp_path / "new.txt"
 
-    app = NovaEditApp(file_path=path)
+    app = NovaEditApp(path=path)
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("h", "i")
@@ -271,7 +281,7 @@ async def test_second_save_of_a_new_file_writes_the_later_edit(tmp_path: Path) -
 async def test_save_refuses_a_file_that_appeared_before_the_first_save(tmp_path: Path) -> None:
     path = tmp_path / "new.txt"
 
-    app = NovaEditApp(file_path=path)
+    app = NovaEditApp(path=path)
     async with app.run_test() as pilot:
         await pilot.pause()
         path.write_text("from elsewhere")
@@ -279,7 +289,8 @@ async def test_save_refuses_a_file_that_appeared_before_the_first_save(tmp_path:
         await pilot.press("ctrl+s")
         await settle(pilot, app)
 
-        assert app.query_one(ConfirmBar).display  # the file is not overwritten without consent
+        confirm_bar = app.query_one(ConfirmBar)
+        assert confirm_bar.display  # the file is not overwritten without consent
 
     assert path.read_text() == "from elsewhere"
 
@@ -290,7 +301,7 @@ async def test_new_file_mode_follows_the_umask(tmp_path: Path) -> None:
 
     old = os.umask(0o077)
     try:
-        app = NovaEditApp(file_path=path)
+        app = NovaEditApp(path=path)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("h", "i")
@@ -311,13 +322,14 @@ async def test_failed_save_removes_the_temp_file(tmp_path: Path, monkeypatch: py
         raise PermissionError("no")
 
     monkeypatch.setattr(NovaTextArea, "save_io", SaveIo(replace=refuse))
-    app = NovaEditApp(file_path=path)
+    app = NovaEditApp(path=path)
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("x")
         await pilot.press("ctrl+s")
         await settle(pilot, app)
-        assert app.query_one("#save_bar").display
+        save_bar = app.query_one("#save_bar")
+        assert save_bar.display
 
     assert path.read_text() == "one"
     assert [p.name for p in tmp_path.iterdir()] == ["f.txt"]
@@ -329,13 +341,14 @@ async def test_save_small_file_shows_the_result_line(tmp_path: Path) -> None:
     path = tmp_path / "save_notify.txt"
     path.write_text("initial")
 
-    app = NovaEditApp(file_path=path)
+    app = NovaEditApp(path=path)
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("n", "e", "w")
         await pilot.press("ctrl+s")
         await settle(pilot, app)
-        assert app.query_one("#save_bar").display
+        save_bar = app.query_one("#save_bar")
+        assert save_bar.display
 
     assert path.read_text() == "newinitial"
 
@@ -372,13 +385,15 @@ def test_lazy_flag_is_rejected_by_argparse(capsys: pytest.CaptureFixture[str]) -
 async def test_app_constructor_takes_soft_wrap(tmp_path: Path) -> None:
     path = tmp_path / "wrap.txt"
     path.write_text("some text\n")
-    wrapped = NovaEditApp(path, soft_wrap=True)
+    wrapped = NovaEditApp(path=path, soft_wrap=True)
     async with wrapped.run_test() as pilot:
         await pilot.pause()
-        assert wrapped.editor is not None
-        assert wrapped.editor.soft_wrap is True
-    plain = NovaEditApp(path)
+        wrapped_screen = wrapped.screen
+        assert isinstance(wrapped_screen, EditorScreen)
+        assert wrapped_screen.document.editor.soft_wrap is True
+    plain = NovaEditApp(path=path)
     async with plain.run_test() as pilot:
         await pilot.pause()
-        assert plain.editor is not None
-        assert plain.editor.soft_wrap is False
+        plain_screen = plain.screen
+        assert isinstance(plain_screen, EditorScreen)
+        assert plain_screen.document.editor.soft_wrap is False

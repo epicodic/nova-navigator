@@ -7,6 +7,7 @@ from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.containers import Container, Vertical
+from textual.message import Message
 from textual.screen import Screen
 from textual.widgets import Input, Static
 
@@ -40,6 +41,9 @@ class EditorScreen(Screen[None]):
     The document is held by reference only; no per-document state is duplicated.
     Wrap mode and line numbers are reactive properties of the widget, not stored here.
     """
+
+    class Closed(Message):
+        """Posted when the editor should close (quit or navigate back)."""
 
     DEFAULT_CSS: ClassVar[str] = """
     EditorScreen {
@@ -426,3 +430,15 @@ class EditorScreen(Screen[None]):
         elif message.choice == "save_as" and message.path is not None:
             path_bar = self.query_one("#path_bar", PathBar)
             path_bar.open(message.path)
+
+    async def press_key(self, key: str) -> bool:
+        """Handle a key press by matching it to an action in the keymap registry.
+
+        Args:
+            key: The key string from the Key event (e.g. "ctrl+s").
+
+        Returns:
+            True if the key was handled, False otherwise.
+        """
+        # Use the keymap registry to handle the key press
+        return await self.keymap_registry.handle_key(key, self.app)
