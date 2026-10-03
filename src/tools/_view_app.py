@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import gc
 import sys
 import time
 from collections.abc import Callable
@@ -20,6 +21,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.strip import Strip
 
+from nova_editor.app import TimedNovaTextArea
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.document._lazy_document import LazyDocument, RowUnavailable
 from nova_editor.widget import NovaTextArea
@@ -79,6 +81,90 @@ class ProbeTextArea(NovaTextArea):
         if self.first_content_ns is None and len(strip.text.strip()) >= MIN_CONTENT_CHARS:
             self.first_content_ns = time.perf_counter_ns()
         return strip
+
+
+SEGMENT_NAMES = ("reestimate", "reconcile", "measure")
+
+
+class SegmentClock:
+    """`perf_counter` accumulators of wrapped methods: seconds and calls per name."""
+
+    def __init__(self) -> None:
+        self.seconds = dict.fromkeys(SEGMENT_NAMES, 0.0)
+        self.calls = dict.fromkeys(SEGMENT_NAMES, 0)
+
+    def wrap[**P, R](self, name: str, function: Callable[P, R]) -> Callable[P, R]:
+        """Return `function` with its time added to `name`."""
+
+        def timed_call(*args: P.args, **kwargs: P.kwargs) -> R:
+            started = time.perf_counter()
+            try:
+                return function(*args, **kwargs)
+            finally:
+                self.seconds[name] += time.perf_counter() - started
+                self.calls[name] += 1
+
+        return timed_call
+
+    def snapshot(self) -> tuple[dict[str, float], dict[str, int]]:
+        """Copy of the accumulators."""
+        return dict(self.seconds), dict(self.calls)
+
+    def since(self, before: tuple[dict[str, float], dict[str, int]]) -> dict[str, Any]:
+        """The row fields `<name>_ms` and `<name>_calls` for the time accumulated since `before`."""
+        seconds, calls = before
+        fields: dict[str, Any] = {}
+        for name in SEGMENT_NAMES:
+            fields[f"{name}_ms"] = (self.seconds[name] - seconds[name]) * 1000
+            fields[f"{name}_calls"] = self.calls[name] - calls[name]
+        return fields
+
+
+class GcTimer:
+    """Duration of every garbage collection between `install` and `uninstall`, to tell whether a slow step coincided with one (`gc.callbacks`)."""
+
+    def __init__(self) -> None:
+        self._durations: list[float] = []
+        self._started = 0.0
+
+    def install(self) -> None:
+        """Start timing collections."""
+        gc.callbacks.append(self._on_gc)
+
+    def uninstall(self) -> None:
+        """Stop timing and forget the recorded durations."""
+        if self._on_gc in gc.callbacks:
+            gc.callbacks.remove(self._on_gc)
+        self._durations.clear()
+
+    def _on_gc(self, phase: str, _info: dict[str, int]) -> None:
+        if phase == "start":
+            self._started = time.perf_counter()
+        else:
+            self._durations.append(time.perf_counter() - self._started)
+
+    def snapshot(self) -> int:
+        """The number of collections so far."""
+        return len(self._durations)
+
+    def since(self, before: int) -> dict[str, Any]:
+        """`gc_ms` (total) and `gc_longest_ms` (the longest single collection) of the collections since `before`."""
+        durations = self._durations[before:]
+        return {"gc_ms": sum(durations) * 1000, "gc_longest_ms": max(durations, default=0.0) * 1000}
+
+
+def install_clock(area: ProbeTextArea) -> SegmentClock:
+    """Wrap `_reestimate`, `_reconcile_cursor` and the `_measure` of the wrapped document of `area` (instance attributes, no class is changed)."""
+    clock = SegmentClock()
+    vars(area)["_reestimate"] = clock.wrap("reestimate", area._reestimate)
+    vars(area)["_reconcile_cursor"] = clock.wrap("reconcile", area._reconcile_cursor)
+    wrapped = area.wrapped_document
+    vars(wrapped)["_measure"] = clock.wrap("measure", wrapped._measure)
+    return clock
+
+
+class ProbeEditor(ProbeTextArea, TimedNovaTextArea):
+    """The editor class of the real `NovaEditApp` with the render counting of `ProbeTextArea` (the `app-latency` probe)."""
 
 
 def open_probe(

@@ -39,6 +39,14 @@ Usage (every subcommand appends JSON lines to `--out`, prints one summary line a
     uv run python -m tools.measure_view search-gen --kind {ascii,nonascii} --size 1GiB [--seed N] --out FILE
     uv run python -m tools.measure_view search-fold [--runs N] [--out O]
 
+  ACT7 (final) subcommands; `--out` defaults to `<results>/<subcommand>-<file stem>[-<wrap>].jsonl`, `--results` to `$RESULTS` or `$REFS/results/act7`; they write nothing else under `$REFS`:
+    uv run python -m tools.measure_view first-end --file F --wrap {off,on,both} --runs N [--out O]
+    uv run python -m tools.measure_view app-latency --file F --wrap {off,on,both} --state {indexing,indexed} --op OP --steps N [--no-instrument] --runs N [--out O]
+    uv run python -m tools.measure_view wrap-blocks --file F [--blocks 1000,10000,100000] [--calls 20] --runs N [--out O]
+    uv run python -m tools.measure_view reload --file F [--repeats 3] --runs N [--out O]
+    uv run python -m tools.measure_view pieces [--delete-pieces 1000,10000,100000] [--checkpoints N] ...   (see ACT4)
+    uv run python -m tools.measure_view save-fulldisk --file F --real-error efbig [--fsize-bytes 1073741824] [--target T] [--out O]
+
 OP is one of down, up, pagedown, pageup, left, right, home, end, ctrl+right, hscroll, farjump.
 
 Methods:
@@ -74,6 +82,16 @@ Methods:
         `--escapes` (read backslash escapes such as the one for a newline in N); every row of those scenarios records the needle in `needle`.
         A case-insensitive search for the default needle takes the literal-prefix
         fast path of `re`; use a needle that starts with a letter that has case variants (for example `Kzq@no-such --case insensitive`) to measure the pattern tier.
+    latency `--instrument`: every direct step row also carries `gc_ms`, `gc_longest_ms` and `segments` (`reestimate_ms`, `reconcile_ms`, `measure_ms`), as the edit rows do;
+        `--no-pilot` skips the Pilot phase.
+    first-end: ctrl+end, ctrl+home, ctrl+end, goto the middle and goto the last line of the indexed document, each timed to the next render,
+        with `measured_blocks` (wrap on) and the cost of `cursor_byte_offset`.
+    app-latency: the `latency` steps in the real `NovaEditApp` (status line, footer, bars) with a probe editor; no Pilot phase;
+        every step row has `status_flushes` (cumulative) and `status_flushes_step`.
+    wrap-blocks: time of `wrap_range` and `RssAnon` with N measured blocks of the wrapped document.
+    reload: time of `reload()` on the UI thread, warm and after dropping the page cache.
+    save-fulldisk `--real-error efbig`: the process limit `RLIMIT_FSIZE` is lowered to `--fsize-bytes` right before the save (SIGXFSZ ignored),
+        so the kernel fails the write with `EFBIG`; nothing is injected.
 Percentiles in `summarise` use the nearest-rank method.
 Files of at most 1 MiB get lowered thresholds (`--config auto`), so a small synthetic file exercises the medium and long row paths.
 """
@@ -104,7 +122,7 @@ from typing import Any
 from nova_editor.core.save import CHUNK, FSYNC_EVERY
 from nova_editor.core.search import CHUNK as SEARCH_CHUNK
 from nova_editor.core.search import PROGRESS_INTERVAL
-from tools import _view_edit, _view_edit_core, _view_edit_latency, _view_oracle, _view_save, _view_scenarios, _view_search, _view_thresholds
+from tools import _view_edit, _view_edit_core, _view_edit_latency, _view_final, _view_oracle, _view_save, _view_scenarios, _view_search, _view_thresholds
 from tools._view_app import versions
 from tools._view_procmem import COLD_RESIDENCY_LIMIT, KIB_PER_MIB, Supervised, drop_cache, kill_group, median, percentile, read_mem, read_rchar, resident_fraction, supervise
 from tools._view_summary import summarise_files
@@ -118,6 +136,10 @@ SAVE_RESULTS = Path("results") / "act5"
 """Where under `$REFS` the save measurements may write."""
 SEARCH_RESULTS = Path("results") / "act6"
 """Where under `$REFS` the search measurements may write."""
+FINAL_RESULTS = Path("results") / "act7"
+"""Where under `$REFS` the ACT7 final measurements may write."""
+ALLOWED_RESULTS = (SAVE_RESULTS, SEARCH_RESULTS, FINAL_RESULTS)
+"""Every directory under `$REFS` that a measurement may write."""
 BYTES_PER_GIB = 1 << 30
 EDIT_TIMEOUT = 1800.0
 SYNTHETIC_ROWS = 3000
@@ -159,6 +181,10 @@ def _scenarios() -> dict[str, Scenario]:
         "search-edited": _view_search.edited_scenario,
         "search-longline": _view_search.longline_scenario,
         "search-fold": _view_search.fold_scenario,
+        "first-end": _view_final.first_end_scenario,
+        "app-latency": _view_final.app_latency_scenario,
+        "wrap-blocks": _view_final.wrap_blocks_scenario,
+        "reload": _view_final.reload_scenario,
     }
 
 
@@ -397,7 +423,7 @@ def _run_many(name: str, kind: str, args: argparse.Namespace, specs: Sequence[di
 
 def cmd_latency(args: argparse.Namespace) -> int:
     profile_out = f"{args.out}.profile.txt" if args.profile else None
-    specs = [_spec(args, run, state=args.state, op=args.op, steps=args.steps, far=FAR, profile_out=profile_out) for run in range(1, args.runs + 1)]
+    specs = [_spec(args, run, state=args.state, op=args.op, steps=args.steps, far=FAR, profile_out=profile_out, instrument=args.instrument, pilot=not args.no_pilot) for run in range(1, args.runs + 1)]
     return _run_many("latency", "latency", args, specs, "latency_ms")
 
 
@@ -544,11 +570,14 @@ def cmd_segments(args: argparse.Namespace) -> int:
 def cmd_pieces(args: argparse.Namespace) -> int:
     base = {"file": "synthetic", "wrap": "off", "config": "default", "timeout": args.timeout}
     sizes = [int(item) for item in args.sizes.split(",")]
+    delete_pieces = [int(item) for item in args.delete_pieces.split(",") if item.strip()]
     memory_size = args.memory_size or max(sizes)
     specs: list[dict[str, Any]] = []
     for run in range(1, args.runs + 1):
-        specs.append({**base, "run": run, "method": "cost", "sizes": sizes, "calls": args.calls})
+        specs.append({**base, "run": run, "method": "cost", "sizes": sizes, "calls": args.calls, "delete_pieces": delete_pieces})
         specs += [{**base, "run": run, "method": method, "memory_size": memory_size} for method in ("tracemalloc", "rss")]
+        if args.checkpoints > 0:
+            specs.append({**base, "run": run, "method": "checkpoints", "checkpoints": args.checkpoints, "calls": args.calls})
     return _run_many("pieces", "pieces", args, specs, "splice_ms", _out_path(args, "pieces"))
 
 
@@ -591,23 +620,29 @@ def _search_results() -> str:
     return str(Path(os.environ.get("REFS") or DEFAULT_REFS) / SEARCH_RESULTS)
 
 
-def _scope(args: argparse.Namespace) -> tuple[str, Path]:
-    """The default results directory and the directory under `$REFS` that a subcommand may write: the ACT6 ones for `search-*`, else the ACT5 ones."""
+def _scope(args: argparse.Namespace) -> tuple[str, tuple[Path, ...]]:
+    """The default results directory of a subcommand (the ACT6 one for `search-*`, else the ACT5 one) and the directories under `$REFS` that it may write."""
     if str(getattr(args, "command", "")).startswith("search-"):
-        return _search_results(), SEARCH_RESULTS
-    return _save_results(), SAVE_RESULTS
+        return _search_results(), ALLOWED_RESULTS
+    return _save_results(), ALLOWED_RESULTS
 
 
-def _guard_write(path: Path, *references: Path, allowed: Path = SAVE_RESULTS) -> Path:
-    """Return the resolved `path`, or exit when writing it would touch a reference file or `$REFS` outside `allowed` (`results/act5` for saves, `results/act6` for searches)."""
+def _guard_write(path: Path, *references: Path, allowed: Path | tuple[Path, ...] = ALLOWED_RESULTS) -> Path:
+    """Return the resolved `path`, or exit when writing it would touch a reference file or `$REFS` outside `allowed`.
+
+    `allowed` defaults to `ALLOWED_RESULTS` (`results/act5` for saves, `results/act6` for searches, `results/act7` for the final measurements);
+    a path under `$REFS` is allowed when it lies under any of them.
+    """
     resolved = Path(os.path.realpath(path))
     for reference in references:
         if resolved == Path(os.path.realpath(reference)) or (resolved.exists() and reference.exists() and resolved.samefile(reference)):
             msg = f"refusing to write {path}: it is the reference file {reference}"
             raise SystemExit(msg)
     refs = Path(os.path.realpath(os.environ.get("REFS") or DEFAULT_REFS))
-    if resolved.is_relative_to(refs) and not resolved.is_relative_to(refs / allowed):
-        msg = f"refusing to write {path}: under {refs} only {refs / allowed} may be written"
+    directories = (allowed,) if isinstance(allowed, Path) else allowed
+    if resolved.is_relative_to(refs) and not any(resolved.is_relative_to(refs / directory) for directory in directories):
+        listing = ", ".join(str(refs / directory) for directory in directories)
+        msg = f"refusing to write {path}: under {refs} only {listing} may be written"
         raise SystemExit(msg)
     return resolved
 
@@ -835,6 +870,11 @@ def _try_tmpfs(size: int) -> Path | None:
 
 
 def cmd_save_fulldisk(args: argparse.Namespace) -> int:
+    if args.real_error == "efbig":
+        target = _save_target(args)
+        print(f"save-fulldisk: method rlimit (RLIMIT_FSIZE {args.fsize_bytes} bytes, SIGXFSZ ignored: the kernel fails the write with EFBIG)")
+        specs = [_save_spec(args, run, "save-fulldisk", target=str(target), fault="real-efbig", fsize_bytes=args.fsize_bytes, method="rlimit") for run in range(1, args.runs + 1)]
+        return _save_loop(args, "save-fulldisk", "save", specs)
     mounted = None if args.no_mount else _try_tmpfs(args.tmpfs_bytes)
     method = "tmpfs" if mounted else "injection"
     print(f"save-fulldisk: method {method}" + ("" if mounted else " (no tmpfs could be mounted without root: ENOSPC is injected through SaveIo at the cancel-at fraction)"))
@@ -846,6 +886,44 @@ def cmd_save_fulldisk(args: argparse.Namespace) -> int:
         if mounted:
             subprocess.run(["umount", str(mounted)], capture_output=True, timeout=30, check=False)
             mounted.rmdir()
+
+
+# -- final subcommands (ACT7) -------------------------------------------------------------------------------------------------------
+def _final_results() -> str:
+    return str(Path(os.environ.get("REFS") or DEFAULT_REFS) / FINAL_RESULTS)
+
+
+def _final_out(args: argparse.Namespace, name: str) -> Path:
+    """The guarded `--out` of an ACT7 subcommand (default `<results>/<name>-<file stem>[-<wrap>].jsonl` in `$RESULTS` or `$REFS/results/act7`)."""
+    return _guard_write(_out_path(args, name, _final_results()), Path(args.file))
+
+
+def _final_specs(args: argparse.Namespace, **extra: object) -> list[dict[str, Any]]:
+    return [_spec(args, run, wrap=wrap, far=FAR, **extra) for wrap in _wraps(args) for run in range(1, args.runs + 1)]
+
+
+def cmd_first_end(args: argparse.Namespace) -> int:
+    out = _final_out(args, "first-end")
+    return _run_many("first-end", "first-end", args, _final_specs(args), "latency_ms", out)
+
+
+def cmd_app_latency(args: argparse.Namespace) -> int:
+    out = _final_out(args, f"app-latency-{args.state}-{args.op}")
+    specs = _final_specs(args, state=args.state, op=args.op, steps=args.steps, instrument=args.instrument, pilot=False)
+    return _run_many("app-latency", "app-latency", args, specs, "latency_ms", out)
+
+
+def cmd_wrap_blocks(args: argparse.Namespace) -> int:
+    out = _final_out(args, "wrap-blocks")
+    blocks = [int(item) for item in args.blocks.split(",")]
+    specs = [_spec(args, run, wrap="on", blocks=blocks, calls=args.calls) for run in range(1, args.runs + 1)]
+    return _run_many("wrap-blocks", "wrap-blocks", args, specs, "wrap_range_ms", out)
+
+
+def cmd_reload(args: argparse.Namespace) -> int:
+    out = _final_out(args, "reload")
+    specs = [_spec(args, run, wrap="off", repeats=args.repeats) for run in range(1, args.runs + 1)]
+    return _run_many("reload", "reload", args, specs, "reload_ms", out)
 
 
 # -- search subcommands (ACT6) ------------------------------------------------------------------------------------------------------
@@ -880,7 +958,7 @@ def _annotate_search(spec: dict[str, Any], rows: list[Row], result: Supervised, 
 
 def _search_out(args: argparse.Namespace) -> Path:
     """The guarded `--out` (default under `$REFS/results/act6`): it is neither the reference file nor anything under `$REFS` outside `results/act6`."""
-    return _guard_write(_out_path(args, args.command, _search_results()), Path(args.file), allowed=SEARCH_RESULTS)
+    return _guard_write(_out_path(args, args.command, _search_results()), Path(args.file), allowed=ALLOWED_RESULTS)
 
 
 def _search_spec(args: argparse.Namespace, run: int, case: str, **extra: object) -> dict[str, Any]:
@@ -956,7 +1034,7 @@ def cmd_search_fold(args: argparse.Namespace) -> int:
 
 
 def cmd_search_gen(args: argparse.Namespace) -> int:
-    out = _guard_write(Path(args.out), allowed=SEARCH_RESULTS)
+    out = _guard_write(Path(args.out), allowed=ALLOWED_RESULTS)
     if out.exists() and not _view_search.sidecar_path(out).exists():
         msg = f"refusing to write {out}: it exists and was not made by search-gen"
         raise SystemExit(msg)
@@ -1033,6 +1111,8 @@ def _add_measuring_parsers(sub: Any) -> None:
     p.add_argument("--steps", type=int, default=50)
     p.add_argument("--runs", type=int, default=1)
     p.add_argument("--profile", action="store_true", help="also write cProfile top 25 and per-step timings to <out>.profile.txt")
+    p.add_argument("--instrument", action="store_true", help="every direct step row also carries gc_ms, gc_longest_ms and segments (reestimate_ms, reconcile_ms, measure_ms)")
+    p.add_argument("--no-pilot", action="store_true", help="skip the Pilot phase (slow while a scan runs); the direct phase and the idle floor stay")
     p.set_defaults(func=cmd_latency)
     p = sub.add_parser("jump", help="End and far jump before and after the scan")
     _add_common(p, wrap=True)
@@ -1128,6 +1208,8 @@ def _add_edit_parsers(sub: Any) -> None:
     p.add_argument("--sizes", default="1000,10000,100000,1000000")
     p.add_argument("--calls", type=int, default=200)
     p.add_argument("--memory-size", type=int, default=0, help="pieces for the memory per piece (default the largest of --sizes)")
+    p.add_argument("--delete-pieces", default="1000,10000,100000", help="pieces removed by one splice, for every size that is not smaller (empty skips)")
+    p.add_argument("--checkpoints", type=int, default=0, help="checkpoints of a long row index whose splice and adopt are timed (0 skips)")
     p.add_argument("--runs", type=int, default=1)
     p.add_argument("--out", default="")
     p.add_argument("--results", default="")
@@ -1212,7 +1294,31 @@ def _add_save_parsers(sub: Any) -> None:
         if name == "save-fulldisk":
             p.add_argument("--no-mount", action="store_true", help="do not try to mount a tmpfs")
             p.add_argument("--tmpfs-bytes", type=int, default=2 << 30)
+            p.add_argument("--real-error", choices=("efbig",), default=None, help="efbig: lower RLIMIT_FSIZE to --fsize-bytes during the save instead of a tmpfs or an injection")
+            p.add_argument("--fsize-bytes", type=int, default=1 << 30, help="the soft RLIMIT_FSIZE of --real-error efbig")
         p.set_defaults(func=func)
+
+
+def _add_final_parsers(sub: Any) -> None:
+    p = sub.add_parser("first-end", help="ctrl+end, ctrl+home, ctrl+end, goto the middle and the last line of the indexed document, each to the next render")
+    _add_edit_common(p, wrap="off")
+    p.set_defaults(func=cmd_first_end)
+    p = sub.add_parser("app-latency", help="the latency steps in the real NovaEditApp (status line, footer, bars) with a probe editor; status line flushes per step")
+    _add_edit_common(p, wrap="off", runs=1)
+    p.add_argument("--state", choices=("indexing", "indexed"), default="indexed")
+    p.add_argument("--op", choices=_view_scenarios.LATENCY_OPS, default="down")
+    p.add_argument("--steps", type=int, default=50)
+    p.add_argument("--instrument", action=argparse.BooleanOptionalAction, default=True, help="every step row carries gc_ms, gc_longest_ms and segments (default on; --no-instrument leaves them out)")
+    p.set_defaults(func=cmd_app_latency)
+    p = sub.add_parser("wrap-blocks", help="time of wrap_range and RssAnon with N measured blocks (wrap on)")
+    _add_edit_common(p, wrap=None, runs=1)
+    p.add_argument("--blocks", default="1000,10000,100000")
+    p.add_argument("--calls", type=int, default=20)
+    p.set_defaults(func=cmd_wrap_blocks)
+    p = sub.add_parser("reload", help="time of reload() on the UI thread, warm and after dropping the page cache")
+    _add_edit_common(p, wrap=None, runs=1)
+    p.add_argument("--repeats", type=int, default=3)
+    p.set_defaults(func=cmd_reload)
 
 
 def _add_search_common(parser: argparse.ArgumentParser, *, wrap: str | None, file_required: bool = True, runs: int = 3, case: bool = True) -> None:
@@ -1291,6 +1397,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_edit_parsers(sub)
     _add_save_parsers(sub)
     _add_search_parsers(sub)
+    _add_final_parsers(sub)
     return parser
 
 

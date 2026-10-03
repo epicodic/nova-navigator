@@ -84,6 +84,6 @@ def test_search_bar_module_surface() -> None:
 def test_app_bindings_name_existing_actions() -> None:
     """Every binding action dispatches to an ``action_<name>`` method (no ``action_`` prefix in the binding)."""
     for b in NovaEditApp.BINDINGS:
-        action = b[1]
+        action = b.action
         assert not action.startswith("action_"), action
         assert hasattr(NovaEditApp, f"action_{action}"), action

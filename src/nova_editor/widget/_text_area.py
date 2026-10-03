@@ -19,7 +19,6 @@ from rich.console import RenderableType
 from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
-from textual._tree_sitter import TREE_SITTER, get_language
 from textual.actions import SkipAction
 from textual.cache import LRUCache
 from textual.color import Color
@@ -60,6 +59,7 @@ from nova_editor.widget._lazy_window import WindowText, section_window, window_t
 from nova_editor.widget._long_row_cursor import PROGRESS_BELOW_ONE, LongRowCursor
 from nova_editor.widget._search_run import SearchOutcome, SearchRun, run_search_thread
 from nova_editor.widget._text_area_theme import TextAreaTheme
+from nova_editor.widget._tree_sitter import TREE_SITTER, get_language
 
 if TYPE_CHECKING:
     from tree_sitter import Language, Query
@@ -1502,13 +1502,16 @@ NovaTextArea {
 
     @property
     def cursor_byte_offset(self) -> int | None:
-        """Byte offset of the cursor from the start of the document; exact in every state (`None` only when unknown)."""
+        """Byte offset of the cursor from the start of the document; exact in every state, `None` while it is unknown.
+
+        It is unknown while the line scan has not resolved the cursor row yet (or after `close()`), and after the source changed.
+        """
         row, column = self.cursor_location
         lazy = self.document
-        machine = self._track_cursor()
-        if machine is None:
-            return lazy.byte_offset(row, column)
         try:
+            machine = self._track_cursor()
+            if machine is None:
+                return lazy.byte_offset(row, column)
             start = lazy.byte_offset(row, 0)
             if start is None:
                 return None
@@ -1516,6 +1519,8 @@ NovaTextArea {
             return start + machine.anchor.byte_rel if exact is None else exact
         except CoreSourceChanged as error:
             self._fail_source(str(error), error.kind)
+            return None
+        except (RowUnavailable, IndexError):
             return None
 
     def toggle_wrap(self) -> None:
@@ -1558,6 +1563,21 @@ NovaTextArea {
     def indexing_complete(self) -> bool:
         """True when nothing is left to scan for the line count."""
         return self.line_count_exact
+
+    @property
+    def indexing_progress(self) -> float:
+        """Fraction of the document that the line scan has covered, from 0.0 to 1.0 (exactly 1.0 when `indexing_complete` or when the document is empty)."""
+        snapshot = self.document.snapshot()
+        if snapshot.complete:
+            return 1.0
+        length = self.document.length
+        return 1.0 if length <= 0 else min(1.0, snapshot.scanned_bytes / length)
+
+    @property
+    def line_ending(self) -> Literal["LF", "CRLF", "CR"]:
+        """The line terminator that new line breaks use: the one of the first row (`LF` for an empty document); a mixed file shows the style of its first terminator."""
+        newline = self.document.newline
+        return "CRLF" if newline == "\r\n" else "CR" if newline == "\r" else "LF"
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Make `escape` (`cancel_pending`) active only while a jump is pending, so it never shadows another use of the key."""
@@ -4181,6 +4201,11 @@ NovaTextArea {
         if not self._has_cursor:
             return Offset(0, 0)
         self._recompute_cursor_offset()
+        # The estimated height of an unmeasured region follows a running mean that the measurements above move; Textual clamps the scroll offset
+        # to `virtual_size`, so the virtual height has to cover the cursor y first (ACT7 design 3.3).
+        # A cursor row inside the current virtual height scrolls correctly without a refresh, and reading `height` is only done when it could matter.
+        if self.soft_wrap and self._cursor_offset[1] >= self.virtual_size.height and self.wrapped_document.height > self.virtual_size.height:
+            self._refresh_size()
 
         x, y = self._cursor_offset
         scroll_offset = self.scroll_to_region(

@@ -365,3 +365,19 @@ def test_lazy_flag_is_rejected_by_argparse(capsys: pytest.CaptureFixture[str]) -
     finally:
         # Restore original argv
         sys.argv = original_argv
+
+
+@pytest.mark.asyncio
+async def test_app_constructor_takes_soft_wrap(tmp_path: Path) -> None:
+    path = tmp_path / "wrap.txt"
+    path.write_text("some text\n")
+    wrapped = NovaEditApp(path, soft_wrap=True)
+    async with wrapped.run_test() as pilot:
+        await pilot.pause()
+        assert wrapped.editor is not None
+        assert wrapped.editor.soft_wrap is True
+    plain = NovaEditApp(path)
+    async with plain.run_test() as pilot:
+        await pilot.pause()
+        assert plain.editor is not None
+        assert plain.editor.soft_wrap is False
