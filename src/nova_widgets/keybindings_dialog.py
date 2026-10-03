@@ -8,10 +8,11 @@ from textual.app import ComposeResult
 from textual.coordinate import Coordinate
 from textual.widgets import Label
 
-from nova_widgets import DataTable, DefaultButton, Dialog
-from nova_widgets.action import Action
-from nova_widgets.keybindings_config import KeybindingsConfig
-from nova_widgets.keymap.key_sequence import KeyChord, KeyFormatStyle, KeySequence
+from .action import Action
+from .data_table import DataTable
+from .dialog import DefaultButton, Dialog
+from .keybindings_config import KeybindingsConfig
+from .keymap.key_sequence import KeyChord, KeyFormatStyle, KeySequence
 
 _HINT_NORMAL = "Assign key: double-click / space | Clear binding: delete"
 _KEY_CHORD_BADGE_STYLE = "bold white on grey30"
@@ -213,7 +214,8 @@ class KeybindingsDialog(Dialog):
         if response == DefaultButton.OK and dialog.value is not None:
             self._key_map[action.id] = dialog.value
             self._deleted_names.discard(action.id)
-            self._table.update_cell_at(Coordinate(idx, 1), _format_key_sequence_badges(dialog.value, self._key_display_style))
+            badges = _format_key_sequence_badges(dialog.value, self._key_display_style)
+            self._table.update_cell_at(Coordinate(idx, 1), badges)
 
     def action_accept_dialog(self) -> None:
         to_save: dict[str, KeySequence | None] = {**self._key_map}

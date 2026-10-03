@@ -2,9 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from nova_widgets import KeybindingsConfig
 from nova_widgets.action import Action
-from nova_widgets.key_types import KeySequence
+from nova_widgets.keymap.key_sequence import KeySequence
+
+
+def test_config_requires_config_dir() -> None:
+    with pytest.raises(TypeError):
+        KeybindingsConfig()  # type: ignore
 
 
 def test_config_default_key_used_when_no_file(tmp_path: Path) -> None:

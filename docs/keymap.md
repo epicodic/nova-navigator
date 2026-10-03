@@ -20,11 +20,11 @@ The implementation is split across two packages.
 | `keybindings_config.py` | `KeybindingsConfig` (TOML persistence) |
 | `keybindings_dialog.py` | `KeybindingsDialog`, `KeyCaptureDialog` |
 
-**`nova_navigator/keymap/`** — app-specific wiring:
+**`nova_navigator/keymap/`** — app-specific context and wiring:
 
 | Module | Contents |
 |--------|----------|
-| (moved to nova_widgets) | See above |
+| `context.py` | `NovaContextResolver` — resolves the active context for the app |
 
 ---
 
