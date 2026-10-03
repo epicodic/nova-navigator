@@ -28,8 +28,19 @@ def test_the_names_resolve_on_first_access() -> None:
     assert run(code) == "NovaTextArea LazyConfig True True"
 
 
-def test_dir_lists_the_public_names() -> None:
-    assert run("import nova_editor; print(sorted(set(nova_editor.__all__) & set(dir(nova_editor))))") == "['DEFAULT_HIGHLIGHT_LIMIT', 'LazyConfig', 'NovaTextArea']"
+def test_dir_lists_names_that_are_not_loaded_yet() -> None:
+    code = "import nova_editor\nnames = ('DEFAULT_HIGHLIGHT_LIMIT', 'LazyConfig', 'NovaTextArea')\nprint([n in vars(nova_editor) for n in names], [n in dir(nova_editor) for n in names])"
+    assert run(code) == "[False, False, False] [True, True, True]"
+
+
+def test_the_first_access_caches_the_name_in_the_module() -> None:
+    code = (
+        "import nova_editor\n"
+        "before = 'LazyConfig' in vars(nova_editor)\n"
+        "first = nova_editor.LazyConfig\n"
+        "print(before, 'LazyConfig' in vars(nova_editor), vars(nova_editor)['LazyConfig'] is first, 'NovaTextArea' in vars(nova_editor))"
+    )
+    assert run(code) == "False True True False"
 
 
 def test_an_unknown_name_raises_attribute_error() -> None:

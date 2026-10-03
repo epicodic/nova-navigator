@@ -215,7 +215,7 @@ _CHANGE_TEXT: dict[ChangeKind, str] = {
 
 
 class ConfirmBar(Static):
-    """Key driven question for overwrite, reload and external change: O overwrite, A save as, R reload, Esc keep."""
+    """Key driven question for overwrite, reload, external change and quit: O overwrite, A save as, R reload, Q quit, Esc keep."""
 
     can_focus = True
 
