@@ -57,7 +57,7 @@ async def test_move_cursor_to_the_last_row_measures_few_blocks(tmp_path: Path, m
         await settled(pilot, area)
         calls = count_measures(monkeypatch)
         area.move_cursor((area.line_count - 1, 0))
-        await pilot.pause(0.2)
+        await wait_until(pilot, lambda: area.scroll_offset.y > 0)
         assert len(calls) <= MAX_MEASURES, len(calls)
         wrapped = lazy_wrapped(area)
         assert area.virtual_size.height >= wrapped.height
@@ -73,7 +73,7 @@ async def test_goto_the_last_line_measures_few_blocks(tmp_path: Path, monkeypatc
         calls = count_measures(monkeypatch)
         area.goto_line(area.line_count)
         await wait_until(pilot, lambda: area.pending_progress is None and area.cursor_location[0] == area.line_count - 1)
-        await pilot.pause(0.2)
+        await wait_until(pilot, lambda: area.scroll_offset.y > 0)
         assert len(calls) <= MAX_MEASURES, len(calls)
         assert area.virtual_size.height >= lazy_wrapped(area).height
 
@@ -86,7 +86,7 @@ async def test_search_placement_at_the_last_row_measures_few_blocks(tmp_path: Pa
         calls = count_measures(monkeypatch)
         assert area.search(MARK, backward=True)
         await wait_until(pilot, lambda: not area.searching and area.cursor_location[0] == area.line_count - 1)
-        await pilot.pause(0.2)
+        await wait_until(pilot, lambda: area.scroll_offset.y > 0)
         assert len(calls) <= MAX_MEASURES, len(calls)
         assert area.virtual_size.height >= lazy_wrapped(area).height
 
