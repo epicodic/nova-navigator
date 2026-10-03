@@ -10,7 +10,6 @@ from .input_name_dialog import InputNameDialog
 from .job_registry import JobRegistry
 from .jobs_dialog import JobsDialog
 from .local_copies_dialog import LocalCopiesDialog
-from .message_box import MessageBox, MessageBoxVariant, MessageDialog
 from .user_menu_input_dialog import InputField, UserMenuInputDialog
 
 # from .processes_dialog import ProcessesDialog
@@ -33,8 +32,5 @@ __all__ = [
     "JobRegistry",
     "JobsDialog",
     "LocalCopiesDialog",
-    "MessageBox",
-    "MessageBoxVariant",
-    "MessageDialog",
     "UserMenuInputDialog",
 ]

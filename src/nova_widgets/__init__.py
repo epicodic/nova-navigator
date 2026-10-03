@@ -8,6 +8,7 @@ from .dialog import ButtonSpec, DefaultButton, Dialog
 from .flat_widgets import Button, Checkbox, Input, Select
 from .icon import Icon
 from .menu import Menu, MenuBar
+from .message_box import MessageBox, MessageBoxVariant, MessageDialog
 from .response import Response, ResponseRole
 
 __all__ = [
@@ -26,6 +27,9 @@ __all__ = [
     "Input",
     "Menu",
     "MenuBar",
+    "MessageBox",
+    "MessageBoxVariant",
+    "MessageDialog",
     "Response",
     "ResponseRole",
     "Select",
