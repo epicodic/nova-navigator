@@ -240,7 +240,7 @@ Textual widget and lazy rendering support.
 - `document` — the `LazyDocument`.
 - `clipboard_cap` (class attribute) — largest selection in bytes that is also copied to the system clipboard (see "Clipboard").
 - `cursor_state` (read-only) — the `CursorState` of the cursor; always `RESOLVED` off long rows.
-- `cursor_byte_offset` (read-only) — the absolute byte offset of the cursor.
+- `cursor_byte_offset` (read-only) — the absolute byte offset of the cursor; `None` while it is unknown (the line scan has not resolved the cursor row yet).
 - `column_exact` (read-only) — true when the cursor column is exact (`RESOLVED`).
 - `cursor_location` — the row and column of the cursor; an estimate while `PROVISIONAL`.
 - `pending_progress` — fraction in [0, 1) of a deferred jump; `None` when nothing is pending.
