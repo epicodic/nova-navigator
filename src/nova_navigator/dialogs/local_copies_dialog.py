@@ -11,9 +11,7 @@ from textual.containers import Horizontal
 from textual.widgets import Label
 
 from nova_navigator.local_copies import CopyEntry, CopyStatus, LocalCopyManager
-from nova_widgets import Button, DataTable, DefaultButton, Dialog
-
-from .message_box import MessageBox
+from nova_widgets import Button, DataTable, DefaultButton, Dialog, MessageBox
 
 _logger = logging.getLogger(__name__)
 
