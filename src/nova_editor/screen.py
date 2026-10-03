@@ -8,7 +8,7 @@ from typing import ClassVar
 from textual.app import ComposeResult
 from textual.containers import Container, Vertical
 from textual.screen import Screen
-from textual.widgets import Static
+from textual.widgets import Input, Static
 
 from nova_widgets.action import Action
 from nova_widgets.file_provider import FileProvider, InMemoryFileProvider
@@ -252,26 +252,54 @@ class EditorScreen(Screen[None]):
 
     def action_save(self) -> None:
         """Save the current document."""
-        # Placeholder: will be implemented in later tasks
+        editor = self.document.editor
+        if editor.file_path is None:
+            path_bar = self.query_one("#path_bar", PathBar)
+            path_bar.open(None)
+        elif not editor.modified:
+            self.notify("No changes to save", timeout=3.0)
+        else:
+            editor.save()
 
     def action_save_as(self) -> None:
         """Save the document under another name."""
-        # Placeholder: will be implemented in later tasks
+        editor = self.document.editor
+        current_path = editor.file_path or self.document.file_path
+        path_bar = self.query_one("#path_bar", PathBar)
+        path_bar.open(current_path)
 
     def action_reload(self) -> None:
         """Reload the file from disk."""
-        # Placeholder: will be implemented in later tasks
+        editor = self.document.editor
+        if editor.file_path is None:
+            self.notify("Nothing to reload", severity="warning")
+            return
+        if editor.modified:
+            confirm_bar = self.query_one("#confirm_bar", ConfirmBar)
+            confirm_bar.ask(None, editor.file_path, overwrite=False, save_as=False, reload=True)
+        else:
+            editor.reload()
 
     def action_close_editor(self) -> None:
         """Close the editor (or navigate back in embedded mode)."""
-        if self.standalone:
-            self.app.exit()
+        editor = self.document.editor
+        if editor.modified:
+            confirm_bar = self.query_one("#confirm_bar", ConfirmBar)
+            confirm_bar.ask(None, editor.file_path, overwrite=False, save_as=False, reload=True)
         else:
-            self.app.pop_screen()
+            if self.standalone:
+                self.app.exit()
+            else:
+                self.app.pop_screen()
 
     def action_quit_editor(self) -> None:
         """Quit the editor (standalone only)."""
-        self.app.exit()
+        editor = self.document.editor
+        if editor.modified:
+            confirm_bar = self.query_one("#confirm_bar", ConfirmBar)
+            confirm_bar.ask_quit(save_running=False)
+        else:
+            self.app.exit()
 
     def action_undo(self) -> None:
         """Undo the last edit."""
@@ -324,3 +352,31 @@ class EditorScreen(Screen[None]):
     def action_toggle_wrap(self) -> None:
         """Toggle soft wrap on/off."""
         self.document.editor.soft_wrap = not self.document.editor.soft_wrap
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle input submission from path bar and search bar."""
+        if event.input.id == "path_bar":
+            text = event.value.strip()
+            if not text:
+                self.notify("No path given", severity="warning")
+                return
+            path_bar = self.query_one("#path_bar", PathBar)
+            path_bar.action_close()
+            path = Path(text)
+            self.document.editor.save(path)
+            return
+        if event.input.id == "search_bar":
+            # Search bar handling (not implemented yet)
+            return
+
+    def on_confirm_bar_chosen(self, message: ConfirmBar.Chosen) -> None:
+        """Handle the answer from the confirm bar."""
+        editor = self.document.editor
+        if message.choice == "quit":
+            self.app.exit()
+            return
+        if message.choice == "reload" and editor.file_path is not None:
+            editor.reload()
+        elif message.choice == "save_as" and message.path is not None:
+            path_bar = self.query_one("#path_bar", PathBar)
+            path_bar.open(message.path)
