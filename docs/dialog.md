@@ -150,3 +150,17 @@ def compose_content(self) -> ComposeResult:
 def compose_content(self) -> ComposeResult:
     yield Horizontal(Label("Name:"), Input(id="name"))
 ```
+
+## KeybindingsDialog and KeyCaptureDialog
+
+`KeybindingsDialog` in `nova_widgets/keybindings_dialog.py` displays all known actions with their current key bindings in an editable table.
+It takes three parameters:
+
+- `actions: list[Action]` — the actions to display (typically filtered to a subset like `editor.*` actions).
+- `config: KeybindingsConfig` — the keybindings configuration object that loads and saves overrides.
+- `key_display_style: KeyFormatStyle | None = None` — optional style for formatting keys (defaults to `KeyFormatStyle.CLASSIC`).
+
+`KeyCaptureDialog` is a helper modal that opens when the user edits a binding.
+It captures a key sequence (supporting multi-chord sequences) and returns the captured sequence or `None` if dismissed.
+
+Both dialogs are moved to `nova_widgets` to be app-agnostic and reusable.
