@@ -1309,7 +1309,7 @@ With wrap on, the earlier code measured 360 to 480 ms for the first `ctrl+end` o
 `uv run python -m tools.measure_view` has the subcommands `first-screen`, `memory`, `latency`, `jump`, `oracle`, `calllog`, `sweep-yield`, `thresholds`, `summarise`, `edit-memory`, `verify`, `edit-latency`, `edit-scatter`, `segments`, `pieces`, `undo-record` and `clipboard`.
 Four more subcommands exist: `first-end` (the first `ctrl+end`, `ctrl+home`, a second `ctrl+end` and two gotos in a fresh process), `app-latency` (the step latency in the real `nova_edit` app with its status line and footer), `wrap-blocks` (the time of `wrap_range` and `RssAnon` for a number of measured blocks) and `reload` (the time of `reload()`, warm and after dropping the page cache).
 Some subcommands take options: `pieces --delete-pieces` (pieces removed by one splice) and `pieces --checkpoints` (checkpoints of a long-row index whose splice and adopt are timed), `save-fulldisk --real-error efbig` (a real `EFBIG` through `RLIMIT_FSIZE`), and `latency --instrument` and `latency --no-pilot` (per-step garbage collection and segment times, and no Pilot phase).
-These scenarios exist and are covered by smoke tests, but they were never run on the reference files.
+These scenarios exist and are covered by smoke tests, and no results from them are quoted in this page (they are not part of any number here).
 The search subcommands are `search-5g`, `search-latency`, `search-cancel`, `search-edited`, `search-longline`, `search-sweep`, `search-gen` and `search-fold`.
 The save subcommands are `save-5g`, `save-latency`, `save-sweep`, `save-longline`, `save-retention`, `save-records`, `save-cancel` and `save-fulldisk`.
 See `src/tools/measure_view.py` for usage.
@@ -1363,7 +1363,7 @@ The following five items are UNMEASURED on the final code and must not be read a
 4. **The app-level latency of `nova_edit`.**
    Every latency number above was measured on the widget without the status line and the footer.
    The step latency of the real app with both, in both wrap modes, is not measured.
-The design target that `cursor_byte_offset`, which the status line reads on its timer, stays under 2 ms is not measured either.
+   The design target that `cursor_byte_offset`, which the status line reads on its timer, stays under 2 ms is not measured either.
 5. **The bulk-delete target.**
    The design target is 10,000 pieces deleted in under 20 ms.
    The bulk delete is implemented and tested for correctness and call count only.
@@ -1430,7 +1430,7 @@ Only the 200 MB line was measured, and the cost at a much larger number of check
 ### `apply_rebase` Lock Time Grows with the Cached Long Indexes
 
 `apply_rebase` rebases every cached long-row index while it holds the document lock on the UI thread.
-The measured time was 1.13 to 1.75 ms with 8 cached indexes for 1 to 10,000 undo records, and 2.29 ms on the 200 MB line.
+The measured time was 1.13 to 1.75 ms with 8 cached indexes for 1 to 10,000 records requested, and 2.29 ms on the 200 MB line.
 Those numbers are from earlier code, and the time grows with the number of cached long-row indexes.
 
 ### The Widget Save Has No `Foreground` Gate
