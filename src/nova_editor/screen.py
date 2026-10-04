@@ -8,6 +8,7 @@ from functools import partial
 from pathlib import Path
 from typing import ClassVar, Literal
 
+from rich.cells import cell_len
 from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -31,7 +32,7 @@ from .document_view import DocumentView
 from .editor_actions import build_editor_actions
 from .editor_menus import build_menu_bar
 from .search_bar import SearchBar, SearchStatus
-from .status_line import StatusLine, StatusState
+from .status_line import StatusLine, StatusState, byte_percent, row_is_known
 from .timed_text_area import TimedNovaTextArea
 from .widget import ExternalCheck, NovaTextArea
 
@@ -56,6 +57,10 @@ def _column_kind(state: CursorState) -> Literal["exact", "provisional", "pending
     if state is CursorState.PROVISIONAL:
         return "provisional"
     return "pending"
+
+
+_MIN_LABEL_CELLS = 2
+"""Fewest cells of path text (an ellipsis and one character) worth showing."""
 
 
 class EditorScreen(Screen[None]):
@@ -168,12 +173,16 @@ class EditorScreen(Screen[None]):
         self._apply_keymap()
         self.menu_bar: MenuBar = build_menu_bar(self._by_id, standalone=standalone)
         self._path_label = Static("", id="path_label", markup=False)
+        self._full_path_text = ""
+        self._path_label_text: str | None = None
+        self._path_label_width: int | None = None
         self.menu_bar.add_right_widget(self._path_label)
 
         self.document, self._load_error = DocumentView.open(
             path,
             editor_class=editor_class,
             soft_wrap=soft_wrap,
+            show_line_numbers=True,
             config=config,
             timing_file=os.environ.get("NOVA_EDIT_TIMING_FILE"),
         )
@@ -282,12 +291,38 @@ class EditorScreen(Screen[None]):
         self.watch(editor, "soft_wrap", self._on_editor_state, init=False)
         self.watch(editor, "show_line_numbers", self._on_editor_state, init=False)
 
+    def on_resize(self, event: events.Resize) -> None:
+        """Adjust the path label when the terminal is resized."""
+        self._constrain_path_label()
+
     def _show_path(self) -> None:
         """Show the path of the document in the menu bar and the sub title of the app."""
         file_path = self.document.file_path
         text = "" if file_path is None else str(file_path)
-        self._path_label.update(text)
+        self._full_path_text = text
         self.app.sub_title = text
+        self.call_after_refresh(self._constrain_path_label)
+
+    def _constrain_path_label(self) -> None:
+        """Fit the path label into the room right of the last menu entry, keeping the end of the path behind `…`."""
+        items = list(self.menu_bar.query("MenuBarItem"))
+        bar_width = self.menu_bar.size.width
+        if not items or bar_width <= 0:
+            return
+        padding = self._path_label.styles.padding
+        room = bar_width - max(item.region.right for item in items) - padding.left - padding.right
+        text = self._full_path_text
+        if room < _MIN_LABEL_CELLS:
+            text, room = "", 0
+        elif cell_len(text) > room:
+            text = "…" + _tail_by_cells(text, room - 1)
+        width = cell_len(text) + (padding.left + padding.right if text else 0)
+        if self._path_label.styles.width is None or self._path_label_width != width:
+            self._path_label.styles.width = width
+            self._path_label_width = width
+        if self._path_label_text != text:
+            self._path_label.update(text)
+            self._path_label_text = text
 
     def _on_editor_state(self, _value: object) -> None:
         self._request_status()
@@ -301,16 +336,20 @@ class EditorScreen(Screen[None]):
         editor = self.document.editor
         row, column = editor.cursor_location
         cursor_state, _ = editor.peek_cursor_state()
-        exact = editor.line_count_exact
+        snapshot = editor.document.snapshot()
         progress = editor.pending_progress
+        byte_offset = editor.cursor_byte_offset
+        file_path = self.document.file_path
         return StatusState(
-            line=row + 1,
+            file_name=None if file_path is None else file_path.name,
+            line=row + 1 if row_is_known(row, snapshot.count, snapshot.complete) else None,
             column=column + 1,
             column_kind=_column_kind(cursor_state),
-            byte_offset=editor.cursor_byte_offset,
-            line_count=editor.line_count,
-            line_count_exact=exact,
-            indexing_percent=100 if exact else min(99, int(editor.indexing_progress * 100)),
+            byte_offset=byte_offset,
+            byte_percent=byte_percent(byte_offset, editor.document.length),
+            line_count=snapshot.count,
+            line_count_exact=snapshot.complete,
+            indexing_percent=100 if snapshot.complete else min(99, int(editor.indexing_progress * 100)),
             line_ending=editor.line_ending,
             modified=editor.modified,
             new_file=self.document.load_state == "new",
@@ -717,3 +756,13 @@ class EditorScreen(Screen[None]):
     def on_nova_text_area_search_failed(self, message: NovaTextArea.SearchFailed) -> None:
         """Show why a search failed."""
         self._search_status.show_result(f"Search failed: {message.error}")
+
+
+def _tail_by_cells(text: str, cells: int) -> str:
+    """Return the longest end of `text` that is at most `cells` terminal cells wide."""
+    start = len(text)
+    used = 0
+    while start > 0 and used + cell_len(text[start - 1]) <= cells:
+        start -= 1
+        used += cell_len(text[start])
+    return text[start:]

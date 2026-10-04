@@ -57,6 +57,7 @@ class DocumentView:
         *,
         editor_class: type[TimedNovaTextArea],
         soft_wrap: bool,
+        show_line_numbers: bool,
         config: LazyConfig | None,
         timing_file: str | None,
     ) -> tuple[DocumentView, str | None]:
@@ -67,7 +68,7 @@ class DocumentView:
         """
 
         def empty() -> TimedNovaTextArea:
-            return editor_class(id="editor", text="", soft_wrap=soft_wrap, timing_file=timing_file)
+            return editor_class(id="editor", text="", soft_wrap=soft_wrap, show_line_numbers=show_line_numbers, timing_file=timing_file)
 
         if path is None:
             return cls(empty()), None
@@ -75,7 +76,7 @@ class DocumentView:
         if reason is not None:
             return cls(empty(), path, "failed"), f"Error loading file: {reason}"
         try:
-            editor = editor_class.open(path, id="editor", soft_wrap=soft_wrap, config=config, timing_file=timing_file)
+            editor = editor_class.open(path, id="editor", soft_wrap=soft_wrap, show_line_numbers=show_line_numbers, config=config, timing_file=timing_file)
         except OSError as error:
             state: LoadState = "new" if isinstance(error, FileNotFoundError) else "failed"
             return cls(empty(), path, state), f"Error loading file: {error}"
