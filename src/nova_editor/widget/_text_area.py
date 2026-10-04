@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import functools
 import logging
@@ -2338,7 +2339,8 @@ NovaTextArea {
     def _watch_show_line_numbers(self) -> None:
         """The line number gutter contributes to virtual size, so recalculate."""
         self._rewrap_and_refresh_virtual_size()
-        self.scroll_cursor_visible()
+        with contextlib.suppress(RowUnavailable):  # the cursor row is not indexed yet (start of a large file); there is nothing to scroll to
+            self.scroll_cursor_visible()
 
     def _watch_line_number_start(self) -> None:
         """The line number gutter max size might change and contributes to virtual size, so recalculate."""
