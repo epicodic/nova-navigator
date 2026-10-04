@@ -3,19 +3,14 @@
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import replace
 from pathlib import Path
-from typing import Any, ClassVar
 
 import pytest
 from textual.app import App, ComposeResult
 
 from nova_editor.app import NovaEditApp
-from nova_editor.core import ByteSource
-from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.status_line import StatusLine, StatusState, format_status
-from nova_editor.timed_text_area import TimedNovaTextArea
-from tests.nova_editor.helpers_view import LOWERED_OPTIONS, GatedLineSource, wait_until
+from tests.nova_editor.helpers_view import GatedRowEditor, GatedRowsEditor, wait_until
 from tests.nova_editor.save_widget_helpers import wait_saved
 
 
@@ -185,30 +180,6 @@ async def test_a_pending_goto_shows_its_progress(tmp_path: Path) -> None:
         await wait_until(pilot, lambda: not status_text(app).startswith("Goto"))
 
 
-class GatedRowEditor(TimedNovaTextArea):
-    """Opens its file through a source whose line scan is held back at byte 0, so row 0 is not resolved yet."""
-
-    gates: ClassVar[list[GatedLineSource]] = []
-
-    @classmethod
-    def open(
-        cls,
-        source: Path | str | ByteSource,
-        *,
-        language: str | None = None,
-        soft_wrap: bool = False,
-        config: LazyConfig | None = None,
-        highlight_limit: int = 1_048_576,
-        timing_file: str | None = None,
-        **kwargs: Any,
-    ) -> TimedNovaTextArea:
-        assert isinstance(source, Path)
-        gate = GatedLineSource(source, threshold=0)
-        cls.gates.append(gate)
-        lowered = replace(config or LazyConfig(**LOWERED_OPTIONS), sync_scan_limit=0)
-        return super().open(gate, language=language, soft_wrap=soft_wrap, config=lowered, highlight_limit=highlight_limit, timing_file=timing_file, **kwargs)
-
-
 @pytest.mark.asyncio
 async def test_the_byte_offset_is_unknown_until_the_scan_resolves_the_row(tmp_path: Path) -> None:
     path = make_file(tmp_path, b"x" * 5000)  # one row, no line ending
@@ -236,3 +207,8 @@ async def test_a_resize_refits_the_text() -> None:
         await wait_until(pilot, lambda: status.text == "Ln 12,345  Col 17")
         await pilot.resize_terminal(100, 10)
         await wait_until(pilot, lambda: status.text.endswith("No wrap"))
+
+
+def test_the_rows_editor_holds_the_scan_after_two_kib() -> None:
+    assert GatedRowEditor.threshold == 0
+    assert GatedRowsEditor.threshold == 2048
