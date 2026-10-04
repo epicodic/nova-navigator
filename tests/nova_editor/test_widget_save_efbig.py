@@ -15,7 +15,8 @@ CHILD = """
 import asyncio, json, resource, signal, sys, time
 from pathlib import Path
 
-from nova_editor.app import NovaEditApp, SaveBar
+from nova_editor.app import NovaEditApp
+from nova_editor.bars import SaveBar
 
 path = Path(sys.argv[1])
 limit = int(sys.argv[2])

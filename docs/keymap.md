@@ -549,3 +549,39 @@ Configured via `GeneralSettings.key_display_style` (`KeyDisplayStyle`):
 It is opened from the `𑁔` system menu under **Key Bindings…** or programmatically via `action_keybindings`.
 
 After the dialog is dismissed, `MainScreen._reload_keymap` is called to apply any changes.
+
+---
+
+## EditorScreen (nova_editor integration)
+
+`EditorScreen` (in `nova_editor/screen.py`) uses a per-screen keymap registry to support independent key bindings across multiple editor instances (REQ-3).
+
+### Architecture
+
+Each `EditorScreen` instance builds:
+1. **ACTIONS** — 18 editor actions (File, Edit, Search, View).
+2. **KeymapRegistry** — Per-screen registry for those actions (not shared).
+3. **MenuBar** — Per-screen menu bar with current bindings.
+4. **HintBar** — Per-screen hint bar.
+
+This design allows a Textual app to embed multiple editor screens with different keybinding configurations or contexts.
+
+### Keybinding Flow
+
+1. On construction, `EditorScreen.__init__` calls `_apply_keymap()`: it resolves the overrides with `KeybindingsConfig.resolve()` and loads them into the registry, the actions and the hint bar.
+2. The menu bar is built with those actions, showing the current binding in each menu item.
+3. The `KeymapRegistry` manages dispatch.
+4. The host forwards every raw `Key` event to `EditorScreen.press_key` (from `App.on_event`, before Textual's priority bindings); the registry dispatches to the action method.
+   While an `Input` bar has the focus, `press_key` leaves its own keys and the editing actions to the `Input`.
+
+### Amendment B2 Defect (Workaround)
+
+**The problem:** `KeymapRegistry.reload()` puts the default key of an unmapped action back instead of showing nothing.
+For example, if `editor.save` is unmapped (empty string) in keybindings, the hint bar would still show `Ctrl+S`.
+
+**Status:** This is a known defect in `nova_widgets` (not in `EditorScreen`).
+
+**Workaround:** `_apply_keymap` calls `action.set_shortcut(None)` for every action without an effective binding after `reload()`.
+The menu and the hint bar then show no key for it.
+
+---

@@ -13,7 +13,7 @@ from nova_editor.widget import NovaTextArea
 
 
 class SearchBar(Input):
-    """Input field for the search needle (F7). Enter searches (the app handles it), Alt+C toggles the case, Escape closes it."""
+    """Input field for the search needle (Ctrl+F). Enter searches (the app handles it), Alt+C toggles the case, Escape closes it."""
 
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [("escape", "close", "Close"), ("alt+c", "toggle_case", "Case")]
 
