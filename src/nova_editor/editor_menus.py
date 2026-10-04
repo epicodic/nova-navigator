@@ -19,16 +19,8 @@ def build_menu_bar(actions: dict[str, Action], *, standalone: bool) -> MenuBar:
     menu_bar = MenuBar()
 
     # File menu
-    file_items = [
-        actions["editor.open"],
-        actions["editor.save"],
-        actions["editor.save_as"],
-        actions["editor.reload"],
-        actions["editor.close"],
-        actions["editor.quit"] if standalone else actions["editor.close"],
-    ]
-    if not standalone:
-        file_items = file_items[:-1]  # Remove quit if not standalone
+    file_items = [actions["editor.open"], actions["editor.save"], actions["editor.save_as"], actions["editor.reload"]]
+    file_items.append(actions["editor.quit"] if standalone else actions["editor.close"])
     menu_bar.add_menu("File", *file_items, name="file")
 
     # Edit menu

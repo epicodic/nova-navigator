@@ -31,7 +31,15 @@ def test_file_menu_items() -> None:
     file_menu: Menu = next(iter(menu_bar.actions))
     items = list(file_menu.actions)
     ids = [a.id for a in items if a.id]
-    assert ids == ["editor.open", "editor.save", "editor.save_as", "editor.reload", "editor.close", "editor.quit"]
+    assert ids == ["editor.open", "editor.save", "editor.save_as", "editor.reload", "editor.quit"]
+
+
+def test_file_menu_items_embedded() -> None:
+    actions = {a.id: a for a in build_editor_actions() if a.id is not None}
+    menu_bar = build_menu_bar(actions, standalone=False)
+    file_menu: Menu = next(iter(menu_bar.actions))
+    ids = [a.id for a in file_menu.actions if a.id]
+    assert ids == ["editor.open", "editor.save", "editor.save_as", "editor.reload", "editor.close"]
 
 
 def test_edit_menu_items() -> None:

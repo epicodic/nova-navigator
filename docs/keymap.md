@@ -554,7 +554,7 @@ After the dialog is dismissed, `MainScreen._reload_keymap` is called to apply an
 
 ## EditorScreen (nova_editor integration)
 
-`EditorScreen` (in `nova_editor/screen.py`) uses a per-screen keymap registry to support independent key bindings across multiple editor instances (REQ-3, REQ-4).
+`EditorScreen` (in `nova_editor/screen.py`) uses a per-screen keymap registry to support independent key bindings across multiple editor instances (REQ-3).
 
 ### Architecture
 
@@ -568,24 +568,20 @@ This design allows a Textual app to embed multiple editor screens with different
 
 ### Keybinding Flow
 
-1. On construction, `EditorScreen.__init__` calls `_apply_keybindings_overrides()` to apply user overrides to each action.
+1. On construction, `EditorScreen.__init__` calls `_apply_keymap()`: it resolves the overrides with `KeybindingsConfig.resolve()` and loads them into the registry, the actions and the hint bar.
 2. The menu bar is built with those actions, showing the current binding in each menu item.
-3. The `KeymapRegistry` is initialized with the actions and manages dispatch.
-4. On every key press, the registry dispatches to the appropriate action method.
+3. The `KeymapRegistry` manages dispatch.
+4. The host forwards every raw `Key` event to `EditorScreen.press_key` (from `App.on_event`, before Textual's priority bindings); the registry dispatches to the action method.
+   While an `Input` bar has the focus, `press_key` leaves its own keys and the editing actions to the `Input`.
 
 ### Amendment B2 Defect (Workaround)
 
-**The problem:** `KeymapRegistry.reload()` shows the default key for unmapped actions instead of showing nothing.
-For example, if `editor.save` is unmapped to `""` in keybindings, the hint bar still shows `Ctrl+S` (the default).
+**The problem:** `KeymapRegistry.reload()` puts the default key of an unmapped action back instead of showing nothing.
+For example, if `editor.save` is unmapped (empty string) in keybindings, the hint bar would still show `Ctrl+S`.
 
-**Why it matters:** Users who unmap a key expect no hint to be shown.
+**Status:** This is a known defect in `nova_widgets` (not in `EditorScreen`).
 
-**Status:** This is a known defect in `nova_widgets` (not in this activity's EditorScreen code).
-It is scheduled for fix in ACT8 or ACT9.
-
-**Workaround:** `EditorScreen` checks effective bindings locally by verifying that an action is actually bound before showing hints.
-The workaround is invisible to users: the hint bar shows only bound actions.
+**Workaround:** `_apply_keymap` calls `action.set_shortcut(None)` for every action without an effective binding after `reload()`.
+The menu and the hint bar then show no key for it.
 
 ---
-
-
