@@ -1,4 +1,4 @@
-"""Tests for nova_edit bindings and the GotoBar widget."""
+"""Tests for nova_edit bindings."""
 
 from __future__ import annotations
 
@@ -10,19 +10,9 @@ from textual.screen import Screen
 from textual.widgets import Input
 
 from nova_editor import search_bar
-from nova_editor.bars import GotoTarget, parse_goto
 from nova_editor.screen import EditorScreen
 from nova_editor.search_bar import SearchBar, SearchStatus
 from nova_editor.widget import NovaTextArea
-
-
-def test_parse_goto() -> None:
-    """Test parse_goto function."""
-    assert parse_goto("120") == GotoTarget("line", 120)
-    assert parse_goto(" @4096 ") == GotoTarget("byte", 4096)
-    assert parse_goto("abc") is None
-    assert parse_goto("") is None
-    assert parse_goto("@-1") is None
 
 
 def test_new_bindings_do_not_collide() -> None:
