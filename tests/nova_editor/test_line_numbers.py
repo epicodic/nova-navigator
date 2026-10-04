@@ -12,7 +12,7 @@ from nova_editor.status_line import StatusLine
 from nova_editor.widget import NovaTextArea
 from nova_widgets.keybindings_config import KeybindingsConfig
 from tests.nova_editor.helpers_view import GatedRowEditor, wait_until
-from tests.nova_editor.view_menu import WIDE, choose_view_item, view_marks
+from tests.nova_editor.view_menu import NARROW, choose_view_item, view_marks
 
 
 def make_file(tmp_path: Path) -> Path:
@@ -39,7 +39,7 @@ def test_the_reusable_widget_still_starts_without_a_gutter() -> None:
 @pytest.mark.asyncio
 async def test_the_editor_starts_with_the_gutter_and_a_checked_menu_item(tmp_path: Path) -> None:
     app = NovaEditApp(file_path=make_file(tmp_path))
-    async with app.run_test(size=WIDE) as pilot:
+    async with app.run_test(size=NARROW) as pilot:
         await pilot.pause()
         assert app.editor.show_line_numbers is True
         assert app.editor.gutter_width > 0
@@ -51,7 +51,7 @@ async def test_the_editor_starts_with_the_gutter_and_a_checked_menu_item(tmp_pat
 @pytest.mark.asyncio
 async def test_a_buffer_without_a_file_also_starts_with_the_gutter() -> None:
     app = NovaEditApp()
-    async with app.run_test(size=WIDE) as pilot:
+    async with app.run_test(size=NARROW) as pilot:
         await pilot.pause()
         assert app.editor.show_line_numbers is True
         drawn = await view_marks(pilot, editor_screen(app))
@@ -61,7 +61,7 @@ async def test_a_buffer_without_a_file_also_starts_with_the_gutter() -> None:
 @pytest.mark.asyncio
 async def test_f11_hides_and_shows_the_gutter_at_once_and_the_menu_agrees(tmp_path: Path) -> None:
     app = NovaEditApp(file_path=make_file(tmp_path))
-    async with app.run_test(size=WIDE) as pilot:
+    async with app.run_test(size=NARROW) as pilot:
         await pilot.pause()
         await pilot.press("f11")
         await pilot.pause()
@@ -80,7 +80,7 @@ async def test_f11_hides_and_shows_the_gutter_at_once_and_the_menu_agrees(tmp_pa
 @pytest.mark.asyncio
 async def test_the_view_menu_item_toggles_the_gutter_and_its_own_check_mark(tmp_path: Path) -> None:
     app = NovaEditApp(file_path=make_file(tmp_path))
-    async with app.run_test(size=WIDE) as pilot:
+    async with app.run_test(size=NARROW) as pilot:
         await pilot.pause()
         screen = editor_screen(app)
         await choose_view_item(pilot, screen, "Line Numbers")
@@ -98,13 +98,13 @@ async def test_the_view_menu_item_toggles_the_gutter_and_its_own_check_mark(tmp_
 async def test_the_toggle_is_for_the_session_only(tmp_path: Path) -> None:
     path = make_file(tmp_path)
     first = NovaEditApp(file_path=path)
-    async with first.run_test(size=WIDE) as pilot:
+    async with first.run_test(size=NARROW) as pilot:
         await pilot.pause()
         await pilot.press("f11")
         await pilot.pause()
         assert first.editor.show_line_numbers is False
     second = NovaEditApp(file_path=path)
-    async with second.run_test(size=WIDE) as pilot:
+    async with second.run_test(size=NARROW) as pilot:
         await pilot.pause()
         assert second.editor.show_line_numbers is True
         drawn = await view_marks(pilot, editor_screen(second))
@@ -121,7 +121,7 @@ async def test_toggling_writes_no_config_file(tmp_path: Path, monkeypatch: pytes
     path = make_file(tmp_path)
     before = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*"))
     app = NovaEditApp(file_path=path, keybindings=KeybindingsConfig(config_dir))
-    async with app.run_test(size=WIDE) as pilot:
+    async with app.run_test(size=NARROW) as pilot:
         await pilot.pause()
         await pilot.press("f11", "f10", "f11", "f10")
         await choose_view_item(pilot, editor_screen(app), "Line Numbers")
@@ -140,7 +140,7 @@ def status_parts(app: NovaEditApp) -> list[str]:
 @pytest.mark.parametrize("start_wrap", [False, True])
 async def test_the_wrap_indicator_and_the_menu_mark_agree_after_every_toggle(tmp_path: Path, start_wrap: bool) -> None:
     app = NovaEditApp(file_path=make_file(tmp_path), soft_wrap=start_wrap)
-    async with app.run_test(size=WIDE) as pilot:
+    async with app.run_test(size=NARROW) as pilot:
         await pilot.pause()
         screen = editor_screen(app)
         wrap = start_wrap
@@ -167,7 +167,7 @@ async def test_the_gutter_toggle_before_the_first_row_is_indexed_does_not_end_th
     path.write_bytes(b"x" * 5000)  # one row; the scan is held back at byte 0, so row 0 is not resolved
     GatedRowEditor.gates.clear()
     app = NovaEditApp(file_path=path, editor_class=GatedRowEditor)
-    async with app.run_test(size=WIDE) as pilot:
+    async with app.run_test(size=NARROW) as pilot:
         await pilot.pause()
         gate = GatedRowEditor.gates[0]
         await wait_until(pilot, gate.blocked.is_set)
