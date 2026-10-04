@@ -271,7 +271,7 @@ async def test_wrap_mode_checkable_state_syncs_with_widget() -> None:
 
 @pytest.mark.asyncio
 async def test_line_numbers_checkable_state_syncs_with_widget() -> None:
-    """Wrap Mode checkable state reflects widget state."""
+    """Line Numbers checkable state reflects widget state."""
     host = EditorScreenHost(standalone=True)
     async with host.run_test() as pilot:
         await pilot.pause()
@@ -282,15 +282,15 @@ async def test_line_numbers_checkable_state_syncs_with_widget() -> None:
         line_numbers_action = next(a for a in screen.ACTIONS if a.id == "editor.line_numbers")
         assert line_numbers_action.checkable
 
-        # Initial state: not checked (show_line_numbers starts False)
-        assert not line_numbers_action.checked
+        # Initial state: checked (show_line_numbers starts True per EditorScreen)
+        assert line_numbers_action.checked
 
-        # Toggle line numbers on the widget
-        screen.document.editor.show_line_numbers = True
+        # Toggle line numbers off the widget
+        screen.document.editor.show_line_numbers = False
         await pilot.pause()
 
-        # Action should now be checked
-        assert line_numbers_action.checked
+        # Action should now be unchecked
+        assert not line_numbers_action.checked
 
 
 @pytest.mark.asyncio
