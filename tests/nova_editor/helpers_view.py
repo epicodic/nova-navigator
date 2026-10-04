@@ -13,7 +13,7 @@ import weakref
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, ClassVar, NamedTuple
 
 from rich.cells import cell_len
 from textual.app import App, ComposeResult
@@ -21,10 +21,11 @@ from textual.message import Message
 from textual.pilot import Pilot
 from textual.widget import Widget
 
-from nova_editor.core import PreadSource
+from nova_editor.core import ByteSource, PreadSource
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.document._lazy_document import LazyDocument
 from nova_editor.document._lazy_wrapped_document import LazyWrappedDocument
+from nova_editor.timed_text_area import TimedNovaTextArea
 from nova_editor.widget import NovaTextArea
 
 # Lowered options for testing lazy document with small synthetic files
@@ -454,16 +455,36 @@ class GatedLineSource:
 _GATES: weakref.WeakKeyDictionary[NovaTextArea, GatedLineSource] = weakref.WeakKeyDictionary()
 
 
-def open_with_gated_line_scan(tmp_path: Path, rows: int = 3000, *, threshold: int | None = 2048, delay: float = 0.0, config: LazyConfig | None = None) -> tuple[NovaTextArea, Path]:
+def open_with_gated_line_scan(
+    tmp_path: Path,
+    rows: int = 3000,
+    *,
+    threshold: int | None = 2048,
+    delay: float = 0.0,
+    config: LazyConfig | None = None,
+    show_line_numbers: bool = False,
+) -> tuple[NovaTextArea, Path]:
     """Open a file of `rows` short rows ("row N") whose line scan is held back at byte `threshold` until `release_line_scan(area)`.
 
+    Args:
+        tmp_path: directory that receives the file.
+        rows: number of rows of the file.
+        threshold: byte offset where the scan is held back; `None` never holds it back (use `delay` to slow it).
+        delay: pause of the scan per chunk.
+        config: lazy config of the widget; defaults to the lowered options.
+        show_line_numbers: show the gutter from the start.
+
     Returns:
-        The widget (not mounted yet) and the file path. With `threshold=None` the scan is never held back (use `delay` to slow it).
+        The widget (not mounted yet) and the file path.
     """
     path = tmp_path / "rows.txt"
     path.write_bytes("".join(f"row {i}\n" for i in range(rows)).encode())
     source = GatedLineSource(path, threshold=threshold, delay=delay)
-    area = NovaTextArea.open(source, config=replace(config or LazyConfig(**LOWERED_OPTIONS), sync_scan_limit=0))  # a gated scan needs the background thread
+    area = NovaTextArea.open(
+        source,
+        config=replace(config or LazyConfig(**LOWERED_OPTIONS), sync_scan_limit=0),
+        show_line_numbers=show_line_numbers,
+    )  # a gated scan needs the background thread
     _GATES[area] = source
     return area, path
 
@@ -476,3 +497,36 @@ def gated_source(area: NovaTextArea) -> GatedLineSource:
 def release_line_scan(area: NovaTextArea) -> None:
     """Let the held-back line scan of `area` run to the end."""
     _GATES[area].release()
+
+
+class GatedRowEditor(TimedNovaTextArea):
+    """Opens its file through a source whose line scan is held back at byte `threshold` (default 0: row 0 is not resolved yet)."""
+
+    gates: ClassVar[list[GatedLineSource]] = []
+    """The gate of every file opened, in order; a test clears the list first."""
+    threshold: ClassVar[int] = 0
+    """Byte at which the line scan stops until `release()`."""
+
+    @classmethod
+    def open(
+        cls,
+        source: Path | str | ByteSource,
+        *,
+        language: str | None = None,
+        soft_wrap: bool = False,
+        config: LazyConfig | None = None,
+        highlight_limit: int = 1_048_576,
+        timing_file: str | None = None,
+        **kwargs: Any,
+    ) -> TimedNovaTextArea:
+        assert isinstance(source, Path)
+        gate = GatedLineSource(source, threshold=cls.threshold)
+        cls.gates.append(gate)
+        lowered = replace(config or LazyConfig(**LOWERED_OPTIONS), sync_scan_limit=0)
+        return super().open(gate, language=language, soft_wrap=soft_wrap, config=lowered, highlight_limit=highlight_limit, timing_file=timing_file, **kwargs)
+
+
+class GatedRowsEditor(GatedRowEditor):
+    """A `GatedRowEditor` whose scan stops after 2 KiB: the first rows are resolved, the rest is not."""
+
+    threshold = 2048

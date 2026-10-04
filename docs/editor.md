@@ -471,6 +471,12 @@ This allows multiple EditorScreen instances in different Textual screens to have
 | Line Numbers | `editor.line_numbers` | F11 | Show/hide line numbers (checkable) |
 | Wrap Mode | `editor.wrap_mode` | F10 | Toggle soft wrap (checkable) |
 
+The line number gutter is shown when the editor screen starts (REQ-11).
+`EditorScreen` passes `show_line_numbers=True` to `DocumentView.open()`; the reusable `NovaTextArea` still starts without a gutter.
+A row whose number is not known yet is drawn blank, and so is every wrapped continuation row; a known row shows its own number.
+Line Numbers (F11) and View > Line Numbers flip `NovaTextArea.show_line_numbers` for the current session only.
+Nothing is written to a configuration file, and a new session starts with the gutter shown (REQ-12).
+
 Actions with `show=True` appear in the hint bar; checkable actions maintain state with the widget.
 
 ### Key Bindings and Overrides
@@ -526,7 +532,10 @@ The menu bar has four menus:
 - Line Numbers (F11, checkable)
 - Wrap Mode (F10, checkable)
 
-Checkable menu items are kept in sync with the widget's reactive properties (`soft_wrap`, `show_line_numbers`).
+Checkable menu items start with the state of the widget, which is checked for Line Numbers and unchecked for Wrap Mode, and are kept in sync with the widget's reactive properties (`soft_wrap`, `show_line_numbers`).
+
+The path label on the right of the menu bar is sized to the room left after the menu entries (truncated keeping its end behind an ellipsis, or hidden), so menus stay clickable at 80 columns.
+Tests are in `tests/nova_editor/test_menu_path_label.py`.
 
 ### Bars
 
@@ -572,14 +581,15 @@ Parts are added in order while text still fits the width; the tail is cut first 
 
 | Order | Text | Meaning |
 |---|---|---|
-| 0 | `Goto P%  Esc cancels` | While a goto waits for the scan (highest priority) |
-| 1 | `Ln N  Col N` | Line and column (1-based, shows `Ln N  Col ~N` when provisional, `Ln N  Col ...` when pending) |
-| 2 | `Byte N` or `Byte ?` | Byte offset (? while line scan has not resolved the row) |
-| 3 | `N lines` or `>= N lines (indexing P%)` | Exact or lower bound during indexing |
-| 4 | `LF`, `CRLF` or `CR` | Line ending |
-| 5 | `Modified` | Only when document is modified |
-| 6 | `New file` | Only before first save of a missing path |
-| 7 | `Wrap` or `No wrap` | Soft wrap state |
+| 0 | `name` | The file name without its directory, `(unsaved)` for a buffer without a path; a name longer than half the width keeps its end behind `…` |
+| 1 | `Goto P%  Esc cancels` | Only while a goto waits for the scan |
+| 2 | `Ln N  Col N` | Line and column (1-based); `Ln ?` while the line scan has not resolved the cursor row; `Col ~N` when the column is provisional, `Col ...` when it is pending |
+| 3 | `Byte N (P%)`, `Byte N` or `Byte ?` | Byte offset of the cursor and its whole percent of the file size; the percent is left out when it is unknown; `?` while the widget does not know the offset |
+| 4 | `Modified` | Only when `editor.modified` |
+| 5 | `New file` | Only before the first save of a path that did not exist |
+| 6 | `Wrap` or `No wrap` | Soft wrap or no wrap, the two modes of the editor; it changes when `soft_wrap` changes |
+| 7 | `N lines` or `>= N lines (indexing P%)` | Exact count, or a lower bound while the scan runs; `1 line` is singular |
+| 8 | `LF`, `CRLF` or `CR` | `editor.line_ending` |
 
 The status line reads from the editor on its own timer (0.05 s) to keep updates off the critical path.
 
@@ -682,28 +692,27 @@ The bars are plain widgets, not dialogs, so they have no entry in `src/tools/dia
 
 `StatusLine` shows the state of the editor.
 The `EditorScreen` builds a `StatusState` from the widget, and the pure function `format_status(state, width)` turns it into text.
-Parts are added in the order below while the text still fits the width; the tail is cut first on a narrow terminal, and the first part is always kept.
+Parts are added in the order below while the text still fits the width; the tail is cut first on a narrow terminal, and the file name is always kept.
 
 | Order | Text | Meaning |
 |---|---|---|
-| 0 | `Goto P%  Esc cancels` | Only while a goto waits for the scan; comes first |
-| 1 | `Ln N  Col N` | Line and column (1-based) |
-| 2 | `Byte N` or `Byte ?` | Byte offset of the cursor; `?` while the line scan has not resolved the row |
-| 3 | `N lines` or `>= N lines (indexing P%)` | Exact count, or a lower bound while the scan runs; `1 line` is singular |
-| 4 | `LF`, `CRLF` or `CR` | `editor.line_ending` |
-| 5 | `Modified` | Only when `editor.modified` |
-| 6 | `New file` | Only before the first save of a path that did not exist |
-| 7 | `Wrap` or `No wrap` | Soft wrap state |
+| 0 | `name` | The file name without its directory, `(unsaved)` for a buffer without a path; a name longer than half the width keeps its end behind `…` |
+| 1 | `Goto P%  Esc cancels` | Only while a goto waits for the scan |
+| 2 | `Ln N  Col N` | Line and column (1-based); `Ln ?` while the line scan has not resolved the cursor row; `Col ~N` when the column is provisional, `Col ...` when it is pending |
+| 3 | `Byte N (P%)`, `Byte N` or `Byte ?` | Byte offset of the cursor and its whole percent of the file size; the percent is left out when it is unknown; `?` while the widget does not know the offset |
+| 4 | `Modified` | Only when `editor.modified` |
+| 5 | `New file` | Only before the first save of a path that did not exist |
+| 6 | `Wrap` or `No wrap` | Soft wrap or no wrap, the two modes of the editor; it changes when `soft_wrap` changes |
+| 7 | `N lines` or `>= N lines (indexing P%)` | Exact count, or a lower bound while the scan runs; `1 line` is singular |
+| 8 | `LF`, `CRLF` or `CR` | `editor.line_ending` |
 
-The column has three states, from the cursor state read with `peek_cursor_state()`:
-- `Col N` when the cursor is `RESOLVED`.
-- `Col ~N` when it is `PROVISIONAL` (the column is an estimate).
-- `Col ...` when it is `PENDING`.
-
-The indexing percentage is `indexing_progress` as a whole percent, at most 99 while the count is not exact.
+The row is unknown only while the cursor stands on the open row of the line scan, the last row of the lower-bound line count.
+`row_is_known(row, line_count, complete)` in `status_line.py` decides it from one `snapshot()` of the line index.
+The status computation reads cached state only: `cursor_location`, `peek_cursor_state()`, `snapshot()`, `cursor_byte_offset` and `document.length`.
+It never starts a scan or builds an index (`test_a_status_refresh_neither_scans_nor_builds_an_index`).
 
 **Refresh:**
-The screen listens to `SelectionChanged`, `Changed`, `IndexProgress`, `IndexingComplete`, `JumpCompleted`, `Saved`, `Reloaded` and to the `pending_progress` and `soft_wrap` changes, and calls `StatusLine.request()`.
+The screen listens to `SelectionChanged`, `Changed`, `IndexProgress`, `IndexingComplete`, `JumpCompleted`, `Saved`, `Reloaded` and to the `pending_progress`, `soft_wrap` and `show_line_numbers` changes, and calls `StatusLine.request()`.
 `request()` sets a dirty flag and starts a timer of `REFRESH_SECONDS` (0.05 s) when none is pending.
 The timer reads the widget state once and updates the text.
 At most 20 updates happen per second, the last state is always shown, and no work happens on the key's critical path.
@@ -1913,7 +1922,10 @@ Tests are located under `tests/nova_editor/` and `tests/tools/`.
 
 **App:**
 - `test_app.py`, `test_app_lazy.py`, `test_app_save.py`, `test_bindings.py` — the app, opening files, the save bars and key bindings (including key collisions).
-- `test_app_status.py` — the status line text, its states and its coalescing.
+- `test_app_status.py` — the status line text, its fields, its states and its coalescing.
+- `test_line_numbers.py` — the gutter at the start, F11 and the View item, the check marks, the session only rule, no config file and the wrap indicator.
+- `test_gutter_rows.py` — the gutter cells of rows that are not known yet and of wrapped continuation rows.
+- `test_menu_path_label.py` — the path label on the menu bar sized to the available width and truncated keeping its end behind an ellipsis.
 - `test_app_footer.py` — the footer keys.
 - `test_app_quit.py` — the quit flow and its two questions.
 - `test_app_search.py` — the keys, the bar, the status texts and the case toggle of `nova_edit`.
@@ -1928,6 +1940,7 @@ Further properties check that the tiers return the same result on ASCII data and
 
 **Helpers and benchmarks:**
 - `helpers_view.py`, `test_helpers_view.py` — synthetic file builder and oracle.
+- `view_menu.py` — helper for opening and inspecting the View menu in tests.
 - `tests/tools/test_measure_view.py` and `tests/tools/test_measure_core.py` — smoke tests of the harnesses.
 
 Run all tests:
