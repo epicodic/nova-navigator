@@ -8,6 +8,7 @@ from textual.app import App
 
 from nova_editor.screen import EditorScreen
 from nova_widgets.file_provider import InMemoryFileProvider
+from nova_widgets.key_types import KeySequence
 from nova_widgets.keybindings_config import KeybindingsConfig
 
 
@@ -35,3 +36,10 @@ class EditorScreenHost(App[None]):
             standalone=self.standalone,
         )
         self.push_screen(self.screen_instance)
+
+
+def write_keys(config_dir: Path, bindings: dict[str, KeySequence | None]) -> KeybindingsConfig:
+    """Write a real key configuration file (a `None` value unmaps the action) and load it."""
+    config = KeybindingsConfig(config_dir)
+    config.save(bindings)
+    return config

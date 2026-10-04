@@ -392,6 +392,7 @@ The screen holds:
 - **StatusLine** (shows editor progress and file status)
 
 The document itself is not stored in the screen; instead, EditorScreen holds a reference to a `DocumentView`.
+A host forwards every `Key` event to `EditorScreen.press_key` from `App.on_event` (the keymap registry has to see a key before Textual's priority bindings), and calls `EditorScreen.poll()` when the terminal gets the focus back (`NovaEditApp` does both).
 
 ### Constructor
 
@@ -405,17 +406,21 @@ EditorScreen(
     config: LazyConfig | None = None,
     editor_class: type[TimedNovaTextArea] = TimedNovaTextArea,
     standalone: bool = False,
+    poll_seconds: float = 2.0,
+    quit_wait_seconds: float = 2.0,
 ) -> None:
 ```
 
 **Parameters:**
 - `path` — File to open, or `None` for an empty buffer.
 - `keybindings` — User keybinding overrides from `~/.config/nova-navigator/keybindings.toml`; `None` for defaults.
-- `file_provider` — FileProvider for the file dialog (used by Open action); defaults to `InMemoryFileProvider`.
+- `file_provider` — FileProvider for the file dialog of the Open action; defaults to `InMemoryFileProvider`. Open is currently unavailable (no file chooser exists yet): the action only shows a notification, so the provider is not used yet.
 - `soft_wrap` — Start with soft wrapping enabled (default `False`).
 - `config` — Tunable thresholds of the lazy document (`LazyConfig`); `None` for defaults.
 - `editor_class` — The editor widget class (default `TimedNovaTextArea`, allows injection for testing).
-- `standalone` — `True` for standalone app, `False` for embedded (affects menu structure).
+- `standalone` — `True` for the standalone app (File menu has Quit), `False` for embedded (File menu has Close).
+- `poll_seconds` — Interval of the check for a change of the file on disk (default 2.0).
+- `quit_wait_seconds` — Longest wait for a cancelled save before the quit question (default 2.0).
 
 ### Architecture
 
@@ -428,7 +433,7 @@ The screen builds these components on construction:
 5. **DocumentView** — Holder of the editor widget and file metadata.
 
 Each screen instance has its own action registry, menu bar, and keybinding registry.
-This allows multiple EditorScreen instances in different Textual screens to have independent key bindings and menu states (REQ-3).
+This allows multiple EditorScreen instances in different Textual screens to have independent key bindings and menu states.
 
 ### The 18 Editor Actions
 
@@ -481,41 +486,40 @@ editor.find = "ctrl+f"
 editor.wrap_mode = ""   # Empty string unmaps the action
 ```
 
-When `EditorScreen` is constructed with a `KeybindingsConfig`, it applies overrides to each action before building the menus (REQ-4).
+When `EditorScreen` is constructed with a `KeybindingsConfig`, it applies overrides to each action before building the menus (REQ-3); the defaults are the REQ-4 table.
 
-**Amendment B2 defect (workaround):** `KeymapRegistry.reload()` shows the default key for unmapped actions instead of showing nothing.
-This is a known defect in `nova_widgets` (not this activity).
-EditorScreen works around this locally by checking effective bindings.
-The defect is scheduled for fix in ACT8 or ACT9.
+**Amendment B2 defect (workaround):** `KeymapRegistry.reload()` puts the default key of an unmapped action back, so the menu and the hint bar would show it.
+This is a known `nova_widgets` defect.
+`EditorScreen._apply_keymap` works around it by calling `action.set_shortcut(None)` for every action that has no effective binding after `reload()`.
+
+**Moved editing keys:** the editor widget binds Ctrl+Z, Ctrl+Y, Ctrl+X, Ctrl+C, Ctrl+V and Ctrl+A itself.
+When one of these actions is moved or unmapped, `press_key` swallows its old default key while the editor has the focus.
+
+**Input bars:** while a bar (`Input`) has the focus, `press_key` leaves every key that the `Input` binds itself (Ctrl+A is home, Ctrl+W deletes a word, Ctrl+X/C/V cut, copy and paste) and the keys of the editing actions to the `Input`; the editing actions never run from a bar.
 
 ### Menu Bar
 
 The menu bar has four menus:
 
 **File Menu:**
-- Open… (Ctrl+O)
+- Open… (Ctrl+O) — currently unavailable, shows a notification
 - Save (Ctrl+S)
 - Save As… (Ctrl+Shift+S)
 - Reload (F5)
-- ─── (separator)
-- Close (Ctrl+W)
-- Quit (Ctrl+Q) — only in standalone mode
+- Quit (Ctrl+Q) in standalone mode, Close (Ctrl+W) when embedded (never both; both actions exist and keep their keys)
 
 **Edit Menu:**
 - Undo (Ctrl+Z)
 - Redo (Ctrl+Y)
-- ─── (separator)
 - Cut (Ctrl+X)
 - Copy (Ctrl+C)
 - Paste (Ctrl+V)
-- ─── (separator)
 - Select All (Ctrl+A)
 
 **Search Menu:**
 - Find… (Ctrl+F)
 - Find Next (F3)
 - Find Previous (Shift+F3)
-- ─── (separator)
 - Go to… (Ctrl+G)
 
 **View Menu:**
@@ -599,16 +603,19 @@ See the "DocumentView" section below.
 `DocumentView` is a holder of per-document state: the `NovaTextArea` widget, the file path, and the load outcome.
 
 It is not part of `EditorScreen` directly; instead, `EditorScreen.document` holds a reference to one.
-This allows the same document to be viewed in multiple screens without duplicating the widget.
 
 ### Class
 
 ```python
+@dataclass
 class DocumentView:
-    editor: NovaTextArea         # The text editor widget
-    file_path: Path | None       # The file path (None for new/unsaved)
-    load_state: str              # "new", "opened", or "failed"
-    error_message: str | None    # If failed, the reason
+    editor: NovaTextArea                  # The widget that shows the document
+    file_path: Path | None = None         # The file the document is bound to (also when it was missing or unreadable)
+    load_state: LoadState = "loaded"      # "loaded", "new" or "failed"
+    needle: str | None = None             # Last needle searched (Find Next / Find Previous)
+    last_backward: bool = False           # Direction of the last search (decides the wrap text)
+    deferred_change: ChangeKind | None = None  # A change seen while a save ran, announced after it
+    polling: bool = False                 # Whether a check of the file on disk runs on a worker thread
 ```
 
 ### Construction
@@ -617,28 +624,31 @@ class DocumentView:
 DocumentView.open(
     path: Path | None,
     *,
-    editor_class: type[TimedNovaTextArea] = TimedNovaTextArea,
-    soft_wrap: bool = False,
-    config: LazyConfig | None = None,
-    timing_file: str | None = None,
+    editor_class: type[TimedNovaTextArea],
+    soft_wrap: bool,
+    config: LazyConfig | None,
+    timing_file: str | None,
 ) -> tuple[DocumentView, str | None]
 ```
 
-Returns a tuple of `(document_view, error_message)`.
-- If the file opens successfully, `error_message` is `None`.
-- If the file cannot be read, `error_message` is a user-friendly error string (e.g., "File not found: /path/to/file").
-- If `path` is `None`, a new empty document is created (`load_state == "new"`).
+Returns a tuple of `(document_view, error_text)`.
+- If `path` is `None` or the file opens, `error_text` is `None` and `load_state == "loaded"`.
+- If the file does not exist, the view holds an empty editor, `load_state == "new"` and `error_text` is `"Error loading file: ..."`.
+- If the file exists but cannot be read (or is not a regular file), `load_state == "failed"` and `error_text` is `"Error loading file: ..."`.
 
-### State Machine
+The screen shows `error_text` as an error notification when it mounts.
 
-| State | Meaning | `load_state` |
-|-------|---------|---|
-| New | Empty buffer, no file | `"new"` |
-| Opened | File read successfully | `"opened"` |
-| Failed | File could not be read | `"failed"` |
+### Load States
 
-After a successful save, the document remains in the `"opened"` state.
-On `reload()`, the document attempts to re-read the file; if it fails, `load_state` becomes `"failed"` again.
+| `load_state` | Meaning |
+|---|---|
+| `"loaded"` | The editor shows the file, or an empty buffer without a path |
+| `"new"` | The file did not exist at start; the first save creates it |
+| `"failed"` | The file exists but could not be read; Save is refused (use Save As) |
+
+A successful save sets the state to `"loaded"` and binds the document to the saved path.
+
+There is one screen per document: the view is held by exactly one `EditorScreen`.
 
 ### Usage
 

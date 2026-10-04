@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from textual import events
-from textual.app import App, ComposeResult
+from textual.app import App
 
 from nova_widgets.file_provider import FileProvider
 from nova_widgets.keybindings_config import KeybindingsConfig
@@ -112,12 +112,6 @@ class NovaEditApp(App[None]):
             msg = f"Expected EditorScreen, got {type(screen).__name__}"
             raise RuntimeError(msg)
         return screen.query_one(GotoBar)
-
-    def compose(self) -> ComposeResult:
-        """This app uses a single screen, so nothing to compose."""
-        # The screen is returned by get_default_screen
-        return
-        yield  # Never reached; makes this a generator
 
     async def on_event(self, event: events.Event) -> None:
         """Give every raw key press to the screen's keymap first, before Textual's priority bindings."""

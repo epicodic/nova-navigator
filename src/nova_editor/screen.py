@@ -153,7 +153,6 @@ class EditorScreen(Screen[None]):
             quit_wait_seconds: Longest wait for a cancelled save before the quit question.
         """
         super().__init__()
-        self.path = path
         self._keybindings = keybindings
         self.file_provider = file_provider or InMemoryFileProvider()
         self.standalone = standalone
@@ -213,6 +212,7 @@ class EditorScreen(Screen[None]):
 
         Hosts call this for every raw `Key` event from `App.on_event` and stop the event when it returns `True`.
         A key press also dismisses a failure shown by the save bar.
+        A focused `Input` keeps its own keys and does not run the editing actions (Undo, Redo, Cut, Copy, Paste, Select All).
         The old default key of an editing action that was moved or unmapped is swallowed, because the widget binds those keys itself.
 
         Args:
@@ -224,11 +224,20 @@ class EditorScreen(Screen[None]):
         bars = self.query(SaveBar)
         if bars and bars.first().failed:
             bars.first().clear()
+        if isinstance(self.focused, Input) and self._input_keeps(key):
+            return False
         if await self.keymap_registry.handle_key(key, self.app):
             return True
         if self._swallowed and self.focused is self.document.editor:
             return KeySequence((KeyChord.parse(key),)) in self._swallowed
         return False
+
+    def _input_keeps(self, key: str) -> bool:
+        """Whether a focused `Input` handles `key` itself: its own bindings (Ctrl+A is home, Ctrl+W deletes a word) and the editing keys."""
+        if any(key in binding.key.split(",") for binding in Input.BINDINGS if isinstance(binding, Binding)):
+            return True
+        chord = KeySequence((KeyChord.parse(key),))
+        return any(self._by_id[action_id].shortcut == chord for action_id in _EDITING_ACTIONS)
 
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
         """The hint bar follows the focus."""
@@ -412,10 +421,6 @@ class EditorScreen(Screen[None]):
         """UI thread: the poll ended; apply its result (the widget ignores one that a save made out of date)."""
         self.document.polling = False
         self.document.editor.apply_external_check(check, kind)
-
-    def on_app_focus(self, event: events.AppFocus) -> None:
-        """The terminal got the focus back: the file may have changed meanwhile, so run the same check as the poll."""
-        self.poll()
 
     # Save, Save As, Reload, Close, Quit
 

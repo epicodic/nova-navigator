@@ -12,7 +12,7 @@ from nova_editor.screen import EditorScreen
 from nova_editor.search_bar import SearchBar
 from nova_widgets.keybindings_config import KeybindingsConfig
 
-from .screen_host import EditorScreenHost
+from .screen_host import EditorScreenHost, write_keys
 
 
 @pytest.mark.asyncio
@@ -162,31 +162,35 @@ async def test_menu_items_are_the_action_objects() -> None:
 @pytest.mark.asyncio
 async def test_standalone_shows_quit_embedded_shows_close() -> None:
     """Standalone mode shows Quit in File menu, embedded mode shows Close only."""
-    # Standalone: should have both Close and Quit
+    from nova_widgets.menu import Menu
+
     host_standalone = EditorScreenHost(standalone=True)
     async with host_standalone.run_test() as pilot:
         await pilot.pause()
         screen_standalone = host_standalone.screen_instance
         assert screen_standalone is not None
-
-        from nova_widgets.menu import Menu
-
         file_menu: Menu = next(iter(screen_standalone.menu_bar.actions))
-        file_items_ids = [a.id for a in file_menu.actions]
-        assert "editor.quit" in file_items_ids
-        assert file_items_ids.count("editor.close") == 1
+        assert [a.id for a in file_menu.actions] == [
+            "editor.open",
+            "editor.save",
+            "editor.save_as",
+            "editor.reload",
+            "editor.quit",
+        ]
 
-    # Embedded: should not have Quit, only Close
     host_embedded = EditorScreenHost(standalone=False)
     async with host_embedded.run_test() as pilot:
         await pilot.pause()
         screen_embedded = host_embedded.screen_instance
         assert screen_embedded is not None
-
-        file_menu: Menu = next(iter(screen_embedded.menu_bar.actions))
-        file_items_ids = [a.id for a in file_menu.actions]
-        assert "editor.quit" not in file_items_ids
-        assert "editor.close" in file_items_ids
+        file_menu = next(iter(screen_embedded.menu_bar.actions))
+        assert [a.id for a in file_menu.actions] == [
+            "editor.open",
+            "editor.save",
+            "editor.save_as",
+            "editor.reload",
+            "editor.close",
+        ]
 
 
 @pytest.mark.asyncio
@@ -216,13 +220,11 @@ async def test_open_action_shows_neutral_stub_message() -> None:
         screen = host.screen_instance
         assert screen is not None
 
-        # Get the open action and call it
         open_action = next(a for a in screen.ACTIONS if a.id == "editor.open")
         assert open_action.action == "open_file"
-
-        # Call the action (should notify)
-        # We just verify the action exists and has the right name
-        assert "Open" in open_action.text
+        screen.action_open_file()
+        await pilot.pause()
+        assert [n.message for n in host._notifications] == ["Open is not available yet"]
 
 
 @pytest.mark.asyncio
@@ -309,10 +311,12 @@ async def test_keybindings_config_applied_to_actions(tmp_path: Path) -> None:
     from nova_widgets.key_types import KeySequence
 
     # Create a keybindings config with an override
-    keybindings = KeybindingsConfig(config_dir=tmp_path)
-
-    # Manually set override (bypass file loading)
-    keybindings._overrides["editor.save"] = KeySequence.parse("f2")
+    keybindings = write_keys(
+        tmp_path,
+        {
+            "editor.save": KeySequence.parse("f2"),
+        },
+    )
 
     host = EditorScreenHost(standalone=True, keybindings=keybindings)
     async with host.run_test() as pilot:
@@ -658,10 +662,12 @@ async def test_override_moves_key_and_updates_labels(tmp_path: Path, monkeypatch
     test_file.write_text("test content")
 
     # Create a keybindings config with save overridden to Ctrl+K
-    keybindings = KeybindingsConfig(config_dir=tmp_path)
-    keybindings._overrides["editor.save"] = KeySequence.parse("ctrl+k")
-
-    # Patch the save action
+    keybindings = write_keys(
+        tmp_path,
+        {
+            "editor.save": KeySequence.parse("ctrl+k"),
+        },
+    )
     monkeypatch.setattr(EditorScreen, "action_save", spy_save)
 
     app = NovaEditApp(path=test_file, keybindings=keybindings)
@@ -681,17 +687,17 @@ async def test_override_moves_key_and_updates_labels(tmp_path: Path, monkeypatch
 
         # Verify the action's shortcut_label shows the new key
         screen = app.screen
-        if isinstance(screen, EditorScreen):
-            save_action = next((a for a in screen.ACTIONS if a.id == "editor.save"), None)
-            assert save_action is not None
-            assert save_action.shortcut_label == "Ctrl+K"
+        assert isinstance(screen, EditorScreen)
+        save_action = next((a for a in screen.ACTIONS if a.id == "editor.save"), None)
+        assert save_action is not None
+        assert save_action.shortcut_label == "Ctrl+K"
 
-            # Verify the hint bar shows the new key
-            hint_bar = app.query_one(HintBar)
-            hint_bar_text = str(hint_bar.render())
-            assert "Ctrl+K  Save" in hint_bar_text
-            # Make sure Ctrl+S Save is not in the hint bar (avoid false positives from Ctrl+Shift+S)
-            assert "Ctrl+S  Save" not in hint_bar_text
+        # Verify the hint bar shows the new key
+        hint_bar = app.query_one(HintBar)
+        hint_bar_text = str(hint_bar.render())
+        assert "Ctrl+K  Save" in hint_bar_text
+        # Make sure Ctrl+S Save is not in the hint bar (avoid false positives from Ctrl+Shift+S)
+        assert "Ctrl+S  Save" not in hint_bar_text
 
 
 @pytest.mark.asyncio
@@ -705,33 +711,37 @@ async def test_empty_override_unmaps_key(tmp_path: Path) -> None:
     test_file.write_text("test content")
 
     # Create a keybindings config with find unmapped (empty override)
-    keybindings = KeybindingsConfig(config_dir=tmp_path)
-    keybindings._overrides["editor.find"] = None  # None means unmapped
+    keybindings = write_keys(
+        tmp_path,
+        {
+            "editor.find": None,
+        },
+    )
 
     app = NovaEditApp(path=test_file, keybindings=keybindings)
     async with app.run_test(size=(200, 24)) as pilot:
         await pilot.pause()
 
         screen = app.screen
-        if isinstance(screen, EditorScreen):
-            # Verify the action has no shortcut
-            find_action = next((a for a in screen.ACTIONS if a.id == "editor.find"), None)
-            assert find_action is not None
-            assert find_action.shortcut is None
-            assert find_action.shortcut_label == ""
+        assert isinstance(screen, EditorScreen)
+        # Verify the action has no shortcut
+        find_action = next((a for a in screen.ACTIONS if a.id == "editor.find"), None)
+        assert find_action is not None
+        assert find_action.shortcut is None
+        assert find_action.shortcut_label == ""
 
-            # Press the default find key (Ctrl+F) - should not show search bar
-            await pilot.press("ctrl+f")
-            await pilot.pause()
+        # Press the default find key (Ctrl+F) - should not show search bar
+        await pilot.press("ctrl+f")
+        await pilot.pause()
 
-            search_bar = screen.query_one(SearchBar)
-            assert search_bar.display is False
+        search_bar = screen.query_one(SearchBar)
+        assert search_bar.display is False
 
-            # Verify the hint bar doesn't show the old key or the unmapped action
-            hint_bar = app.query_one(HintBar)
-            hint_bar_text = str(hint_bar.render())
-            assert "Ctrl+F  Find" not in hint_bar_text  # Avoid matching "Find Next" or "Find Previous"
-            assert "Find…" not in hint_bar_text  # The action text with ellipsis
+        # Verify the hint bar doesn't show the old key or the unmapped action
+        hint_bar = app.query_one(HintBar)
+        hint_bar_text = str(hint_bar.render())
+        assert "Ctrl+F  Find" not in hint_bar_text  # Avoid matching "Find Next" or "Find Previous"
+        assert "Find…" not in hint_bar_text  # The action text with ellipsis
 
 
 @pytest.mark.asyncio
@@ -750,10 +760,12 @@ async def test_override_takes_key_from_another_action(tmp_path: Path, monkeypatc
     test_file.write_text("test content")
 
     # Create a keybindings config with save_as overridden to F2
-    keybindings = KeybindingsConfig(config_dir=tmp_path)
-    keybindings._overrides["editor.save_as"] = KeySequence.parse("f2")
-
-    # Patch the save_as action
+    keybindings = write_keys(
+        tmp_path,
+        {
+            "editor.save_as": KeySequence.parse("f2"),
+        },
+    )
     monkeypatch.setattr(EditorScreen, "action_save_as", spy_save_as)
 
     app = NovaEditApp(path=test_file, keybindings=keybindings)
@@ -798,35 +810,35 @@ async def test_reload_keymap_applies_changed_file(tmp_path: Path, monkeypatch: p
         await pilot.pause()
 
         screen = app.screen
-        if isinstance(screen, EditorScreen):
-            # Verify the override is applied (Ctrl+L)
-            goto_action = next((a for a in screen.ACTIONS if a.id == "editor.goto"), None)
-            assert goto_action is not None
-            assert goto_action.shortcut_label == "Ctrl+L"
+        assert isinstance(screen, EditorScreen)
+        # Verify the override is applied (Ctrl+L)
+        goto_action = next((a for a in screen.ACTIONS if a.id == "editor.goto"), None)
+        assert goto_action is not None
+        assert goto_action.shortcut_label == "Ctrl+L"
 
-            # Rewrite the config with defaults (empty file)
-            config_file.write_text("[bindings]\n")
+        # Rewrite the config with defaults (empty file)
+        config_file.write_text("[bindings]\n")
 
-            # Reload the keybindings config from disk
-            keybindings.reload()
+        # Reload the keybindings config from disk
+        keybindings.reload()
 
-            # Reload the keymap
-            screen.reload_keymap()
-            await pilot.pause()
+        # Reload the keymap
+        screen.reload_keymap()
+        await pilot.pause()
 
-            # Verify the default is restored (Ctrl+G)
-            assert goto_action.shortcut_label == "Ctrl+G"
+        # Verify the default is restored (Ctrl+G)
+        assert goto_action.shortcut_label == "Ctrl+G"
 
-            # Press the restored default key (Ctrl+G)
-            await pilot.press("ctrl+g")
-            await pilot.pause()
+        # Press the restored default key (Ctrl+G)
+        await pilot.press("ctrl+g")
+        await pilot.pause()
 
-            # Press the old overridden key (Ctrl+L) - should not trigger
-            await pilot.press("ctrl+l")
-            await pilot.pause()
+        # Press the old overridden key (Ctrl+L) - should not trigger
+        await pilot.press("ctrl+l")
+        await pilot.pause()
 
-            # Only Ctrl+G should have triggered the action
-            assert calls == ["goto"]
+        # Only Ctrl+G should have triggered the action
+        assert calls == ["goto"]
 
 
 @pytest.mark.asyncio
@@ -845,13 +857,13 @@ async def test_defaults_without_config_equal_req4_table(tmp_path: Path) -> None:
         await pilot.pause()
 
         screen = app.screen
-        if isinstance(screen, EditorScreen):
-            # Build a dict of action_id -> shortcut from the screen's actions
-            labels = {a.id: a.shortcut for a in screen.ACTIONS}
+        assert isinstance(screen, EditorScreen)
+        # Build a dict of action_id -> shortcut from the screen's actions
+        labels = {a.id: a.shortcut for a in screen.ACTIONS}
 
-            # Compare with REQ4_DEFAULTS
-            expected = {action_id: KeySequence.parse(key) for action_id, key in REQ4_DEFAULTS.items()}
-            assert labels == expected
+        # Compare with REQ4_DEFAULTS
+        expected = {action_id: KeySequence.parse(key) for action_id, key in REQ4_DEFAULTS.items()}
+        assert labels == expected
 
 
 @pytest.mark.asyncio
@@ -868,18 +880,18 @@ async def test_goto_bar_displays_when_action_triggered(tmp_path: Path) -> None:
         await pilot.pause()
 
         screen = app.screen
-        if isinstance(screen, EditorScreen):
-            # Initially GotoBar should not be displayed
-            goto_bar = screen.query_one(GotoBar)
-            assert goto_bar.display is False
+        assert isinstance(screen, EditorScreen)
+        # Initially GotoBar should not be displayed
+        goto_bar = screen.query_one(GotoBar)
+        assert goto_bar.display is False
 
-            # Press Ctrl+G to trigger the goto action
-            await pilot.press("ctrl+g")
-            await pilot.pause()
+        # Press Ctrl+G to trigger the goto action
+        await pilot.press("ctrl+g")
+        await pilot.pause()
 
-            # Verify GotoBar is displayed and focused
-            assert goto_bar.display is True
-            assert app.focused is goto_bar
+        # Verify GotoBar is displayed and focused
+        assert goto_bar.display is True
+        assert app.focused is goto_bar
 
 
 @pytest.mark.asyncio
@@ -893,33 +905,37 @@ async def test_key_swallowing_undo_override_moves_key(tmp_path: Path) -> None:
     test_file.write_text("initial content")
 
     # Create keybindings with undo overridden to Ctrl+Shift+Z
-    keybindings = KeybindingsConfig(config_dir=tmp_path)
-    keybindings._overrides["editor.undo"] = KeySequence.parse("ctrl+shift+z")
+    keybindings = write_keys(
+        tmp_path,
+        {
+            "editor.undo": KeySequence.parse("ctrl+shift+z"),
+        },
+    )
 
     app = NovaEditApp(path=test_file, keybindings=keybindings)
     async with app.run_test() as pilot:
         await pilot.pause()
 
         screen = app.screen
-        if isinstance(screen, EditorScreen):
-            # Verify the undo action has the overridden shortcut
-            undo_action = next((a for a in screen.ACTIONS if a.id == "editor.undo"), None)
-            assert undo_action is not None
-            assert undo_action.shortcut == KeySequence.parse("ctrl+shift+z")
+        assert isinstance(screen, EditorScreen)
+        # Verify the undo action has the overridden shortcut
+        undo_action = next((a for a in screen.ACTIONS if a.id == "editor.undo"), None)
+        assert undo_action is not None
+        assert undo_action.shortcut == KeySequence.parse("ctrl+shift+z")
 
-            # Type, then press the old default key (Ctrl+Z): the screen swallows it, so nothing is undone
-            screen.document.editor.focus()
-            await pilot.press("x")
-            await pilot.pause()
-            assert screen.document.editor.text.startswith("x")
-            await pilot.press("ctrl+z")
-            await pilot.pause()
-            assert screen.document.editor.text.startswith("x")
+        # Type, then press the old default key (Ctrl+Z): the screen swallows it, so nothing is undone
+        screen.document.editor.focus()
+        await pilot.press("x")
+        await pilot.pause()
+        assert screen.document.editor.text.startswith("x")
+        await pilot.press("ctrl+z")
+        await pilot.pause()
+        assert screen.document.editor.text.startswith("x")
 
-            # The new key undoes
-            await pilot.press("ctrl+shift+z")
-            await pilot.pause()
-            assert not screen.document.editor.text.startswith("x")
+        # The new key undoes
+        await pilot.press("ctrl+shift+z")
+        await pilot.pause()
+        assert not screen.document.editor.text.startswith("x")
 
 
 @pytest.mark.asyncio
@@ -932,27 +948,31 @@ async def test_key_swallowing_empty_override_unmaps(tmp_path: Path) -> None:
     test_file.write_text("initial content")
 
     # Create keybindings with undo unmapped (None)
-    keybindings = KeybindingsConfig(config_dir=tmp_path)
-    keybindings._overrides["editor.undo"] = None
+    keybindings = write_keys(
+        tmp_path,
+        {
+            "editor.undo": None,
+        },
+    )
 
     app = NovaEditApp(path=test_file, keybindings=keybindings)
     async with app.run_test() as pilot:
         await pilot.pause()
 
         screen = app.screen
-        if isinstance(screen, EditorScreen):
-            # Verify the undo action has no shortcut
-            undo_action = next((a for a in screen.ACTIONS if a.id == "editor.undo"), None)
-            assert undo_action is not None
-            assert undo_action.shortcut is None
+        assert isinstance(screen, EditorScreen)
+        # Verify the undo action has no shortcut
+        undo_action = next((a for a in screen.ACTIONS if a.id == "editor.undo"), None)
+        assert undo_action is not None
+        assert undo_action.shortcut is None
 
-            # Ctrl+Z is swallowed: typed text stays
-            screen.document.editor.focus()
-            await pilot.press("x")
-            await pilot.pause()
-            await pilot.press("ctrl+z")
-            await pilot.pause()
-            assert screen.document.editor.text.startswith("x")
+        # Ctrl+Z is swallowed: typed text stays
+        screen.document.editor.focus()
+        await pilot.press("x")
+        await pilot.pause()
+        await pilot.press("ctrl+z")
+        await pilot.pause()
+        assert screen.document.editor.text.startswith("x")
 
 
 @pytest.mark.asyncio
@@ -980,84 +1000,89 @@ async def test_key_swallowing_non_overridden_key_passes_through(tmp_path: Path, 
         await pilot.pause()
 
         screen = app.screen
-        if isinstance(screen, EditorScreen):
-            # Press the default wrap mode key (F10) - should NOT be swallowed, should trigger action
-            await pilot.press("f10")
-            await pilot.pause()
+        assert isinstance(screen, EditorScreen)
+        # Press the default wrap mode key (F10) - should NOT be swallowed, should trigger action
+        await pilot.press("f10")
+        await pilot.pause()
 
-            # The action should have been triggered
-            assert toggle_wrap_calls == ["toggle_wrap"]
+        # The action should have been triggered
+        assert toggle_wrap_calls == ["toggle_wrap"]
 
 
 @pytest.mark.asyncio
-async def test_key_swallowing_all_editing_actions(tmp_path: Path) -> None:
-    """B1: All six editing actions (Undo, Redo, Cut, Copy, Paste, Select All) swallow old defaults when overridden."""
+async def test_key_swallowing_all_editing_actions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """B1: All six editing actions swallow their old default key when moved; the new key runs the editor action."""
     from nova_editor.app import NovaEditApp
     from nova_widgets.key_types import KeySequence
 
-    # Create a test file
     test_file = tmp_path / "test.txt"
     test_file.write_text("initial content for testing")
 
-    # Create keybindings with all editing actions overridden
-    keybindings = KeybindingsConfig(config_dir=tmp_path)
-    keybindings._overrides["editor.undo"] = KeySequence.parse("ctrl+shift+z")
-    keybindings._overrides["editor.redo"] = KeySequence.parse("ctrl+shift+y")
-    keybindings._overrides["editor.cut"] = KeySequence.parse("ctrl+shift+x")
-    keybindings._overrides["editor.copy"] = KeySequence.parse("ctrl+shift+c")
-    keybindings._overrides["editor.paste"] = KeySequence.parse("ctrl+shift+v")
-    keybindings._overrides["editor.select_all"] = KeySequence.parse("ctrl+shift+a")
+    moved = {
+        "undo": ("ctrl+z", "ctrl+shift+z", "Ctrl+Shift+Z"),
+        "redo": ("ctrl+y", "ctrl+shift+y", "Ctrl+Shift+Y"),
+        "cut": ("ctrl+x", "ctrl+shift+x", "Ctrl+Shift+X"),
+        "copy": ("ctrl+c", "ctrl+shift+c", "Ctrl+Shift+C"),
+        "paste": ("ctrl+v", "ctrl+shift+v", "Ctrl+Shift+V"),
+        "select_all": ("ctrl+a", "ctrl+shift+a", "Ctrl+Shift+A"),
+    }
+    keybindings = write_keys(tmp_path, {f"editor.{name}": KeySequence.parse(new) for name, (_, new, _l) in moved.items()})
 
+    calls: list[str] = []
     app = NovaEditApp(path=test_file, keybindings=keybindings)
     async with app.run_test() as pilot:
         await pilot.pause()
-
         screen = app.screen
-        if isinstance(screen, EditorScreen):
-            # Verify all editing actions have their new shortcuts
-            undo_action = next((a for a in screen.ACTIONS if a.id == "editor.undo"), None)
-            assert undo_action is not None
-            assert undo_action.shortcut_label == "Ctrl+Shift+Z"
+        assert isinstance(screen, EditorScreen)
+        editor = screen.document.editor
+        for name in moved:
+            monkeypatch.setattr(type(editor), f"action_{name}", lambda _self, n=name: calls.append(n))
+        for name, (_old, _new, label) in moved.items():
+            action = next(a for a in screen.ACTIONS if a.id == f"editor.{name}")
+            assert action.shortcut_label == label
 
-            redo_action = next((a for a in screen.ACTIONS if a.id == "editor.redo"), None)
-            assert redo_action is not None
-            assert redo_action.shortcut_label == "Ctrl+Shift+Y"
-
-            cut_action = next((a for a in screen.ACTIONS if a.id == "editor.cut"), None)
-            assert cut_action is not None
-            assert cut_action.shortcut_label == "Ctrl+Shift+X"
-
-            copy_action = next((a for a in screen.ACTIONS if a.id == "editor.copy"), None)
-            assert copy_action is not None
-            assert copy_action.shortcut_label == "Ctrl+Shift+C"
-
-            paste_action = next((a for a in screen.ACTIONS if a.id == "editor.paste"), None)
-            assert paste_action is not None
-            assert paste_action.shortcut_label == "Ctrl+Shift+V"
-
-            select_all_action = next((a for a in screen.ACTIONS if a.id == "editor.select_all"), None)
-            assert select_all_action is not None
-            assert select_all_action.shortcut_label == "Ctrl+Shift+A"
-
-            # Press all the old default keys - they should all be swallowed
-            screen.document.editor.focus()
-            # If they weren't swallowed, they would reach the widget and cause side effects
-            await pilot.press("ctrl+z")
+        editor.focus()
+        for old, _new, _label in moved.values():
+            await pilot.press(old)
             await pilot.pause()
-            await pilot.press("ctrl+y")
-            await pilot.pause()
-            await pilot.press("ctrl+x")
-            await pilot.pause()
-            await pilot.press("ctrl+c")
-            await pilot.pause()
-            await pilot.press("ctrl+v")
-            await pilot.pause()
-            await pilot.press("ctrl+a")
-            await pilot.pause()
+        assert calls == []  # the old keys never reached the widget
+        assert editor.selected_text == ""
+        assert editor.text == "initial content for testing"
 
-            # The keys were swallowed, so they didn't reach the widget: nothing selected, nothing cut
-            assert screen.document.editor.selected_text == ""
-            assert screen.document.editor.text == "initial content for testing"
+        for _old, new, _label in moved.values():
+            await pilot.press(new)
+            await pilot.pause()
+        assert calls == list(moved)
+
+
+@pytest.mark.asyncio
+async def test_input_bar_keeps_its_own_keys(tmp_path: Path) -> None:
+    """Ctrl+A in a bar moves the cursor to the start (as the Input does) and does not select the document."""
+    from textual.widgets import Input
+
+    from nova_editor.app import NovaEditApp
+
+    test_file = tmp_path / "test.txt"
+    test_file.write_text("hello world")
+    app = NovaEditApp(path=test_file)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, EditorScreen)
+        await pilot.press("ctrl+f")
+        await pilot.pause()
+        bar = screen.query_one(SearchBar)
+        assert isinstance(app.focused, Input)
+        await pilot.press("a", "b", "c")
+        assert app.focused.cursor_position == 3
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        assert app.focused.cursor_position == 0
+        assert screen.document.editor.selected_text == ""
+        await pilot.press("ctrl+e", "ctrl+w")
+        await pilot.pause()
+        assert app.focused.value == ""  # Ctrl+W deleted the word, it did not close the editor
+        assert bar.display
 
 
 @pytest.mark.asyncio

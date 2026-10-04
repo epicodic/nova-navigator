@@ -42,10 +42,11 @@ async def test_the_hint_bar_renders_every_key(tmp_path: Path) -> None:
     path = tmp_path / "f.txt"
     path.write_text("one\n")
     app = NovaEditApp(path=path)
-    async with app.run_test(size=(200, 24)) as pilot:
+    # The nine hints need 160 columns: the label is the menu text of the action, which the hint bar cannot shorten.
+    async with app.run_test(size=(160, 24)) as pilot:
         await pilot.pause()
         hint_bar = app.query_one(HintBar)
-        assert hint_bar.region.width == 200
+        assert hint_bar.region.width == 160
         text = str(hint_bar.render())
         for key, label in FEATURES.values():
             shown_key = str(KeySequence.parse(key).format(KeyFormatStyle.CLASSIC))
