@@ -160,6 +160,24 @@ async def test_menu_items_are_the_action_objects() -> None:
 
 
 @pytest.mark.asyncio
+async def test_hosted_screen_has_four_menus_in_order_with_req2_items() -> None:
+    """A hosted screen shows File, Edit, Search, View in order with the REQ-2 items."""
+    host = EditorScreenHost(standalone=True)
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        screen = host.screen_instance
+        assert screen is not None
+        menus = list(screen.menu_bar.actions)
+        assert [m.text for m in menus] == ["File", "Edit", "Search", "View"]
+        assert [[a.id for a in m.actions] for m in menus] == [
+            ["editor.open", "editor.save", "editor.save_as", "editor.reload", "editor.quit"],
+            ["editor.undo", "editor.redo", "editor.cut", "editor.copy", "editor.paste", "editor.select_all"],
+            ["editor.find", "editor.find_next", "editor.find_previous", "editor.goto"],
+            ["editor.line_numbers", "editor.wrap_mode"],
+        ]
+
+
+@pytest.mark.asyncio
 async def test_standalone_shows_quit_embedded_shows_close() -> None:
     """Standalone mode shows Quit in File menu, embedded mode shows Close only."""
     from nova_widgets.menu import Menu
