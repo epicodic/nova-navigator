@@ -17,7 +17,7 @@ from textual.screen import Screen
 from textual.widgets import Input, Static
 
 from nova_widgets.action import Action
-from nova_widgets.file_provider import FileProvider, InMemoryFileProvider
+from nova_widgets.file_provider import FileProvider, default_file_provider
 from nova_widgets.key_types import KeyChord, KeySequence
 from nova_widgets.keybindings_config import KeybindingsConfig
 from nova_widgets.keymap import HintBar, KeymapRegistry
@@ -149,7 +149,7 @@ class EditorScreen(Screen[None]):
         Args:
             path: The file to open, or `None` for an empty buffer.
             keybindings: User keybinding overrides; `None` for defaults.
-            file_provider: FileProvider for the file dialog; defaults to InMemoryFileProvider.
+            file_provider: FileProvider for the file dialogs; defaults to the local file system provider.
             soft_wrap: Start with soft wrapping enabled.
             config: Thresholds of the lazy document; `None` for defaults.
             editor_class: The editor widget class (allows injection for testing).
@@ -159,7 +159,7 @@ class EditorScreen(Screen[None]):
         """
         super().__init__()
         self._keybindings = keybindings
-        self.file_provider = file_provider or InMemoryFileProvider()
+        self.file_provider = file_provider or default_file_provider()
         self.standalone = standalone
         self._poll_seconds = poll_seconds
         self._quit_wait_seconds = quit_wait_seconds

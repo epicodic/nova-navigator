@@ -53,7 +53,7 @@ class NovaEditApp(App[None]):
             path: The file to open, or `None` for an empty buffer.
             file_path: Alias for `path` (for backward compatibility).
             keybindings: User keybinding overrides; `None` for defaults.
-            file_provider: FileProvider for the file dialog; defaults to InMemoryFileProvider.
+            file_provider: FileProvider for the file dialogs; defaults to the local file system provider.
             soft_wrap: Start with soft wrapping.
             config: Thresholds of the lazy document (`None`: the defaults).
             editor_class: The editor widget class; the benchmark harness passes a probe subclass.
