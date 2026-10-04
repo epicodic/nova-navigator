@@ -12,6 +12,8 @@ from nova_editor.screen import EditorScreen
 from nova_editor.search_bar import SearchBar
 from nova_widgets.keybindings_config import KeybindingsConfig
 
+from .dialog_helpers import open_file_dialog
+from .helpers_view import wait_until
 from .screen_host import EditorScreenHost, write_keys
 
 
@@ -37,23 +39,21 @@ async def test_editor_screen_composes_menu_bar_and_hint_bar() -> None:
 
 @pytest.mark.asyncio
 async def test_editor_screen_composes_all_bars() -> None:
-    """The screen composes GotoBar, PathBar, SaveBar, and SearchBar."""
+    """The screen composes GotoBar, SaveBar, and SearchBar."""
     host = EditorScreenHost(standalone=True)
     async with host.run_test() as pilot:
         await pilot.pause()
         screen = host.screen_instance
         assert screen is not None
 
-        from nova_editor.bars import GotoBar, PathBar, SaveBar
+        from nova_editor.bars import GotoBar, SaveBar
         from nova_editor.search_bar import SearchBar
 
         goto_bars = screen.query(GotoBar)
-        path_bars = screen.query(PathBar)
         save_bars = screen.query(SaveBar)
         search_bars = screen.query(SearchBar)
 
         assert len(goto_bars) > 0, "GotoBar not found"
-        assert len(path_bars) > 0, "PathBar not found"
         assert len(save_bars) > 0, "SaveBar not found"
         assert len(search_bars) > 0, "SearchBar not found"
 
@@ -348,8 +348,8 @@ async def test_keybindings_config_applied_to_actions(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_action_save_when_file_has_no_path() -> None:
-    """Save action shows PathBar when file has no path."""
+async def test_action_save_when_file_has_no_path_opens_the_save_dialog() -> None:
+    """Save action opens the file dialog when file has no path."""
     host = EditorScreenHost(path=None, standalone=True)
     async with host.run_test() as pilot:
         await pilot.pause()
@@ -361,19 +361,12 @@ async def test_action_save_when_file_has_no_path() -> None:
 
         # Call save action
         screen.action_save()
-        await pilot.pause()
-
-        # PathBar should be displayed and focused
-        from nova_editor.bars import PathBar
-
-        path_bars = screen.query(PathBar)
-        assert len(path_bars) > 0
-        assert path_bars.first().display is True
+        await wait_until(pilot, lambda: open_file_dialog(host) is not None)
 
 
 @pytest.mark.asyncio
-async def test_action_save_as_shows_path_bar() -> None:
-    """Save As action displays PathBar."""
+async def test_action_save_as_opens_the_save_dialog() -> None:
+    """Save As action opens the file dialog."""
     host = EditorScreenHost(standalone=True)
     async with host.run_test() as pilot:
         await pilot.pause()
@@ -382,14 +375,7 @@ async def test_action_save_as_shows_path_bar() -> None:
 
         # Call save as action
         screen.action_save_as()
-        await pilot.pause()
-
-        # PathBar should be displayed
-        from nova_editor.bars import PathBar
-
-        path_bars = screen.query(PathBar)
-        assert len(path_bars) > 0
-        assert path_bars.first().display is True
+        await wait_until(pilot, lambda: open_file_dialog(host) is not None)
 
 
 @pytest.mark.asyncio
@@ -464,32 +450,6 @@ async def test_confirm_bar_chosen_reload_calls_editor_reload() -> None:
         await pilot.pause()
 
         # The confirmation should be handled
-
-
-@pytest.mark.asyncio
-async def test_input_submitted_path_bar_calls_save_to() -> None:
-    """Input.Submitted message from PathBar calls save flow."""
-    from textual.widgets import Input
-
-    host = EditorScreenHost(standalone=True)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        screen = host.screen_instance
-        assert screen is not None
-
-        path_bar = screen.query_one("#path_bar", Input)
-
-        # Show the path bar
-        path_bar.display = True
-        await pilot.pause()
-
-        # Simulate user submitting a path
-        test_path = "/home/test.txt"
-        path_bar.post_message(Input.Submitted(path_bar, value=test_path))
-        await pilot.pause()
-
-        # The path bar should be hidden
-        assert path_bar.display is False
 
 
 @pytest.mark.asyncio
@@ -1107,7 +1067,6 @@ async def test_input_bar_keeps_its_own_keys(tmp_path: Path) -> None:
 async def test_menu_items_run_their_actions(tmp_path: Path) -> None:
     """A triggered menu item runs the same flow as its key (every item except Open)."""
     from nova_editor.app import NovaEditApp
-    from nova_editor.bars import PathBar
     from nova_widgets.menu import Menu
 
     test_file = tmp_path / "test.txt"
@@ -1138,7 +1097,9 @@ async def test_menu_items_run_their_actions(tmp_path: Path) -> None:
         await trigger("editor.goto")
         assert screen.query_one(GotoBar).display
         await trigger("editor.save_as")
-        assert screen.query_one(PathBar).display
+        await wait_until(pilot, lambda: open_file_dialog(app) is not None)
+        await pilot.press("escape")
+        await wait_until(pilot, lambda: open_file_dialog(app) is None)
         await trigger("editor.save")
         assert editor.file_path == test_file
         await trigger("editor.reload")

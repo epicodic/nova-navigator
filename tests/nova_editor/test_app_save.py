@@ -13,11 +13,12 @@ from textual import events
 from textual.pilot import Pilot
 
 from nova_editor.app import NovaEditApp, main
-from nova_editor.bars import ConfirmBar, PathBar, SaveBar
+from nova_editor.bars import ConfirmBar, SaveBar
 from nova_editor.core.byte_source import ChangeKind
 from nova_editor.core.save import SaveIo
 from nova_editor.document._lazy_document import LazyDocument
 from nova_editor.widget import ExternalCheck, NovaTextArea
+from tests.nova_editor.dialog_helpers import has_dialog, open_file_dialog
 from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.save_widget_helpers import SETTINGS, Gate, wait_saved
 
@@ -36,8 +37,8 @@ def make_file(tmp_path: Path, text: str = "one\n") -> Path:
     return path
 
 
-def bars(app: NovaEditApp) -> tuple[SaveBar, ConfirmBar, PathBar]:
-    return app.query_one(SaveBar), app.query_one(ConfirmBar), app.query_one(PathBar)
+def bars(app: NovaEditApp) -> tuple[SaveBar, ConfirmBar]:
+    return app.query_one(SaveBar), app.query_one(ConfirmBar)
 
 
 def counting_clock(save_bar: SaveBar, now: list[float]) -> list[int]:
@@ -68,58 +69,10 @@ async def test_ctrl_s_saves_an_edited_file(tmp_path: Path) -> None:
         assert app.editor is not None
         await wait_until(pilot, lambda: path.read_text() == "xone\n")
         await wait_saved(pilot, app.editor)
-        save_bar, _, _ = bars(app)
+        save_bar, _ = bars(app)
         assert save_bar.display
         assert save_bar.line.startswith("Saved")
         assert not app.editor.modified
-
-
-@pytest.mark.asyncio
-async def test_ctrl_s_without_a_file_opens_the_path_bar() -> None:
-    app = NovaEditApp(file_path=None)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("a", "ctrl+s")
-        await pilot.pause()
-        _, _, path_bar = bars(app)
-        assert path_bar.display
-        assert app.focused is path_bar
-
-
-@pytest.mark.asyncio
-async def test_f2_opens_the_prefilled_path_bar_and_enter_saves_as(tmp_path: Path) -> None:
-    path = make_file(tmp_path)
-    other = tmp_path / "other.txt"
-    app = NovaEditApp(file_path=path)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("ctrl+shift+s")
-        await pilot.pause()
-        _, _, path_bar = bars(app)
-        assert path_bar.display
-        assert path_bar.value == str(path)
-        path_bar.value = str(other)
-        await pilot.press("enter")
-        assert app.editor is not None
-        await wait_until(pilot, other.exists)
-        await wait_saved(pilot, app.editor)
-        assert other.read_text() == "one\n"
-        assert not path_bar.display
-        assert app.editor.file_path == other
-
-
-@pytest.mark.asyncio
-async def test_f2_then_escape_closes_the_path_bar(tmp_path: Path) -> None:
-    app = NovaEditApp(file_path=make_file(tmp_path))
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("ctrl+shift+s")
-        await pilot.pause()
-        await pilot.press("escape")
-        await pilot.pause()
-        _, _, path_bar = bars(app)
-        assert not path_bar.display
-        assert app.focused is app.editor
 
 
 @pytest.mark.asyncio
@@ -144,7 +97,7 @@ async def test_f5_of_a_modified_document_asks_first(tmp_path: Path) -> None:
         path.write_text("changed on disk\n")
         await pilot.press("f5")
         await pilot.pause()
-        _, confirm, _ = bars(app)
+        _, confirm = bars(app)
         assert confirm.display
         assert app.editor is not None
         assert app.editor.text == "xone\n"
@@ -175,7 +128,7 @@ async def test_escape_cancels_a_running_save(tmp_path: Path, monkeypatch: pytest
             await pilot.press("escape")
             gate.release()
             await wait_saved(pilot, app.editor)
-            save_bar, _, _ = bars(app)
+            save_bar, _ = bars(app)
             assert "cancel" in save_bar.line.lower()
             assert path.read_text() == "a" * 100 + "\n"
     finally:
@@ -213,7 +166,7 @@ async def test_save_bar_shows_progress_while_the_save_runs(tmp_path: Path, monke
             await pilot.pause()
             await pilot.press("x", "ctrl+s")
             await wait_until(pilot, gate.reached.is_set)
-            save_bar, _, _ = bars(app)
+            save_bar, _ = bars(app)
             await wait_until(pilot, lambda: save_bar.line.startswith("Saving"))
             assert re.fullmatch(r"Saving {2}\S+ / \S+ (B|KiB|MiB|GiB) {2}\d+ % {2}Esc cancels", save_bar.line), save_bar.line
             gate.release()
@@ -230,7 +183,7 @@ async def test_save_bar_phases_and_units(tmp_path: Path) -> None:
         await pilot.pause()
         editor = app.editor
         assert editor is not None
-        save_bar, _, _ = bars(app)
+        save_bar, _ = bars(app)
         gib = 1024**3
         editor.post_message(NovaTextArea.SaveProgress("writing", int(1.2 * gib), 5 * gib, editor))
         await wait_until(pilot, lambda: save_bar.line.startswith("Saving"))
@@ -248,7 +201,7 @@ async def test_result_line_disappears_after_four_seconds(tmp_path: Path) -> None
     async with app.run_test() as pilot:
         await pilot.pause()
         now = [1000.0]
-        save_bar, _, _ = bars(app)
+        save_bar, _ = bars(app)
         reads = counting_clock(save_bar, now)
         await pilot.press("x", "ctrl+s")
         await wait_until(pilot, lambda: save_bar.line.startswith("Saved"))
@@ -271,7 +224,7 @@ async def test_failure_stays_until_a_key_is_pressed(tmp_path: Path, monkeypatch:
     async with app.run_test() as pilot:
         await pilot.pause()
         now = [1000.0]
-        save_bar, _, _ = bars(app)
+        save_bar, _ = bars(app)
         save_bar.clock = lambda: now[0]
         await pilot.press("x", "ctrl+s")
         await wait_until(pilot, lambda: "failed" in save_bar.line.lower())
@@ -304,10 +257,11 @@ async def test_unreadable_file_refuses_plain_save(tmp_path: Path) -> None:
     try:
         async with app.run_test() as pilot:
             await pilot.pause()
-            _, _, path_bar = bars(app)
             await pilot.press("x", "ctrl+s")
-            await wait_until(pilot, lambda: path_bar.display)  # only a save as is offered
+            await wait_until(pilot, lambda: open_file_dialog(app) is not None)  # only a save as is offered
             assert any("Not saved" in n.message for n in app._notifications)
+            await pilot.press("escape")
+            await wait_until(pilot, lambda: not has_dialog(app))
     finally:
         path.chmod(0o644)
     assert path.read_text() == "precious"
@@ -320,7 +274,7 @@ async def test_new_file_that_exists_at_save_time_asks_for_confirmation(tmp_path:
     async with app.run_test() as pilot:
         await pilot.pause()
         path.write_text("from elsewhere")
-        _, confirm, _ = bars(app)
+        _, confirm = bars(app)
         await pilot.press("h", "i", "ctrl+s")
         await wait_until(pilot, lambda: confirm.display)
         assert confirm.kind is ChangeKind.CREATED
@@ -342,7 +296,7 @@ async def test_confirm_bar_keys_for_an_external_change(tmp_path: Path) -> None:
         assert app.editor is not None
         await pilot.press("x")
         path.write_text("changed on disk, longer\n")
-        _, confirm, path_bar = bars(app)
+        _, confirm = bars(app)
         await pilot.press("ctrl+s")
         await wait_until(pilot, lambda: confirm.display)
         assert path.read_text() == "changed on disk, longer\n"
@@ -355,11 +309,9 @@ async def test_confirm_bar_keys_for_an_external_change(tmp_path: Path) -> None:
         await pilot.press("ctrl+s")
         await wait_until(pilot, lambda: confirm.display)
         await pilot.press("a")
-        await pilot.pause()
-        assert path_bar.display
+        await wait_until(pilot, lambda: open_file_dialog(app) is not None)
         assert not confirm.display
-        path_bar.value = str(other)
-        await pilot.press("enter")
+        await pilot.press("ctrl+e", "ctrl+u", *"other.txt", "enter")
         await wait_until(pilot, other.exists)
         await wait_saved(pilot, app.editor)
         assert other.read_text() == "xone\n"
@@ -374,7 +326,7 @@ async def test_confirm_bar_overwrite_key(tmp_path: Path) -> None:
         assert app.editor is not None
         await pilot.press("x")
         path.write_text("changed on disk, longer\n")
-        _, confirm, _ = bars(app)
+        _, confirm = bars(app)
         await pilot.press("ctrl+s")
         await wait_until(pilot, lambda: confirm.display)
         await pilot.press("o")
@@ -392,7 +344,7 @@ async def test_confirm_bar_reload_key(tmp_path: Path) -> None:
         assert app.editor is not None
         await pilot.press("x")
         path.write_text("changed on disk, longer\n")
-        _, confirm, _ = bars(app)
+        _, confirm = bars(app)
         await pilot.press("ctrl+s")
         await wait_until(pilot, lambda: confirm.display)
         await pilot.press("r")
@@ -490,7 +442,7 @@ async def test_committed_failure_tells_the_file_was_written(tmp_path: Path, monk
     app = NovaEditApp(file_path=path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        save_bar, _, _ = bars(app)
+        save_bar, _ = bars(app)
         await pilot.press("x", "ctrl+s")
         await wait_until(pilot, lambda: "failed" in save_bar.line.lower())
         assert "The file was written; press F5 to reload" in save_bar.line
@@ -512,7 +464,7 @@ async def test_poll_applies_its_result_on_the_ui_thread(tmp_path: Path, monkeypa
     monkeypatch.setattr(NovaTextArea, "_fail_source", recording)
     async with app.run_test() as pilot:
         await pilot.pause()
-        _, confirm, _ = bars(app)
+        _, confirm = bars(app)
         path.write_text("changed on disk, longer\n")
         await wait_until(pilot, lambda: confirm.display)
         assert confirm.kind is not ChangeKind.UNCHANGED
@@ -526,7 +478,7 @@ async def test_app_focus_runs_the_check(tmp_path: Path) -> None:
     app.POLL_SECONDS = 1000.0
     async with app.run_test() as pilot:
         await pilot.pause()
-        _, confirm, _ = bars(app)
+        _, confirm = bars(app)
         path.write_text("changed on disk, longer\n")
         await pilot.pause(0.1)
         assert not confirm.display
@@ -551,7 +503,7 @@ async def test_a_change_seen_during_a_save_is_announced_when_the_save_does_not_c
         await pilot.pause()
         editor = app.editor
         assert editor is not None
-        _, confirm, _ = bars(app)
+        _, confirm = bars(app)
         await pilot.press("x", "ctrl+s")
         assert gate.reached.wait(10.0)
         editor._fail_source("the file changed on disk (modified)", ChangeKind.MODIFIED)  # a read of the stale file during the save
@@ -576,7 +528,7 @@ async def test_a_change_seen_during_a_save_is_dropped_when_the_save_commits(tmp_
         await pilot.pause()
         editor = app.editor
         assert editor is not None
-        _, confirm, _ = bars(app)
+        _, confirm = bars(app)
         await pilot.press("x", "ctrl+s")
         assert gate.reached.wait(10.0)
         editor._fail_source("the file changed on disk (modified)", ChangeKind.MODIFIED)
@@ -596,7 +548,7 @@ async def test_a_source_changed_message_that_arrives_after_the_save_is_ignored(t
         await pilot.pause()
         editor = app.editor
         assert editor is not None
-        _, confirm, _ = bars(app)
+        _, confirm = bars(app)
         await pilot.press("x", "ctrl+s")
         await wait_saved(pilot, editor)
         # the message was posted while the save ran and is handled only now: the save already rebased the document onto its own file
