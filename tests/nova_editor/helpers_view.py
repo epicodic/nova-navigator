@@ -455,16 +455,29 @@ class GatedLineSource:
 _GATES: weakref.WeakKeyDictionary[NovaTextArea, GatedLineSource] = weakref.WeakKeyDictionary()
 
 
-def open_with_gated_line_scan(tmp_path: Path, rows: int = 3000, *, threshold: int | None = 2048, delay: float = 0.0, config: LazyConfig | None = None) -> tuple[NovaTextArea, Path]:
+def open_with_gated_line_scan(
+    tmp_path: Path,
+    rows: int = 3000,
+    *,
+    threshold: int | None = 2048,
+    delay: float = 0.0,
+    config: LazyConfig | None = None,
+    show_line_numbers: bool = False,
+) -> tuple[NovaTextArea, Path]:
     """Open a file of `rows` short rows ("row N") whose line scan is held back at byte `threshold` until `release_line_scan(area)`.
 
     Returns:
         The widget (not mounted yet) and the file path. With `threshold=None` the scan is never held back (use `delay` to slow it).
+        show_line_numbers: show the gutter from the start.
     """
     path = tmp_path / "rows.txt"
     path.write_bytes("".join(f"row {i}\n" for i in range(rows)).encode())
     source = GatedLineSource(path, threshold=threshold, delay=delay)
-    area = NovaTextArea.open(source, config=replace(config or LazyConfig(**LOWERED_OPTIONS), sync_scan_limit=0))  # a gated scan needs the background thread
+    area = NovaTextArea.open(
+        source,
+        config=replace(config or LazyConfig(**LOWERED_OPTIONS), sync_scan_limit=0),
+        show_line_numbers=show_line_numbers,
+    )  # a gated scan needs the background thread
     _GATES[area] = source
     return area, path
 
