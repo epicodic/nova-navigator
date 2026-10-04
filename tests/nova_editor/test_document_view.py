@@ -13,7 +13,7 @@ from nova_editor.timed_text_area import TimedNovaTextArea
 
 
 def _open(path: Path | None) -> tuple[DocumentView, str | None]:
-    return DocumentView.open(path, editor_class=TimedNovaTextArea, soft_wrap=False, config=None, timing_file=None)
+    return DocumentView.open(path, editor_class=TimedNovaTextArea, soft_wrap=False, show_line_numbers=True, config=None, timing_file=None)
 
 
 def test_no_path_gives_an_empty_loaded_document() -> None:
@@ -74,5 +74,18 @@ def test_two_views_do_not_share_state() -> None:
 
 @pytest.mark.parametrize("soft_wrap", [False, True])
 def test_the_start_wrap_is_given_to_the_widget(soft_wrap: bool) -> None:
-    view, _ = DocumentView.open(None, editor_class=TimedNovaTextArea, soft_wrap=soft_wrap, config=None, timing_file=None)
+    view, _ = DocumentView.open(None, editor_class=TimedNovaTextArea, soft_wrap=soft_wrap, show_line_numbers=True, config=None, timing_file=None)
     assert view.editor.soft_wrap is soft_wrap
+
+
+@pytest.mark.parametrize("show_line_numbers", [False, True])
+def test_the_start_gutter_is_given_to_the_widget(show_line_numbers: bool) -> None:
+    view, _ = DocumentView.open(None, editor_class=TimedNovaTextArea, soft_wrap=False, show_line_numbers=show_line_numbers, config=None, timing_file=None)
+    assert view.editor.show_line_numbers is show_line_numbers
+
+
+def test_the_start_gutter_reaches_a_file_widget(tmp_path: Path) -> None:
+    path = tmp_path / "f.txt"
+    path.write_text("one\n")
+    view, _ = _open(path)
+    assert view.editor.show_line_numbers is True

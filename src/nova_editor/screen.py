@@ -31,7 +31,7 @@ from .document_view import DocumentView
 from .editor_actions import build_editor_actions
 from .editor_menus import build_menu_bar
 from .search_bar import SearchBar, SearchStatus
-from .status_line import StatusLine, StatusState
+from .status_line import StatusLine, StatusState, byte_percent, row_is_known
 from .timed_text_area import TimedNovaTextArea
 from .widget import ExternalCheck, NovaTextArea
 
@@ -174,6 +174,7 @@ class EditorScreen(Screen[None]):
             path,
             editor_class=editor_class,
             soft_wrap=soft_wrap,
+            show_line_numbers=True,
             config=config,
             timing_file=os.environ.get("NOVA_EDIT_TIMING_FILE"),
         )
@@ -301,16 +302,20 @@ class EditorScreen(Screen[None]):
         editor = self.document.editor
         row, column = editor.cursor_location
         cursor_state, _ = editor.peek_cursor_state()
-        exact = editor.line_count_exact
+        snapshot = editor.document.snapshot()
         progress = editor.pending_progress
+        byte_offset = editor.cursor_byte_offset
+        file_path = self.document.file_path
         return StatusState(
-            line=row + 1,
+            file_name=None if file_path is None else file_path.name,
+            line=row + 1 if row_is_known(row, snapshot.count, snapshot.complete) else None,
             column=column + 1,
             column_kind=_column_kind(cursor_state),
-            byte_offset=editor.cursor_byte_offset,
-            line_count=editor.line_count,
-            line_count_exact=exact,
-            indexing_percent=100 if exact else min(99, int(editor.indexing_progress * 100)),
+            byte_offset=byte_offset,
+            byte_percent=byte_percent(byte_offset, editor.document.length),
+            line_count=snapshot.count,
+            line_count_exact=snapshot.complete,
+            indexing_percent=100 if snapshot.complete else min(99, int(editor.indexing_progress * 100)),
             line_ending=editor.line_ending,
             modified=editor.modified,
             new_file=self.document.load_state == "new",
