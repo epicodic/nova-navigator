@@ -6,11 +6,12 @@ from collections.abc import Iterable
 from typing import Any
 
 from textual.app import App
+from textual.screen import Screen
 from textual.widgets import Input
 
 from nova_editor import search_bar
-from nova_editor.app import NovaEditApp
 from nova_editor.bars import GotoTarget, parse_goto
+from nova_editor.screen import EditorScreen
 from nova_editor.search_bar import SearchBar, SearchStatus
 from nova_editor.widget import NovaTextArea
 
@@ -37,20 +38,25 @@ def test_new_bindings_do_not_collide() -> None:
             out.extend(k.strip() for k in spec.split(","))
         return out
 
-    new_keys = ("f4", "ctrl+g", "f2", "f5", "f7", "f3", "shift+f3")
-    existing = keys(NovaTextArea.BINDINGS) + [k for k in keys(NovaEditApp.BINDINGS) if k not in (*new_keys, "escape")] + keys(App.BINDINGS) + keys(Input.BINDINGS)
+    screen = EditorScreen()
+    screen_keys = {a.id: a.initial_shortcut for a in screen.ACTIONS}
+    new_ids = ("editor.wrap_mode", "editor.goto", "editor.save_as", "editor.reload", "editor.find", "editor.find_next", "editor.find_previous")
+    new_keys = [str(screen_keys[action_id]).lower() for action_id in new_ids]
+    assert new_keys == ["f10", "ctrl+g", "ctrl+shift+s", "f5", "ctrl+f", "f3", "shift+f3"]
+    existing = keys(NovaTextArea.BINDINGS) + keys(App.BINDINGS) + keys(Input.BINDINGS)
     for new in new_keys:
         assert new not in existing, new
-    app_keys = keys(NovaEditApp.BINDINGS)
-    for new in new_keys:
-        assert app_keys.count(new) == 1, new
-    # Escape: the widget cancels a pending jump (active only then), the app cancels a running save (active only then)
+    # every key of the screen belongs to exactly one action
+    shortcuts = [str(shortcut) for shortcut in screen_keys.values() if shortcut is not None]
+    assert len(shortcuts) == len(set(shortcuts))
+    # Escape: the widget cancels a pending jump (active only then), the screen cancels a running save (active only then)
+    screen_binding_keys = keys(EditorScreen.BINDINGS)
     assert keys(NovaTextArea.BINDINGS).count("escape") == 1
-    assert app_keys.count("escape") == 1
-    assert NovaEditApp.check_action is not App.check_action
+    assert screen_binding_keys.count("escape") == 1
+    assert EditorScreen.check_action is not Screen.check_action
     # Alt+C toggles the case in the search bar and is used nowhere else
     assert keys(SearchBar.BINDINGS).count("alt+c") == 1
-    for owner in (NovaTextArea.BINDINGS, NovaEditApp.BINDINGS, App.BINDINGS, Input.BINDINGS):
+    for owner in (NovaTextArea.BINDINGS, EditorScreen.BINDINGS, App.BINDINGS, Input.BINDINGS):
         assert "alt+c" not in keys(owner)
 
 
@@ -69,7 +75,7 @@ def test_select_all_moved_off_f7_and_is_still_reachable() -> None:
     assert "f7" not in [key for key, _ in area]
     assert sorted(key for key, action in area if action == "select_all") == ["ctrl+shift+a", "f8"]
     # f8 and ctrl+shift+a have no other meaning in the editor or the app
-    others = [key for key, action in area + binding_pairs(NovaEditApp.BINDINGS) + binding_pairs(App.BINDINGS) if action != "select_all"]
+    others = [key for key, action in area + binding_pairs(EditorScreen.BINDINGS) + binding_pairs(App.BINDINGS) if action != "select_all"]
     assert "f8" not in others
     assert "ctrl+shift+a" not in others
 
@@ -82,9 +88,10 @@ def test_search_bar_module_surface() -> None:
     assert methods == ["clear", "show_progress", "show_result"]
 
 
-def test_app_bindings_name_existing_actions() -> None:
-    """Every binding action dispatches to an ``action_<name>`` method (no ``action_`` prefix in the binding)."""
-    for b in NovaEditApp.BINDINGS:
-        action = b.action
-        assert not action.startswith("action_"), action
-        assert hasattr(NovaEditApp, f"action_{action}"), action
+def test_every_action_name_has_a_handler() -> None:
+    """Every `Action.action` of the screen dispatches to an `action_<name>` method of the screen or of the editor widget."""
+    for action in EditorScreen().ACTIONS:
+        name = action.action
+        assert name is not None
+        assert not name.startswith("action_"), name
+        assert hasattr(EditorScreen, f"action_{name}") or hasattr(NovaTextArea, f"action_{name}"), name

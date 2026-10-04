@@ -22,7 +22,7 @@ async def test_large_file_opens_lazily_and_is_editable(tmp_path: Path) -> None:
         assert app.editor is not None
         assert isinstance(app.editor.document, LazyDocument)
         assert not app.editor.read_only
-        await pilot.press("f4")
+        await pilot.press("f10")
         await pilot.pause()
         assert app.editor.soft_wrap is True
         # Test goto bar visibility
@@ -51,8 +51,8 @@ async def test_small_file_opens_on_the_lazy_document_and_is_editable(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_f4_toggles_wrap(tmp_path: Path) -> None:
-    """Test that F4 toggle wrap action works."""
+async def test_f10_toggles_wrap(tmp_path: Path) -> None:
+    """Test that F10 toggle wrap action works."""
     path = make_mixed(tmp_path / "m.txt")
     app = NovaEditApp(file_path=path)
     async with app.run_test() as pilot:
@@ -62,14 +62,14 @@ async def test_f4_toggles_wrap(tmp_path: Path) -> None:
         # Initial wrap state is False
         initial_wrap = app.editor.soft_wrap
 
-        await pilot.press("f4")
+        await pilot.press("f10")
         await pilot.pause()
 
         # Wrap state should be toggled
         assert app.editor.soft_wrap != initial_wrap
 
         # Press again to toggle back
-        await pilot.press("f4")
+        await pilot.press("f10")
         await pilot.pause()
 
         # Should be back to initial state

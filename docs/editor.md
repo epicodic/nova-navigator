@@ -304,8 +304,8 @@ class MyEditorApp(App):
 - `goto_line(line)` — go to a 1-based line; returns `None`, and a line the scan has not reached stays pending.
 - `goto_byte(offset)` — go to an absolute byte offset; returns `None`, and an offset beyond the scanned frontier stays pending.
 - `cancel_pending()` — cancel a pending jump or deferred cursor operation; the action is bound to Escape while one is pending or a search runs.
-- `toggle_wrap()` — flip `soft_wrap`; `nova_edit` binds it to F4.
-- `select_all` is bound to `ctrl+shift+a` and `f8`; the stock binding was `f7` only, and F7 belongs to the search of `nova_edit`.
+- `toggle_wrap()` — flip `soft_wrap`; `nova_edit` binds it to F10.
+- `select_all` is bound to `ctrl+shift+a` and `f8`; the stock binding was `f7` only, and Ctrl+F belongs to the search of `nova_edit`.
 
 ### Saving, reloading, external changes
 
@@ -562,7 +562,7 @@ Checkable menu items are kept in sync with the widget's reactive properties (`so
 ### StatusLine
 
 `StatusLine` displays the editor state on one row.
-The app builds a `StatusState` from the editor, and the pure function `format_status(state, width)` renders it.
+The `EditorScreen` builds a `StatusState` from the editor, and the pure function `format_status(state, width)` renders it.
 
 Parts are added in order while text still fits the width; the tail is cut first on a narrow terminal:
 
@@ -660,18 +660,18 @@ The document reference is stable across the lifetime of the screen.
 ### Layout
 
 From top to bottom:
-- `Header` — the title `nova_edit`, and the path as sub-title (updated after a save).
+- The menu bar (File, Edit, Search, View) with the path of the document on its right side (updated after a save); the app title is `nova_edit` and its sub-title is the path.
 - The editor (`#editor`), which takes the remaining height.
 - The bars, all hidden until needed: `GotoBar`, `PathBar`, `SaveBar`, `ConfirmBar`, `SearchBar` and `SearchStatus`.
 - `StatusLine`, always visible, one row.
-- Textual's `Footer(compact=True)`, one row, without the command palette.
+- The `HintBar`, one row, which shows the keys of the actions that are shown in the bar.
 
 The bars are plain widgets, not dialogs, so they have no entry in `src/tools/dialog_tester.py`.
 
 ### Status line
 
 `StatusLine` shows the state of the editor.
-The app builds a `StatusState` from the widget, and the pure function `format_status(state, width)` turns it into text.
+The `EditorScreen` builds a `StatusState` from the widget, and the pure function `format_status(state, width)` turns it into text.
 Parts are added in the order below while the text still fits the width; the tail is cut first on a narrow terminal, and the first part is always kept.
 
 | Order | Text | Meaning |
@@ -693,7 +693,7 @@ The column has three states, from the cursor state read with `peek_cursor_state(
 The indexing percentage is `indexing_progress` as a whole percent, at most 99 while the count is not exact.
 
 **Refresh:**
-The app listens to `SelectionChanged`, `Changed`, `IndexProgress`, `IndexingComplete`, `JumpCompleted`, `Saved`, `Reloaded` and to the `pending_progress` and `soft_wrap` changes, and calls `StatusLine.request()`.
+The screen listens to `SelectionChanged`, `Changed`, `IndexProgress`, `IndexingComplete`, `JumpCompleted`, `Saved`, `Reloaded` and to the `pending_progress` and `soft_wrap` changes, and calls `StatusLine.request()`.
 `request()` sets a dirty flag and starts a timer of `REFRESH_SECONDS` (0.05 s) when none is pending.
 The timer reads the widget state once and updates the text.
 At most 20 updates happen per second, the last state is always shown, and no work happens on the key's critical path.
@@ -703,21 +703,22 @@ A save and a search keep their own transient lines (`SaveBar`, `SearchStatus`); 
 
 ### Footer and keys
 
-The footer is Textual's `Footer`, generated from the app bindings.
-It shows `^s Save`, `F2 SaveAs`, `F5 Reload`, `^g Goto`, `F7 Find`, `F3 Next`, `S-F3 Prev`, `F4 Wrap` and `^q Quit`.
-Escape is bound but hidden, and is active only while a save runs.
+The keys are the `editor.*` actions of the `EditorScreen`; the `KeymapRegistry` runs them, and `NovaEditApp.on_event` hands every raw key press to `EditorScreen.press_key` first.
+The `HintBar` shows `Ctrl+S Save`, `Ctrl+Q Quit`, `Ctrl+F Find…`, `Ctrl+G Go to…`, `F5 Reload`, `Ctrl+Shift+S Save As…`, `F10 Wrap Mode`, `F3 Find Next` and `Shift+F3 Find Previous`.
+Escape is bound by the screen but hidden, and is active only while a save runs.
+When an editing action (Undo, Redo, Cut, Copy, Paste, Select All) is moved or unmapped, its old default key is swallowed by the screen while the editor has the focus, because the widget binds those keys itself.
 
 | Key | Action |
 |---|---|
 | `Ctrl+S` | Save; without a file it opens the path bar; an unmodified document shows "No changes to save" |
-| `F2` | Path bar for save as, prefilled with the current path; Enter saves and Escape closes |
+| `Ctrl+Shift+S` | Path bar for save as, prefilled with the current path; Enter saves and Escape closes |
 | `F5` | Reload; a modified document shows the confirm bar first; during a save it shows a warning |
 | `Ctrl+G` | Show or hide the goto bar: `N` for a line, `@N` for a byte offset |
-| `F7` | Search bar; Enter searches forward, Escape closes it |
+| `Ctrl+F` | Search bar; Enter searches forward, Escape closes it |
 | `F3` | Repeat the search forward, also with the bar closed; without a needle it opens the bar |
 | `Shift+F3` | Repeat the search backward |
 | `Alt+C` | In the search bar: toggle between case-sensitive and ignore case |
-| `F4` | Toggle soft wrap |
+| `F10` | Toggle soft wrap |
 | `Ctrl+Q` | Quit (see "Quit flow") |
 | `Escape` | Close the goto, path or search bar while it has the focus; cancel a running save, a pending jump and a running search |
 | `Ctrl+Z`, `Ctrl+Y`, `Ctrl+X`, `Ctrl+C`, `Ctrl+V` | Stock undo, redo, cut, copy and paste |
@@ -787,7 +788,7 @@ A target beyond the scanned part stays pending: the status line shows `Goto P%  
 
 ### Search in nova_edit
 
-`F7` opens the bar, Enter searches forward and `Escape` closes the bar.
+`Ctrl+F` opens the bar, Enter searches forward and `Escape` closes the bar.
 `F3` and `Shift+F3` repeat the last needle forward and backward, also with the bar closed.
 `Alt+C` toggles the case in the bar, and the placeholder shows `Search (case-sensitive)` or `Search (ignore case)`.
 `SearchStatus` shows `Searching 42% (2.1 of 5.0 GiB), Esc cancels` while it runs.
@@ -1198,7 +1199,7 @@ In `nova_edit`, F5 on a modified document asks first, and F5 during a save shows
 It returns False, and posts nothing, when a save runs, the widget is closed, there is no target, or a plain save finds the document unmodified.
 A save as writes even when nothing changed, and afterwards the document is bound to the new file.
 
-| State of the file | Plain save (Ctrl+S) | Save as (F2) |
+| State of the file | Plain save (Ctrl+S) | Save as (Ctrl+Shift+S) |
 |---|---|---|
 | `UNCHANGED` | Writes | Writes; an existing target needs confirmation (`EXISTS`) |
 | `MODIFIED`, `TRUNCATED`, `REPLACED`, `DELETED`, `CREATED` | Posts `SaveNeedsConfirmation(kind, path)`; with `overwrite=True` it writes | Writes |
@@ -1226,7 +1227,7 @@ The layers are `core/casefold.py` and `core/search.py` (Textual-free), `LazyDocu
 
 ### The Key Move
 
-`F7` opens the search, as in Midnight Commander.
+Ctrl+F opens the search (it was F7, as in Midnight Commander, before the editor got a menu bar).
 The stock binding of `select_all` was `f7` only; it is now `ctrl+shift+a,f8`, and `ctrl+shift+a` is a new key.
 `Ctrl+F` stays the stock cursor-right binding.
 
@@ -1410,7 +1411,7 @@ With wrap off nothing changes.
 The tests are in `tests/nova_editor/test_wrapped_cursor_end.py` (`test_move_cursor_to_the_last_row_measures_few_blocks`, `test_goto_the_last_line_measures_few_blocks`, `test_search_placement_at_the_last_row_measures_few_blocks`, `test_wrap_off_scroll_cursor_visible_does_not_refresh_the_size` and the tests that count reads of the height).
 The time of this step on the 5 GB file with the final code is not measured (see "Unverified claims").
 
-**Wrap toggle (F4 in `nova_edit`):**
+**Wrap toggle (F10 in `nova_edit`):**
 `toggle_wrap()` flips `soft_wrap` and re-wraps the wrapped document for every row class.
 A cursor on a long row keeps its byte: when wrap turns on, a provisional cursor becomes pending until the scan reaches it.
 
@@ -1906,7 +1907,7 @@ Tests are located under `tests/nova_editor/` and `tests/tools/`.
 - `test_app_footer.py` — the footer keys.
 - `test_app_quit.py` — the quit flow and its two questions.
 - `test_app_search.py` — the keys, the bar, the status texts and the case toggle of `nova_edit`.
-- `test_app_req16.py` — a missing path, goto messages, search through F7 and the wrap toggle.
+- `test_app_req16.py` — a missing path, goto messages, search through Ctrl+F and the wrap toggle.
 
 **Search reference model:**
 `core/search_reference.py` is written independently of the production matcher.

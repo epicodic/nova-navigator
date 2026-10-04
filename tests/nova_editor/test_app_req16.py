@@ -75,20 +75,20 @@ async def test_an_out_of_range_goto_is_rejected_with_a_message_and_the_cursor_st
 
 
 @pytest.mark.asyncio
-async def test_f7_searches_and_selects_the_match(tmp_path: Path) -> None:
+async def test_ctrl_f_searches_and_selects_the_match(tmp_path: Path) -> None:
     path = tmp_path / "f.txt"
     path.write_text(LINES)
     app = NovaEditApp(file_path=path)
     async with app.run_test() as pilot:
         await pilot.pause()
         assert app.editor is not None
-        await pilot.press("f7")
+        await pilot.press("ctrl+f")
         await pilot.press(*"line 42", "enter")
         await wait_until(pilot, lambda: app.editor is not None and not app.editor.searching and app.editor.selection == Selection((41, 0), (41, 7)))
 
 
 @pytest.mark.asyncio
-async def test_f4_toggles_wrap_and_keeps_the_cursor_on_the_same_character(tmp_path: Path) -> None:
+async def test_f10_toggles_wrap_and_keeps_the_cursor_on_the_same_character(tmp_path: Path) -> None:
     path = tmp_path / "f.txt"
     path.write_text(("word " * 60 + "\n") * 4)
     app = NovaEditApp(file_path=path)
@@ -98,11 +98,11 @@ async def test_f4_toggles_wrap_and_keeps_the_cursor_on_the_same_character(tmp_pa
         app.editor.move_cursor((2, 123))
         await pilot.pause()
         assert app.editor.soft_wrap is False
-        await pilot.press("f4")
+        await pilot.press("f10")
         await pilot.pause(0.1)
         assert app.editor.soft_wrap is True
         assert app.editor.cursor_location == (2, 123)
-        await pilot.press("f4")
+        await pilot.press("f10")
         await pilot.pause(0.1)
         assert app.editor.soft_wrap is False
         assert app.editor.cursor_location == (2, 123)
