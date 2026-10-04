@@ -477,7 +477,7 @@ Actions with `show=True` appear in the hint bar; checkable actions maintain stat
 
 **Default keys** are defined in `build_editor_actions()`.
 
-**User overrides** are loaded from `~/.config/nova-navigator/keybindings.toml`:
+**User overrides** come from the `KeybindingsConfig` the host passes in (hosts supply the config directory). Example file content:
 
 ```toml
 [bindings]
@@ -761,7 +761,7 @@ See "Search".
 
 ### Quit flow
 
-`Ctrl+Q` works as follows:
+`Ctrl+Q` works as follows. The `editor.quit` action and `NovaEditApp.action_quit` (reached by Textual's own Ctrl+Q binding when `editor.quit` is remapped) both run the same screen flow, `EditorScreen.action_quit_editor`; `action_quit` falls back to an immediate exit only when the current screen is not an `EditorScreen`.
 - First, a running search is cancelled, and a pending jump is cancelled.
 - Then a running save is cancelled, and the app waits without blocking the UI for its end, polling every 0.02 s for at most `QUIT_WAIT_SECONDS` (2 s).
 - If the save is still running after the wait, the confirm bar asks the second question: `A save is still running.  Q quit anyway  Esc stay`.
