@@ -11,7 +11,7 @@ from nova_editor.screen import EditorScreen
 from nova_editor.status_line import StatusLine
 from nova_editor.widget import NovaTextArea
 from nova_widgets.keybindings_config import KeybindingsConfig
-from tests.nova_editor.helpers_view import wait_until
+from tests.nova_editor.helpers_view import GatedRowEditor, wait_until
 from tests.nova_editor.view_menu import WIDE, choose_view_item, view_marks
 
 
@@ -159,3 +159,26 @@ async def test_the_wrap_indicator_and_the_menu_mark_agree_after_every_toggle(tmp
         await wait_until(pilot, lambda: shown in status_parts(app))
         drawn = await view_marks(pilot, screen)
         assert drawn["Wrap Mode"] is wrap
+
+
+@pytest.mark.asyncio
+async def test_the_gutter_toggle_before_the_first_row_is_indexed_does_not_end_the_app(tmp_path: Path) -> None:
+    path = make_file(tmp_path)
+    path.write_bytes(b"x" * 5000)  # one row; the scan is held back at byte 0, so row 0 is not resolved
+    GatedRowEditor.gates.clear()
+    app = NovaEditApp(file_path=path, editor_class=GatedRowEditor)
+    async with app.run_test(size=WIDE) as pilot:
+        await pilot.pause()
+        gate = GatedRowEditor.gates[0]
+        await wait_until(pilot, gate.blocked.is_set)
+        await pilot.press("f11")
+        await pilot.pause()
+        assert app.return_code is None
+        assert app.editor.show_line_numbers is False
+        await pilot.press("f11")
+        await pilot.pause()
+        assert app.return_code is None
+        assert app.editor.show_line_numbers is True
+        gate.release()
+        await wait_until(pilot, lambda: app.editor.line_count_exact)
+        await wait_until(pilot, lambda: first_row(app.editor).lstrip().startswith("1  xxx"))
