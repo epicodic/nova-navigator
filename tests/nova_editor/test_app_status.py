@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 from textual.app import App, ComposeResult
 
 from nova_editor.app import NovaEditApp
+from nova_editor.document import LazyDocument
 from nova_editor.status_line import StatusLine, StatusState, byte_percent, format_status, row_is_known
 from tests.nova_editor.helpers_view import GatedRowEditor, GatedRowsEditor, wait_until
 from tests.nova_editor.save_widget_helpers import wait_saved
@@ -85,9 +88,7 @@ def test_the_file_name_leads_and_a_document_without_a_path_says_so() -> None:
 
 
 def test_the_byte_percent_is_left_out_when_it_is_unknown() -> None:
-    text = format_status(state(byte_percent=None), 200)
-    assert "Byte 5,678,901  No wrap" in text
-    assert "%" not in text.split("Byte")[1].split("No wrap")[0]
+    assert format_status(state(byte_percent=None), 200) == "notes.txt  Ln 12,345  Col 17  Byte 5,678,901  No wrap  46,944,995 lines  LF"
 
 
 def test_a_long_file_name_keeps_its_end_behind_an_ellipsis() -> None:
@@ -299,3 +300,41 @@ async def test_a_buffer_without_a_path_shows_unsaved_and_no_percent_of_an_empty_
     async with app.run_test() as pilot:
         await pilot.pause()
         await wait_until(pilot, lambda: status_text(app).startswith("(unsaved)  Ln 1  Col 1  Byte 0  "))
+
+
+SCANNING_METHODS = ("start_scan", "wait_first_row", "wait_indexed", "long_index", "anchor_index", "read_all")
+"""The `LazyDocument` methods that start a scan, wait for one or build an index; a short row and a refresh of the status never need them."""
+
+
+def spy(name: str, original: Callable[..., Any], calls: list[str]) -> Callable[..., Any]:
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        calls.append(name)
+        return original(*args, **kwargs)
+
+    return wrapper
+
+
+@pytest.mark.asyncio
+async def test_a_status_refresh_neither_scans_nor_builds_an_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = make_file(tmp_path, "".join(f"row {i}\n" for i in range(3000)).encode())
+    GatedRowEditor.gates.clear()
+    app = NovaEditApp(file_path=path, editor_class=GatedRowsEditor)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        gate = GatedRowEditor.gates[0]
+        await wait_until(pilot, gate.blocked.is_set)  # the scan is held at 2 KiB: the index is not complete
+        await wait_until(pilot, lambda: "indexing" in status_text(app))
+        calls: list[str] = []
+        for name in SCANNING_METHODS:
+            monkeypatch.setattr(LazyDocument, name, spy(name, getattr(LazyDocument, name), calls))
+        status = app.query_one(StatusLine)
+        flushes, scan_reads = status.flushes, gate.reads
+        await pilot.press("down", "down", "f10", "f10")
+        await wait_until(pilot, lambda: status_text(app).startswith("f.txt  Ln 3  Col 1  Byte 12 (0%)  No wrap  >= "))
+        assert status.flushes > flushes  # the status was computed again, with the scan still held
+        assert calls == []
+        assert gate.reads == scan_reads
+        assert not app.editor.document.wait_indexed(0)  # control: the spy does see a scanning call
+        assert calls == ["wait_indexed"]
+        gate.release()
+        await wait_until(pilot, lambda: ">=" not in status_text(app))
