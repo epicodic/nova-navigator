@@ -304,8 +304,8 @@ class MyEditorApp(App):
 - `goto_line(line)` — go to a 1-based line; returns `None`, and a line the scan has not reached stays pending.
 - `goto_byte(offset)` — go to an absolute byte offset; returns `None`, and an offset beyond the scanned frontier stays pending.
 - `cancel_pending()` — cancel a pending jump or deferred cursor operation; the action is bound to Escape while one is pending or a search runs.
-- `toggle_wrap()` — flip `soft_wrap`; `nova_edit` binds it to F4.
-- `select_all` is bound to `ctrl+shift+a` and `f8`; the stock binding was `f7` only, and F7 belongs to the search of `nova_edit`.
+- `toggle_wrap()` — flip `soft_wrap`; `nova_edit` binds it to F10.
+- `select_all` is bound to `ctrl+shift+a` and `f8`; the stock binding was `f7` only, and Ctrl+F belongs to the search of `nova_edit`.
 
 ### Saving, reloading, external changes
 
@@ -370,9 +370,298 @@ uv run nova_edit /path/to/file.txt  # Open a specific file
 ```
 
 A path that exists but is not a regular file (a FIFO, a device, a directory) is refused: `main()` prints `nova_edit: <path>: not a regular file` to stderr and exits with status 1.
-A path that does not exist opens an empty buffer that the first save creates (see "nova_edit").
+A path that does not exist opens an empty buffer that the first save creates (see "EditorScreen").
 Every file is opened through `NovaTextArea.open`; there is no eager path.
 The environment variable `NOVA_EDIT_TIMING_FILE` makes `TimedNovaTextArea` write `FIRST_CONTENT <ns>` when content first renders (used by the benchmark harness).
+
+---
+
+## EditorScreen
+
+### Overview
+
+`EditorScreen` is a Textual `Screen` that provides a complete editing UI (REQ-1, REQ-2, ADR-3).
+It can be used as a standalone app (`nova_edit`) or embedded in other Textual applications.
+
+The screen holds:
+- **Per-screen action registry** (18 editor actions, built fresh per screen instance)
+- **Per-screen MenuBar** (File, Edit, Search, View menus)
+- **Per-screen KeymapRegistry and HintBar** (for action key binding and hint display)
+- **DocumentView** (holds the NovaTextArea widget and file metadata)
+- **Bars** (GotoBar, PathBar, SaveBar, SearchBar, ConfirmBar)
+- **StatusLine** (shows editor progress and file status)
+
+The document itself is not stored in the screen; instead, EditorScreen holds a reference to a `DocumentView`.
+A host forwards every `Key` event to `EditorScreen.press_key` from `App.on_event` (the keymap registry has to see a key before Textual's priority bindings), and calls `EditorScreen.poll()` when the terminal gets the focus back (`NovaEditApp` does both).
+
+### Constructor
+
+```python
+EditorScreen(
+    path: Path | None = None,
+    *,
+    keybindings: KeybindingsConfig | None = None,
+    file_provider: FileProvider | None = None,
+    soft_wrap: bool = False,
+    config: LazyConfig | None = None,
+    editor_class: type[TimedNovaTextArea] = TimedNovaTextArea,
+    standalone: bool = False,
+    poll_seconds: float = 2.0,
+    quit_wait_seconds: float = 2.0,
+) -> None:
+```
+
+**Parameters:**
+- `path` — File to open, or `None` for an empty buffer.
+- `keybindings` — User keybinding overrides from `~/.config/nova-navigator/keybindings.toml`; `None` for defaults.
+- `file_provider` — FileProvider for the file dialog of the Open action; defaults to `InMemoryFileProvider`. Open is currently unavailable (no file chooser exists yet): the action only shows a notification, so the provider is not used yet.
+- `soft_wrap` — Start with soft wrapping enabled (default `False`).
+- `config` — Tunable thresholds of the lazy document (`LazyConfig`); `None` for defaults.
+- `editor_class` — The editor widget class (default `TimedNovaTextArea`, allows injection for testing).
+- `standalone` — `True` for the standalone app (File menu has Quit), `False` for embedded (File menu has Close).
+- `poll_seconds` — Interval of the check for a change of the file on disk (default 2.0).
+- `quit_wait_seconds` — Longest wait for a cancelled save before the quit question (default 2.0).
+
+### Architecture
+
+The screen builds these components on construction:
+
+1. **ACTIONS** — Fresh list of 18 `Action` objects (built by `build_editor_actions()`).
+2. **MenuBar** — Menu bar with File, Edit, Search, View menus (built by `build_menu_bar()`).
+3. **HintBar** — Key hint display (one per screen).
+4. **KeymapRegistry** — Manages keybindings and dispatches actions (one per screen).
+5. **DocumentView** — Holder of the editor widget and file metadata.
+
+Each screen instance has its own action registry, menu bar, and keybinding registry.
+This allows multiple EditorScreen instances in different Textual screens to have independent key bindings and menu states.
+
+### The 18 Editor Actions
+
+**File operations:**
+| Action | ID | Key | Description |
+|--------|-----|-----|---|
+| Open | `editor.open` | Ctrl+O | Open a file |
+| Save | `editor.save` | Ctrl+S | Save the document |
+| Save As | `editor.save_as` | Ctrl+Shift+S | Save under another name |
+| Reload | `editor.reload` | F5 | Reload from disk |
+| Close | `editor.close` | Ctrl+W | Close the editor |
+| Quit | `editor.quit` | Ctrl+Q | Quit (in standalone mode) |
+
+**Edit operations:**
+| Action | ID | Key | Description |
+|--------|-----|-----|---|
+| Undo | `editor.undo` | Ctrl+Z | Undo the last edit |
+| Redo | `editor.redo` | Ctrl+Y | Redo the last undone edit |
+| Cut | `editor.cut` | Ctrl+X | Cut the selection |
+| Copy | `editor.copy` | Ctrl+C | Copy the selection |
+| Paste | `editor.paste` | Ctrl+V | Paste from the clipboard |
+| Select All | `editor.select_all` | Ctrl+A | Select the whole document |
+
+**Search operations:**
+| Action | ID | Key | Description |
+|--------|-----|-----|---|
+| Find | `editor.find` | Ctrl+F | Search the document |
+| Find Next | `editor.find_next` | F3 | Repeat the search forward |
+| Find Previous | `editor.find_previous` | Shift+F3 | Repeat the search backward |
+| Go to | `editor.goto` | Ctrl+G | Go to a line or byte offset |
+
+**View options:**
+| Action | ID | Key | Description |
+|--------|-----|-----|---|
+| Line Numbers | `editor.line_numbers` | F11 | Show/hide line numbers (checkable) |
+| Wrap Mode | `editor.wrap_mode` | F10 | Toggle soft wrap (checkable) |
+
+Actions with `show=True` appear in the hint bar; checkable actions maintain state with the widget.
+
+### Key Bindings and Overrides
+
+**Default keys** are defined in `build_editor_actions()`.
+
+**User overrides** come from the `KeybindingsConfig` the host passes in (hosts supply the config directory). Example file content:
+
+```toml
+[bindings]
+editor.save = "ctrl+s"
+editor.find = "ctrl+f"
+editor.wrap_mode = ""   # Empty string unmaps the action
+```
+
+When `EditorScreen` is constructed with a `KeybindingsConfig`, it applies overrides to each action before building the menus (REQ-3); the defaults are the REQ-4 table.
+
+**Amendment B2 defect (workaround):** `KeymapRegistry.reload()` puts the default key of an unmapped action back, so the menu and the hint bar would show it.
+This is a known `nova_widgets` defect.
+`EditorScreen._apply_keymap` works around it by calling `action.set_shortcut(None)` for every action that has no effective binding after `reload()`.
+
+**Moved editing keys:** the editor widget binds Ctrl+Z, Ctrl+Y, Ctrl+X, Ctrl+C, Ctrl+V and Ctrl+A itself.
+When one of these actions is moved or unmapped, `press_key` swallows its old default key while the editor has the focus.
+
+**Input bars:** while a bar (`Input`) has the focus, `press_key` leaves every key that the `Input` binds itself (Ctrl+A is home, Ctrl+W deletes a word, Ctrl+X/C/V cut, copy and paste) and the keys of the editing actions to the `Input`; the editing actions never run from a bar.
+
+### Menu Bar
+
+The menu bar has four menus:
+
+**File Menu:**
+- Open… (Ctrl+O) — currently unavailable, shows a notification
+- Save (Ctrl+S)
+- Save As… (Ctrl+Shift+S)
+- Reload (F5)
+- Quit (Ctrl+Q) in standalone mode, Close (Ctrl+W) when embedded (never both; both actions exist and keep their keys)
+
+**Edit Menu:**
+- Undo (Ctrl+Z)
+- Redo (Ctrl+Y)
+- Cut (Ctrl+X)
+- Copy (Ctrl+C)
+- Paste (Ctrl+V)
+- Select All (Ctrl+A)
+
+**Search Menu:**
+- Find… (Ctrl+F)
+- Find Next (F3)
+- Find Previous (Shift+F3)
+- Go to… (Ctrl+G)
+
+**View Menu:**
+- Line Numbers (F11, checkable)
+- Wrap Mode (F10, checkable)
+
+Checkable menu items are kept in sync with the widget's reactive properties (`soft_wrap`, `show_line_numbers`).
+
+### Bars
+
+**GotoBar** — Go to a line or byte offset.
+- Input: `N` for line, `@N` for byte offset.
+- Show: Ctrl+G.
+- Close: Escape.
+- Action: Enter navigates to the target.
+
+**PathBar** — Save the file under a new path.
+- Placeholder: `Save as: path`.
+- Show: When saving without a file path (Ctrl+S) or via Save As (Ctrl+Shift+S).
+- Close: Escape.
+- Action: Enter saves.
+
+**SearchBar** — Enter the search term.
+- Placeholder: `Search (case-sensitive)` or `Search (ignore case)`.
+- Show: Ctrl+F.
+- Close: Escape.
+- Action: Enter starts the search.
+
+**SaveBar** — Progress indicator for a running save.
+- Shows phases: `Saving`, `Flushing`, `Finishing`, `Preserving undo history`.
+- Progress: `X.X / Y.Y GiB  P%`.
+- Cancel: Escape (while saving).
+- Messages: `Saved`, `Save cancelled`, `Save failed`, `Reloaded`.
+
+**ConfirmBar** — Confirmation of actions.
+- Used for: overwrite after external change, reload of modified document, quit questions.
+- Keys: `O` overwrite, `A` save as, `R` reload, `Q` quit, `Esc` stay.
+- Only the keys that the question lists are active.
+
+**SearchStatus** — Result indicator.
+- Shows: `Searching N% (X of Y), Esc cancels`, `Found`, `Not found`, `Search cancelled`.
+- Display: 3 seconds (then clears).
+
+### StatusLine
+
+`StatusLine` displays the editor state on one row.
+The `EditorScreen` builds a `StatusState` from the editor, and the pure function `format_status(state, width)` renders it.
+
+Parts are added in order while text still fits the width; the tail is cut first on a narrow terminal:
+
+| Order | Text | Meaning |
+|---|---|---|
+| 0 | `Goto P%  Esc cancels` | While a goto waits for the scan (highest priority) |
+| 1 | `Ln N  Col N` | Line and column (1-based, shows `Ln N  Col ~N` when provisional, `Ln N  Col ...` when pending) |
+| 2 | `Byte N` or `Byte ?` | Byte offset (? while line scan has not resolved the row) |
+| 3 | `N lines` or `>= N lines (indexing P%)` | Exact or lower bound during indexing |
+| 4 | `LF`, `CRLF` or `CR` | Line ending |
+| 5 | `Modified` | Only when document is modified |
+| 6 | `New file` | Only before first save of a missing path |
+| 7 | `Wrap` or `No wrap` | Soft wrap state |
+
+The status line reads from the editor on its own timer (0.05 s) to keep updates off the critical path.
+
+### On Mount
+
+When the screen mounts (`on_mount()`), it:
+1. Sets up checkable actions (connects them to editor state).
+2. Watches editor reactive properties (`soft_wrap`, `show_line_numbers`).
+3. Updates action checked state when properties change.
+
+### Document View
+
+See the "DocumentView" section below.
+
+---
+
+## DocumentView
+
+### Purpose
+
+`DocumentView` is a holder of per-document state: the `NovaTextArea` widget, the file path, and the load outcome.
+
+It is not part of `EditorScreen` directly; instead, `EditorScreen.document` holds a reference to one.
+
+### Class
+
+```python
+@dataclass
+class DocumentView:
+    editor: NovaTextArea                  # The widget that shows the document
+    file_path: Path | None = None         # The file the document is bound to (also when it was missing or unreadable)
+    load_state: LoadState = "loaded"      # "loaded", "new" or "failed"
+    needle: str | None = None             # Last needle searched (Find Next / Find Previous)
+    last_backward: bool = False           # Direction of the last search (decides the wrap text)
+    deferred_change: ChangeKind | None = None  # A change seen while a save ran, announced after it
+    polling: bool = False                 # Whether a check of the file on disk runs on a worker thread
+```
+
+### Construction
+
+```python
+DocumentView.open(
+    path: Path | None,
+    *,
+    editor_class: type[TimedNovaTextArea],
+    soft_wrap: bool,
+    config: LazyConfig | None,
+    timing_file: str | None,
+) -> tuple[DocumentView, str | None]
+```
+
+Returns a tuple of `(document_view, error_text)`.
+- If `path` is `None` or the file opens, `error_text` is `None` and `load_state == "loaded"`.
+- If the file does not exist, the view holds an empty editor, `load_state == "new"` and `error_text` is `"Error loading file: ..."`.
+- If the file exists but cannot be read (or is not a regular file), `load_state == "failed"` and `error_text` is `"Error loading file: ..."`.
+
+The screen shows `error_text` as an error notification when it mounts.
+
+### Load States
+
+| `load_state` | Meaning |
+|---|---|
+| `"loaded"` | The editor shows the file, or an empty buffer without a path |
+| `"new"` | The file did not exist at start; the first save creates it |
+| `"failed"` | The file exists but could not be read; Save is refused (use Save As) |
+
+A successful save sets the state to `"loaded"` and binds the document to the saved path.
+
+There is one screen per document: the view is held by exactly one `EditorScreen`.
+
+### Usage
+
+`EditorScreen` gets the editor widget via `self.document.editor`:
+
+```python
+editor = self.document.editor
+editor.save()
+editor.reload()
+editor.search(needle="foo")
+```
+
+The document reference is stable across the lifetime of the screen.
 
 ---
 
@@ -381,18 +670,18 @@ The environment variable `NOVA_EDIT_TIMING_FILE` makes `TimedNovaTextArea` write
 ### Layout
 
 From top to bottom:
-- `Header` — the title `nova_edit`, and the path as sub-title (updated after a save).
+- The menu bar (File, Edit, Search, View) with the path of the document on its right side (updated after a save); the app title is `nova_edit` and its sub-title is the path.
 - The editor (`#editor`), which takes the remaining height.
 - The bars, all hidden until needed: `GotoBar`, `PathBar`, `SaveBar`, `ConfirmBar`, `SearchBar` and `SearchStatus`.
 - `StatusLine`, always visible, one row.
-- Textual's `Footer(compact=True)`, one row, without the command palette.
+- The `HintBar`, one row, which shows the keys of the actions that are shown in the bar.
 
 The bars are plain widgets, not dialogs, so they have no entry in `src/tools/dialog_tester.py`.
 
 ### Status line
 
 `StatusLine` shows the state of the editor.
-The app builds a `StatusState` from the widget, and the pure function `format_status(state, width)` turns it into text.
+The `EditorScreen` builds a `StatusState` from the widget, and the pure function `format_status(state, width)` turns it into text.
 Parts are added in the order below while the text still fits the width; the tail is cut first on a narrow terminal, and the first part is always kept.
 
 | Order | Text | Meaning |
@@ -414,7 +703,7 @@ The column has three states, from the cursor state read with `peek_cursor_state(
 The indexing percentage is `indexing_progress` as a whole percent, at most 99 while the count is not exact.
 
 **Refresh:**
-The app listens to `SelectionChanged`, `Changed`, `IndexProgress`, `IndexingComplete`, `JumpCompleted`, `Saved`, `Reloaded` and to the `pending_progress` and `soft_wrap` changes, and calls `StatusLine.request()`.
+The screen listens to `SelectionChanged`, `Changed`, `IndexProgress`, `IndexingComplete`, `JumpCompleted`, `Saved`, `Reloaded` and to the `pending_progress` and `soft_wrap` changes, and calls `StatusLine.request()`.
 `request()` sets a dirty flag and starts a timer of `REFRESH_SECONDS` (0.05 s) when none is pending.
 The timer reads the widget state once and updates the text.
 At most 20 updates happen per second, the last state is always shown, and no work happens on the key's critical path.
@@ -424,21 +713,22 @@ A save and a search keep their own transient lines (`SaveBar`, `SearchStatus`); 
 
 ### Footer and keys
 
-The footer is Textual's `Footer`, generated from the app bindings.
-It shows `^s Save`, `F2 SaveAs`, `F5 Reload`, `^g Goto`, `F7 Find`, `F3 Next`, `S-F3 Prev`, `F4 Wrap` and `^q Quit`.
-Escape is bound but hidden, and is active only while a save runs.
+The keys are the `editor.*` actions of the `EditorScreen`; the `KeymapRegistry` runs them, and `NovaEditApp.on_event` hands every raw key press to `EditorScreen.press_key` first.
+The `HintBar` shows `Ctrl+S Save`, `Ctrl+Q Quit`, `Ctrl+F Find…`, `Ctrl+G Go to…`, `F5 Reload`, `Ctrl+Shift+S Save As…`, `F10 Wrap Mode`, `F3 Find Next` and `Shift+F3 Find Previous`.
+Escape is bound by the screen but hidden, and is active only while a save runs.
+When an editing action (Undo, Redo, Cut, Copy, Paste, Select All) is moved or unmapped, its old default key is swallowed by the screen while the editor has the focus, because the widget binds those keys itself.
 
 | Key | Action |
 |---|---|
 | `Ctrl+S` | Save; without a file it opens the path bar; an unmodified document shows "No changes to save" |
-| `F2` | Path bar for save as, prefilled with the current path; Enter saves and Escape closes |
+| `Ctrl+Shift+S` | Path bar for save as, prefilled with the current path; Enter saves and Escape closes |
 | `F5` | Reload; a modified document shows the confirm bar first; during a save it shows a warning |
 | `Ctrl+G` | Show or hide the goto bar: `N` for a line, `@N` for a byte offset |
-| `F7` | Search bar; Enter searches forward, Escape closes it |
+| `Ctrl+F` | Search bar; Enter searches forward, Escape closes it |
 | `F3` | Repeat the search forward, also with the bar closed; without a needle it opens the bar |
 | `Shift+F3` | Repeat the search backward |
 | `Alt+C` | In the search bar: toggle between case-sensitive and ignore case |
-| `F4` | Toggle soft wrap |
+| `F10` | Toggle soft wrap |
 | `Ctrl+Q` | Quit (see "Quit flow") |
 | `Escape` | Close the goto, path or search bar while it has the focus; cancel a running save, a pending jump and a running search |
 | `Ctrl+Z`, `Ctrl+Y`, `Ctrl+X`, `Ctrl+C`, `Ctrl+V` | Stock undo, redo, cut, copy and paste |
@@ -471,7 +761,7 @@ See "Search".
 
 ### Quit flow
 
-`Ctrl+Q` works as follows:
+`Ctrl+Q` works as follows. The `editor.quit` action and `NovaEditApp.action_quit` (reached by Textual's own Ctrl+Q binding when `editor.quit` is remapped) both run the same screen flow, `EditorScreen.action_quit_editor`; `action_quit` falls back to an immediate exit only when the current screen is not an `EditorScreen`.
 - First, a running search is cancelled, and a pending jump is cancelled.
 - Then a running save is cancelled, and the app waits without blocking the UI for its end, polling every 0.02 s for at most `QUIT_WAIT_SECONDS` (2 s).
 - If the save is still running after the wait, the confirm bar asks the second question: `A save is still running.  Q quit anyway  Esc stay`.
@@ -508,7 +798,7 @@ A target beyond the scanned part stays pending: the status line shows `Goto P%  
 
 ### Search in nova_edit
 
-`F7` opens the bar, Enter searches forward and `Escape` closes the bar.
+`Ctrl+F` opens the bar, Enter searches forward and `Escape` closes the bar.
 `F3` and `Shift+F3` repeat the last needle forward and backward, also with the bar closed.
 `Alt+C` toggles the case in the bar, and the placeholder shows `Search (case-sensitive)` or `Search (ignore case)`.
 `SearchStatus` shows `Searching 42% (2.1 of 5.0 GiB), Esc cancels` while it runs.
@@ -919,7 +1209,7 @@ In `nova_edit`, F5 on a modified document asks first, and F5 during a save shows
 It returns False, and posts nothing, when a save runs, the widget is closed, there is no target, or a plain save finds the document unmodified.
 A save as writes even when nothing changed, and afterwards the document is bound to the new file.
 
-| State of the file | Plain save (Ctrl+S) | Save as (F2) |
+| State of the file | Plain save (Ctrl+S) | Save as (Ctrl+Shift+S) |
 |---|---|---|
 | `UNCHANGED` | Writes | Writes; an existing target needs confirmation (`EXISTS`) |
 | `MODIFIED`, `TRUNCATED`, `REPLACED`, `DELETED`, `CREATED` | Posts `SaveNeedsConfirmation(kind, path)`; with `overwrite=True` it writes | Writes |
@@ -947,7 +1237,7 @@ The layers are `core/casefold.py` and `core/search.py` (Textual-free), `LazyDocu
 
 ### The Key Move
 
-`F7` opens the search, as in Midnight Commander.
+Ctrl+F opens the search (it was F7, as in Midnight Commander, before the editor got a menu bar).
 The stock binding of `select_all` was `f7` only; it is now `ctrl+shift+a,f8`, and `ctrl+shift+a` is a new key.
 `Ctrl+F` stays the stock cursor-right binding.
 
@@ -1131,7 +1421,7 @@ With wrap off nothing changes.
 The tests are in `tests/nova_editor/test_wrapped_cursor_end.py` (`test_move_cursor_to_the_last_row_measures_few_blocks`, `test_goto_the_last_line_measures_few_blocks`, `test_search_placement_at_the_last_row_measures_few_blocks`, `test_wrap_off_scroll_cursor_visible_does_not_refresh_the_size` and the tests that count reads of the height).
 The time of this step on the 5 GB file with the final code is not measured (see "Unverified claims").
 
-**Wrap toggle (F4 in `nova_edit`):**
+**Wrap toggle (F10 in `nova_edit`):**
 `toggle_wrap()` flips `soft_wrap` and re-wraps the wrapped document for every row class.
 A cursor on a long row keeps its byte: when wrap turns on, a provisional cursor becomes pending until the scan reaches it.
 
@@ -1627,7 +1917,7 @@ Tests are located under `tests/nova_editor/` and `tests/tools/`.
 - `test_app_footer.py` — the footer keys.
 - `test_app_quit.py` — the quit flow and its two questions.
 - `test_app_search.py` — the keys, the bar, the status texts and the case toggle of `nova_edit`.
-- `test_app_req16.py` — a missing path, goto messages, search through F7 and the wrap toggle.
+- `test_app_req16.py` — a missing path, goto messages, search through Ctrl+F and the wrap toggle.
 
 **Search reference model:**
 `core/search_reference.py` is written independently of the production matcher.

@@ -96,6 +96,15 @@ class MenuBar(Widget, ActionCollection):
         self._menu_opened = None
         self._right_widgets = []
 
+    @property
+    def actions(self) -> list[Menu]:
+        """Return the list of menus.
+
+        Override to provide proper type hints for MenuBar-specific usage.
+        Each Menu is also an Action, but this property returns them as Menu objects.
+        """
+        return [m for m in self._actions if isinstance(m, Menu)]  # type: list[Menu]
+
     def add_menu(self, title: str, *items: Action, name: str | None = None) -> Menu:
         menu = Menu(title, *items, name=name)
         self._menus.append(menu)

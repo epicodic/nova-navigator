@@ -212,6 +212,7 @@ class ActionCollection:
 
     @property
     def actions(self) -> list[Action]:
+        # Return the actions list, which may contain Action objects or subclasses like Menu
         return self._actions
 
     def find_action(self, path: str | list[str]) -> Action | None:

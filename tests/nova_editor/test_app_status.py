@@ -10,10 +10,11 @@ from typing import Any, ClassVar
 import pytest
 from textual.app import App, ComposeResult
 
-from nova_editor.app import NovaEditApp, TimedNovaTextArea
+from nova_editor.app import NovaEditApp
 from nova_editor.core import ByteSource
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.status_line import StatusLine, StatusState, format_status
+from nova_editor.timed_text_area import TimedNovaTextArea
 from tests.nova_editor.helpers_view import LOWERED_OPTIONS, GatedLineSource, wait_until
 from tests.nova_editor.save_widget_helpers import wait_saved
 
@@ -150,13 +151,13 @@ async def test_the_line_ending_is_shown(tmp_path: Path, data: bytes, ending: str
 
 
 @pytest.mark.asyncio
-async def test_f4_toggles_the_wrap_text(tmp_path: Path) -> None:
+async def test_f10_toggles_the_wrap_text(tmp_path: Path) -> None:
     app = NovaEditApp(file_path=make_file(tmp_path))
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("f4")
+        await pilot.press("f10")
         await wait_until(pilot, lambda: status_text(app).endswith("  Wrap"))
-        await pilot.press("f4")
+        await pilot.press("f10")
         await wait_until(pilot, lambda: status_text(app).endswith("No wrap"))
 
 

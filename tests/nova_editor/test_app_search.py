@@ -36,7 +36,7 @@ async def search_done(pilot: Pilot[None], editor: NovaTextArea) -> None:
 
 
 async def type_and_enter(pilot: Pilot[None], needle: str) -> None:
-    await pilot.press("f7")
+    await pilot.press("ctrl+f")
     await pilot.press(*needle)
     await pilot.press("enter")
 
@@ -58,13 +58,13 @@ class Throttle:
 
 
 @pytest.mark.asyncio
-async def test_f7_shows_and_focuses_the_bar(tmp_path: Path) -> None:
+async def test_ctrl_f_shows_and_focuses_the_bar(tmp_path: Path) -> None:
     app = NovaEditApp(file_path=make_file(tmp_path))
     async with app.run_test() as pilot:
         await pilot.pause()
         _, bar, _ = parts(app)
         assert not bar.display
-        await pilot.press("f7")
+        await pilot.press("ctrl+f")
         assert bar.display
         assert app.focused is bar
         assert bar.placeholder == "Search (case-sensitive)"
@@ -90,7 +90,7 @@ async def test_alt_c_toggles_the_case_and_ignore_case_finds_both(tmp_path: Path)
     async with app.run_test() as pilot:
         await pilot.pause()
         editor, bar, _ = parts(app)
-        await pilot.press("f7")
+        await pilot.press("ctrl+f")
         await pilot.press("alt+c")
         assert bar.placeholder == "Search (ignore case)"
         await pilot.press(*"needle", "enter")
@@ -98,7 +98,7 @@ async def test_alt_c_toggles_the_case_and_ignore_case_finds_both(tmp_path: Path)
         await pilot.press("f3")
         await search_done(pilot, editor)
         assert editor.selection == Selection((3, 0), (3, 6))
-        await pilot.press("f7")
+        await pilot.press("ctrl+f")
         await pilot.press("alt+c")
         assert bar.placeholder == "Search (case-sensitive)"
 
@@ -162,7 +162,7 @@ async def test_empty_bar_value_does_nothing(tmp_path: Path) -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         editor, bar, status = parts(app)
-        await pilot.press("f7", "enter")
+        await pilot.press("ctrl+f", "enter")
         await pilot.pause()
         assert not editor.searching
         assert status.line == ""
@@ -199,7 +199,7 @@ async def test_escape_closes_the_bar(tmp_path: Path) -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         editor, bar, _ = parts(app)
-        await pilot.press("f7")
+        await pilot.press("ctrl+f")
         await pilot.press("escape")
         assert not bar.display
         assert app.focused is editor
@@ -271,7 +271,7 @@ async def test_result_text_disappears_after_three_seconds(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_select_all_is_on_f8_and_ctrl_shift_a_and_f7_is_search(tmp_path: Path) -> None:
+async def test_select_all_is_on_f8_and_ctrl_shift_a_and_ctrl_f_is_search(tmp_path: Path) -> None:
     app = NovaEditApp(file_path=make_file(tmp_path))
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -283,5 +283,5 @@ async def test_select_all_is_on_f8_and_ctrl_shift_a_and_f7_is_search(tmp_path: P
         assert editor.selected_text == ""
         await pilot.press("ctrl+shift+a")
         assert editor.selected_text == TEXT
-        await pilot.press("f7")
+        await pilot.press("ctrl+f")
         assert bar.display

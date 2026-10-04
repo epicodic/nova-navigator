@@ -21,9 +21,9 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.strip import Strip
 
-from nova_editor.app import TimedNovaTextArea
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.document._lazy_document import LazyDocument, RowUnavailable
+from nova_editor.timed_text_area import TimedNovaTextArea
 from nova_editor.widget import NovaTextArea
 
 SIZE = (120, 30)
