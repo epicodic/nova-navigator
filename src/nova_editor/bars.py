@@ -13,6 +13,7 @@ from textual.message import Message
 from textual.widgets import Input, Static
 
 from .core.byte_source import ChangeKind
+from .decisions import CHANGE_TEXT
 from .status_line import format_sizes
 from .widget import NovaTextArea
 
@@ -121,17 +122,6 @@ class SaveBar(Static):
             self.clear()
 
 
-_CHANGE_TEXT: dict[ChangeKind, str] = {
-    ChangeKind.MODIFIED: "The file changed on disk",
-    ChangeKind.TRUNCATED: "The file was truncated on disk",
-    ChangeKind.REPLACED: "The file was replaced on disk",
-    ChangeKind.DELETED: "The file was deleted on disk",
-    ChangeKind.CREATED: "The file was created since the editor started",
-    ChangeKind.EXISTS: "The file already exists",
-    ChangeKind.UNREADABLE: "The file cannot be read",
-}
-
-
 class ConfirmBar(Static):
     """Key driven question for overwrite, reload, external change and quit: O overwrite, A save as, R reload, Q quit, Esc keep."""
 
@@ -186,7 +176,7 @@ class ConfirmBar(Static):
             self._allowed.add("reload")
             offers.append("R reload")
         offers.append("Esc keep")
-        head = "Discard the edits and reload?" if kind is None else _CHANGE_TEXT.get(kind, "The file changed")
+        head = "Discard the edits and reload?" if kind is None else CHANGE_TEXT.get(kind, "The file changed")
         self.update(f"{head}  {'  '.join(offers)}")
         self.display = True
         self.focus()
