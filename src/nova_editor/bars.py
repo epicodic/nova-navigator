@@ -73,7 +73,7 @@ class GotoBar(Input):
 
 
 class PathBar(Input):
-    """Input field for the save-as path (F2). Enter saves, Escape closes it."""
+    """Input field for the save-as path (Ctrl+Shift+S). Enter saves, Escape closes it."""
 
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [("escape", "close", "Close")]
 
