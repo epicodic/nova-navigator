@@ -277,7 +277,7 @@ class EditorScreen(Screen[None]):
         if self._load_error is not None:
             self.notify(self._load_error, severity="error")
         self._show_path()
-        self._constrain_path_label()
+        self.call_after_refresh(self._constrain_path_label)
         self.set_interval(self._poll_seconds, self.poll)
         self._sync_view_actions()
         editor = self.document.editor
@@ -295,7 +295,7 @@ class EditorScreen(Screen[None]):
         text = "" if file_path is None else str(file_path)
         self._full_path_text = text
         self.app.sub_title = text
-        self._constrain_path_label()
+        self.call_after_refresh(self._constrain_path_label)
 
     def _constrain_path_label(self) -> None:
         """Ensure the path label does not cover menu entries by constraining its width and text."""
@@ -303,18 +303,21 @@ class EditorScreen(Screen[None]):
         if terminal_width <= 0:
             return
 
-        # Calculate total width of menu items (File, Edit, Search, View + spacing)
-        menu_width = 0
-        for menu in self.menu_bar.actions:
-            if hasattr(menu, "text"):
-                menu_width += len(str(menu.text)) + 4  # +4 for padding around each menu item
+        # Get the right edge of the last menu bar item
+        menu_items = list(self.query("MenuBarItem"))
+        if not menu_items:
+            # No menu items yet, can't constrain
+            return
 
-        # Reserve space: menu items + padding + minimum space
-        min_label_width = 2  # at least space for ellipsis
-        reserved_width = menu_width + min_label_width + 2  # +2 for path label padding
+        menu_right_edge = max(item.region.right for item in menu_items)
 
-        # Calculate available width for path label
-        available_width = terminal_width - reserved_width
+        # Path label CSS has padding: 0 1 (1 cell on left and right)
+        label_padding = 2  # left padding (1) + right padding (1)
+
+        # Calculate available width for path label (ensuring no overlap with menus)
+        available_width = terminal_width - menu_right_edge - label_padding
+        min_label_width = 2  # at least space for ellipsis or partial content
+
         if available_width < min_label_width:
             # Not enough space, hide the label
             self._path_label.styles.width = 0

@@ -14,11 +14,11 @@ WIDE = (80, 24)
 CHECKED = SYMBOL_TABLE["checkbox"][1].glyph
 
 
-async def open_view_menu(pilot: Pilot[None], screen: EditorScreen) -> Menu:
-    """Click the View entry of the menu bar and return its menu (the items are drawn from the very `Action` objects)."""
-    menu = screen.menu_bar.actions[VIEW_MENU_INDEX]
-    assert menu.text == "View"
-    item = list(screen.query("MenuBarItem"))[VIEW_MENU_INDEX]
+async def open_view_menu(pilot: Pilot[None], screen: EditorScreen, menu_index: int = VIEW_MENU_INDEX) -> Menu:
+    """Click the menu entry at `menu_index` and return its menu (the items are drawn from the very `Action` objects)."""
+    menu = screen.menu_bar.actions[menu_index]
+    items = list(screen.query("MenuBarItem"))
+    item = items[menu_index]
     await pilot.hover(item)
     await pilot.click(item)
     await wait_until(pilot, lambda: menu in list(screen.query(Menu)))
