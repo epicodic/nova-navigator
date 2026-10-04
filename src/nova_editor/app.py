@@ -139,6 +139,14 @@ class NovaEditApp(App[None]):
         if isinstance(screen, EditorScreen):
             screen.search(needle, backward=backward, case_sensitive=case_sensitive)
 
+    async def action_quit(self) -> None:
+        """Quit: run the editor screen's quit flow (asks when edits would be lost), else exit."""
+        screen = self.screen
+        if isinstance(screen, EditorScreen):
+            await screen.action_quit_editor()
+        else:
+            self.exit()
+
     def on_editor_screen_closed(self, message: EditorScreen.Closed) -> None:
         """Exit when the editor screen closes."""
         self.exit()

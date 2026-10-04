@@ -12,8 +12,10 @@ from nova_editor.app import NovaEditApp
 from nova_editor.bars import ConfirmBar
 from nova_editor.core.save import SaveIo
 from nova_editor.widget import NovaTextArea
+from nova_widgets.key_types import KeySequence
 from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.save_widget_helpers import Gate, wait_saved
+from tests.nova_editor.screen_host import write_keys
 from tests.nova_editor.test_app_search import Throttle
 
 DISCARD = "Discard the unsaved changes and quit?"
@@ -311,3 +313,29 @@ async def test_ctrl_q_from_a_bar_asks_and_escape_returns_to_the_editor(tmp_path:
         assert app.focused is app.editor
         assert app.editor is not None
         assert app.editor.text.startswith("xone")
+
+
+@pytest.mark.asyncio
+async def test_ctrl_q_asks_when_quit_is_remapped_to_another_key(tmp_path: Path) -> None:
+    keys = write_keys(tmp_path / "cfg", {"editor.quit": KeySequence.parse("ctrl+e")})
+    app = NovaEditApp(file_path=make_file(tmp_path), keybindings=keys)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("x", "ctrl+q")
+        await pilot.pause()
+        assert app.query_one(ConfirmBar).display
+        assert DISCARD in question(app)
+        assert not app._exit
+
+
+@pytest.mark.asyncio
+async def test_a_direct_action_quit_asks_when_modified(tmp_path: Path) -> None:
+    app = NovaEditApp(file_path=make_file(tmp_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("x")
+        await app.action_quit()
+        await pilot.pause()
+        assert app.query_one(ConfirmBar).display
+        assert DISCARD in question(app)
+        assert not app._exit
