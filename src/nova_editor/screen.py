@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Awaitable, Callable
 from functools import partial
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import ClassVar, Literal
 
 from rich.cells import cell_len
@@ -17,13 +18,15 @@ from textual.screen import Screen
 from textual.widgets import Input, Static
 
 from nova_widgets.action import Action
+from nova_widgets.file_dialog import FileDialog, FileDialogMode
 from nova_widgets.file_provider import FileProvider, default_file_provider
 from nova_widgets.key_types import KeyChord, KeySequence
 from nova_widgets.keybindings_config import KeybindingsConfig
 from nova_widgets.keymap import HintBar, KeymapRegistry
 from nova_widgets.menu import Menu, MenuBar
+from nova_widgets.response import Response
 
-from .bars import ConfirmBar, GotoBar, PathBar, SaveBar
+from .bars import ConfirmBar, GotoBar, SaveBar
 from .core.byte_source import ChangeKind
 from .core.save import check_path
 from .document._cursor_anchor import CursorState
@@ -104,13 +107,6 @@ class EditorScreen(Screen[None]):
         display: none;
     }
 
-    #path_bar {
-        width: 100%;
-        height: 1;
-        border: none;
-        display: none;
-    }
-
     #search_bar {
         width: 100%;
         height: 1;
@@ -164,6 +160,9 @@ class EditorScreen(Screen[None]):
         self.standalone = standalone
         self._poll_seconds = poll_seconds
         self._quit_wait_seconds = quit_wait_seconds
+
+        self._flows = asyncio.Lock()
+        self._open_flows = 0
 
         self.ACTIONS: list[Action] = build_editor_actions()
         """The 18 `editor.*` actions of this screen; the menus, the keymap registry and the handlers use these very objects."""
@@ -272,7 +271,6 @@ class EditorScreen(Screen[None]):
         yield self.menu_bar
         yield self.document.editor
         yield GotoBar()
-        yield PathBar()
         yield SaveBar()
         yield ConfirmBar()
         yield SearchBar()
@@ -417,10 +415,6 @@ class EditorScreen(Screen[None]):
         return self.query_one(ConfirmBar)
 
     @property
-    def _path_bar(self) -> PathBar:
-        return self.query_one(PathBar)
-
-    @property
     def _search_bar(self) -> SearchBar:
         return self.query_one(SearchBar)
 
@@ -462,6 +456,50 @@ class EditorScreen(Screen[None]):
         self.document.polling = False
         self.document.editor.apply_external_check(check, kind)
 
+    # Flows: every decision and dialog runs in a worker, one at a time
+
+    def _start_flow(self, flow: Callable[[], Awaitable[None]]) -> None:
+        """Run `flow` in a worker, after the flows that were started before it.
+
+        Handlers only start flows and never await them; a flow calls the inner flows it needs directly, so it never waits for the lock it holds.
+        `_open_flows` is counted here, before the worker runs, so that a second request in the same instant sees the first one.
+        """
+        self._open_flows += 1
+        self.run_worker(self._run_flow(flow), group="flow", exit_on_error=True)
+
+    async def _run_flow(self, flow: Callable[[], Awaitable[None]]) -> None:
+        try:
+            async with self._flows:
+                await flow()
+        finally:
+            self._open_flows -= 1
+
+    def _dialog_start(self, path: Path | None) -> PurePath | None:
+        """The directory a file dialog starts in: the directory of `path` when the provider has it, else `None` (the home of the provider).
+
+        A `PurePath` is passed on purpose: `FileDialog` validates a `Path` with the local `pathlib` (`file_dialog.py:310-316`), which is wrong for a provider that is not local.
+        """
+        if path is None:
+            return None
+        directory = PurePath(str(path.parent))
+        return directory if self.file_provider.is_dir(directory) else None
+
+    async def _save_as_flow(self, current: Path | None) -> None:
+        """Save As: pick the target in the file dialog and save to it; Cancel and Escape change nothing."""
+        document = self.document
+        dialog = FileDialog(
+            FileDialogMode.SAVE,
+            start_path=self._dialog_start(current),
+            title="Save As",
+            provider=self.file_provider,
+            filename="" if current is None else current.name,
+        )
+        answer = await dialog.run()
+        selected = dialog.selected_path
+        if answer is Response.OK and selected is not None and document is self.document:
+            self._save_to(selected)
+        self.document.editor.focus()
+
     # Save, Save As, Reload, Close, Quit
 
     def action_save(self) -> None:
@@ -475,11 +513,11 @@ class EditorScreen(Screen[None]):
                 "Not saved: the file could not be loaded, saving would replace it with an empty document. Use save as.",
                 severity="error",
             )
-            self._path_bar.open(document.file_path)
+            self._start_flow(partial(self._save_as_flow, document.file_path))
             return
         if editor.file_path is None:
             if document.file_path is None:
-                self._path_bar.open(None)
+                self._start_flow(partial(self._save_as_flow, None))
             else:
                 self._save_to(document.file_path)
             return
@@ -489,10 +527,10 @@ class EditorScreen(Screen[None]):
         editor.save()
 
     def action_save_as(self) -> None:
-        """Open the save-as bar, prefilled with the current path."""
+        """Save As: pick a new path in the file dialog, prefilled with the current path."""
         editor = self.document.editor
         current = editor.file_path if editor.file_path is not None else self.document.file_path
-        self._path_bar.open(current)
+        self._start_flow(partial(self._save_as_flow, current))
 
     def action_reload(self) -> None:
         """Reload the file; a modified document asks first."""
@@ -568,7 +606,7 @@ class EditorScreen(Screen[None]):
             else:
                 editor.save(message.path, overwrite=True)
         elif message.choice == "save_as":
-            self._path_bar.open(message.path)
+            self._start_flow(partial(self._save_as_flow, message.path))
         elif message.choice == "reload" and not editor.saving:
             editor.reload()
 
@@ -689,15 +727,7 @@ class EditorScreen(Screen[None]):
             goto_bar.focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Handle input submission from the path bar, the search bar and the goto bar."""
-        if event.input.id == "path_bar":
-            text = event.value.strip()
-            if not text:
-                self.notify("No path given", severity="warning")
-                return
-            self._path_bar.action_close()
-            self._save_to(Path(text))
-            return
+        """Handle input submission from the search bar and the goto bar."""
         if event.input.id == "search_bar":
             needle = event.value
             if not needle:
