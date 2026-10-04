@@ -8,8 +8,10 @@ import pytest
 
 from nova_editor.app import NovaEditApp
 from nova_editor.screen import EditorScreen
+from nova_editor.status_line import StatusLine
 from nova_editor.widget import NovaTextArea
 from nova_widgets.keybindings_config import KeybindingsConfig
+from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.view_menu import WIDE, choose_view_item, view_marks
 
 
@@ -128,3 +130,32 @@ async def test_toggling_writes_no_config_file(tmp_path: Path, monkeypatch: pytes
     assert after == before  # nothing was created: not in the key config dir, not in the fake home
     assert not config_dir.exists()
     assert list(home.iterdir()) == []
+
+
+def status_parts(app: NovaEditApp) -> list[str]:
+    return app.query_one(StatusLine).text.split("  ")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("start_wrap", [False, True])
+async def test_the_wrap_indicator_and_the_menu_mark_agree_after_every_toggle(tmp_path: Path, start_wrap: bool) -> None:
+    app = NovaEditApp(file_path=make_file(tmp_path), soft_wrap=start_wrap)
+    async with app.run_test(size=WIDE) as pilot:
+        await pilot.pause()
+        screen = editor_screen(app)
+        wrap = start_wrap
+        for toggle in ("key", "menu", "key"):
+            shown = "Wrap" if wrap else "No wrap"
+            await wait_until(pilot, lambda shown=shown: shown in status_parts(app))
+            assert app.editor.soft_wrap is wrap
+            drawn = await view_marks(pilot, screen)
+            assert drawn["Wrap Mode"] is wrap
+            if toggle == "key":
+                await pilot.press("f10")
+            else:
+                await choose_view_item(pilot, screen, "Wrap Mode")
+            wrap = not wrap
+        shown = "Wrap" if wrap else "No wrap"
+        await wait_until(pilot, lambda: shown in status_parts(app))
+        drawn = await view_marks(pilot, screen)
+        assert drawn["Wrap Mode"] is wrap
