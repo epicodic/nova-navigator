@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import ClassVar
 
 from textual.binding import Binding
 from textual.message import Message
@@ -15,45 +15,6 @@ from textual.widgets import Input, Static
 from .core.byte_source import ChangeKind
 from .status_line import format_sizes
 from .widget import NovaTextArea
-
-
-@dataclass
-class GotoTarget:
-    """Parsed goto target: line number or byte offset."""
-
-    kind: Literal["line", "byte"]
-    value: int
-
-
-def parse_goto(text: str) -> GotoTarget | None:
-    """Parse goto input: 'N' for line, '@N' for byte offset.
-
-    Args:
-        text: Input text (stripped of surrounding whitespace).
-
-    Returns:
-        GotoTarget if valid, None otherwise.
-    """
-    text = text.strip()
-    if not text:
-        return None
-
-    if text.startswith("@"):
-        try:
-            offset = int(text[1:])
-            if offset < 0:
-                return None
-            return GotoTarget("byte", offset)
-        except ValueError:
-            return None
-
-    try:
-        line_num = int(text)
-        if line_num < 0:
-            return None
-        return GotoTarget("line", line_num)
-    except ValueError:
-        return None
 
 
 class GotoBar(Input):
