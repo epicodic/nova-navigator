@@ -466,9 +466,16 @@ def open_with_gated_line_scan(
 ) -> tuple[NovaTextArea, Path]:
     """Open a file of `rows` short rows ("row N") whose line scan is held back at byte `threshold` until `release_line_scan(area)`.
 
-    Returns:
-        The widget (not mounted yet) and the file path. With `threshold=None` the scan is never held back (use `delay` to slow it).
+    Args:
+        tmp_path: directory that receives the file.
+        rows: number of rows of the file.
+        threshold: byte offset where the scan is held back; `None` never holds it back (use `delay` to slow it).
+        delay: pause of the scan per chunk.
+        config: lazy config of the widget; defaults to the lowered options.
         show_line_numbers: show the gutter from the start.
+
+    Returns:
+        The widget (not mounted yet) and the file path.
     """
     path = tmp_path / "rows.txt"
     path.write_bytes("".join(f"row {i}\n" for i in range(rows)).encode())

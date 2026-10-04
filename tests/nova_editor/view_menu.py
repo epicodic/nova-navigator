@@ -9,7 +9,7 @@ from nova_widgets.menu import SYMBOL_TABLE, Menu
 from tests.nova_editor.helpers_view import wait_until
 
 VIEW_MENU_INDEX = 3
-WIDE = (80, 24)
+NARROW = (80, 24)
 """Terminal size of the menu tests: 80 columns, with a long path in the menu bar (a pytest tmp_path is long)."""
 CHECKED = SYMBOL_TABLE["checkbox"][1].glyph
 

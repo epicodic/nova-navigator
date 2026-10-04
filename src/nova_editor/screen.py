@@ -8,6 +8,7 @@ from functools import partial
 from pathlib import Path
 from typing import ClassVar, Literal
 
+from rich.cells import cell_len
 from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -56,6 +57,10 @@ def _column_kind(state: CursorState) -> Literal["exact", "provisional", "pending
     if state is CursorState.PROVISIONAL:
         return "provisional"
     return "pending"
+
+
+_MIN_LABEL_CELLS = 2
+"""Fewest cells of path text (an ellipsis and one character) worth showing."""
 
 
 class EditorScreen(Screen[None]):
@@ -169,6 +174,8 @@ class EditorScreen(Screen[None]):
         self.menu_bar: MenuBar = build_menu_bar(self._by_id, standalone=standalone)
         self._path_label = Static("", id="path_label", markup=False)
         self._full_path_text = ""
+        self._path_label_text: str | None = None
+        self._path_label_width: int | None = None
         self.menu_bar.add_right_widget(self._path_label)
 
         self.document, self._load_error = DocumentView.open(
@@ -277,7 +284,6 @@ class EditorScreen(Screen[None]):
         if self._load_error is not None:
             self.notify(self._load_error, severity="error")
         self._show_path()
-        self.call_after_refresh(self._constrain_path_label)
         self.set_interval(self._poll_seconds, self.poll)
         self._sync_view_actions()
         editor = self.document.editor
@@ -298,43 +304,25 @@ class EditorScreen(Screen[None]):
         self.call_after_refresh(self._constrain_path_label)
 
     def _constrain_path_label(self) -> None:
-        """Ensure the path label does not cover menu entries by constraining its width and text."""
-        terminal_width = self.size.width
-        if terminal_width <= 0:
+        """Fit the path label into the room right of the last menu entry, keeping the end of the path behind `…`."""
+        items = list(self.menu_bar.query("MenuBarItem"))
+        bar_width = self.menu_bar.size.width
+        if not items or bar_width <= 0:
             return
-
-        # Get the right edge of the last menu bar item
-        menu_items = list(self.query("MenuBarItem"))
-        if not menu_items:
-            # No menu items yet, can't constrain
-            return
-
-        menu_right_edge = max(item.region.right for item in menu_items)
-
-        # Path label CSS has padding: 0 1 (1 cell on left and right)
-        label_padding = 2  # left padding (1) + right padding (1)
-
-        # Calculate available width for path label (ensuring no overlap with menus)
-        available_width = terminal_width - menu_right_edge - label_padding
-        min_label_width = 2  # at least space for ellipsis or partial content
-
-        if available_width < min_label_width:
-            # Not enough space, hide the label
-            self._path_label.styles.width = 0
-            self._path_label.update("")
-            return
-
-        # Set max-width for the path label
-        self._path_label.styles.width = available_width
-
-        # Truncate text to fit in available width
-        if len(self._full_path_text) > available_width:
-            # Keep the end of the path with ellipsis
-            truncated = "…" + self._full_path_text[-(available_width - 1) :]
-            self._path_label.update(truncated)
-        else:
-            # Text fits, no need to truncate
-            self._path_label.update(self._full_path_text)
+        padding = self._path_label.styles.padding
+        room = bar_width - max(item.region.right for item in items) - padding.left - padding.right
+        text = self._full_path_text
+        if room < _MIN_LABEL_CELLS:
+            text, room = "", 0
+        elif cell_len(text) > room:
+            text = "…" + _tail_by_cells(text, room - 1)
+        width = cell_len(text) + (padding.left + padding.right if text else 0)
+        if self._path_label.styles.width is None or self._path_label_width != width:
+            self._path_label.styles.width = width
+            self._path_label_width = width
+        if self._path_label_text != text:
+            self._path_label.update(text)
+            self._path_label_text = text
 
     def _on_editor_state(self, _value: object) -> None:
         self._request_status()
@@ -768,3 +756,13 @@ class EditorScreen(Screen[None]):
     def on_nova_text_area_search_failed(self, message: NovaTextArea.SearchFailed) -> None:
         """Show why a search failed."""
         self._search_status.show_result(f"Search failed: {message.error}")
+
+
+def _tail_by_cells(text: str, cells: int) -> str:
+    """Return the longest end of `text` that is at most `cells` terminal cells wide."""
+    start = len(text)
+    used = 0
+    while start > 0 and used + cell_len(text[start - 1]) <= cells:
+        start -= 1
+        used += cell_len(text[start])
+    return text[start:]
