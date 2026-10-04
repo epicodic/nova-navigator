@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import ClassVar, Literal
 
 from textual.timer import Timer
@@ -39,6 +39,8 @@ class StatusState:
     wrap: bool
     goto_percent: int | None
     """Percent of a goto that waits for the scan, `None` when no goto is pending."""
+    note: str | None = None
+    """A transient text (progress or result of a save, a search or a reload) shown right after the file name; set by `StatusLine.set_note`."""
 
 
 def row_is_known(row: int, line_count: int, complete: bool) -> bool:
@@ -47,6 +49,21 @@ def row_is_known(row: int, line_count: int, complete: bool) -> bool:
     While the scan runs, `line_count` is a lower bound and its last row is the open row that the scan has not terminated yet (`LineIndex.row_range`).
     """
     return complete or row < line_count - 1
+
+
+_UNITS = ("B", "KiB", "MiB", "GiB", "TiB")
+_KIB = 1024
+
+
+def format_sizes(done: int, total: int) -> str:
+    """Format `done / total` in the binary unit that suits `total` (`1.2 / 5.0 GiB`)."""
+    unit = 0
+    while unit < len(_UNITS) - 1 and total >= _KIB ** (unit + 1):
+        unit += 1
+    scale = _KIB**unit
+    if unit == 0:
+        return f"{done} / {total} B"
+    return f"{done / scale:.1f} / {total / scale:.1f} {_UNITS[unit]}"
 
 
 def byte_percent(byte_offset: int | None, length: int) -> int | None:
@@ -68,6 +85,10 @@ def format_status(state: StatusState, width: int) -> str:
     """Return the status text; parts are added in priority order while the text fits in `width` (the file name is always kept)."""
     column = {"exact": f"Col {state.column}", "provisional": f"Col ~{state.column}", "pending": "Col ..."}[state.column_kind]
     parts: list[str] = [_fit_name(UNSAVED_NAME if state.file_name is None else state.file_name, width)]
+    if state.note is not None:
+        room = width - len(parts[0]) - len(SEPARATOR)
+        if room > 0:
+            parts.append(state.note if len(state.note) <= room else state.note[: room - 1] + ELLIPSIS)
     if state.goto_percent is not None:
         parts.append(f"Goto {state.goto_percent}%  Esc cancels")
     line = "?" if state.line is None else f"{state.line:,}"
@@ -101,6 +122,8 @@ class StatusLine(Static):
     """One row below the editor; `request()` coalesces updates to at most one per `REFRESH_SECONDS` and never does work on the key's critical path."""
 
     REFRESH_SECONDS: ClassVar[float] = 0.05
+    NOTE_SECONDS: ClassVar[float] = 4.0
+    """How long a timed note stays (a result such as `Saved`)."""
 
     def __init__(self, source: Callable[[], StatusState | None]) -> None:
         super().__init__("", id="status_line", markup=False)
@@ -111,6 +134,9 @@ class StatusLine(Static):
         self._source = source
         self._dirty = False
         self._timer: Timer | None = None
+        self.note: str | None = None
+        """The note shown after the file name, `None` when there is none."""
+        self._note_timer: Timer | None = None
 
     def on_mount(self) -> None:
         self.request()
@@ -125,11 +151,27 @@ class StatusLine(Static):
         if self._timer is None:
             self._timer = self.set_timer(self.REFRESH_SECONDS, self._flush)
 
+    def set_note(self, text: str | None, *, timed: bool = False) -> None:
+        """Show `text` right after the file name (`None` clears it); a timed note clears itself after `NOTE_SECONDS`."""
+        if self._note_timer is not None:
+            self._note_timer.stop()
+            self._note_timer = None
+        self.note = text
+        if text is not None and timed:
+            self._note_timer = self.set_timer(self.NOTE_SECONDS, self.clear_note)
+        self.request()
+
+    def clear_note(self) -> None:
+        """Remove the note."""
+        self.set_note(None)
+
     def _flush(self) -> None:
         self._timer = None
         self._dirty = False
         self.flushes += 1
         state = self._source()
+        if state is not None and self.note is not None:
+            state = replace(state, note=self.note)
         text = "" if state is None else format_status(state, max(self.size.width, 1))
         if text != self.text:
             self.text = text
