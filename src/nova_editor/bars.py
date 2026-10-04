@@ -13,6 +13,7 @@ from textual.message import Message
 from textual.widgets import Input, Static
 
 from .core.byte_source import ChangeKind
+from .status_line import format_sizes
 from .widget import NovaTextArea
 
 
@@ -94,21 +95,6 @@ class PathBar(Input):
         editors = self.app.query(NovaTextArea)
         if editors:
             editors.first().focus()
-
-
-_UNITS = ("B", "KiB", "MiB", "GiB", "TiB")
-_KIB = 1024
-
-
-def format_sizes(done: int, total: int) -> str:
-    """Format `done / total` in the binary unit that suits `total` (`1.2 / 5.0 GiB`)."""
-    unit = 0
-    while unit < len(_UNITS) - 1 and total >= _KIB ** (unit + 1):
-        unit += 1
-    scale = _KIB**unit
-    if unit == 0:
-        return f"{done} / {total} B"
-    return f"{done / scale:.1f} / {total / scale:.1f} {_UNITS[unit]}"
 
 
 class SaveBar(Static):

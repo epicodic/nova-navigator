@@ -23,7 +23,7 @@ from nova_widgets.keybindings_config import KeybindingsConfig
 from nova_widgets.keymap import HintBar, KeymapRegistry
 from nova_widgets.menu import Menu, MenuBar
 
-from .bars import ConfirmBar, GotoBar, PathBar, SaveBar, format_sizes, parse_goto
+from .bars import ConfirmBar, GotoBar, PathBar, SaveBar, parse_goto
 from .core.byte_source import ChangeKind
 from .core.save import check_path
 from .document._cursor_anchor import CursorState
@@ -32,7 +32,7 @@ from .document_view import DocumentView
 from .editor_actions import build_editor_actions
 from .editor_menus import build_menu_bar
 from .search_bar import SearchBar, SearchStatus
-from .status_line import StatusLine, StatusState, byte_percent, row_is_known
+from .status_line import StatusLine, StatusState, byte_percent, format_sizes, row_is_known
 from .timed_text_area import TimedNovaTextArea
 from .widget import ExternalCheck, NovaTextArea
 
