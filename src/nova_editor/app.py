@@ -11,8 +11,8 @@ import sys
 from pathlib import Path
 from typing import ClassVar
 
+from textual import events
 from textual.app import App, ComposeResult
-from textual.binding import Binding
 
 from nova_widgets.file_provider import FileProvider
 from nova_widgets.keybindings_config import KeybindingsConfig
@@ -29,20 +29,12 @@ class NovaEditApp(App[None]):
     """A thin host app for the Nova Editor using EditorScreen."""
 
     TITLE: ClassVar[str] = "nova_edit"
-    POLL_SECONDS: float = 0.1  # Polling interval for save progress (can be overridden for testing)
 
-    BINDINGS: ClassVar[list[Binding]] = [
-        Binding("ctrl+s", "save", "Save", show=False),
-        Binding("f2", "show_path_bar", "SaveAs", show=False),
-        Binding("f5", "reload", "Reload", show=False),
-        Binding("ctrl+g", "show_goto", "Goto", show=False),
-        Binding("f7", "show_search", "Find", show=False),
-        Binding("f3", "search_next", "Next", show=False),
-        Binding("shift+f3", "search_prev", "Prev", show=False),
-        Binding("f4", "toggle_wrap", "Wrap", show=False),
-        Binding("ctrl+q", "quit", "Quit", show=False),
-        Binding("escape", "cancel_save", "Cancel save", show=False),
-    ]
+    POLL_SECONDS: float = 2.0
+    """Interval of the check for a change of the file on disk."""
+
+    QUIT_WAIT_SECONDS: ClassVar[float] = 2.0
+    """Longest wait for a cancelled save before quitting."""
 
     def __init__(
         self,
@@ -85,6 +77,8 @@ class NovaEditApp(App[None]):
             config=self._config,
             editor_class=self._editor_class,
             standalone=True,
+            poll_seconds=self.POLL_SECONDS,
+            quit_wait_seconds=self.QUIT_WAIT_SECONDS,
         )
 
     @property
@@ -125,86 +119,19 @@ class NovaEditApp(App[None]):
         return
         yield  # Never reached; makes this a generator
 
-    def on_mount(self) -> None:
-        """Set up the app after mounting."""
-        screen = self.screen
-        if isinstance(screen, EditorScreen) and screen.path is not None:
-            self.sub_title = str(screen.path)
+    async def on_event(self, event: events.Event) -> None:
+        """Give every raw key press to the screen's keymap first, before Textual's priority bindings."""
+        if isinstance(event, events.Key) and not event.is_forwarded:
+            screen = self.screen
+            if isinstance(screen, EditorScreen) and await screen.press_key(event.key):
+                return
+        await super().on_event(event)
 
-    def action_save(self) -> None:
-        """Save the document; without a file the path bar asks for one."""
-        screen = self.screen
-        if not isinstance(screen, EditorScreen):
-            return
-        editor = screen.document.editor
-        # Check if the file failed to load (can't save over it)
-        if screen.document.load_state == "failed":
-            self.notify("Not saved: the file could not be loaded, saving would replace it with an empty document. Use save as.", severity="error")
-            return
-        if editor.file_path is None:
-            # If the editor doesn't have a file path but the app does, save to that path
-            if self.path is not None:
-                editor.save(self.path)
-            else:
-                # Otherwise, open the path bar to ask the user
-                screen.action_save()
-        else:
-            # Editor has a file path, use the screen's save logic
-            screen.action_save()
-
-    def action_show_path_bar(self) -> None:
-        """Forward to the screen's save-as action."""
+    def on_app_focus(self, event: events.AppFocus) -> None:
+        """The terminal got the focus back: the file may have changed meanwhile."""
         screen = self.screen
         if isinstance(screen, EditorScreen):
-            screen.action_save_as()
-
-    def action_reload(self) -> None:
-        """Forward to the screen's reload action."""
-        screen = self.screen
-        if isinstance(screen, EditorScreen):
-            screen.action_reload()
-
-    def action_show_goto(self) -> None:
-        """Forward to the screen's goto action."""
-        screen = self.screen
-        if isinstance(screen, EditorScreen):
-            screen.action_goto()
-
-    def action_show_search(self) -> None:
-        """Forward to the screen's find action."""
-        screen = self.screen
-        if isinstance(screen, EditorScreen):
-            screen.action_find()
-
-    def action_search_next(self) -> None:
-        """Forward to the screen's find-next action."""
-        screen = self.screen
-        if isinstance(screen, EditorScreen):
-            screen.action_find_next()
-
-    def action_search_prev(self) -> None:
-        """Forward to the screen's find-prev action."""
-        screen = self.screen
-        if isinstance(screen, EditorScreen):
-            screen.action_find_previous()
-
-    def action_toggle_wrap(self) -> None:
-        """Forward to the screen's toggle-wrap action."""
-        screen = self.screen
-        if isinstance(screen, EditorScreen):
-            screen.action_toggle_wrap()
-
-    async def action_quit(self) -> None:
-        """Forward to the screen's quit action."""
-        screen = self.screen
-        if isinstance(screen, EditorScreen):
-            screen.action_quit_editor()
-        else:
-            self.exit()
-
-    def action_cancel_save(self) -> None:
-        """Forward to the screen (Esc)."""
-        # The screen should handle this via its bindings
+            screen.poll()
 
     def search(self, needle: str, *, backward: bool = False, case_sensitive: bool | None = None) -> None:
         """Search the editor for the given text.

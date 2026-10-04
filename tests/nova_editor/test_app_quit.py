@@ -136,7 +136,7 @@ async def test_a_running_search_is_cancelled_before_the_question(tmp_path: Path,
         await pilot.pause()
         assert app.editor is not None
         throttle = Throttle(app.editor, monkeypatch)
-        await pilot.press("x", "f7")
+        await pilot.press("x", "ctrl+f")
         await pilot.press(*"two", "enter")
         await wait_until(pilot, lambda: app.editor is not None and app.editor.searching)
         await pilot.press("ctrl+q")
@@ -292,7 +292,7 @@ async def test_a_save_that_finishes_in_time_quits_without_asking(tmp_path: Path,
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("key", ["ctrl+g", "f7"])
+@pytest.mark.parametrize("key", ["ctrl+g", "ctrl+f"])
 async def test_ctrl_q_from_a_bar_asks_and_escape_returns_to_the_editor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str) -> None:
     exits = count_exits(monkeypatch)
     app = NovaEditApp(file_path=make_file(tmp_path))

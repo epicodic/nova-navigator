@@ -93,7 +93,7 @@ async def test_f2_opens_the_prefilled_path_bar_and_enter_saves_as(tmp_path: Path
     app = NovaEditApp(file_path=path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("f2")
+        await pilot.press("ctrl+shift+s")
         await pilot.pause()
         _, _, path_bar = bars(app)
         assert path_bar.display
@@ -113,7 +113,7 @@ async def test_f2_then_escape_closes_the_path_bar(tmp_path: Path) -> None:
     app = NovaEditApp(file_path=make_file(tmp_path))
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("f2")
+        await pilot.press("ctrl+shift+s")
         await pilot.pause()
         await pilot.press("escape")
         await pilot.pause()
@@ -188,7 +188,7 @@ async def test_escape_keeps_its_pending_jump_binding(tmp_path: Path) -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         assert app.editor is not None
-        assert app.check_action("cancel_save", ()) is False  # no save runs: Esc is left to the widget
+        assert app.screen.check_action("cancel_save", ()) is False  # no save runs: Esc is left to the widget
         assert any(getattr(b, "key", None) == "escape" and b.action == "cancel_pending" for b in NovaTextArea.BINDINGS)
 
 

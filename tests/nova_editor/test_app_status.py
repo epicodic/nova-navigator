@@ -151,13 +151,13 @@ async def test_the_line_ending_is_shown(tmp_path: Path, data: bytes, ending: str
 
 
 @pytest.mark.asyncio
-async def test_f4_toggles_the_wrap_text(tmp_path: Path) -> None:
+async def test_f10_toggles_the_wrap_text(tmp_path: Path) -> None:
     app = NovaEditApp(file_path=make_file(tmp_path))
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("f4")
+        await pilot.press("f10")
         await wait_until(pilot, lambda: status_text(app).endswith("  Wrap"))
-        await pilot.press("f4")
+        await pilot.press("f10")
         await wait_until(pilot, lambda: status_text(app).endswith("No wrap"))
 
 

@@ -502,7 +502,7 @@ async def test_action_find_next_calls_search_when_has_needle() -> None:
         assert screen is not None
 
         # Set the search term
-        screen._search_term = "test"
+        screen.document.needle = "test"
 
         # Call the find next action
         screen.action_find_next()
@@ -521,7 +521,7 @@ async def test_action_find_previous_calls_search_when_has_needle() -> None:
         assert screen is not None
 
         # Set the search term
-        screen._search_term = "test"
+        screen.document.needle = "test"
 
         # Call the find previous action
         screen.action_find_previous()
@@ -578,7 +578,7 @@ async def test_input_submitted_search_bar_triggers_search() -> None:
         await pilot.pause()
 
         # The search term should be stored
-        assert screen._search_term == "hello"
+        assert screen.document.needle == "hello"
 
 
 @pytest.mark.asyncio
@@ -619,7 +619,7 @@ async def test_default_key_triggers_its_action(tmp_path: Path, monkeypatch: pyte
 
     calls: list[str] = []
 
-    def spy_save(self: object) -> None:  # noqa: ARG001
+    def spy_save(_self: object) -> None:
         calls.append("save")
 
     # Create a test file
@@ -650,7 +650,7 @@ async def test_override_moves_key_and_updates_labels(tmp_path: Path, monkeypatch
 
     calls: list[str] = []
 
-    def spy_save(self: object) -> None:  # noqa: ARG001
+    def spy_save(_self: object) -> None:
         calls.append("save")
 
     # Create a test file
@@ -742,7 +742,7 @@ async def test_override_takes_key_from_another_action(tmp_path: Path, monkeypatc
 
     calls: list[str] = []
 
-    def spy_save_as(self: object) -> None:  # noqa: ARG001
+    def spy_save_as(_self: object) -> None:
         calls.append("save_as")
 
     # Create a test file
@@ -775,7 +775,7 @@ async def test_reload_keymap_applies_changed_file(tmp_path: Path, monkeypatch: p
 
     calls: list[str] = []
 
-    def spy_goto(self: object) -> None:  # noqa: ARG001
+    def spy_goto(_self: object) -> None:
         calls.append("goto")
 
     # Create a test file
@@ -907,14 +907,19 @@ async def test_key_swallowing_undo_override_moves_key(tmp_path: Path) -> None:
             assert undo_action is not None
             assert undo_action.shortcut == KeySequence.parse("ctrl+shift+z")
 
-            # Press the old default key (Ctrl+Z)
-            # This should be swallowed by the screen and NOT reach the widget
-            # We verify this by checking that nothing happens
+            # Type, then press the old default key (Ctrl+Z): the screen swallows it, so nothing is undone
+            screen.document.editor.focus()
+            await pilot.press("x")
+            await pilot.pause()
+            assert screen.document.editor.text.startswith("x")
             await pilot.press("ctrl+z")
             await pilot.pause()
+            assert screen.document.editor.text.startswith("x")
 
-            # The test passes if no exception is raised and the key was swallowed
-            # The widget doesn't receive the key, so no undo happens
+            # The new key undoes
+            await pilot.press("ctrl+shift+z")
+            await pilot.pause()
+            assert not screen.document.editor.text.startswith("x")
 
 
 @pytest.mark.asyncio
@@ -941,13 +946,13 @@ async def test_key_swallowing_empty_override_unmaps(tmp_path: Path) -> None:
             assert undo_action is not None
             assert undo_action.shortcut is None
 
-            # Press the default undo key (Ctrl+Z) - should be swallowed
-            # We verify this by checking that the screen consumed it (returned True from press_key)
-            # The widget doesn't receive it, so no undo happens
+            # Ctrl+Z is swallowed: typed text stays
+            screen.document.editor.focus()
+            await pilot.press("x")
+            await pilot.pause()
             await pilot.press("ctrl+z")
             await pilot.pause()
-
-            # No assertion needed beyond not crashing; the key was swallowed
+            assert screen.document.editor.text.startswith("x")
 
 
 @pytest.mark.asyncio
@@ -957,7 +962,7 @@ async def test_key_swallowing_non_overridden_key_passes_through(tmp_path: Path, 
 
     toggle_wrap_calls: list[str] = []
 
-    def spy_toggle_wrap(self: object) -> None:  # noqa: ARG001
+    def spy_toggle_wrap(_self: object) -> None:
         toggle_wrap_calls.append("toggle_wrap")
 
     # Create a test file
@@ -1035,6 +1040,7 @@ async def test_key_swallowing_all_editing_actions(tmp_path: Path) -> None:
             assert select_all_action.shortcut_label == "Ctrl+Shift+A"
 
             # Press all the old default keys - they should all be swallowed
+            screen.document.editor.focus()
             # If they weren't swallowed, they would reach the widget and cause side effects
             await pilot.press("ctrl+z")
             await pilot.pause()
@@ -1049,5 +1055,51 @@ async def test_key_swallowing_all_editing_actions(tmp_path: Path) -> None:
             await pilot.press("ctrl+a")
             await pilot.pause()
 
-            # No assertions needed beyond not crashing
-            # The keys were swallowed, so they didn't reach the widget
+            # The keys were swallowed, so they didn't reach the widget: nothing selected, nothing cut
+            assert screen.document.editor.selected_text == ""
+            assert screen.document.editor.text == "initial content for testing"
+
+
+@pytest.mark.asyncio
+async def test_menu_items_run_their_actions(tmp_path: Path) -> None:
+    """A triggered menu item runs the same flow as its key (every item except Open)."""
+    from nova_editor.app import NovaEditApp
+    from nova_editor.bars import PathBar
+    from nova_widgets.menu import Menu
+
+    test_file = tmp_path / "test.txt"
+    test_file.write_text("hello world")
+    app = NovaEditApp(path=test_file)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, EditorScreen)
+        editor = screen.document.editor
+        menu = next(m for m in screen.menu_bar.actions if isinstance(m, Menu))
+
+        async def trigger(action_id: str) -> None:
+            action = next(a for a in screen.ACTIONS if a.id == action_id)
+            screen.post_message(Menu.Triggered(menu, action))
+            await pilot.pause()
+
+        wrap = editor.soft_wrap
+        await trigger("editor.wrap_mode")
+        assert editor.soft_wrap is not wrap
+        numbers = editor.show_line_numbers
+        await trigger("editor.line_numbers")
+        assert editor.show_line_numbers is not numbers
+        await trigger("editor.select_all")
+        assert editor.selected_text == "hello world"
+        await trigger("editor.find")
+        assert screen.query_one(SearchBar).display
+        await trigger("editor.goto")
+        assert screen.query_one(GotoBar).display
+        await trigger("editor.save_as")
+        assert screen.query_one(PathBar).display
+        await trigger("editor.save")
+        assert editor.file_path == test_file
+        await trigger("editor.reload")
+        await trigger("editor.find_next")
+        await trigger("editor.find_previous")
+        await trigger("editor.open")
+        assert any("Open is not available yet" in n.message for n in app._notifications)
