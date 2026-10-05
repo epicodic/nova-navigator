@@ -8,19 +8,17 @@ import pytest
 from textual.pilot import Pilot
 
 from nova_editor.app import NovaEditApp
-from nova_editor.bars import ConfirmBar
 from nova_editor.core.save import SaveIo
 from nova_editor.screen import EditorScreen
 from nova_editor.widget import NovaTextArea
+from tests.nova_editor.dialog_helpers import box_title, open_box
+from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.save_widget_helpers import wait_saved
 
 
 async def settle(pilot: Pilot[None], app: NovaEditApp) -> None:
     """Let a started save end and its messages arrive."""
-    screen = app.screen
-    assert isinstance(screen, EditorScreen)
-    assert screen.document.editor is not None
-    await wait_saved(pilot, screen.document.editor)
+    await wait_saved(pilot, app.editor)
 
 
 @pytest.mark.asyncio
@@ -276,10 +274,10 @@ async def test_save_refuses_a_file_that_appeared_before_the_first_save(tmp_path:
         path.write_text("from elsewhere")
         await pilot.press("h", "i")
         await pilot.press("ctrl+s")
-        await settle(pilot, app)
-
-        confirm_bar = app.query_one(ConfirmBar)
-        assert confirm_bar.display  # the file is not overwritten without consent
+        await wait_until(pilot, lambda: open_box(app) is not None)  # the file is not overwritten without consent
+        box = open_box(app)
+        assert box is not None
+        assert box_title(box) == "Overwrite"
 
     assert path.read_text() == "from elsewhere"
 

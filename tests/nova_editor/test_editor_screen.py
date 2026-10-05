@@ -430,28 +430,6 @@ async def test_action_quit_editor_when_not_modified() -> None:
 
 
 @pytest.mark.asyncio
-async def test_confirm_bar_chosen_reload_calls_editor_reload() -> None:
-    """ConfirmBar Chosen message with reload choice calls editor.reload()."""
-    from pathlib import Path
-
-    from nova_editor.bars import ConfirmBar
-
-    host = EditorScreenHost(standalone=True)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        screen = host.screen_instance
-        assert screen is not None
-
-        confirm_bar = screen.query_one(ConfirmBar)
-
-        # Simulate user choosing to reload
-        test_path = Path("/home/test.txt")
-        confirm_bar.post_message(ConfirmBar.Chosen("reload", test_path))
-        await pilot.pause()
-
-        # The confirmation should be handled
-
-
 @pytest.mark.asyncio
 async def test_action_find_shows_search_bar() -> None:
     """The find action shows the SearchBar."""
