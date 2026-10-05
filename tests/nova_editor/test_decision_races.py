@@ -55,6 +55,8 @@ async def test_a_change_that_arrives_while_a_question_is_open_is_asked_afterward
     app.POLL_SECONDS = 0.05
     async with app.run_test(size=SIZE) as pilot:
         await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, EditorScreen)
         await pilot.press("x", "ctrl+shift+s")
         await wait_until(pilot, lambda: open_file_dialog(app) is not None)
         await pilot.press("ctrl+e", "ctrl+u", *"other.txt", "enter")

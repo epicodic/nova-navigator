@@ -241,7 +241,7 @@ class EditorScreen(Screen[None]):
     # Composition
 
     def compose(self) -> ComposeResult:
-        """Compose the menu bar, the editor, the bars, the status line and the hint bar."""
+        """Compose the menu bar, the editor, the popups, the status line and the hint bar."""
         yield self.menu_bar
         yield self.document.editor
         yield StatusLine(self._status_state)
@@ -525,54 +525,6 @@ class EditorScreen(Screen[None]):
             self._save_to(selected)
         self.document.editor.focus()
 
-    async def _open_flow(self) -> None:
-        document = self.document
-        editor = document.editor
-        if editor.saving:
-            self.notify("A save is running", severity="warning")
-            return
-        current = editor.file_path if editor.file_path is not None else document.file_path
-        dialog = FileDialog(
-            FileDialogMode.OPEN,
-            start_path=self._dialog_start(current),
-            title="Open",
-            provider=self.file_provider,
-        )
-        answer = await dialog.run()
-        selected = dialog.selected_path
-        if answer is not Response.OK or selected is None or document is not self.document:
-            self.document.editor.focus()
-            return
-        if editor.modified and await open_question(selected.name).run() is not Response.DISCARD:
-            self.document.editor.focus()
-            return
-        if document is not self.document or editor.saving:
-            return
-        view, error = self._open_view(selected, soft_wrap=editor.soft_wrap, show_line_numbers=editor.show_line_numbers)
-        if error is not None:  # unreadable, vanished or not a regular file: nothing was replaced
-            await failure_box("Open", error).run()
-            self.document.editor.focus()
-            return
-        await self._swap_document(view)
-
-    async def _swap_document(self, view: DocumentView) -> None:
-        """Replace the document by `view`: remove the old editor, mount the new one and re-establish everything the screen derived from the old one."""
-        editor = self.document.editor
-        if editor.searching:
-            editor.cancel_search()
-        editor.cancel_pending()
-        self.goto_popup.hide()
-        self.find_popup.hide()
-        await editor.remove()
-        self.document = view
-        await self.mount(view.editor, after=self.menu_bar)
-        self._watch_editor()
-        self._show_path()
-        self._sync_view_actions()
-        self._note(None)
-        self._request_status()
-        view.editor.focus()
-
     def _is_current(self, editor: NovaTextArea) -> bool:
         """Whether `editor` is the widget of the current document (a message of a replaced editor must change nothing)."""
         return editor is self.document.editor
@@ -640,7 +592,7 @@ class EditorScreen(Screen[None]):
     # Save, Save As, Reload, Close, Quit
 
     def action_save(self) -> None:
-        """Save the document; without a file the path bar asks for one."""
+        """Save the document; without a file the Save As dialog asks for one."""
         editor = self.document.editor
         document = self.document
         if editor.saving:
@@ -688,7 +640,7 @@ class EditorScreen(Screen[None]):
         self.document.editor.cancel_save()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """Keep Esc for the widget and the bars unless a save runs."""
+        """Keep Esc for the widget and the popups unless a save runs."""
         if action == "cancel_save":
             return self.document.editor.saving
         return super().check_action(action, parameters)
