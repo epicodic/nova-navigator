@@ -19,6 +19,7 @@ from nova_widgets.keybindings_config import KeybindingsConfig
 
 from .document._lazy_config import LazyConfig
 from .document_view import not_regular_reason
+from .find_popup import FindPopup
 from .goto_popup import GotoPopup
 from .screen import EditorScreen
 from .timed_text_area import TimedNovaTextArea
@@ -117,6 +118,18 @@ class NovaEditApp(App[None]):
         """
         return self._editor_screen().goto_popup
 
+    @property
+    def find_popup(self) -> FindPopup:
+        """Get the Find popup of the current screen.
+
+        Returns:
+            The FindPopup widget.
+
+        Raises:
+            RuntimeError: If no EditorScreen is on the screen stack.
+        """
+        return self._editor_screen().find_popup
+
     async def on_event(self, event: events.Event) -> None:
         """Give every raw key press to the screen's keymap first, before Textual's priority bindings."""
         if isinstance(event, events.Key) and not event.is_forwarded:
@@ -137,7 +150,7 @@ class NovaEditApp(App[None]):
         Args:
             needle: The text to find.
             backward: Search towards the start of the document.
-            case_sensitive: Distinguish case; the case state of the search bar when `None`.
+            case_sensitive: Distinguish case; the case option of the Find popup when `None`.
         """
         screen = self.screen
         if isinstance(screen, EditorScreen):

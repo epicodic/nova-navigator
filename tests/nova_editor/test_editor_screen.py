@@ -8,7 +8,6 @@ import pytest
 
 from nova_editor.document_view import DocumentView
 from nova_editor.screen import EditorScreen
-from nova_editor.search_bar import SearchBar
 from nova_widgets.keybindings_config import KeybindingsConfig
 
 from .dialog_helpers import open_file_dialog
@@ -37,22 +36,19 @@ async def test_editor_screen_composes_menu_bar_and_hint_bar() -> None:
 
 
 @pytest.mark.asyncio
-async def test_editor_screen_composes_all_bars() -> None:
-    """The screen composes GotoPopup and SearchBar."""
+async def test_editor_screen_composes_the_popups_and_no_bar() -> None:
+    """The screen composes the Go to and Find popups and none of the old bars."""
     host = EditorScreenHost(standalone=True)
     async with host.run_test() as pilot:
         await pilot.pause()
         screen = host.screen_instance
         assert screen is not None
-
+        from nova_editor.find_popup import FindPopup
         from nova_editor.goto_popup import GotoPopup
-        from nova_editor.search_bar import SearchBar
 
-        goto_popups = screen.query(GotoPopup)
-        search_bars = screen.query(SearchBar)
-
-        assert len(goto_popups) == 1, "GotoPopup not found"
-        assert len(search_bars) > 0, "SearchBar not found"
+        assert len(screen.query(GotoPopup)) == 1
+        assert len(screen.query(FindPopup)) == 1
+        assert len(screen.query("#goto_bar, #path_bar, #save_bar, #confirm_bar, #search_bar, #search_status")) == 0
 
 
 @pytest.mark.asyncio
@@ -428,25 +424,17 @@ async def test_action_quit_editor_when_not_modified() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.asyncio
-async def test_action_find_shows_search_bar() -> None:
-    """The find action shows the SearchBar."""
-    from nova_editor.search_bar import SearchBar
-
+async def test_action_find_shows_the_find_popup() -> None:
+    """The find action shows the Find popup."""
     host = EditorScreenHost(standalone=True)
     async with host.run_test() as pilot:
         await pilot.pause()
         screen = host.screen_instance
         assert screen is not None
-
-        search_bar = screen.query_one(SearchBar)
-        assert not search_bar.display
-
-        # Call the find action
+        popup = screen.find_popup
+        assert not popup.display
         screen.action_find()
-        await pilot.pause()
-
-        # SearchBar should now be displayed and focused
-        assert search_bar.display
+        assert popup.display
 
 
 @pytest.mark.asyncio
@@ -506,36 +494,6 @@ async def test_action_go_to_shows_the_goto_popup() -> None:
 
 
 @pytest.mark.asyncio
-async def test_input_submitted_search_bar_triggers_search() -> None:
-    """Input.Submitted from SearchBar triggers a search."""
-    from textual.widgets import Input
-
-    host = EditorScreenHost(standalone=True)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        screen = host.screen_instance
-        assert screen is not None
-
-        search_bar = screen.query_one("#search_bar", Input)
-        editor = screen.document.editor
-
-        # Type some text into the editor
-        editor.load_text("hello world\ntest\nhello again")
-        await pilot.pause()
-
-        # Show the search bar
-        search_bar.display = True
-        search_bar.value = "hello"
-        await pilot.pause()
-
-        # Simulate user submitting a search
-        search_bar.post_message(Input.Submitted(search_bar, value="hello"))
-        await pilot.pause()
-
-        # The search term should be stored
-        assert screen.document.needle == "hello"
-
-
 @pytest.mark.asyncio
 async def test_default_key_triggers_its_action(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A default key (Ctrl+S) triggers its action (save)."""
@@ -650,12 +608,11 @@ async def test_empty_override_unmaps_key(tmp_path: Path) -> None:
         assert find_action.shortcut is None
         assert find_action.shortcut_label == ""
 
-        # Press the default find key (Ctrl+F) - should not show search bar
+        # Press the default find key (Ctrl+F) - should not show the popup
         await pilot.press("ctrl+f")
         await pilot.pause()
 
-        search_bar = screen.query_one(SearchBar)
-        assert search_bar.display is False
+        assert screen.find_popup.display is False
 
         # Verify the hint bar doesn't show the old key or the unmapped action
         hint_bar = app.query_one(HintBar)
@@ -976,8 +933,8 @@ async def test_key_swallowing_all_editing_actions(tmp_path: Path, monkeypatch: p
 
 
 @pytest.mark.asyncio
-async def test_input_bar_keeps_its_own_keys(tmp_path: Path) -> None:
-    """Ctrl+A in a bar moves the cursor to the start (as the Input does) and does not select the document."""
+async def test_a_popup_input_keeps_its_own_keys(tmp_path: Path) -> None:
+    """Ctrl+A in a popup moves the cursor to the start (as the Input does) and does not select the document."""
     from textual.widgets import Input
 
     from nova_editor.app import NovaEditApp
@@ -991,7 +948,7 @@ async def test_input_bar_keeps_its_own_keys(tmp_path: Path) -> None:
         assert isinstance(screen, EditorScreen)
         await pilot.press("ctrl+f")
         await pilot.pause()
-        bar = screen.query_one(SearchBar)
+        popup = screen.find_popup
         assert isinstance(app.focused, Input)
         await pilot.press("a", "b", "c")
         assert app.focused.cursor_position == 3
@@ -1002,7 +959,7 @@ async def test_input_bar_keeps_its_own_keys(tmp_path: Path) -> None:
         await pilot.press("ctrl+e", "ctrl+w")
         await pilot.pause()
         assert app.focused.value == ""  # Ctrl+W deleted the word, it did not close the editor
-        assert bar.display
+        assert popup.display
 
 
 @pytest.mark.asyncio
@@ -1035,7 +992,7 @@ async def test_menu_items_run_their_actions(tmp_path: Path) -> None:
         await trigger("editor.select_all")
         assert editor.selected_text == "hello world"
         await trigger("editor.find")
-        assert screen.query_one(SearchBar).display
+        assert screen.find_popup.display
         await trigger("editor.goto")
         assert screen.goto_popup.display
         await trigger("editor.save_as")

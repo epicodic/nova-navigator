@@ -9,9 +9,9 @@ from textual.app import App
 from textual.screen import Screen
 from textual.widgets import Input
 
-from nova_editor import search_bar
+from nova_editor import find_popup
+from nova_editor.find_popup import FindPopup
 from nova_editor.screen import EditorScreen
-from nova_editor.search_bar import SearchBar, SearchStatus
 from nova_editor.widget import NovaTextArea
 
 
@@ -44,8 +44,8 @@ def test_new_bindings_do_not_collide() -> None:
     assert keys(NovaTextArea.BINDINGS).count("escape") == 1
     assert screen_binding_keys.count("escape") == 1
     assert EditorScreen.check_action is not Screen.check_action
-    # Alt+C toggles the case in the search bar and is used nowhere else
-    assert keys(SearchBar.BINDINGS).count("alt+c") == 1
+    # Alt+C toggles the case in the Find popup and is used nowhere else
+    assert keys(FindPopup.BINDINGS).count("alt+c") == 1
     for owner in (NovaTextArea.BINDINGS, EditorScreen.BINDINGS, App.BINDINGS, Input.BINDINGS):
         assert "alt+c" not in keys(owner)
 
@@ -70,12 +70,12 @@ def test_select_all_moved_off_f7_and_is_still_reachable() -> None:
     assert "ctrl+shift+a" not in others
 
 
-def test_search_bar_module_surface() -> None:
-    """DEC-29 note 2: the module defines exactly `SearchBar` and `SearchStatus`; `SearchStatus` has three public methods."""
-    classes = [name for name in dir(search_bar) if not name.startswith("_") and isinstance(getattr(search_bar, name), type) and getattr(search_bar, name).__module__ == search_bar.__name__]
-    assert classes == ["SearchBar", "SearchStatus"]
-    methods = sorted(name for name, value in vars(SearchStatus).items() if not name.startswith("_") and callable(value))
-    assert methods == ["clear", "show_progress", "show_result"]
+def test_find_popup_module_surface() -> None:
+    """The module defines exactly `FindPopup`, with its two messages."""
+    classes = [name for name in dir(find_popup) if not name.startswith("_") and isinstance(getattr(find_popup, name), type) and getattr(find_popup, name).__module__ == find_popup.__name__]
+    assert classes == ["FindPopup"]
+    messages = sorted(name for name, value in vars(FindPopup).items() if isinstance(value, type))
+    assert messages == ["Dismissed", "Requested"]
 
 
 def test_every_action_name_has_a_handler() -> None:
