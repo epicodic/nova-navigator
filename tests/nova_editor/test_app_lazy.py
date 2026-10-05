@@ -25,11 +25,10 @@ async def test_large_file_opens_lazily_and_is_editable(tmp_path: Path) -> None:
         await pilot.press("f10")
         await pilot.pause()
         assert app.editor.soft_wrap is True
-        # Test goto bar visibility
+        # Test goto popup visibility
         await pilot.press("ctrl+g")
         await pilot.pause()
-        assert app.goto_bar is not None
-        assert app.goto_bar.display is True
+        assert app.goto_popup.display is True
         # Try goto line 3
         await pilot.press(*"3", "enter")
         await pilot.pause()
@@ -77,40 +76,32 @@ async def test_f10_toggles_wrap(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ctrl_g_shows_goto_bar(tmp_path: Path) -> None:
-    """Test that Ctrl+G show goto bar action works."""
+async def test_ctrl_g_shows_the_goto_popup(tmp_path: Path) -> None:
+    """Test that Ctrl+G show goto popup action works."""
     path = make_mixed(tmp_path / "m.txt")
     app = NovaEditApp(file_path=path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app.goto_bar is not None
-
-        # GotoBar should be hidden initially
-        initial_visible = app.goto_bar.display
-
+        assert app.goto_popup.display is False
         await pilot.press("ctrl+g")
         await pilot.pause()
-
-        # GotoBar should now be visible and focused
-        assert initial_visible is False
-        assert app.goto_bar.display is True
-        assert app.focused is app.goto_bar
+        assert app.goto_popup.display is True
+        assert app.focused is app.goto_popup.input
 
 
 @pytest.mark.asyncio
-async def test_escape_closes_goto_bar_and_refocuses_editor(tmp_path: Path) -> None:
-    """Escape hides the GotoBar and returns the focus to the editor."""
+async def test_escape_closes_the_goto_popup_and_refocuses_editor(tmp_path: Path) -> None:
+    """Escape hides the popup and returns the focus to the editor."""
     path = make_mixed(tmp_path / "m.txt")
     app = NovaEditApp(file_path=path)
     async with app.run_test(size=(80, 20)) as pilot:
         await pilot.pause()
-        assert app.goto_bar is not None
         await pilot.press("ctrl+g")
         await pilot.pause()
-        assert app.goto_bar.display is True
+        assert app.goto_popup.display is True
         await pilot.press("4", "escape")
         await pilot.pause()
-        assert app.goto_bar.display is False
+        assert app.goto_popup.display is False
         assert app.focused is app.editor
         assert app.editor is not None
         assert app.editor.cursor_location[0] == 0

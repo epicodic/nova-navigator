@@ -17,9 +17,9 @@ from textual.app import App
 from nova_widgets.file_provider import FileProvider
 from nova_widgets.keybindings_config import KeybindingsConfig
 
-from .bars import GotoBar
 from .document._lazy_config import LazyConfig
 from .document_view import not_regular_reason
+from .goto_popup import GotoPopup
 from .screen import EditorScreen
 from .timed_text_area import TimedNovaTextArea
 from .widget import NovaTextArea
@@ -106,20 +106,16 @@ class NovaEditApp(App[None]):
         return self._editor_screen().document.editor
 
     @property
-    def goto_bar(self) -> GotoBar:
-        """Get the goto bar widget from the current screen.
+    def goto_popup(self) -> GotoPopup:
+        """Get the Go to popup of the current screen.
 
         Returns:
-            The GotoBar widget.
+            The GotoPopup widget.
 
         Raises:
-            RuntimeError: If the screen is not an EditorScreen.
+            RuntimeError: If no EditorScreen is on the screen stack.
         """
-        screen = self.screen
-        if not isinstance(screen, EditorScreen):
-            msg = f"Expected EditorScreen, got {type(screen).__name__}"
-            raise RuntimeError(msg)
-        return screen.query_one(GotoBar)
+        return self._editor_screen().goto_popup
 
     async def on_event(self, event: events.Event) -> None:
         """Give every raw key press to the screen's keymap first, before Textual's priority bindings."""

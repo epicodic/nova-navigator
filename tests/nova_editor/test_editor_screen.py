@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from nova_editor.bars import GotoBar
 from nova_editor.document_view import DocumentView
 from nova_editor.screen import EditorScreen
 from nova_editor.search_bar import SearchBar
@@ -39,20 +38,20 @@ async def test_editor_screen_composes_menu_bar_and_hint_bar() -> None:
 
 @pytest.mark.asyncio
 async def test_editor_screen_composes_all_bars() -> None:
-    """The screen composes GotoBar and SearchBar."""
+    """The screen composes GotoPopup and SearchBar."""
     host = EditorScreenHost(standalone=True)
     async with host.run_test() as pilot:
         await pilot.pause()
         screen = host.screen_instance
         assert screen is not None
 
-        from nova_editor.bars import GotoBar
+        from nova_editor.goto_popup import GotoPopup
         from nova_editor.search_bar import SearchBar
 
-        goto_bars = screen.query(GotoBar)
+        goto_popups = screen.query(GotoPopup)
         search_bars = screen.query(SearchBar)
 
-        assert len(goto_bars) > 0, "GotoBar not found"
+        assert len(goto_popups) == 1, "GotoPopup not found"
         assert len(search_bars) > 0, "SearchBar not found"
 
 
@@ -487,25 +486,23 @@ async def test_action_find_previous_calls_search_when_has_needle() -> None:
 
 
 @pytest.mark.asyncio
-async def test_action_go_to_shows_goto_bar() -> None:
-    """The goto action shows the GotoBar."""
-    from nova_editor.bars import GotoBar
-
+async def test_action_go_to_shows_the_goto_popup() -> None:
+    """The goto action shows the GotoPopup."""
     host = EditorScreenHost(standalone=True)
     async with host.run_test() as pilot:
         await pilot.pause()
         screen = host.screen_instance
         assert screen is not None
 
-        goto_bar = screen.query_one(GotoBar)
-        assert not goto_bar.display
+        popup = screen.goto_popup
+        assert not popup.display
 
         # Call the goto action
         screen.action_goto()
         await pilot.pause()
 
-        # GotoBar should now be displayed and focused
-        assert goto_bar.display
+        # GotoPopup should now be displayed and focused
+        assert popup.display
 
 
 @pytest.mark.asyncio
@@ -537,37 +534,6 @@ async def test_input_submitted_search_bar_triggers_search() -> None:
 
         # The search term should be stored
         assert screen.document.needle == "hello"
-
-
-@pytest.mark.asyncio
-async def test_input_submitted_goto_bar_jumps_to_line() -> None:
-    """Input.Submitted from GotoBar jumps to the specified line."""
-    from textual.widgets import Input
-
-    host = EditorScreenHost(standalone=True)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        screen = host.screen_instance
-        assert screen is not None
-
-        goto_bar = screen.query_one("#goto_bar", Input)
-        editor = screen.document.editor
-
-        # Load multiline text
-        editor.load_text("line 1\nline 2\nline 3\nline 4")
-        await pilot.pause()
-
-        # Show the goto bar
-        goto_bar.display = True
-        goto_bar.value = "3"
-        await pilot.pause()
-
-        # Simulate user submitting a line number
-        goto_bar.post_message(Input.Submitted(goto_bar, value="3"))
-        await pilot.pause()
-
-        # The goto bar should be closed
-        assert not goto_bar.display
 
 
 @pytest.mark.asyncio
@@ -821,8 +787,8 @@ async def test_defaults_without_config_equal_req4_table(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_goto_bar_displays_when_action_triggered(tmp_path: Path) -> None:
-    """The goto action displays and focuses the GotoBar."""
+async def test_goto_popup_displays_when_action_triggered(tmp_path: Path) -> None:
+    """The goto action displays and focuses the GotoPopup."""
     from nova_editor.app import NovaEditApp
 
     # Create a test file
@@ -835,17 +801,17 @@ async def test_goto_bar_displays_when_action_triggered(tmp_path: Path) -> None:
 
         screen = app.screen
         assert isinstance(screen, EditorScreen)
-        # Initially GotoBar should not be displayed
-        goto_bar = screen.query_one(GotoBar)
-        assert goto_bar.display is False
+        # Initially GotoPopup should not be displayed
+        popup = screen.goto_popup
+        assert popup.display is False
 
         # Press Ctrl+G to trigger the goto action
         await pilot.press("ctrl+g")
         await pilot.pause()
 
-        # Verify GotoBar is displayed and focused
-        assert goto_bar.display is True
-        assert app.focused is goto_bar
+        # Verify GotoPopup is displayed and focused
+        assert popup.display is True
+        assert app.focused is popup.input
 
 
 @pytest.mark.asyncio
@@ -1071,7 +1037,7 @@ async def test_menu_items_run_their_actions(tmp_path: Path) -> None:
         await trigger("editor.find")
         assert screen.query_one(SearchBar).display
         await trigger("editor.goto")
-        assert screen.query_one(GotoBar).display
+        assert screen.goto_popup.display
         await trigger("editor.save_as")
         await wait_until(pilot, lambda: open_file_dialog(app) is not None)
         await pilot.press("escape")
