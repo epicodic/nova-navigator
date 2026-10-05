@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import ClassVar
 
@@ -172,8 +173,21 @@ class NovaEditApp(App[None]):
         self.exit()
 
 
-def main() -> None:
-    """Entry point for the nova_edit command."""
+def default_config_dir(home: Path | None = None) -> Path:
+    """Return the directory of the nova_edit key file: `~/.config/nova-edit` (REQ-5)."""
+    return (home if home is not None else Path.home()) / ".config" / "nova-edit"
+
+
+def build_app(argv: Sequence[str]) -> NovaEditApp:
+    """Parse the command line and build the app.
+
+    Args:
+        argv: The arguments without the program name.
+
+    Returns:
+        The app, with the key file of the config directory loaded (a missing file means the
+        defaults).
+    """
     parser = argparse.ArgumentParser(
         prog="nova_edit",
         description="Nova Editor - a Textual-based text editor",
@@ -183,8 +197,14 @@ def main() -> None:
         nargs="?",
         help="File to edit (optional)",
     )
+    parser.add_argument(
+        "--config-dir",
+        type=Path,
+        default=None,
+        help="Directory of keybindings.toml (default: ~/.config/nova-edit)",
+    )
 
-    args = parser.parse_args()
+    args = parser.parse_args(list(argv))
 
     file_path: Path | None = None
     if args.file:
@@ -194,8 +214,13 @@ def main() -> None:
             sys.stderr.write(f"nova_edit: {reason}\n")
             sys.exit(1)
 
-    app = NovaEditApp(path=file_path)
-    app.run()
+    config_dir = args.config_dir if args.config_dir is not None else default_config_dir()
+    return NovaEditApp(path=file_path, keybindings=KeybindingsConfig(config_dir))
+
+
+def main() -> None:
+    """Entry point for the nova_edit command."""
+    build_app(sys.argv[1:]).run()
 
 
 if __name__ == "__main__":
