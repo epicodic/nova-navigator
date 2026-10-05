@@ -207,6 +207,7 @@ async def wait_box(pilot: Pilot[None], app: App[None]) -> MessageBox:
     await wait_until(pilot, lambda: open_box(app) is not None)
     box = open_box(app)
     assert box is not None
+    await wait_until(pilot, lambda: len(box_buttons(box)) > 0)
     return box
 
 
