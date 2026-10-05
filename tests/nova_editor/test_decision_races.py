@@ -10,8 +10,9 @@ from nova_editor.app import NovaEditApp
 from nova_editor.core.byte_source import ChangeKind
 from nova_editor.screen import EditorScreen
 from nova_editor.widget import NovaTextArea
-from tests.nova_editor.dialog_helpers import answer, box_title, has_dialog, open_box, open_file_dialog, open_title
+from tests.nova_editor.dialog_helpers import HomeProvider, answer, box_title, has_dialog, open_box, open_file_dialog, open_title
 from tests.nova_editor.helpers_view import wait_until
+from tests.nova_editor.test_open_flow import pick
 
 SIZE = (100, 30)
 CHANGED = "changed on disk, longer\n"
@@ -84,3 +85,43 @@ async def test_a_message_of_another_editor_is_ignored(tmp_path: Path) -> None:
         assert not has_dialog(app)
         assert screen.document.change_question is False
         assert screen.document.deferred_change is None
+
+
+@pytest.mark.asyncio
+async def test_a_change_while_the_open_dialog_is_shown_is_asked_after_cancel(tmp_path: Path) -> None:
+    path = make_file(tmp_path)
+    (tmp_path / "home").mkdir()
+    app = NovaEditApp(file_path=path, file_provider=HomeProvider(tmp_path / "home"))
+    app.POLL_SECONDS = 0.05
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+o")
+        await wait_until(pilot, lambda: open_file_dialog(app) is not None)
+        path.write_text(CHANGED)
+        await pilot.pause(0.3)  # several polls
+        assert open_file_dialog(app) is not None  # the dialog is not replaced
+        await pilot.press("escape")
+        await wait_until(pilot, lambda: open_title(app) == "File changed")
+
+
+@pytest.mark.asyncio
+async def test_a_change_while_the_open_dialog_is_shown_is_dropped_after_a_successful_open(tmp_path: Path) -> None:
+    path = make_file(tmp_path)
+    other = tmp_path / "other.txt"
+    other.write_text("other\n")
+    (tmp_path / "home").mkdir()
+    app = NovaEditApp(file_path=path, file_provider=HomeProvider(tmp_path / "home"))
+    app.POLL_SECONDS = 0.05
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, EditorScreen)
+        await pilot.press("ctrl+o")
+        await wait_until(pilot, lambda: open_file_dialog(app) is not None)
+        path.write_text(CHANGED)  # the open document's file changes while the dialog is shown
+        await pilot.pause(0.3)
+        await pick(pilot, tmp_path, "other.txt")
+        await wait_until(pilot, lambda: app.editor.text == "other\n")
+        await pilot.pause(0.3)
+        assert not has_dialog(app)  # the question about the replaced document is silently dropped
+        assert screen.document.change_question is False

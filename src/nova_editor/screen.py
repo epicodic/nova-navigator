@@ -29,7 +29,7 @@ from nova_widgets.response import Response
 
 from .core.byte_source import ChangeKind
 from .core.save import check_path
-from .decisions import failure_box, file_question, quit_question, reload_question
+from .decisions import failure_box, file_question, open_question, quit_question, reload_question
 from .document._cursor_anchor import CursorState
 from .document._lazy_config import LazyConfig
 from .document_view import DocumentView
@@ -157,14 +157,9 @@ class EditorScreen(Screen[None]):
         self._path_label_width: int | None = None
         self.menu_bar.add_right_widget(self._path_label)
 
-        self.document, self._load_error = DocumentView.open(
-            path,
-            editor_class=editor_class,
-            soft_wrap=soft_wrap,
-            show_line_numbers=True,
-            config=config,
-            timing_file=os.environ.get("NOVA_EDIT_TIMING_FILE"),
-        )
+        self._editor_class = editor_class
+        self._config = config
+        self.document, self._load_error = self._open_view(path, soft_wrap=soft_wrap, show_line_numbers=True)
 
     # Keymap
 
@@ -261,10 +256,7 @@ class EditorScreen(Screen[None]):
         self._show_path()
         self.set_interval(self._poll_seconds, self.poll)
         self._sync_view_actions()
-        editor = self.document.editor
-        self.watch(editor, "pending_progress", self._on_editor_state, init=False)
-        self.watch(editor, "soft_wrap", self._on_editor_state, init=False)
-        self.watch(editor, "show_line_numbers", self._on_editor_state, init=False)
+        self._watch_editor()
 
     def on_resize(self, event: events.Resize) -> None:
         """Adjust the path label when the terminal is resized."""
@@ -338,6 +330,26 @@ class EditorScreen(Screen[None]):
             goto_percent=None if progress is None else int(progress * 100),
         )
 
+    # Document management
+
+    def _open_view(self, path: Path | None, *, soft_wrap: bool, show_line_numbers: bool) -> tuple[DocumentView, str | None]:
+        """Open `path` as a document: the one call of `DocumentView.open`, so that `NOVA_EDIT_TIMING_FILE` reaches every widget the screen builds."""
+        return DocumentView.open(
+            path,
+            editor_class=self._editor_class,
+            soft_wrap=soft_wrap,
+            show_line_numbers=show_line_numbers,
+            config=self._config,
+            timing_file=os.environ.get("NOVA_EDIT_TIMING_FILE"),
+        )
+
+    def _watch_editor(self) -> None:
+        """Mirror the state of the current editor in the status line and the menu; a replaced editor takes its watchers with it."""
+        editor = self.document.editor
+        self.watch(editor, "pending_progress", self._on_editor_state, init=False)
+        self.watch(editor, "soft_wrap", self._on_editor_state, init=False)
+        self.watch(editor, "show_line_numbers", self._on_editor_state, init=False)
+
     # View actions: the widget owns the state, the checked items mirror it
 
     def _sync_view_actions(self) -> None:
@@ -357,8 +369,8 @@ class EditorScreen(Screen[None]):
         self._sync_view_actions()
 
     def action_open_file(self) -> None:
-        """Open: no file chooser exists yet, so say so."""
-        self.notify("Open is not available yet", timeout=3.0)
+        """Open: pick a file in the file dialog; the document is replaced after the unsaved-changes question."""
+        self._start_flow(self._open_flow)
 
     # Status refresh
 
@@ -458,6 +470,50 @@ class EditorScreen(Screen[None]):
         directory = PurePath(str(path.parent))
         return directory if self.file_provider.is_dir(directory) else None
 
+    async def _open_flow(self) -> None:
+        """Open: pick a file in the file dialog; the document is replaced after the unsaved-changes question."""
+        document = self.document
+        editor = document.editor
+        if editor.saving:
+            self.notify("A save is running", severity="warning")
+            return
+        current = editor.file_path if editor.file_path is not None else document.file_path
+        dialog = FileDialog(FileDialogMode.OPEN, start_path=self._dialog_start(current), title="Open", provider=self.file_provider)
+        answer = await dialog.run()
+        selected = dialog.selected_path
+        if answer is not Response.OK or selected is None or document is not self.document:
+            self.document.editor.focus()
+            return
+        if editor.modified and await open_question(selected.name).run() is not Response.DISCARD:
+            self.document.editor.focus()
+            return
+        if document is not self.document or editor.saving:
+            return
+        view, error = self._open_view(selected, soft_wrap=editor.soft_wrap, show_line_numbers=editor.show_line_numbers)
+        if error is not None:  # unreadable, vanished or not a regular file: nothing was replaced
+            await failure_box("Open", error).run()
+            self.document.editor.focus()
+            return
+        await self._swap_document(view)
+
+    async def _swap_document(self, view: DocumentView) -> None:
+        """Replace the document by `view`: remove the old editor, mount the new one and re-establish everything the screen derived from the old one."""
+        editor = self.document.editor
+        if editor.searching:
+            editor.cancel_search()
+        editor.cancel_pending()
+        self.goto_popup.hide()
+        self.find_popup.hide()
+        await editor.remove()
+        self.document = view
+        await self.mount(view.editor, after=self.menu_bar)
+        self._watch_editor()
+        self._show_path()
+        self._sync_view_actions()
+        self._note(None)
+        self._request_status()
+        view.editor.focus()
+
     async def _save_as_flow(self, current: Path | None) -> None:
         """Save As: pick the target in the file dialog and save to it; Cancel and Escape change nothing."""
         document = self.document
@@ -473,6 +529,54 @@ class EditorScreen(Screen[None]):
         if answer is Response.OK and selected is not None and document is self.document:
             self._save_to(selected)
         self.document.editor.focus()
+
+    async def _open_flow(self) -> None:
+        document = self.document
+        editor = document.editor
+        if editor.saving:
+            self.notify("A save is running", severity="warning")
+            return
+        current = editor.file_path if editor.file_path is not None else document.file_path
+        dialog = FileDialog(
+            FileDialogMode.OPEN,
+            start_path=self._dialog_start(current),
+            title="Open",
+            provider=self.file_provider,
+        )
+        answer = await dialog.run()
+        selected = dialog.selected_path
+        if answer is not Response.OK or selected is None or document is not self.document:
+            self.document.editor.focus()
+            return
+        if editor.modified and await open_question(selected.name).run() is not Response.DISCARD:
+            self.document.editor.focus()
+            return
+        if document is not self.document or editor.saving:
+            return
+        view, error = self._open_view(selected, soft_wrap=editor.soft_wrap, show_line_numbers=editor.show_line_numbers)
+        if error is not None:  # unreadable, vanished or not a regular file: nothing was replaced
+            await failure_box("Open", error).run()
+            self.document.editor.focus()
+            return
+        await self._swap_document(view)
+
+    async def _swap_document(self, view: DocumentView) -> None:
+        """Replace the document by `view`: remove the old editor, mount the new one and re-establish everything the screen derived from the old one."""
+        editor = self.document.editor
+        if editor.searching:
+            editor.cancel_search()
+        editor.cancel_pending()
+        self.goto_popup.hide()
+        self.find_popup.hide()
+        await editor.remove()
+        self.document = view
+        await self.mount(view.editor, after=self.menu_bar)
+        self._watch_editor()
+        self._show_path()
+        self._sync_view_actions()
+        self._note(None)
+        self._request_status()
+        view.editor.focus()
 
     def _is_current(self, editor: NovaTextArea) -> bool:
         """Whether `editor` is the widget of the current document (a message of a replaced editor must change nothing)."""

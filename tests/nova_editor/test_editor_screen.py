@@ -8,6 +8,7 @@ import pytest
 
 from nova_editor.document_view import DocumentView
 from nova_editor.screen import EditorScreen
+from nova_widgets.file_dialog import FileDialogMode
 from nova_widgets.keybindings_config import KeybindingsConfig
 
 from .dialog_helpers import open_file_dialog
@@ -223,19 +224,22 @@ async def test_document_held_by_reference_only() -> None:
 
 
 @pytest.mark.asyncio
-async def test_open_action_shows_neutral_stub_message() -> None:
-    """The Open action shows a neutral notification message."""
+async def test_open_action_opens_the_open_dialog() -> None:
+    """The Open action shows the Open file dialog."""
     host = EditorScreenHost(standalone=True)
     async with host.run_test() as pilot:
         await pilot.pause()
         screen = host.screen_instance
         assert screen is not None
-
         open_action = next(a for a in screen.ACTIONS if a.id == "editor.open")
         assert open_action.action == "open_file"
         screen.action_open_file()
-        await pilot.pause()
-        assert [n.message for n in host._notifications] == ["Open is not available yet"]
+        await wait_until(pilot, lambda: open_file_dialog(host) is not None)
+        dialog = open_file_dialog(host)
+        assert dialog is not None
+        assert dialog.mode is FileDialogMode.OPEN
+        await pilot.press("escape")
+        await wait_until(pilot, lambda: open_file_dialog(host) is None)
 
 
 @pytest.mark.asyncio
@@ -964,7 +968,7 @@ async def test_a_popup_input_keeps_its_own_keys(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_menu_items_run_their_actions(tmp_path: Path) -> None:
-    """A triggered menu item runs the same flow as its key (every item except Open)."""
+    """A triggered menu item runs the same flow as its key (every item)."""
     from nova_editor.app import NovaEditApp
     from nova_widgets.menu import Menu
 
@@ -1005,4 +1009,6 @@ async def test_menu_items_run_their_actions(tmp_path: Path) -> None:
         await trigger("editor.find_next")
         await trigger("editor.find_previous")
         await trigger("editor.open")
-        assert any("Open is not available yet" in n.message for n in app._notifications)
+        await wait_until(pilot, lambda: open_file_dialog(app) is not None)
+        await pilot.press("escape")
+        await wait_until(pilot, lambda: open_file_dialog(app) is None)
