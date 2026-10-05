@@ -10,6 +10,7 @@ from textual.pilot import Pilot
 from nova_editor.app import NovaEditApp
 from nova_editor.core.save import SaveIo
 from nova_editor.screen import EditorScreen
+from nova_editor.status_line import StatusLine
 from nova_editor.widget import NovaTextArea
 from tests.nova_editor.dialog_helpers import box_title, open_box
 from tests.nova_editor.helpers_view import wait_until
@@ -314,9 +315,10 @@ async def test_failed_save_removes_the_temp_file(tmp_path: Path, monkeypatch: py
         await pilot.pause()
         await pilot.press("x")
         await pilot.press("ctrl+s")
-        await settle(pilot, app)
-        save_bar = app.query_one("#save_bar")
-        assert save_bar.display
+        await wait_until(pilot, lambda: open_box(app) is not None)
+        box = open_box(app)
+        assert box is not None
+        assert box_title(box) == "Save failed"
 
     assert path.read_text() == "one"
     assert [p.name for p in tmp_path.iterdir()] == ["f.txt"]
@@ -324,7 +326,7 @@ async def test_failed_save_removes_the_temp_file(tmp_path: Path, monkeypatch: py
 
 @pytest.mark.asyncio
 async def test_save_small_file_shows_the_result_line(tmp_path: Path) -> None:
-    """A save shows a result line in the save bar and no notification about an interim save."""
+    """A save shows a result line in the status line and no notification about an interim save."""
     path = tmp_path / "save_notify.txt"
     path.write_text("initial")
 
@@ -333,9 +335,8 @@ async def test_save_small_file_shows_the_result_line(tmp_path: Path) -> None:
         await pilot.pause()
         await pilot.press("n", "e", "w")
         await pilot.press("ctrl+s")
-        await settle(pilot, app)
-        save_bar = app.query_one("#save_bar")
-        assert save_bar.display
+        status = app.query_one(StatusLine)
+        await wait_until(pilot, lambda: status.note is not None and status.note.startswith("Saved"))
 
     assert path.read_text() == "newinitial"
 

@@ -66,6 +66,18 @@ def format_sizes(done: int, total: int) -> str:
     return f"{done / scale:.1f} / {total / scale:.1f} {_UNITS[unit]}"
 
 
+def save_progress_text(phase: str, done: int, total: int) -> str:
+    """The note of a running save: the bytes written, or the name of a later phase."""
+    if phase == "flushing":
+        return "Flushing"
+    if phase == "history":
+        return "Preserving undo history"
+    if phase == "finishing":
+        return "Finishing"
+    percent = 100 if total <= 0 else round(done * 100 / total)
+    return f"Saving  {format_sizes(done, total)}  {percent} %  Esc cancels"
+
+
 def byte_percent(byte_offset: int | None, length: int) -> int | None:
     """Return the whole percent of `length` bytes that lie before `byte_offset`, or `None` when the offset is unknown or the document is empty."""
     if byte_offset is None or length <= 0:

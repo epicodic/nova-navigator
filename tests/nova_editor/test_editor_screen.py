@@ -39,22 +39,20 @@ async def test_editor_screen_composes_menu_bar_and_hint_bar() -> None:
 
 @pytest.mark.asyncio
 async def test_editor_screen_composes_all_bars() -> None:
-    """The screen composes GotoBar, SaveBar, and SearchBar."""
+    """The screen composes GotoBar and SearchBar."""
     host = EditorScreenHost(standalone=True)
     async with host.run_test() as pilot:
         await pilot.pause()
         screen = host.screen_instance
         assert screen is not None
 
-        from nova_editor.bars import GotoBar, SaveBar
+        from nova_editor.bars import GotoBar
         from nova_editor.search_bar import SearchBar
 
         goto_bars = screen.query(GotoBar)
-        save_bars = screen.query(SaveBar)
         search_bars = screen.query(SearchBar)
 
         assert len(goto_bars) > 0, "GotoBar not found"
-        assert len(save_bars) > 0, "SaveBar not found"
         assert len(search_bars) > 0, "SearchBar not found"
 
 

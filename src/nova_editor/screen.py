@@ -26,10 +26,10 @@ from nova_widgets.keymap import HintBar, KeymapRegistry
 from nova_widgets.menu import Menu, MenuBar
 from nova_widgets.response import Response
 
-from .bars import GotoBar, SaveBar
+from .bars import GotoBar
 from .core.byte_source import ChangeKind
 from .core.save import check_path
-from .decisions import file_question, quit_question, reload_question
+from .decisions import failure_box, file_question, quit_question, reload_question
 from .document._cursor_anchor import CursorState
 from .document._lazy_config import LazyConfig
 from .document_view import DocumentView
@@ -37,7 +37,7 @@ from .editor_actions import build_editor_actions
 from .editor_menus import build_menu_bar
 from .goto_popup import parse_goto
 from .search_bar import SearchBar, SearchStatus
-from .status_line import StatusLine, StatusState, byte_percent, format_sizes, row_is_known
+from .status_line import StatusLine, StatusState, byte_percent, format_sizes, row_is_known, save_progress_text
 from .timed_text_area import TimedNovaTextArea
 from .widget import ExternalCheck, NovaTextArea
 
@@ -115,7 +115,7 @@ class EditorScreen(Screen[None]):
         display: none;
     }
 
-    #save_bar, #search_status {
+    #search_status {
         width: 100%;
         height: 1;
         display: none;
@@ -216,7 +216,6 @@ class EditorScreen(Screen[None]):
         """Run the action bound to `key`.
 
         Hosts call this for every raw `Key` event from `App.on_event` and stop the event when it returns `True`.
-        A key press also dismisses a failure shown by the save bar.
         A focused `Input` keeps its own keys and does not run the editing actions (Undo, Redo, Cut, Copy, Paste, Select All).
         The old default key of an editing action that was moved or unmapped is swallowed, because the widget binds those keys itself.
 
@@ -226,9 +225,6 @@ class EditorScreen(Screen[None]):
         Returns:
             True if the key was handled, False otherwise.
         """
-        bars = self.query(SaveBar)
-        if bars and bars.first().failed:
-            bars.first().clear()
         if isinstance(self.focused, Input) and self._input_keeps(key):
             return False
         if await self.keymap_registry.handle_key(key, self.app):
@@ -267,7 +263,6 @@ class EditorScreen(Screen[None]):
         yield self.menu_bar
         yield self.document.editor
         yield GotoBar()
-        yield SaveBar()
         yield SearchBar()
         yield SearchStatus()
         yield StatusLine(self._status_state)
@@ -325,6 +320,11 @@ class EditorScreen(Screen[None]):
     def _request_status(self) -> None:
         for status in self.query(StatusLine):
             status.request()
+
+    def _note(self, text: str | None, *, timed: bool = False) -> None:
+        """Show `text` as the note of the status line (`None` clears it); a result is timed, a progress is not."""
+        for status in self.query(StatusLine):
+            status.set_note(text, timed=timed)
 
     def _status_state(self) -> StatusState | None:
         editor = self.document.editor
@@ -400,10 +400,6 @@ class EditorScreen(Screen[None]):
         self.notify(message.reason, severity="warning")
 
     # Bars
-
-    @property
-    def _save_bar(self) -> SaveBar:
-        return self.query_one(SaveBar)
 
     @property
     def _search_bar(self) -> SearchBar:
@@ -577,7 +573,7 @@ class EditorScreen(Screen[None]):
                 self._save_to(document.file_path)
             return
         if not editor.modified:
-            self._save_bar.show_result("No changes to save")
+            self._note("No changes to save", timed=True)
             return
         editor.save()
 
@@ -654,6 +650,14 @@ class EditorScreen(Screen[None]):
         else:
             self.document.editor.focus()
 
+    async def _failure_flow(self, document: DocumentView, title: str, text: str, *, committed: bool, recheck: bool) -> None:
+        await failure_box(title, text).run()
+        if document is not self.document:
+            return
+        if recheck:
+            self._recheck_deferred_change(committed=committed)
+        document.editor.focus()
+
     def _save_to(self, path: Path, *, confirmed: bool = False) -> None:
         """Save to `path` (a save as, or the first save of a new file)."""
         document = self.document
@@ -665,8 +669,8 @@ class EditorScreen(Screen[None]):
         document.editor.save(path, overwrite=confirmed or first_save)
 
     def on_nova_text_area_save_progress(self, message: NovaTextArea.SaveProgress) -> None:
-        """Show the progress of the save."""
-        self._save_bar.show_progress(message.phase, message.done, message.total)
+        """Show the progress of the save in the status line."""
+        self._note(save_progress_text(message.phase, message.done, message.total))
 
     def on_nova_text_area_saved(self, message: NovaTextArea.Saved) -> None:
         """Show the result and follow the file the document is bound to now."""
@@ -677,23 +681,24 @@ class EditorScreen(Screen[None]):
         document.file_path = message.path
         self._show_path()
         self._request_status()
-        self._save_bar.show_result(f"Saved  {message.path.name}  {format_sizes(message.length, message.length)}")
+        self._note(f"Saved  {message.path.name}  {format_sizes(message.length, message.length)}", timed=True)
         document.deferred_change = None
 
     def on_nova_text_area_save_failed(self, message: NovaTextArea.SaveFailed) -> None:
-        """Show the failure with its stage; it stays until a key is pressed."""
+        """Acknowledge the failure, with its stage, in an error box; a change seen during the save is asked afterwards."""
         if not self._is_current(message.text_area):
             return
+        self._note(None)
         reason = message.error.strerror or str(message.error)
-        written = "  The file was written; press F5 to reload." if message.committed else ""
-        self._save_bar.show_failure(f"Save failed ({message.stage}): {reason}{written}  Press a key")
-        self._recheck_deferred_change(committed=message.committed)
+        written = " The file was written. Reload to read it again." if message.committed else ""
+        text = f"Save failed ({message.stage}): {reason}{written}"
+        self._start_flow(partial(self._failure_flow, self.document, "Save failed", text, committed=message.committed, recheck=True))
 
     def on_nova_text_area_save_cancelled(self, message: NovaTextArea.SaveCancelled) -> None:
         """Show that the save was cancelled."""
         if not self._is_current(message.text_area):
             return
-        self._save_bar.show_result("Save cancelled")
+        self._note("Save cancelled", timed=True)
         self._recheck_deferred_change()
 
     def on_nova_text_area_save_needs_confirmation(self, message: NovaTextArea.SaveNeedsConfirmation) -> None:
@@ -731,13 +736,14 @@ class EditorScreen(Screen[None]):
         if not self._is_current(message.text_area):
             return
         self._request_status()
-        self._save_bar.show_result("Reloaded")
+        self._note("Reloaded", timed=True)
 
     def on_nova_text_area_reload_failed(self, message: NovaTextArea.ReloadFailed) -> None:
-        """Show why the file could not be reloaded."""
+        """Acknowledge why the file could not be reloaded."""
         if not self._is_current(message.text_area):
             return
-        self._save_bar.show_failure(f"Reload failed: {message.error.strerror or message.error}  Press a key")
+        text = f"Reload failed: {message.error.strerror or message.error}"
+        self._start_flow(partial(self._failure_flow, self.document, "Reload failed", text, committed=False, recheck=False))
 
     # Search and Go to
 
