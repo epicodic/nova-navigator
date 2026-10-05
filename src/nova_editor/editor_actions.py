@@ -34,3 +34,8 @@ def build_editor_actions() -> list[Action]:
         Action("Line Numbers", id="editor.line_numbers", action="toggle_line_numbers", shortcut="f11", checkable=True, description="Show or hide the line numbers"),
         Action("Wrap Mode", id="editor.wrap_mode", action="toggle_wrap", shortcut="f10", checkable=True, description="Switch soft wrap on or off", show=True, bar_priority=70),
     ]
+
+
+def build_keyboard_shortcuts_action() -> Action:
+    """Build the action that opens the keyboard shortcuts dialog (no default key; only a screen with a key config has it)."""
+    return Action("Keyboard Shortcuts…", id="editor.keyboard_shortcuts", action="keyboard_shortcuts", description="Edit the key bindings of the editor")

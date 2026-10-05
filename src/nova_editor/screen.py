@@ -22,6 +22,7 @@ from nova_widgets.file_dialog import FileDialog, FileDialogMode
 from nova_widgets.file_provider import FileProvider, default_file_provider
 from nova_widgets.key_types import KeyChord, KeySequence
 from nova_widgets.keybindings_config import KeybindingsConfig
+from nova_widgets.keybindings_dialog import KeybindingsDialog
 from nova_widgets.keymap import HintBar, KeymapRegistry
 from nova_widgets.menu import Menu, MenuBar
 from nova_widgets.popup_widget import PopupWidget
@@ -33,7 +34,7 @@ from .decisions import failure_box, file_question, open_question, quit_question,
 from .document._cursor_anchor import CursorState
 from .document._lazy_config import LazyConfig
 from .document_view import DocumentView
-from .editor_actions import build_editor_actions
+from .editor_actions import build_editor_actions, build_keyboard_shortcuts_action
 from .editor_menus import build_menu_bar
 from .find_popup import FindPopup
 from .goto_popup import GotoPopup
@@ -142,7 +143,9 @@ class EditorScreen(Screen[None]):
         self._open_flows = 0
 
         self.ACTIONS: list[Action] = build_editor_actions()
-        """The 18 `editor.*` actions of this screen; the menus, the keymap registry and the handlers use these very objects."""
+        """The 18 `editor.*` actions of this screen, plus Keyboard Shortcuts… when the screen has a key config; the menus, the keymap registry and the handlers use these very objects."""
+        if keybindings is not None:
+            self.ACTIONS.append(build_keyboard_shortcuts_action())
         self._by_id: dict[str, Action] = {a.id: a for a in self.ACTIONS if a.id is not None}
         self._swallowed: set[KeySequence] = set()
         self.hint_bar: HintBar = HintBar()
@@ -372,6 +375,11 @@ class EditorScreen(Screen[None]):
         """Open: pick a file in the file dialog; the document is replaced after the unsaved-changes question."""
         self._start_flow(self._open_flow)
 
+    def action_keyboard_shortcuts(self) -> None:
+        """Keyboard Shortcuts…: edit the editor key bindings in the shared dialog; a save applies at once."""
+        if self._keybindings is not None:
+            self._start_flow(self._keyboard_shortcuts_flow)
+
     # Status refresh
 
     def on_nova_text_area_selection_changed(self, message: NovaTextArea.SelectionChanged) -> None:
@@ -508,6 +516,15 @@ class EditorScreen(Screen[None]):
         self._note(None)
         self._request_status()
         view.editor.focus()
+
+    async def _keyboard_shortcuts_flow(self) -> None:
+        """Keyboard Shortcuts: open the keyboard shortcuts dialog and apply the saved config."""
+        config = self._keybindings
+        if config is None:
+            return
+        editor_actions = [a for a in self.ACTIONS if a.id is not None and a.id.startswith("editor.")]
+        await KeybindingsDialog(editor_actions, config).run()
+        self.reload_keymap()
 
     async def _save_as_flow(self, current: Path | None) -> None:
         """Save As: pick the target in the file dialog and save to it; Cancel and Escape change nothing."""
