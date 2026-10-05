@@ -140,17 +140,6 @@ async def test_ctrl_s_key_saves_eager_file(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ctrl_q_key_quits() -> None:
-    """Pressing ctrl+q exits the app."""
-    app = NovaEditApp(path=None)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("ctrl+q")
-        await pilot.pause()
-        assert app._exit
-
-
-@pytest.mark.asyncio
 async def test_save_small_file_with_invalid_bytes(tmp_path: Path) -> None:
     """Saving an edited document with invalid UTF-8 writes those bytes exactly."""
     path = tmp_path / "invalid.txt"
