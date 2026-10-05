@@ -8,7 +8,7 @@ import pytest
 from textual.widgets.text_area import Selection
 
 from nova_editor.app import NovaEditApp
-from tests.nova_editor.dialog_helpers import box_message, box_title, open_box
+from tests.nova_editor.dialog_helpers import box_message, box_title, wait_box
 from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.save_widget_helpers import wait_saved
 
@@ -35,9 +35,7 @@ async def test_a_missing_parent_directory_is_a_visible_failure_and_creates_nothi
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("x", "ctrl+s")
-        await wait_until(pilot, lambda: open_box(app) is not None)
-        box = open_box(app)
-        assert box is not None
+        box = await wait_box(pilot, app)
         assert box_title(box) == "Save failed"
         assert box_message(box).startswith("Save failed (")
     assert not path.exists()

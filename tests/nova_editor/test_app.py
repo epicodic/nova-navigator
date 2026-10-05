@@ -12,7 +12,7 @@ from nova_editor.core.save import SaveIo
 from nova_editor.screen import EditorScreen
 from nova_editor.status_line import StatusLine
 from nova_editor.widget import NovaTextArea
-from tests.nova_editor.dialog_helpers import box_title, open_box
+from tests.nova_editor.dialog_helpers import box_title, wait_box
 from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.save_widget_helpers import wait_saved
 
@@ -275,9 +275,7 @@ async def test_save_refuses_a_file_that_appeared_before_the_first_save(tmp_path:
         path.write_text("from elsewhere")
         await pilot.press("h", "i")
         await pilot.press("ctrl+s")
-        await wait_until(pilot, lambda: open_box(app) is not None)  # the file is not overwritten without consent
-        box = open_box(app)
-        assert box is not None
+        box = await wait_box(pilot, app)  # the file is not overwritten without consent
         assert box_title(box) == "Overwrite"
 
     assert path.read_text() == "from elsewhere"
@@ -315,9 +313,7 @@ async def test_failed_save_removes_the_temp_file(tmp_path: Path, monkeypatch: py
         await pilot.pause()
         await pilot.press("x")
         await pilot.press("ctrl+s")
-        await wait_until(pilot, lambda: open_box(app) is not None)
-        box = open_box(app)
-        assert box is not None
+        box = await wait_box(pilot, app)
         assert box_title(box) == "Save failed"
 
     assert path.read_text() == "one"

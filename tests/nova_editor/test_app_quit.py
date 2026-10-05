@@ -14,7 +14,7 @@ from nova_editor.app import NovaEditApp
 from nova_editor.core.save import SaveIo
 from nova_editor.widget import NovaTextArea
 from nova_widgets.key_types import KeySequence
-from tests.nova_editor.dialog_helpers import answer, box_message, box_title, has_dialog, open_box, open_file_dialog
+from tests.nova_editor.dialog_helpers import answer, box_message, box_title, has_dialog, open_box, open_file_dialog, wait_box
 from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.save_widget_helpers import Gate, wait_saved
 from tests.nova_editor.screen_host import write_keys
@@ -43,9 +43,7 @@ def count_exits(monkeypatch: pytest.MonkeyPatch) -> list[int]:
 
 async def question(pilot: Pilot[None], app: App[None]) -> str:
     """Wait for the question box and return its message."""
-    await wait_until(pilot, lambda: open_box(app) is not None)
-    box = open_box(app)
-    assert box is not None
+    box = await wait_box(pilot, app)
     return box_message(box)
 
 

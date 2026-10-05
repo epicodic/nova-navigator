@@ -24,6 +24,7 @@ from tests.nova_editor.dialog_helpers import (
     has_dialog,
     open_box,
     open_file_dialog,
+    wait_box,
 )
 from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.save_widget_helpers import SETTINGS, Gate, wait_saved
@@ -217,7 +218,7 @@ def test_main_refuses_a_fifo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ca
 
 @pytest.mark.asyncio
 async def test_ctrl_q_during_a_save_cancels_then_asks_and_quit_anyway_exits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from tests.nova_editor.dialog_helpers import answer, open_box
+    from tests.nova_editor.dialog_helpers import answer, wait_box
     from tests.nova_editor.test_app_quit import count_exits
 
     path = make_file(tmp_path, "a" * 100 + "\n")
@@ -231,7 +232,7 @@ async def test_ctrl_q_during_a_save_cancels_then_asks_and_quit_anyway_exits(tmp_
             await pilot.press("x", "ctrl+s")
             await wait_until(pilot, gate.reached.is_set)
             await pilot.press("ctrl+q")
-            await wait_until(pilot, lambda: open_box(app) is not None, limit=5.0)  # after the bounded wait for the cancel
+            await wait_box(pilot, app)  # after the bounded wait for the cancel
             assert exits == []
             await answer(pilot, app, "Quit Anyway")
             await wait_until(pilot, lambda: exits == [1], limit=5.0)
@@ -290,9 +291,7 @@ async def test_poll_applies_its_result_on_the_ui_thread(tmp_path: Path, monkeypa
     async with app.run_test() as pilot:
         await pilot.pause()
         path.write_text("changed on disk, longer\n")
-        await wait_until(pilot, lambda: open_box(app) is not None)
-        box = open_box(app)
-        assert box is not None
+        box = await wait_box(pilot, app)
         assert box_message(box).startswith(CHANGE_TEXT[ChangeKind.MODIFIED])
     assert threads == [threading.get_ident()]
 
@@ -338,14 +337,10 @@ async def test_a_change_seen_during_a_save_is_announced_when_the_save_does_not_c
         gate.release()
         await wait_saved(pilot, editor)
         if how == "fail":
-            await wait_until(pilot, lambda: open_box(app) is not None)
-            failure = open_box(app)
-            assert failure is not None
+            failure = await wait_box(pilot, app)
             assert box_title(failure) == "Save failed"
             await answer(pilot, app, "OK")
-        await wait_until(pilot, lambda: open_box(app) is not None)
-        box = open_box(app)
-        assert box is not None
+        box = await wait_box(pilot, app)
         assert box_message(box).startswith(CHANGE_TEXT[ChangeKind.MODIFIED])
 
 

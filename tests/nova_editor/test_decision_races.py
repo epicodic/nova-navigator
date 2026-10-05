@@ -10,7 +10,7 @@ from nova_editor.app import NovaEditApp
 from nova_editor.core.byte_source import ChangeKind
 from nova_editor.screen import EditorScreen
 from nova_editor.widget import NovaTextArea
-from tests.nova_editor.dialog_helpers import HomeProvider, answer, box_title, has_dialog, open_box, open_file_dialog, open_title
+from tests.nova_editor.dialog_helpers import HomeProvider, answer, box_title, has_dialog, open_box, open_file_dialog, open_title, wait_box
 from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.test_open_flow import pick
 
@@ -60,7 +60,7 @@ async def test_a_change_that_arrives_while_a_question_is_open_is_asked_afterward
         await pilot.press("x", "ctrl+shift+s")
         await wait_until(pilot, lambda: open_file_dialog(app) is not None)
         await pilot.press("ctrl+e", "ctrl+u", *"other.txt", "enter")
-        await wait_until(pilot, lambda: open_box(app) is not None)
+        await wait_box(pilot, app)
         path.write_text(CHANGED)  # the file of the open document changes under the open question
         await wait_until(pilot, lambda: screen.document.change_question)  # a poll saw the change and queued its question behind the open one
         box = open_box(app)

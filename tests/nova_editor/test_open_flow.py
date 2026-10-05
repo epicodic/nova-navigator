@@ -15,7 +15,7 @@ from nova_editor.status_line import StatusLine
 from nova_editor.timed_text_area import TimedNovaTextArea
 from nova_editor.widget import NovaTextArea
 from nova_widgets.file_dialog import FileDialogMode
-from tests.nova_editor.dialog_helpers import HomeProvider, answer, box_buttons, box_message, box_title, dialog_directory, has_dialog, open_box, open_file_dialog
+from tests.nova_editor.dialog_helpers import HomeProvider, answer, box_buttons, box_message, box_title, dialog_directory, has_dialog, open_file_dialog, wait_box
 from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.save_widget_helpers import Gate
 from tests.nova_editor.view_menu import NARROW, view_marks
@@ -158,9 +158,7 @@ async def test_open_over_edits_asks_and_cancel_changes_nothing(tmp_path: Path) -
         await pilot.press("x", "ctrl+o")
         await wait_until(pilot, lambda: open_file_dialog(app) is not None)
         await pick(pilot, tmp_path, "second.txt")
-        await wait_until(pilot, lambda: open_box(app) is not None)
-        box = open_box(app)
-        assert box is not None
+        box = await wait_box(pilot, app)
         assert box_title(box) == "Open"
         assert box_message(box) == "Discard the unsaved changes and open second.txt?"
         assert box_buttons(box) == ["Cancel", "Discard & Open"]
@@ -183,7 +181,7 @@ async def test_open_over_edits_discard_replaces_the_document(tmp_path: Path) -> 
         await pilot.press("x", "ctrl+o")
         await wait_until(pilot, lambda: open_file_dialog(app) is not None)
         await pick(pilot, tmp_path, "second.txt")
-        await wait_until(pilot, lambda: open_box(app) is not None)
+        await wait_box(pilot, app)
         await answer(pilot, app, "Discard & Open")
         await wait_until(pilot, lambda: app.editor is not old and app.editor.text == "two\n")
         assert not app.editor.modified
@@ -207,9 +205,7 @@ async def test_an_unreadable_file_shows_an_error_and_keeps_the_document(tmp_path
             await pilot.press("ctrl+o")
             await wait_until(pilot, lambda: open_file_dialog(app) is not None)
             await pick(pilot, tmp_path, "locked.txt")
-            await wait_until(pilot, lambda: open_box(app) is not None)
-            box = open_box(app)
-            assert box is not None
+            box = await wait_box(pilot, app)
             assert box_title(box) == "Open"
             assert box_message(box).startswith("Error loading file")
             await pilot.press("enter")
@@ -234,9 +230,7 @@ async def test_a_file_that_vanished_shows_an_error_and_keeps_the_document(tmp_pa
         index = listing_index(tmp_path, "gone.txt")
         gone.unlink()  # the dialog still lists it
         await pilot.press(*["down"] * index, "enter")
-        await wait_until(pilot, lambda: open_box(app) is not None)
-        box = open_box(app)
-        assert box is not None
+        box = await wait_box(pilot, app)
         assert box_message(box).startswith("Error loading file")
         await pilot.press("enter")
         await wait_until(pilot, lambda: not has_dialog(app))
