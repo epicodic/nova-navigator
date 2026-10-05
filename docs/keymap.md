@@ -594,6 +594,6 @@ For example, if `editor.save` is unmapped (empty string) in keybindings, the hin
 
 **Workaround:** `_apply_keymap` calls `action.set_shortcut(None)` for every action without an effective binding after `reload()`.
 The menu and the hint bar then show no key for it.
-The defect stays deferred with the screen workaround (not fixed here; fixing it changes the navigator, which is ACT8/ACT9 scope).
+The defect stays deferred with the screen workaround, because fixing it in the registry changes the navigator's behaviour.
 
 ---
