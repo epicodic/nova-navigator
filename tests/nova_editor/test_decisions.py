@@ -33,6 +33,7 @@ from tests.nova_editor.dialog_helpers import (
     has_dialog,
     open_box,
     open_file_dialog,
+    wait_box,
 )
 from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.save_widget_helpers import wait_saved
@@ -201,15 +202,6 @@ def make_file(tmp_path: Path) -> Path:
     path = tmp_path / "f.txt"
     path.write_text("one\ntwo\n")
     return path
-
-
-async def wait_box(pilot: Pilot[None], app: App[None]) -> MessageBox:
-    await wait_until(pilot, lambda: open_box(app) is not None)
-    box = open_box(app)
-    assert box is not None
-    await pilot.pause()  # the children of a pushed screen mount in later messages: let them all arrive, then the button row is whole
-    await wait_until(pilot, lambda: len(box_buttons(box)) > 0 and box.query("#button_box").first().is_mounted)
-    return box
 
 
 @pytest.mark.asyncio
