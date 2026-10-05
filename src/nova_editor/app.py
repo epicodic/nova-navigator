@@ -81,21 +81,29 @@ class NovaEditApp(App[None]):
             quit_wait_seconds=self.QUIT_WAIT_SECONDS,
         )
 
+    def _editor_screen(self) -> EditorScreen:
+        """Return the editor screen, also while a dialog is on top of it.
+
+        Raises:
+            RuntimeError: If no EditorScreen is on the screen stack.
+        """
+        for screen in reversed(self.screen_stack):
+            if isinstance(screen, EditorScreen):
+                return screen
+        msg = f"Expected EditorScreen, got {type(self.screen).__name__}"
+        raise RuntimeError(msg)
+
     @property
     def editor(self) -> NovaTextArea:
-        """Get the editor widget from the current screen.
+        """Get the editor widget of the editor screen, also while a dialog is open.
 
         Returns:
             The NovaTextArea editor widget.
 
         Raises:
-            RuntimeError: If the screen is not an EditorScreen.
+            RuntimeError: If no EditorScreen is on the screen stack.
         """
-        screen = self.screen
-        if not isinstance(screen, EditorScreen):
-            msg = f"Expected EditorScreen, got {type(screen).__name__}"
-            raise RuntimeError(msg)
-        return screen.document.editor
+        return self._editor_screen().document.editor
 
     @property
     def goto_bar(self) -> GotoBar:
@@ -140,12 +148,15 @@ class NovaEditApp(App[None]):
             screen.search(needle, backward=backward, case_sensitive=case_sensitive)
 
     async def action_quit(self) -> None:
-        """Quit: run the editor screen's quit flow (asks when edits would be lost), else exit."""
-        screen = self.screen
-        if isinstance(screen, EditorScreen):
-            await screen.action_quit_editor()
-        else:
-            self.exit()
+        """Quit: run the quit flow of the editor screen (it asks when edits would be lost), else exit.
+
+        The screen is looked up in the screen stack because a dialog may be on top of it; the screen ignores the request while a flow is open.
+        """
+        for screen in reversed(self.screen_stack):
+            if isinstance(screen, EditorScreen):
+                await screen.action_quit_editor()
+                return
+        self.exit()
 
     def on_editor_screen_closed(self, message: EditorScreen.Closed) -> None:
         """Exit when the editor screen closes."""

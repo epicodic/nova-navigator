@@ -6,13 +6,18 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from textual.app import App
+from textual.pilot import Pilot
 
+from nova_editor.app import NovaEditApp
 from nova_editor.core.byte_source import ChangeKind
 from nova_editor.decisions import failure_box, file_question, open_question, quit_question, reload_question
 from nova_widgets.flat_widgets import Button
 from nova_widgets.message_box import MessageBox
 from nova_widgets.response import Response
-from tests.nova_editor.dialog_helpers import BoxHost, answer, box_buttons, box_message, box_title, open_box
+from tests.nova_editor.dialog_helpers import BoxHost, answer, box_buttons, box_message, box_title, has_dialog, open_box
+from tests.nova_editor.helpers_view import wait_until
+from tests.nova_editor.screen_host import EditorScreenHost
 
 TARGET = Path("/work/notes.txt")
 SIZE = (80, 24)
@@ -160,3 +165,92 @@ async def test_a_failure_box_has_one_ok_button_and_escape_answers_none() -> None
         await pilot.press("enter")
         await pilot.pause()
     assert again.answers == [Response.OK]
+
+
+def count_exits(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Record every `exit()` call of the app; the app keeps running, the test context closes it."""
+    calls: list[int] = []
+
+    def counting() -> None:
+        calls.append(1)
+
+    monkeypatch.setattr(NovaEditApp, "exit", staticmethod(counting))
+    return calls
+
+
+def make_file(tmp_path: Path) -> Path:
+    path = tmp_path / "f.txt"
+    path.write_text("one\ntwo\n")
+    return path
+
+
+async def wait_box(pilot: Pilot[None], app: App[None]) -> MessageBox:
+    await wait_until(pilot, lambda: open_box(app) is not None)
+    box = open_box(app)
+    assert box is not None
+    return box
+
+
+@pytest.mark.asyncio
+async def test_close_with_edits_asks_and_discard_closes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    exits = count_exits(monkeypatch)
+    app = NovaEditApp(file_path=make_file(tmp_path))
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("x", "ctrl+w")
+        box = await wait_box(pilot, app)
+        assert box_message(box) == "Discard the unsaved changes and quit?"
+        await pilot.press("enter")  # the harmless first button: Cancel
+        await wait_until(pilot, lambda: not has_dialog(app))
+        assert exits == []
+        assert app.editor.modified
+        assert app.focused is app.editor
+        await pilot.press("ctrl+w")
+        await wait_box(pilot, app)
+        await answer(pilot, app, "Discard & Quit")
+        await wait_until(pilot, lambda: exits == [1])
+
+
+@pytest.mark.asyncio
+async def test_quit_with_edits_asks_and_discard_exits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    exits = count_exits(monkeypatch)
+    path = make_file(tmp_path)
+    app = NovaEditApp(file_path=path)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("x", "ctrl+q")
+        box = await wait_box(pilot, app)
+        assert box_title(box) == "Quit"
+        await answer(pilot, app, "Discard & Quit")
+        await wait_until(pilot, lambda: exits == [1])
+    assert path.read_bytes() == b"one\ntwo\n"
+
+
+@pytest.mark.asyncio
+async def test_the_editor_property_finds_the_screen_under_a_dialog(tmp_path: Path) -> None:
+    app = NovaEditApp(file_path=make_file(tmp_path))
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        editor = app.editor
+        await pilot.press("ctrl+shift+s")
+        await wait_until(pilot, lambda: has_dialog(app))
+        assert app.editor is editor  # the dialog is the top screen, the editor is still reachable
+
+
+@pytest.mark.asyncio
+async def test_the_embedded_screen_says_close_and_posts_closed(tmp_path: Path) -> None:
+    host = EditorScreenHost(path=make_file(tmp_path))
+    async with host.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        screen = host.screen_instance
+        assert screen is not None
+        screen.document.editor.focus()
+        await pilot.press("x")
+        assert screen.document.editor.modified
+        await screen.action_close_editor()
+        box = await wait_box(pilot, host)
+        assert box_title(box) == "Close"
+        assert box_message(box) == "Discard the unsaved changes and close?"
+        assert host.closed == 0
+        await answer(pilot, host, "Discard & Close")
+        await wait_until(pilot, lambda: host.closed == 1)

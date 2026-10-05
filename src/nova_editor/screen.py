@@ -29,6 +29,7 @@ from nova_widgets.response import Response
 from .bars import ConfirmBar, GotoBar, SaveBar
 from .core.byte_source import ChangeKind
 from .core.save import check_path
+from .decisions import quit_question
 from .document._cursor_anchor import CursorState
 from .document._lazy_config import LazyConfig
 from .document_view import DocumentView
@@ -558,13 +559,22 @@ class EditorScreen(Screen[None]):
 
     async def action_close_editor(self) -> None:
         """Close: the same flow as Quit."""
-        await self._request_close()
+        self._request_close()
 
     async def action_quit_editor(self) -> None:
-        """Quit: cancel a search and a save, then ask when edits would be lost or a save still runs."""
-        await self._request_close()
+        """Quit: cancel a search and a save, then ask when edits would be lost or a save still runs.
 
-    async def _request_close(self) -> None:
+        The methods stay awaitable (hosts such as `NovaEditApp.action_quit` await them), but they only start the flow and return at once.
+        A request that arrives while a question or a dialog is open is ignored: that one is answered first, and Ctrl+Q never discards under an open dialog.
+        """
+        self._request_close()
+
+    def _request_close(self) -> None:
+        if self._open_flows:
+            return
+        self._start_flow(self._close_flow)
+
+    async def _close_flow(self) -> None:
         editor = self.document.editor
         if editor.searching:
             editor.cancel_search()
@@ -576,12 +586,19 @@ class EditorScreen(Screen[None]):
                     break
                 await asyncio.sleep(QUIT_POLL_SECONDS)
             if editor.saving:
-                self._confirm_bar.ask_quit(save_running=True)
+                await self._confirm_close(save_running=True)
                 return
         if editor.modified:
-            self._confirm_bar.ask_quit(save_running=False)
+            await self._confirm_close(save_running=False)
             return
         self.post_message(self.Closed())
+
+    async def _confirm_close(self, *, save_running: bool) -> None:
+        answer = await quit_question(save_running=save_running, standalone=self.standalone).run()
+        if answer is Response.DISCARD:
+            self.post_message(self.Closed())
+        else:
+            self.document.editor.focus()
 
     def _save_to(self, path: Path, *, confirmed: bool = False) -> None:
         """Save to `path` (a save as, or the first save of a new file)."""
