@@ -35,8 +35,8 @@ from .document._lazy_config import LazyConfig
 from .document_view import DocumentView
 from .editor_actions import build_editor_actions
 from .editor_menus import build_menu_bar
+from .find_popup import FindPopup
 from .goto_popup import GotoPopup
-from .search_bar import SearchBar, SearchStatus
 from .status_line import StatusLine, StatusState, byte_percent, format_sizes, row_is_known, save_progress_text
 from .timed_text_area import TimedNovaTextArea
 from .widget import ExternalCheck, NovaTextArea
@@ -101,18 +101,6 @@ class EditorScreen(Screen[None]):
         color: $text;
     }
 
-    #search_bar {
-        width: 100%;
-        height: 1;
-        border: none;
-        display: none;
-    }
-
-    #search_status {
-        width: 100%;
-        height: 1;
-        display: none;
-    }
     """
 
     BINDINGS: ClassVar[list[Binding]] = [Binding("escape", "cancel_save", "Cancel save", show=False)]
@@ -159,6 +147,7 @@ class EditorScreen(Screen[None]):
         self._swallowed: set[KeySequence] = set()
         self.hint_bar: HintBar = HintBar()
         self.goto_popup: GotoPopup = GotoPopup()
+        self.find_popup: FindPopup = FindPopup()
         self.keymap_registry: KeymapRegistry = KeymapRegistry(self.hint_bar)
         self._apply_keymap()
         self.menu_bar: MenuBar = build_menu_bar(self._by_id, standalone=standalone)
@@ -238,8 +227,9 @@ class EditorScreen(Screen[None]):
         """The hint bar follows the focus; a visible popup closes when the focus lands outside it (the controlled form of `CLOSE_ON_BLUR`)."""
         self.keymap_registry.on_focus_changed(self.focused)
         focused = self.focused
-        if focused is not None and self.goto_popup.display and self.goto_popup not in focused.ancestors_with_self:
-            self.goto_popup.hide()
+        for popup in self._all_popups():
+            if focused is not None and popup.display and popup not in focused.ancestors_with_self:
+                popup.hide()
 
     async def on_menu_triggered(self, event: Menu.Triggered) -> None:
         """A menu item runs the same action as its key: the editor widget first, then the screen."""
@@ -259,11 +249,10 @@ class EditorScreen(Screen[None]):
         """Compose the menu bar, the editor, the bars, the status line and the hint bar."""
         yield self.menu_bar
         yield self.document.editor
-        yield SearchBar()
-        yield SearchStatus()
         yield StatusLine(self._status_state)
         yield self.hint_bar
         yield self.goto_popup
+        yield self.find_popup
 
     def on_mount(self) -> None:
         """Show the path, start the poll for external changes and mirror the widget state in the menu."""
@@ -406,14 +395,6 @@ class EditorScreen(Screen[None]):
             self.notify(message.reason, severity="warning")
 
     # Bars
-
-    @property
-    def _search_bar(self) -> SearchBar:
-        return self.query_one(SearchBar)
-
-    @property
-    def _search_status(self) -> SearchStatus:
-        return self.query_one(SearchStatus)
 
     def _refocus_editor(self) -> None:
         self.document.editor.focus()
@@ -757,14 +738,14 @@ class EditorScreen(Screen[None]):
         """Search the editor for `needle` and remember it for Find Next and Find Previous.
 
         Args:
-            needle: The text to find (it may hold line breaks, which a bar cannot take).
+            needle: The text to find (it may hold line breaks, which the popup cannot take).
             backward: Search towards the start of the document.
-            case_sensitive: Distinguish case; the case state of the search bar when `None`.
+            case_sensitive: Distinguish case; the case option of the Find popup when `None`.
         """
         if not needle:
             return
         if case_sensitive is None:
-            case_sensitive = self._search_bar.case_sensitive
+            case_sensitive = self.find_popup.case_sensitive
         document = self.document
         document.needle = needle
         document.last_backward = backward
@@ -778,8 +759,9 @@ class EditorScreen(Screen[None]):
         self.search(needle, backward=backward)
 
     def action_find(self) -> None:
-        """Open the search bar."""
-        self._search_bar.open()
+        """Open the Find popup with the last needle selected."""
+        self.goto_popup.hide()
+        self.find_popup.open(self._popup_offset(FindPopup.WIDTH), self.document.needle)
 
     def action_find_next(self) -> None:
         """Repeat the last search forward."""
@@ -808,6 +790,18 @@ class EditorScreen(Screen[None]):
         """Escape: close the popup and focus the editor."""
         self._close_popup(self.goto_popup)
 
+    def on_find_popup_requested(self, message: FindPopup.Requested) -> None:
+        """Enter, Next or Previous in the popup: search; the popup stays open."""
+        self.search(message.needle, backward=message.backward, case_sensitive=message.case_sensitive)
+
+    def on_find_popup_dismissed(self, message: FindPopup.Dismissed) -> None:
+        """Escape: cancel a running search first, else close the popup and focus the editor."""
+        editor = self.document.editor
+        if editor.searching:
+            editor.cancel_search()
+            return
+        self._close_popup(self.find_popup)
+
     def _close_popup(self, popup: PopupWidget) -> None:
         """Hide a popup and give the focus to the editor (`PopupWidget.close()` is not used: it would focus whatever had the focus at `show()` time)."""
         popup.hide()
@@ -818,19 +812,20 @@ class EditorScreen(Screen[None]):
         region = self.document.editor.region
         return (max(region.x, region.right - min(width, region.width)), region.y)
 
-    def _place_popups(self) -> None:
-        if self.goto_popup.display:
-            self.goto_popup.offset = self._popup_offset(GotoPopup.WIDTH)
+    def _all_popups(self) -> tuple[GotoPopup | FindPopup, ...]:
+        return (self.goto_popup, self.find_popup)
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Handle input submission from the search bar."""
-        if event.input.id == "search_bar":
-            needle = event.value
-            if not needle:
-                return
-            self._search_bar.action_close()
-            self.search(needle, case_sensitive=self._search_bar.case_sensitive)
-            return
+    def _place_popups(self) -> None:
+        for popup in self._all_popups():
+            if popup.display:
+                popup.offset = self._popup_offset(popup.WIDTH)
+
+    def _show_search_text(self, text: str, *, final: bool) -> None:
+        """Show a search text in the Find popup while it is open, else as a note of the status line (a result is timed, a progress is not)."""
+        if self.find_popup.display:
+            self.find_popup.set_status(text)
+        else:
+            self._note(text, timed=final)
 
     def on_nova_text_area_search_progress(self, message: NovaTextArea.SearchProgress) -> None:
         """Show the progress of the search."""
@@ -838,7 +833,7 @@ class EditorScreen(Screen[None]):
             return
         percent = 100 if message.total <= 0 else round(message.done * 100 / message.total)
         sizes = format_sizes(message.done, message.total).replace(" / ", " of ")
-        self._search_status.show_progress(f"Searching {percent}% ({sizes}), Esc cancels")
+        self._show_search_text(f"Searching {percent}% ({sizes}), Esc cancels", final=False)
 
     def on_nova_text_area_search_found(self, message: NovaTextArea.SearchFound) -> None:
         """Show the result of a search that found a match."""
@@ -846,25 +841,25 @@ class EditorScreen(Screen[None]):
             text = "Found"
         else:
             text = "Wrapped to the bottom" if self.document.last_backward else "Wrapped to the top"
-        self._search_status.show_result(text)
+        self._show_search_text(text, final=True)
 
     def on_nova_text_area_search_not_found(self, message: NovaTextArea.SearchNotFound) -> None:
         """Show that nothing was found."""
         needle = message.needle
         if len(needle) > NEEDLE_SHOWN:
             needle = needle[:NEEDLE_SHOWN] + chr(0x2026)
-        self._search_status.show_result(f"Not found: {needle}")
+        self._show_search_text(f"Not found: {needle}", final=True)
 
     def on_nova_text_area_search_cancelled(self, message: NovaTextArea.SearchCancelled) -> None:
         """Show why a search ended without a result; a replaced one is followed by its successor."""
         if message.reason == "replaced":
             return
         suffix = "" if message.reason == "cancelled" else f": {message.reason}"
-        self._search_status.show_result(f"Search cancelled{suffix}")
+        self._show_search_text(f"Search cancelled{suffix}", final=True)
 
     def on_nova_text_area_search_failed(self, message: NovaTextArea.SearchFailed) -> None:
         """Show why a search failed."""
-        self._search_status.show_result(f"Search failed: {message.error}")
+        self._show_search_text(f"Search failed: {message.error}", final=True)
 
 
 def _tail_by_cells(text: str, cells: int) -> str:
