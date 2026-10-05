@@ -325,7 +325,7 @@ async def test_saving_over_a_changed_file_asks_with_four_choices(tmp_path: Path)
         await pilot.press("escape")  # Keep
         await wait_closed(pilot, app)
         assert path.read_text() == CHANGED
-        await pilot.press("ctrl+s")  # asks again, as the bar did
+        await pilot.press("ctrl+s")  # asks again, as the question did before
         await wait_box(pilot, app)
         await answer(pilot, app, "Overwrite")
         await wait_until(pilot, lambda: path.read_text() == EDITED)

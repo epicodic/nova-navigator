@@ -62,7 +62,7 @@ async def test_a_change_that_arrives_while_a_question_is_open_is_asked_afterward
         await pilot.press("ctrl+e", "ctrl+u", *"other.txt", "enter")
         await wait_until(pilot, lambda: open_box(app) is not None)
         path.write_text(CHANGED)  # the file of the open document changes under the open question
-        await pilot.pause(0.3)  # several polls
+        await wait_until(pilot, lambda: screen.document.change_question)  # a poll saw the change and queued its question behind the open one
         box = open_box(app)
         assert box is not None
         assert box_title(box) == "Overwrite"  # the open question was not replaced
@@ -97,10 +97,12 @@ async def test_a_change_while_the_open_dialog_is_shown_is_asked_after_cancel(tmp
     app.POLL_SECONDS = 0.05
     async with app.run_test(size=SIZE) as pilot:
         await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, EditorScreen)
         await pilot.press("ctrl+o")
         await wait_until(pilot, lambda: open_file_dialog(app) is not None)
         path.write_text(CHANGED)
-        await pilot.pause(0.3)  # several polls
+        await wait_until(pilot, lambda: screen.document.change_question)  # a poll saw the change and queued its question behind the dialog
         assert open_file_dialog(app) is not None  # the dialog is not replaced
         await pilot.press("escape")
         await wait_until(pilot, lambda: open_title(app) == "File changed")
@@ -121,9 +123,10 @@ async def test_a_change_while_the_open_dialog_is_shown_is_dropped_after_a_succes
         await pilot.press("ctrl+o")
         await wait_until(pilot, lambda: open_file_dialog(app) is not None)
         path.write_text(CHANGED)  # the open document's file changes while the dialog is shown
-        await pilot.pause(0.3)
+        old = screen.document
+        await wait_until(pilot, lambda: old.change_question)  # a poll saw the change and queued its question behind the dialog
         await pick(pilot, tmp_path, "other.txt")
         await wait_until(pilot, lambda: app.editor.text == "other\n")
-        await pilot.pause(0.3)
+        await wait_until(pilot, lambda: not old.change_question)  # the queued question ended
         assert not has_dialog(app)  # the question about the replaced document is silently dropped
         assert screen.document.change_question is False
