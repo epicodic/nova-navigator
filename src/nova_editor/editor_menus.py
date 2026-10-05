@@ -48,6 +48,8 @@ def build_menu_bar(actions: dict[str, Action], *, standalone: bool) -> MenuBar:
         actions["editor.line_numbers"],
         actions["editor.wrap_mode"],
     ]
+    if "editor.keyboard_shortcuts" in actions:
+        view_items.append(actions["editor.keyboard_shortcuts"])
     menu_bar.add_menu("View", *view_items, name="view")
 
     return menu_bar
