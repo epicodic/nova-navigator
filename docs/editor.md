@@ -21,7 +21,7 @@ Saving streams the document to a temporary file on a worker thread and replaces 
 After a save the document stands on the saved file, and undo still works (see "Rebase After a Save").
 A change of the file on disk is detected and never overwritten silently (see "External Changes").
 A literal search runs over the whole document on a worker thread (see "Search").
-The standalone app `nova_edit` wraps the widget with a status line, a footer, bars and a quit confirmation (see "nova_edit").
+The standalone app `nova_edit` wraps the widget with a status line, a footer, popups, dialogs and a quit confirmation (see "nova_edit").
 
 **Where to look:**
 
@@ -232,12 +232,15 @@ The package exports `NovaTextArea`, `DEFAULT_HIGHLIGHT_LIMIT`, `ExternalCheck`, 
 
 The widget's members and messages are listed in "Public API".
 
-### Application Layer (`nova_editor/app.py`, `status_line.py`, `search_bar.py`)
+### Application Layer (`nova_editor/app.py`, `screen.py`, `status_line.py`, `goto_popup.py`, `find_popup.py`, `decisions.py`)
 
-`app.py` holds the standalone Textual app `NovaEditApp`, the bars (`GotoBar`, `PathBar`, `SaveBar`, `ConfirmBar`), `TimedNovaTextArea` and the entry point `main()`.
+`app.py` holds the standalone Textual app `NovaEditApp` and the entry point `main()`.
+`screen.py` holds `EditorScreen`: the actions, the menus, the keymap, the popups and the flows that ask through dialogs.
 `status_line.py` holds `StatusLine`, `StatusState` and the pure function `format_status`.
-`search_bar.py` holds `SearchBar` and `SearchStatus`.
-All three modules import the widget layer and Textual, and nothing from `nova_navigator`.
+`goto_popup.py` and `find_popup.py` hold the two inline popups.
+`decisions.py` builds the `MessageBox` of every question of the screen.
+`timed_text_area.py` holds `TimedNovaTextArea`.
+All of them import the widget layer, `nova_widgets` and Textual, and nothing from `nova_navigator` or the VFS.
 The app is described in "nova_edit".
 
 ---
@@ -388,7 +391,7 @@ The screen holds:
 - **Per-screen MenuBar** (File, Edit, Search, View menus)
 - **Per-screen KeymapRegistry and HintBar** (for action key binding and hint display)
 - **DocumentView** (holds the NovaTextArea widget and file metadata)
-- **Bars** (GotoBar, PathBar, SaveBar, SearchBar, ConfirmBar)
+- **Popups** (the Go to and Find popups) and the modal dialogs of its flows (Open, Save As, the questions)
 - **StatusLine** (shows editor progress and file status)
 
 The document itself is not stored in the screen; instead, EditorScreen holds a reference to a `DocumentView`.
@@ -414,7 +417,7 @@ EditorScreen(
 **Parameters:**
 - `path` — File to open, or `None` for an empty buffer.
 - `keybindings` — User keybinding overrides from `~/.config/nova-navigator/keybindings.toml`; `None` for defaults.
-- `file_provider` — FileProvider for the file dialog of the Open action; defaults to `InMemoryFileProvider`. Open is currently unavailable (no file chooser exists yet): the action only shows a notification, so the provider is not used yet.
+- `file_provider` — FileProvider for the file dialogs of Open and Save As; defaults to the local file system provider (`default_file_provider()`). A host with another file system passes its own provider.
 - `soft_wrap` — Start with soft wrapping enabled (default `False`).
 - `config` — Tunable thresholds of the lazy document (`LazyConfig`); `None` for defaults.
 - `editor_class` — The editor widget class (default `TimedNovaTextArea`, allows injection for testing).
@@ -501,14 +504,16 @@ This is a known `nova_widgets` defect.
 **Moved editing keys:** the editor widget binds Ctrl+Z, Ctrl+Y, Ctrl+X, Ctrl+C, Ctrl+V and Ctrl+A itself.
 When one of these actions is moved or unmapped, `press_key` swallows its old default key while the editor has the focus.
 
-**Input bars:** while a bar (`Input`) has the focus, `press_key` leaves every key that the `Input` binds itself (Ctrl+A is home, Ctrl+W deletes a word, Ctrl+X/C/V cut, copy and paste) and the keys of the editing actions to the `Input`; the editing actions never run from a bar.
+**Popup inputs:** while an `Input` of a popup has the focus, `press_key` leaves every key that the `Input` binds itself (Ctrl+A is home, Ctrl+W deletes a word, Ctrl+X/C/V cut, copy and paste) and the keys of the editing actions to the `Input`; the editing actions never run from a popup.
+All other keys (Ctrl+F, Ctrl+G, F3, Shift+F3, Ctrl+S, F5, Ctrl+Q) reach the keymap first, so they work with a popup open.
+Escape, Enter and Alt+C are not mapped to an action and reach the popup.
 
 ### Menu Bar
 
 The menu bar has four menus:
 
 **File Menu:**
-- Open… (Ctrl+O) — currently unavailable, shows a notification
+- Open… (Ctrl+O) — picks a file in the Open dialog; the document is replaced after the unsaved-changes question.
 - Save (Ctrl+S)
 - Save As… (Ctrl+Shift+S)
 - Reload (F5)
@@ -537,40 +542,34 @@ Checkable menu items start with the state of the widget, which is checked for Li
 The path label on the right of the menu bar is sized to the room left after the menu entries (truncated keeping its end behind an ellipsis, or hidden), so menus stay clickable at 80 columns.
 Tests are in `tests/nova_editor/test_menu_path_label.py`.
 
-### Bars
+### Popups and dialogs
 
-**GotoBar** — Go to a line or byte offset.
-- Input: `N` for line, `@N` for byte offset.
-- Show: Ctrl+G.
-- Close: Escape.
-- Action: Enter navigates to the target.
+**Go to popup** (`GotoPopup`, Ctrl+G) — Go to a line or a byte offset.
+- Input: `N` for a line, `@N` for a byte offset (S0001 REQ-7).
+- Enter jumps and closes the popup; Escape closes it and gives the focus back to the editor.
+- Text that is no target shows `Not a line number or @byte offset (for example 120 or @4096)` in the popup.
+- A target that the widget rejects (`line N is beyond the last line (COUNT)` and the other texts of "Goto messages") keeps the popup open with that reason and the input selected.
+- A target beyond the scanned part closes the popup; the status line shows `Goto P%  Esc cancels`.
 
-**PathBar** — Save the file under a new path.
-- Placeholder: `Save as: path`.
-- Show: When saving without a file path (Ctrl+S) or via Save As (Ctrl+Shift+S).
-- Close: Escape.
-- Action: Enter saves.
+**Find popup** (`FindPopup`, Ctrl+F) — a literal search.
+- Controls: the needle, `Match case` (on by default, Alt+C), `Previous` and `Next`, and a status row.
+- There is no replace, no regular expression and no whole word.
+- Enter and `Next` search forward and the popup stays open, so Enter repeats; `Previous` searches backward; F3 and Shift+F3 work with the popup open or closed.
+- Escape cancels a running search first, then closes the popup and gives the focus back to the editor.
+- The progress and the result of the search (`Searching 42% (2.1 of 5.0 GiB), Esc cancels`, `Found`, `Wrapped to the top`, `Not found: <needle>`, ...) appear in the status row while the popup is open, and as a note of the status line while it is closed.
 
-**SearchBar** — Enter the search term.
-- Placeholder: `Search (case-sensitive)` or `Search (ignore case)`.
-- Show: Ctrl+F.
-- Close: Escape.
-- Action: Enter starts the search.
+**Dialogs** (`nova_widgets`, ADR-1) — the screen shows each as a modal screen from a worker (`run_worker` and `await dialog.run()`), one at a time (see "Flows").
+- Open and Save As use `FileDialog` with the host's file provider; Save As starts in the directory of the file with its name (an unnamed buffer starts in the home of the provider).
+- Every question is a `MessageBox` built in `decisions.py`: quit and close with edits, a save that still runs, open over edits, reload of a modified document, overwrite of a file that exists, and a change of the file on disk.
+- The first button is the harmless one (Cancel or Keep): it holds the focus, Enter presses it and Escape answers it.
+- Failures of a save, a reload and an open are acknowledged in an error box with one OK button.
+- No new `Dialog` subclass exists, so `src/tools/dialog_tester.py` has no entry for them.
 
-**SaveBar** — Progress indicator for a running save.
-- Shows phases: `Saving`, `Flushing`, `Finishing`, `Preserving undo history`.
-- Progress: `X.X / Y.Y GiB  P%`.
-- Cancel: Escape (while saving).
-- Messages: `Saved`, `Save cancelled`, `Save failed`, `Reloaded`.
-
-**ConfirmBar** — Confirmation of actions.
-- Used for: overwrite after external change, reload of modified document, quit questions.
-- Keys: `O` overwrite, `A` save as, `R` reload, `Q` quit, `Esc` stay.
-- Only the keys that the question lists are active.
-
-**SearchStatus** — Result indicator.
-- Shows: `Searching N% (X of Y), Esc cancels`, `Found`, `Not found`, `Search cancelled`.
-- Display: 3 seconds (then clears).
+**Flows:** `EditorScreen._start_flow` runs a coroutine in a worker under one lock, so one question or dialog is open at a time and a later one waits.
+A handler only starts a flow and never awaits one.
+Quit and Close are ignored while a flow is open, so Ctrl+Q never discards the edits under an open dialog; `NovaEditApp.action_quit` finds the `EditorScreen` in the screen stack for that reason.
+`SourceChanged` and `SaveNeedsConfirmation` for one change ask once (`DocumentView.change_question`), and a question that became moot while another dialog was open is checked again when its turn comes.
+Open loads the new file first and replaces the document only on success; a file that cannot be read shows an error and leaves the old document.
 
 ### StatusLine
 
@@ -582,6 +581,7 @@ Parts are added in order while text still fits the width; the tail is cut first 
 | Order | Text | Meaning |
 |---|---|---|
 | 0 | `name` | The file name without its directory, `(unsaved)` for a buffer without a path; a name longer than half the width keeps its end behind `…` |
+| 0 | `note` | A transient text right after the name: the progress or the result of a save, a search or a reload; set by `StatusLine.set_note`, a result clears itself after `StatusLine.NOTE_SECONDS` (4 s) |
 | 1 | `Goto P%  Esc cancels` | Only while a goto waits for the scan |
 | 2 | `Ln N  Col N` | Line and column (1-based); `Ln ?` while the line scan has not resolved the cursor row; `Col ~N` when the column is provisional, `Col ...` when it is pending |
 | 3 | `Byte N (P%)`, `Byte N` or `Byte ?` | Byte offset of the cursor and its whole percent of the file size; the percent is left out when it is unknown; `?` while the widget does not know the offset |
@@ -591,13 +591,14 @@ Parts are added in order while text still fits the width; the tail is cut first 
 | 7 | `N lines` or `>= N lines (indexing P%)` | Exact count, or a lower bound while the scan runs; `1 line` is singular |
 | 8 | `LF`, `CRLF` or `CR` | `editor.line_ending` |
 
+A note keeps its place when the line is cut: the position parts drop first.
 The status line reads from the editor on its own timer (0.05 s) to keep updates off the critical path.
 
 ### On Mount
 
 When the screen mounts (`on_mount()`), it:
 1. Sets up checkable actions (connects them to editor state).
-2. Watches editor reactive properties (`soft_wrap`, `show_line_numbers`).
+2. Watches the reactive properties of the current editor (`pending_progress`, `soft_wrap`, `show_line_numbers`); `_watch_editor` registers them again after Open replaced the editor.
 3. Updates action checked state when properties change.
 
 ### Document View
@@ -626,6 +627,7 @@ class DocumentView:
     last_backward: bool = False           # Direction of the last search (decides the wrap text)
     deferred_change: ChangeKind | None = None  # A change seen while a save ran, announced after it
     polling: bool = False                 # Whether a check of the file on disk runs on a worker thread
+    change_question: bool = False  # A question about a change of the file is open or queued
 ```
 
 ### Construction
@@ -636,6 +638,7 @@ DocumentView.open(
     *,
     editor_class: type[TimedNovaTextArea],
     soft_wrap: bool,
+    show_line_numbers: bool,
     config: LazyConfig | None,
     timing_file: str | None,
 ) -> tuple[DocumentView, str | None]
@@ -647,6 +650,7 @@ Returns a tuple of `(document_view, error_text)`.
 - If the file exists but cannot be read (or is not a regular file), `load_state == "failed"` and `error_text` is `"Error loading file: ..."`.
 
 The screen shows `error_text` as an error notification when it mounts.
+Open shows it in an error box and keeps the old document.
 
 ### Load States
 
@@ -658,7 +662,7 @@ The screen shows `error_text` as an error notification when it mounts.
 
 A successful save sets the state to `"loaded"` and binds the document to the saved path.
 
-There is one screen per document: the view is held by exactly one `EditorScreen`.
+The screen holds one view at a time; Open replaces it (REQ-15).
 
 ### Usage
 
@@ -682,11 +686,11 @@ The document reference is stable across the lifetime of the screen.
 From top to bottom:
 - The menu bar (File, Edit, Search, View) with the path of the document on its right side (updated after a save); the app title is `nova_edit` and its sub-title is the path.
 - The editor (`#editor`), which takes the remaining height.
-- The bars, all hidden until needed: `GotoBar`, `PathBar`, `SaveBar`, `ConfirmBar`, `SearchBar` and `SearchStatus`.
+- The Go to and Find popups, hidden until needed; they float over the first rows of the editor and take no layout space.
 - `StatusLine`, always visible, one row.
 - The `HintBar`, one row, which shows the keys of the actions that are shown in the bar.
 
-The bars are plain widgets, not dialogs, so they have no entry in `src/tools/dialog_tester.py`.
+The popups are not dialogs, and the dialogs are plain `MessageBox` and `FileDialog`, so they have no entry in `src/tools/dialog_tester.py`.
 
 ### Status line
 
@@ -718,7 +722,7 @@ The timer reads the widget state once and updates the text.
 At most 20 updates happen per second, the last state is always shown, and no work happens on the key's critical path.
 `StatusLine.flushes` counts the updates.
 
-A save and a search keep their own transient lines (`SaveBar`, `SearchStatus`); the status line does not repeat them.
+The progress and the result of a save, a search or a reload are the note of the status line (the texts are `Saving  1.2 / 5.0 GiB  24 %  Esc cancels`, `Flushing`, `Preserving undo history`, `Finishing`, `Saved  <name>  <size>`, `Save cancelled`, `No changes to save`, `Reloaded`); failures are error boxes.
 
 ### Footer and keys
 
@@ -729,59 +733,31 @@ When an editing action (Undo, Redo, Cut, Copy, Paste, Select All) is moved or un
 
 | Key | Action |
 |---|---|
-| `Ctrl+S` | Save; without a file it opens the path bar; an unmodified document shows "No changes to save" |
-| `Ctrl+Shift+S` | Path bar for save as, prefilled with the current path; Enter saves and Escape closes |
-| `F5` | Reload; a modified document shows the confirm bar first; during a save it shows a warning |
-| `Ctrl+G` | Show or hide the goto bar: `N` for a line, `@N` for a byte offset |
-| `Ctrl+F` | Search bar; Enter searches forward, Escape closes it |
-| `F3` | Repeat the search forward, also with the bar closed; without a needle it opens the bar |
-| `Shift+F3` | Repeat the search backward |
-| `Alt+C` | In the search bar: toggle between case-sensitive and ignore case |
+| `Ctrl+S` | Save; without a file it opens the Save As dialog; an unmodified document shows "No changes to save" |
+| `Ctrl+O` | Open: pick a file in the Open dialog |
+| `Ctrl+Shift+S` | Save As dialog, prefilled with the current name; Enter saves and Escape cancels |
+| `F5` | Reload; a modified document asks first; during a save it shows a warning |
+| `Ctrl+G` | Go to popup: `N` for a line, `@N` for a byte offset; Enter jumps and closes, Escape closes |
+| `Ctrl+F` | Find popup; Enter and Next search forward, Previous backward, Escape closes it |
+| `F3` | Repeat the search forward, with the popup open or closed; without a needle it opens the popup |
+| `Alt+C` | In the Find popup: toggle between match case and ignore case |
+| `Escape` | Close the popup that has the focus; cancel a running search first, then a running save and a pending jump |
 | `F10` | Toggle soft wrap |
 | `Ctrl+Q` | Quit (see "Quit flow") |
-| `Escape` | Close the goto, path or search bar while it has the focus; cancel a running save, a pending jump and a running search |
 | `Ctrl+Z`, `Ctrl+Y`, `Ctrl+X`, `Ctrl+C`, `Ctrl+V` | Stock undo, redo, cut, copy and paste |
-
-### Bars
-
-**GotoBar:**
-An input that accepts `N` (line number) or `@N` (byte offset).
-Enter navigates and Escape closes it.
-Text that does not parse shows the warning `Invalid goto format`.
-
-**PathBar:**
-An input like the goto bar, with the placeholder `Save as: path`.
-An empty path shows the warning `No path given`.
-
-**SaveBar:**
-A line that is hidden when idle.
-It shows `Saving  1.2 / 5.0 GiB  24 %  Esc cancels`, then `Flushing`, `Finishing` or `Preserving undo history`, and a result line for 4 seconds (`Saved  <name>  <size>`, `Save cancelled`, `No changes to save`, `Reloaded`).
-A failure shows `Save failed (<stage>): <OS message>` and stays until a key is pressed.
-A committed failure adds that the file was written and that F5 reloads it.
-
-**ConfirmBar:**
-A key driven question that takes the focus.
-The keys are `O` overwrite, `A` save as, `R` reload, `Q` quit and `Esc` keep or stay.
-Only the keys that the question lists are active.
-The questions are overwrite after an external change, reload of a modified document, and the two quit questions.
-
-**SearchBar and SearchStatus:**
-See "Search".
 
 ### Quit flow
 
 `Ctrl+Q` works as follows. The `editor.quit` action and `NovaEditApp.action_quit` (reached by Textual's own Ctrl+Q binding when `editor.quit` is remapped) both run the same screen flow, `EditorScreen.action_quit_editor`; `action_quit` falls back to an immediate exit only when the current screen is not an `EditorScreen`.
 - First, a running search is cancelled, and a pending jump is cancelled.
 - Then a running save is cancelled, and the app waits without blocking the UI for its end, polling every 0.02 s for at most `QUIT_WAIT_SECONDS` (2 s).
-- If the save is still running after the wait, the confirm bar asks the second question: `A save is still running.  Q quit anyway  Esc stay`.
-- Otherwise, if the document is modified, the confirm bar asks the first question: `Discard the unsaved changes and quit?  Q quit  Esc stay`.
+- If the save is still running after the wait, a `MessageBox` asks the second question: `A save is still running. Quit anyway?` with `Cancel` and `Quit Anyway`.
+- Otherwise, if the document is modified, a `MessageBox` asks the first question: `Discard the unsaved changes and quit?` with `Cancel` and `Discard & Quit`.
 - Otherwise the app exits at once.
 
-`Esc` returns to the editor with every edit intact, and the next `Ctrl+Q` asks again.
-A quit question replaces any other open question of the bar.
-A save that finished with `Saved` before the wait ended leaves the document unmodified, so the app exits; `SaveCancelled` leaves it modified, so the first question follows.
-An untouched empty buffer for a missing path, and a file that failed to load, exit at once.
-The tests are in `tests/nova_editor/test_app_quit.py`.
+`Cancel` and Escape return to the editor with every edit intact, and the next `Ctrl+Q` asks again.
+A second `Ctrl+Q` while the question is open is ignored, and so is `Ctrl+Q` while any other dialog is open.
+(embedded hosts say `Close` instead of `Quit`.)
 
 ### A path that does not exist
 
@@ -790,13 +766,13 @@ The first `Ctrl+S` creates the file, even when it is empty, and the status line 
 If the file appears on disk before that save, the save asks for confirmation (kind `CREATED`).
 A missing parent directory makes the save fail visibly and creates nothing.
 Typing then quitting asks the first quit question, and the file is not created.
-A file that exists but cannot be read shows an error notification, refuses `Ctrl+S` ("Not saved: the file could not be loaded ...") and opens the path bar for a save as.
+A file that exists but cannot be read shows an error notification, refuses `Ctrl+S` ("Not saved: the file could not be loaded ...") and opens the Save As dialog.
 The tests are in `tests/nova_editor/test_app_req16.py`.
 
 ### Goto messages
 
-`Ctrl+G` opens the bar; Enter goes to the target and hides the bar.
-The widget posts `JumpRejected`, and the app shows its reason as a warning notification while the cursor stays where it was:
+`Ctrl+G` opens the popup; Enter goes to the target and closes it.
+The widget posts `JumpRejected`; the popup shows its reason (a toast when the popup is not waiting) while the cursor stays where it was:
 - `line N is not a line number (lines start at 1)` for a line below 1.
 - `line N is beyond the last line (COUNT)` for a line above the final count.
 - `byte offset N is negative`.
@@ -807,11 +783,11 @@ A target beyond the scanned part stays pending: the status line shows `Goto P%  
 
 ### Search in nova_edit
 
-`Ctrl+F` opens the bar, Enter searches forward and `Escape` closes the bar.
-`F3` and `Shift+F3` repeat the last needle forward and backward, also with the bar closed.
-`Alt+C` toggles the case in the bar, and the placeholder shows `Search (case-sensitive)` or `Search (ignore case)`.
-`SearchStatus` shows `Searching 42% (2.1 of 5.0 GiB), Esc cancels` while it runs.
-Then it shows `Found`, `Wrapped to the top`, `Wrapped to the bottom`, `Not found: <needle>`, `Search cancelled` (with `: <reason>` unless the user cancelled) or `Search failed: <error>` for 3 seconds.
+`Ctrl+F` opens the Find popup, Enter and `Next` search forward, `Previous` searches backward, and Escape closes it (a running search is cancelled first).
+`F3` and `Shift+F3` repeat the last needle forward and backward, with the popup open or closed.
+`Alt+C` flips `Match case`, which is on by default.
+While the popup is open the texts appear in its status row, and while it is closed as a note of the status line.
+The texts are `Searching 42% (2.1 of 5.0 GiB), Esc cancels` while it runs, then `Found`, `Wrapped to the top`, `Wrapped to the bottom`, `Not found: <needle>`, `Search cancelled` (with `: <reason>` unless the user cancelled) or `Search failed: <error>`.
 A needle is shown at most 40 characters in `Not found`.
 
 ### Other app behaviour
@@ -1229,9 +1205,9 @@ A truncation that removed bytes the document still needs fails with "the file wa
 After `REPLACED` or `DELETED` the held descriptor still names the original inode, so the save is exact.
 
 **`nova_edit` guards:**
-- A file that existed but could not be read refuses Ctrl+S and opens the path bar for a save as.
+- A file that existed but could not be read refuses Ctrl+S and opens the Save As dialog.
 - A file expected to be new that exists at save time is `CREATED`, which asks for confirmation.
-- Ctrl+S without a file opens the path bar.
+- Ctrl+S without a file opens the Save As dialog.
   The first save of a new file creates it even when it is empty.
 - Ctrl+S on an unmodified document that has a file shows "No changes to save".
 - `nova_edit` refuses to open a file that is not regular, because opening a FIFO blocks.
@@ -1242,7 +1218,7 @@ After `REPLACED` or `DELETED` the held descriptor still names the original inode
 
 `NovaTextArea.search` finds literal text in the whole document, forward or backward, in the original bytes and in the edited ones.
 It runs on a worker thread with progress and cancellation, and the UI keeps answering while it runs.
-The layers are `core/casefold.py` and `core/search.py` (Textual-free), `LazyDocument.search_plan`, `widget/_search_run.py` with the glue in `_text_area.py`, and `search_bar.py` in the app.
+The layers are `core/casefold.py` and `core/search.py` (Textual-free), `LazyDocument.search_plan`, `widget/_search_run.py` with the glue in `_text_area.py`, and `find_popup.py` in the app.
 
 ### The Key Move
 
@@ -1875,7 +1851,7 @@ Any other `fchmod` error fails the save at stage `flush`.
 - **Line breaks in a needle.**
   A line break in a needle matches exactly one document terminator (`\r\n`, `\n` or `\r`).
   A needle `\n` never selects half of a CRLF, and a needle `\r\n` also matches a lone LF or a lone CR.
-  The search bar of `nova_edit` takes one line, so a line break reaches the search only through the API.
+  The Find popup of `nova_edit` takes one line, so a line break reaches the search only through the API.
 
 ---
 
@@ -1921,14 +1897,17 @@ Tests are located under `tests/nova_editor/` and `tests/tools/`.
   `tests/test_package_independence.py` guards that `nova_editor` and `nova_widgets` do not depend on `nova_navigator`, and that `nova_editor` does not use the VFS.
 
 **App:**
-- `test_app.py`, `test_app_lazy.py`, `test_app_save.py`, `test_bindings.py` — the app, opening files, the save bars and key bindings (including key collisions).
+- `test_app.py`, `test_app_lazy.py`, `test_app_save.py`, `test_bindings.py` — the app, opening files, the save status and key bindings (including key collisions).
 - `test_app_status.py` — the status line text, its fields, its states and its coalescing.
 - `test_line_numbers.py` — the gutter at the start, F11 and the View item, the check marks, the session only rule, no config file and the wrap indicator.
 - `test_gutter_rows.py` — the gutter cells of rows that are not known yet and of wrapped continuation rows.
 - `test_menu_path_label.py` — the path label on the menu bar sized to the available width and truncated keeping its end behind an ellipsis.
 - `test_app_footer.py` — the footer keys.
 - `test_app_quit.py` — the quit flow and its two questions.
-- `test_app_search.py` — the keys, the bar, the status texts and the case toggle of `nova_edit`.
+- `test_app_search.py`, `test_find_popup.py`, `test_goto_popup.py`, `test_popups.py` — the Find and Go to popups, their keys, texts and options.
+- `test_decisions.py`, `test_decision_races.py` — every question as a `MessageBox` (texts, buttons, answers), Ctrl+Q with a dialog open, the single question for one change, changes while a dialog is open.
+- `test_open_flow.py`, `test_save_as_flow.py`, `test_menu_flows.py`, `test_default_provider.py` — Open and Save As through the file dialog, the menu items, the default local provider.
+- `test_status_note.py` — the note of the status line.
 - `test_app_req16.py` — a missing path, goto messages, search through Ctrl+F and the wrap toggle.
 
 **Search reference model:**
@@ -1940,7 +1919,7 @@ Further properties check that the tiers return the same result on ASCII data and
 
 **Helpers and benchmarks:**
 - `helpers_view.py`, `test_helpers_view.py` — synthetic file builder and oracle.
-- `view_menu.py` — helper for opening and inspecting the View menu in tests.
+- `view_menu.py` — helper for opening and inspecting any menu in tests.
 - `tests/tools/test_measure_view.py` and `tests/tools/test_measure_core.py` — smoke tests of the harnesses.
 
 Run all tests:
