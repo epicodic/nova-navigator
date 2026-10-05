@@ -172,6 +172,8 @@ It takes three parameters:
 - `config: KeybindingsConfig` — the keybindings configuration object that loads and saves overrides.
 - `key_display_style: KeyFormatStyle | None = None` — optional style for formatting keys (defaults to `KeyFormatStyle.CLASSIC`).
 
+The host passes the actions it wants listed (the editor passes its `editor.*` actions); the dialog keeps unmapped actions unmapped on save.
+
 `KeyCaptureDialog` is a helper modal that opens when the user edits a binding.
 It captures a key sequence (supporting multi-chord sequences) and returns the captured sequence or `None` if dismissed.
 It takes two parameters:
