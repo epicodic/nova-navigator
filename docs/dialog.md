@@ -83,8 +83,20 @@ buttons=[
 ]
 ```
 
-The accept button (first button whose `response.is_accepted` is `True`) is dismissed on Enter.
-The reject button (first button whose `response.is_rejected` is `True`) is dismissed on Escape.
+Enter presses the focused button, and the first button holds the initial focus, so put the harmless button first.
+`Dialog` keeps the **last** accept-role button (`response.is_accepted`) as its accept button and the **last** reject-role button (`response.is_rejected`) as its dismiss button (the constructor loop overwrites).
+Escape dismisses with the dismiss button, and with `None` when there is none.
+A button of another role (for example `Response.DISCARD`, the destructive role) or an accept button that is not the last one dismisses with its own `Response`.
+Give a dialog at most one reject button.
+Do not use `Response.custom(...)`: its `ButtonSpec.id` is `None`, and pressing it raises `KeyError`.
+
+## Showing a Dialog from a Screen
+
+`await dialog.run()` pushes the dialog and waits for its answer, so it must run in a worker, never in `on_event` or a key handler.
+Start the work with `self.run_worker(coroutine, group="flow", exit_on_error=True)` and `await dialog.run()` inside it.
+Only that worker waits; the event loop and the timers keep running.
+`EditorScreen` serialises its flows with one `asyncio.Lock` and counts them before the worker starts, so a second request in the same instant sees the first.
+A flow that needs another dialog awaits it directly and never starts and awaits another flow.
 
 ## Keyboard Handling
 
@@ -240,3 +252,14 @@ After dismissal, check `dialog.selected_path`:
 if dialog.selected_path:
     print(f"Selected: {dialog.selected_path}")
 ```
+
+### Pre-filled name
+
+In SAVE mode `FileDialog(..., filename="notes.txt")` fills the name input and gives it the initial focus, so Enter saves that name; `None` (the default) keeps the listing focused.
+The prefill survives the first highlight of the listing and is replaced by a later one.
+`filename` is ignored in the other modes.
+
+## MessageBox
+
+`MessageBox(..., width="90%")` sets the width of the box for a row of more buttons than the default 50 % holds; `None` keeps the CSS.
+Button labels longer than 16 characters wrap, because `Dialog` limits a button to 20 columns.
