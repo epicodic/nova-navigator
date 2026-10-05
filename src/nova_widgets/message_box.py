@@ -13,7 +13,10 @@ MessageBoxVariant = Literal["default", "success", "warning", "error"]
 
 
 class MessageBox(Dialog):
-    """Modal dialog that displays a plain text message with an OK button."""
+    """Modal dialog that displays a plain text message with an OK button.
+
+    Pass width (for example "90%") for a row of more buttons than the default 50 % box holds.
+    """
 
     DEFAULT_CSS = """
     MessageBox {
@@ -33,6 +36,7 @@ class MessageBox(Dialog):
 
     _message: str
     _variant: MessageBoxVariant
+    _width: str | None
 
     def __init__(
         self,
@@ -40,14 +44,21 @@ class MessageBox(Dialog):
         title: str = "Error",
         buttons: list[ButtonSpec | DefaultButton] | None = None,
         variant: MessageBoxVariant = "default",
+        *,
+        width: str | None = None,
     ) -> None:
         super().__init__(title=title, buttons=buttons if buttons is not None else [DefaultButton.OK])
         self._message = message
         self._variant = variant
+        self._width = width
 
     def on_mount(self) -> None:
-        if self._variant != "default" and self._dialog_box is not None:
+        if self._dialog_box is None:
+            return
+        if self._variant != "default":
             self._dialog_box.add_class(f"-{self._variant}")
+        if self._width is not None:
+            self._dialog_box.styles.width = self._width
 
     def compose_content(self) -> ComposeResult:
         yield Label(self._message)

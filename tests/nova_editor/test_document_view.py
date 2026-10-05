@@ -61,7 +61,7 @@ def test_a_fifo_is_a_failed_load_and_is_not_opened(tmp_path: Path) -> None:
 def test_the_view_holds_no_wrap_or_line_number_state() -> None:
     """The widget owns `soft_wrap` and `show_line_numbers` (ADR-4); the view keeps no copy."""
     names = {field.name for field in dataclasses.fields(DocumentView)}
-    assert names == {"editor", "file_path", "load_state", "needle", "last_backward", "deferred_change", "polling"}
+    assert names == {"editor", "file_path", "load_state", "needle", "last_backward", "deferred_change", "polling", "change_question"}
 
 
 def test_two_views_do_not_share_state() -> None:

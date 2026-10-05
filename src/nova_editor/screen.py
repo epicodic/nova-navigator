@@ -1,11 +1,12 @@
-"""The editor screen: menu bar, editor, bars, status line and hint bar with the `editor.*` actions."""
+"""The editor screen: menu bar, editor, popups, status line and hint bar with the `editor.*` actions and the flows that ask through dialogs."""
 
 from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Awaitable, Callable
 from functools import partial
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import ClassVar, Literal
 
 from rich.cells import cell_len
@@ -17,22 +18,26 @@ from textual.screen import Screen
 from textual.widgets import Input, Static
 
 from nova_widgets.action import Action
-from nova_widgets.file_provider import FileProvider, InMemoryFileProvider
+from nova_widgets.file_dialog import FileDialog, FileDialogMode
+from nova_widgets.file_provider import FileProvider, default_file_provider
 from nova_widgets.key_types import KeyChord, KeySequence
 from nova_widgets.keybindings_config import KeybindingsConfig
 from nova_widgets.keymap import HintBar, KeymapRegistry
 from nova_widgets.menu import Menu, MenuBar
+from nova_widgets.popup_widget import PopupWidget
+from nova_widgets.response import Response
 
-from .bars import ConfirmBar, GotoBar, PathBar, SaveBar, format_sizes, parse_goto
 from .core.byte_source import ChangeKind
 from .core.save import check_path
+from .decisions import failure_box, file_question, open_question, quit_question, reload_question
 from .document._cursor_anchor import CursorState
 from .document._lazy_config import LazyConfig
 from .document_view import DocumentView
 from .editor_actions import build_editor_actions
 from .editor_menus import build_menu_bar
-from .search_bar import SearchBar, SearchStatus
-from .status_line import StatusLine, StatusState, byte_percent, row_is_known
+from .find_popup import FindPopup
+from .goto_popup import GotoPopup
+from .status_line import StatusLine, StatusState, byte_percent, format_sizes, row_is_known, save_progress_text
 from .timed_text_area import TimedNovaTextArea
 from .widget import ExternalCheck, NovaTextArea
 
@@ -64,9 +69,9 @@ _MIN_LABEL_CELLS = 2
 
 
 class EditorScreen(Screen[None]):
-    """The editor: a menu bar with File, Edit, Search and View, the editor widget, the bars, the status line and a hint bar.
+    """The editor: a menu bar with File, Edit, Search and View, the editor widget, the Go to and Find popups, the status line and a hint bar.
 
-    The screen holds the actions, the menus, the keymap and the bars; everything about the open document lives in its `DocumentView`.
+    The screen holds the actions, the menus, the keymap and the flows (dialogs and popups); everything about the open document lives in its `DocumentView`.
     Wrap mode and line numbers are reactive properties of the widget, not stored here.
     A host must forward `Key` events to `press_key` from `App.on_event`, because the keymap registry has to see a key before Textual's priority bindings do.
     """
@@ -96,37 +101,6 @@ class EditorScreen(Screen[None]):
         color: $text;
     }
 
-    #goto_bar {
-        width: 100%;
-        height: 1;
-        border: solid $primary;
-        display: none;
-    }
-
-    #path_bar {
-        width: 100%;
-        height: 1;
-        border: none;
-        display: none;
-    }
-
-    #search_bar {
-        width: 100%;
-        height: 1;
-        border: none;
-        display: none;
-    }
-
-    #save_bar, #confirm_bar, #search_status {
-        width: 100%;
-        height: 1;
-        display: none;
-    }
-
-    #confirm_bar {
-        background: $warning;
-        color: $text;
-    }
     """
 
     BINDINGS: ClassVar[list[Binding]] = [Binding("escape", "cancel_save", "Cancel save", show=False)]
@@ -149,7 +123,7 @@ class EditorScreen(Screen[None]):
         Args:
             path: The file to open, or `None` for an empty buffer.
             keybindings: User keybinding overrides; `None` for defaults.
-            file_provider: FileProvider for the file dialog; defaults to InMemoryFileProvider.
+            file_provider: FileProvider for the file dialogs; defaults to the local file system provider.
             soft_wrap: Start with soft wrapping enabled.
             config: Thresholds of the lazy document; `None` for defaults.
             editor_class: The editor widget class (allows injection for testing).
@@ -159,16 +133,21 @@ class EditorScreen(Screen[None]):
         """
         super().__init__()
         self._keybindings = keybindings
-        self.file_provider = file_provider or InMemoryFileProvider()
+        self.file_provider = file_provider or default_file_provider()
         self.standalone = standalone
         self._poll_seconds = poll_seconds
         self._quit_wait_seconds = quit_wait_seconds
+
+        self._flows = asyncio.Lock()
+        self._open_flows = 0
 
         self.ACTIONS: list[Action] = build_editor_actions()
         """The 18 `editor.*` actions of this screen; the menus, the keymap registry and the handlers use these very objects."""
         self._by_id: dict[str, Action] = {a.id: a for a in self.ACTIONS if a.id is not None}
         self._swallowed: set[KeySequence] = set()
         self.hint_bar: HintBar = HintBar()
+        self.goto_popup: GotoPopup = GotoPopup()
+        self.find_popup: FindPopup = FindPopup()
         self.keymap_registry: KeymapRegistry = KeymapRegistry(self.hint_bar)
         self._apply_keymap()
         self.menu_bar: MenuBar = build_menu_bar(self._by_id, standalone=standalone)
@@ -178,14 +157,9 @@ class EditorScreen(Screen[None]):
         self._path_label_width: int | None = None
         self.menu_bar.add_right_widget(self._path_label)
 
-        self.document, self._load_error = DocumentView.open(
-            path,
-            editor_class=editor_class,
-            soft_wrap=soft_wrap,
-            show_line_numbers=True,
-            config=config,
-            timing_file=os.environ.get("NOVA_EDIT_TIMING_FILE"),
-        )
+        self._editor_class = editor_class
+        self._config = config
+        self.document, self._load_error = self._open_view(path, soft_wrap=soft_wrap, show_line_numbers=True)
 
     # Keymap
 
@@ -220,7 +194,6 @@ class EditorScreen(Screen[None]):
         """Run the action bound to `key`.
 
         Hosts call this for every raw `Key` event from `App.on_event` and stop the event when it returns `True`.
-        A key press also dismisses a failure shown by the save bar.
         A focused `Input` keeps its own keys and does not run the editing actions (Undo, Redo, Cut, Copy, Paste, Select All).
         The old default key of an editing action that was moved or unmapped is swallowed, because the widget binds those keys itself.
 
@@ -230,9 +203,6 @@ class EditorScreen(Screen[None]):
         Returns:
             True if the key was handled, False otherwise.
         """
-        bars = self.query(SaveBar)
-        if bars and bars.first().failed:
-            bars.first().clear()
         if isinstance(self.focused, Input) and self._input_keeps(key):
             return False
         if await self.keymap_registry.handle_key(key, self.app):
@@ -249,8 +219,12 @@ class EditorScreen(Screen[None]):
         return any(self._by_id[action_id].shortcut == chord for action_id in _EDITING_ACTIONS)
 
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
-        """The hint bar follows the focus."""
+        """The hint bar follows the focus; a visible popup closes when the focus lands outside it (the controlled form of `CLOSE_ON_BLUR`)."""
         self.keymap_registry.on_focus_changed(self.focused)
+        focused = self.focused
+        for popup in self._all_popups():
+            if focused is not None and popup.display and popup not in focused.ancestors_with_self:
+                popup.hide()
 
     async def on_menu_triggered(self, event: Menu.Triggered) -> None:
         """A menu item runs the same action as its key: the editor widget first, then the screen."""
@@ -267,17 +241,13 @@ class EditorScreen(Screen[None]):
     # Composition
 
     def compose(self) -> ComposeResult:
-        """Compose the menu bar, the editor, the bars, the status line and the hint bar."""
+        """Compose the menu bar, the editor, the popups, the status line and the hint bar."""
         yield self.menu_bar
         yield self.document.editor
-        yield GotoBar()
-        yield PathBar()
-        yield SaveBar()
-        yield ConfirmBar()
-        yield SearchBar()
-        yield SearchStatus()
         yield StatusLine(self._status_state)
         yield self.hint_bar
+        yield self.goto_popup
+        yield self.find_popup
 
     def on_mount(self) -> None:
         """Show the path, start the poll for external changes and mirror the widget state in the menu."""
@@ -286,14 +256,12 @@ class EditorScreen(Screen[None]):
         self._show_path()
         self.set_interval(self._poll_seconds, self.poll)
         self._sync_view_actions()
-        editor = self.document.editor
-        self.watch(editor, "pending_progress", self._on_editor_state, init=False)
-        self.watch(editor, "soft_wrap", self._on_editor_state, init=False)
-        self.watch(editor, "show_line_numbers", self._on_editor_state, init=False)
+        self._watch_editor()
 
     def on_resize(self, event: events.Resize) -> None:
         """Adjust the path label when the terminal is resized."""
         self._constrain_path_label()
+        self._place_popups()
 
     def _show_path(self) -> None:
         """Show the path of the document in the menu bar and the sub title of the app."""
@@ -332,6 +300,11 @@ class EditorScreen(Screen[None]):
         for status in self.query(StatusLine):
             status.request()
 
+    def _note(self, text: str | None, *, timed: bool = False) -> None:
+        """Show `text` as the note of the status line (`None` clears it); a result is timed, a progress is not."""
+        for status in self.query(StatusLine):
+            status.set_note(text, timed=timed)
+
     def _status_state(self) -> StatusState | None:
         editor = self.document.editor
         row, column = editor.cursor_location
@@ -357,6 +330,26 @@ class EditorScreen(Screen[None]):
             goto_percent=None if progress is None else int(progress * 100),
         )
 
+    # Document management
+
+    def _open_view(self, path: Path | None, *, soft_wrap: bool, show_line_numbers: bool) -> tuple[DocumentView, str | None]:
+        """Open `path` as a document: the one call of `DocumentView.open`, so that `NOVA_EDIT_TIMING_FILE` reaches every widget the screen builds."""
+        return DocumentView.open(
+            path,
+            editor_class=self._editor_class,
+            soft_wrap=soft_wrap,
+            show_line_numbers=show_line_numbers,
+            config=self._config,
+            timing_file=os.environ.get("NOVA_EDIT_TIMING_FILE"),
+        )
+
+    def _watch_editor(self) -> None:
+        """Mirror the state of the current editor in the status line and the menu; a replaced editor takes its watchers with it."""
+        editor = self.document.editor
+        self.watch(editor, "pending_progress", self._on_editor_state, init=False)
+        self.watch(editor, "soft_wrap", self._on_editor_state, init=False)
+        self.watch(editor, "show_line_numbers", self._on_editor_state, init=False)
+
     # View actions: the widget owns the state, the checked items mirror it
 
     def _sync_view_actions(self) -> None:
@@ -376,8 +369,8 @@ class EditorScreen(Screen[None]):
         self._sync_view_actions()
 
     def action_open_file(self) -> None:
-        """Open: no file chooser exists yet, so say so."""
-        self.notify("Open is not available yet", timeout=3.0)
+        """Open: pick a file in the file dialog; the document is replaced after the unsaved-changes question."""
+        self._start_flow(self._open_flow)
 
     # Status refresh
 
@@ -398,37 +391,20 @@ class EditorScreen(Screen[None]):
         self._request_status()
 
     def on_nova_text_area_jump_completed(self, message: NovaTextArea.JumpCompleted) -> None:
-        """Refresh the status line."""
+        """Refresh the status line; a jump that the popup started closes it."""
         self._request_status()
+        popup = self.goto_popup
+        if popup.display and popup.awaiting:
+            popup.awaiting = False
+            self._close_popup(popup)
 
     def on_nova_text_area_jump_rejected(self, message: NovaTextArea.JumpRejected) -> None:
-        """Show why a goto was rejected; the cursor did not move."""
-        self.notify(message.reason, severity="warning")
-
-    # Bars
-
-    @property
-    def _save_bar(self) -> SaveBar:
-        return self.query_one(SaveBar)
-
-    @property
-    def _confirm_bar(self) -> ConfirmBar:
-        return self.query_one(ConfirmBar)
-
-    @property
-    def _path_bar(self) -> PathBar:
-        return self.query_one(PathBar)
-
-    @property
-    def _search_bar(self) -> SearchBar:
-        return self.query_one(SearchBar)
-
-    @property
-    def _search_status(self) -> SearchStatus:
-        return self.query_one(SearchStatus)
-
-    def _refocus_editor(self) -> None:
-        self.document.editor.focus()
+        """Show why a goto was rejected (the cursor did not move): in the popup that asked, else as a toast."""
+        popup = self.goto_popup
+        if popup.display and popup.awaiting:
+            popup.reject(message.reason)
+        else:
+            self.notify(message.reason, severity="warning")
 
     # Polling
 
@@ -461,10 +437,162 @@ class EditorScreen(Screen[None]):
         self.document.polling = False
         self.document.editor.apply_external_check(check, kind)
 
+    # Flows: every decision and dialog runs in a worker, one at a time
+
+    def _start_flow(self, flow: Callable[[], Awaitable[None]]) -> None:
+        """Run `flow` in a worker, after the flows that were started before it.
+
+        Handlers only start flows and never await them; a flow calls the inner flows it needs directly, so it never waits for the lock it holds.
+        `_open_flows` is counted here, before the worker runs, so that a second request in the same instant sees the first one.
+        """
+        self._open_flows += 1
+        self.run_worker(self._run_flow(flow), group="flow", exit_on_error=True)
+
+    async def _run_flow(self, flow: Callable[[], Awaitable[None]]) -> None:
+        try:
+            async with self._flows:
+                await flow()
+        finally:
+            self._open_flows -= 1
+
+    def _dialog_start(self, path: Path | None) -> PurePath | None:
+        """The directory a file dialog starts in: the directory of `path` when the provider has it, else `None` (the home of the provider).
+
+        A `PurePath` is passed on purpose: `FileDialog` validates a `Path` with the local `pathlib` (`file_dialog.py:310-316`), which is wrong for a provider that is not local.
+        """
+        if path is None:
+            return None
+        directory = PurePath(str(path.parent))
+        return directory if self.file_provider.is_dir(directory) else None
+
+    async def _open_flow(self) -> None:
+        """Open: pick a file in the file dialog; the document is replaced after the unsaved-changes question."""
+        document = self.document
+        editor = document.editor
+        if editor.saving:
+            self.notify("A save is running", severity="warning")
+            return
+        current = editor.file_path if editor.file_path is not None else document.file_path
+        dialog = FileDialog(FileDialogMode.OPEN, start_path=self._dialog_start(current), title="Open", provider=self.file_provider)
+        answer = await dialog.run()
+        selected = dialog.selected_path
+        if answer is not Response.OK or selected is None or document is not self.document:
+            self.document.editor.focus()
+            return
+        if editor.modified and await open_question(selected.name).run() is not Response.DISCARD:
+            self.document.editor.focus()
+            return
+        if document is not self.document or editor.saving:
+            return
+        view, error = self._open_view(selected, soft_wrap=editor.soft_wrap, show_line_numbers=editor.show_line_numbers)
+        if error is not None:  # unreadable, vanished or not a regular file: nothing was replaced
+            await failure_box("Open", error).run()
+            self.document.editor.focus()
+            return
+        await self._swap_document(view)
+
+    async def _swap_document(self, view: DocumentView) -> None:
+        """Replace the document by `view`: remove the old editor, mount the new one and re-establish everything the screen derived from the old one."""
+        editor = self.document.editor
+        if editor.searching:
+            editor.cancel_search()
+        editor.cancel_pending()
+        self.goto_popup.hide()
+        self.find_popup.hide()
+        await editor.remove()
+        self.document = view
+        await self.mount(view.editor, after=self.menu_bar)
+        self._watch_editor()
+        self._show_path()
+        self._sync_view_actions()
+        self._note(None)
+        self._request_status()
+        view.editor.focus()
+
+    async def _save_as_flow(self, current: Path | None) -> None:
+        """Save As: pick the target in the file dialog and save to it; Cancel and Escape change nothing."""
+        document = self.document
+        dialog = FileDialog(
+            FileDialogMode.SAVE,
+            start_path=self._dialog_start(current),
+            title="Save As",
+            provider=self.file_provider,
+            filename="" if current is None else current.name,
+        )
+        answer = await dialog.run()
+        selected = dialog.selected_path
+        if answer is Response.OK and selected is not None and document is self.document:
+            self._save_to(selected)
+        self.document.editor.focus()
+
+    def _is_current(self, editor: NovaTextArea) -> bool:
+        """Whether `editor` is the widget of the current document (a message of a replaced editor must change nothing)."""
+        return editor is self.document.editor
+
+    async def _reload_flow(self) -> None:
+        document = self.document
+        answer = await reload_question().run()
+        editor = document.editor
+        if answer is Response.DISCARD and document is self.document and not editor.saving:
+            editor.reload()
+        self.document.editor.focus()
+
+    async def _overwrite_flow(self, document: DocumentView, kind: ChangeKind, path: Path) -> None:
+        """Ask before saving onto a file that exists: a save as onto an existing file, or the first save of a path that appeared since the start."""
+        question = file_question(kind, path, overwrite=True, save_as=True, reload=False, modified=document.editor.modified)
+        await self._carry_out(document, await question.run(), path)
+
+    def _queue_change(self, kind: ChangeKind, path: Path | None = None, *, from_save: bool = False) -> None:
+        """Ask about a change of the file, once per document: a second request while one is open or queued returns."""
+        document = self.document
+        if document.change_question:
+            return
+        document.change_question = True
+        self._start_flow(partial(self._change_flow, document, kind, path, from_save=from_save))
+
+    async def _change_flow(self, document: DocumentView, kind: ChangeKind, path: Path | None, *, from_save: bool) -> None:
+        try:
+            asked = await self._ask_change(document, kind, path, from_save=from_save)
+        finally:
+            document.change_question = False
+        if asked is not None:
+            await self._carry_out(document, *asked)
+
+    async def _ask_change(self, document: DocumentView, kind: ChangeKind, path: Path | None, *, from_save: bool) -> tuple[Response | None, Path | None] | None:
+        """Ask what to do about a file that changed on disk, unless the view is not stale any more.
+
+        A `SourceChanged` posted during a save can be handled after the save ended; when the save rebased the document onto its own file the view is no longer stale
+        and the check finds nothing, so there is nothing to ask. A request from a save (`from_save`) already knows that the file differs and offers Overwrite.
+        """
+        editor = document.editor
+        if document is not self.document:
+            return None
+        if not from_save and editor.check_external_change() is ChangeKind.UNCHANGED:  # the stale kind while the view is stale, else a fresh check
+            return None
+        target = path if from_save else editor.file_path
+        question = file_question(kind, target, overwrite=from_save or editor.modified, save_as=True, reload=editor.file_path is not None, modified=editor.modified)
+        return await question.run(), target
+
+    async def _carry_out(self, document: DocumentView, answer: Response | None, path: Path | None) -> None:
+        """Carry out the answer to a question about a file (Overwrite, Save As, Reload); Cancel and Keep do nothing."""
+        if document is not self.document:
+            return
+        editor = document.editor
+        editor.focus()
+        if answer is Response.OVERWRITE and path is not None:
+            if editor.file_path is None:
+                self._save_to(path, confirmed=True)
+            else:
+                editor.save(path, overwrite=True)
+        elif answer is Response.SAVE:
+            await self._save_as_flow(path)
+        elif answer is Response.DISCARD and not editor.saving:
+            editor.reload()
+
     # Save, Save As, Reload, Close, Quit
 
     def action_save(self) -> None:
-        """Save the document; without a file the path bar asks for one."""
+        """Save the document; without a file the Save As dialog asks for one."""
         editor = self.document.editor
         document = self.document
         if editor.saving:
@@ -474,24 +602,24 @@ class EditorScreen(Screen[None]):
                 "Not saved: the file could not be loaded, saving would replace it with an empty document. Use save as.",
                 severity="error",
             )
-            self._path_bar.open(document.file_path)
+            self._start_flow(partial(self._save_as_flow, document.file_path))
             return
         if editor.file_path is None:
             if document.file_path is None:
-                self._path_bar.open(None)
+                self._start_flow(partial(self._save_as_flow, None))
             else:
                 self._save_to(document.file_path)
             return
         if not editor.modified:
-            self._save_bar.show_result("No changes to save")
+            self._note("No changes to save", timed=True)
             return
         editor.save()
 
     def action_save_as(self) -> None:
-        """Open the save-as bar, prefilled with the current path."""
+        """Save As: pick a new path in the file dialog, prefilled with the current path."""
         editor = self.document.editor
         current = editor.file_path if editor.file_path is not None else self.document.file_path
-        self._path_bar.open(current)
+        self._start_flow(partial(self._save_as_flow, current))
 
     def action_reload(self) -> None:
         """Reload the file; a modified document asks first."""
@@ -503,7 +631,7 @@ class EditorScreen(Screen[None]):
             self.notify("Nothing to reload", severity="warning")
             return
         if editor.modified:
-            self._confirm_bar.ask(None, editor.file_path, overwrite=False, save_as=False, reload=True)
+            self._start_flow(self._reload_flow)
             return
         editor.reload()
 
@@ -512,20 +640,29 @@ class EditorScreen(Screen[None]):
         self.document.editor.cancel_save()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """Keep Esc for the widget and the bars unless a save runs."""
+        """Keep Esc for the widget and the popups unless a save runs."""
         if action == "cancel_save":
             return self.document.editor.saving
         return super().check_action(action, parameters)
 
     async def action_close_editor(self) -> None:
         """Close: the same flow as Quit."""
-        await self._request_close()
+        self._request_close()
 
     async def action_quit_editor(self) -> None:
-        """Quit: cancel a search and a save, then ask when edits would be lost or a save still runs."""
-        await self._request_close()
+        """Quit: cancel a search and a save, then ask when edits would be lost or a save still runs.
 
-    async def _request_close(self) -> None:
+        The methods stay awaitable (hosts such as `NovaEditApp.action_quit` await them), but they only start the flow and return at once.
+        A request that arrives while a question or a dialog is open is ignored: that one is answered first, and Ctrl+Q never discards under an open dialog.
+        """
+        self._request_close()
+
+    def _request_close(self) -> None:
+        if self._open_flows:
+            return
+        self._start_flow(self._close_flow)
+
+    async def _close_flow(self) -> None:
         editor = self.document.editor
         if editor.searching:
             editor.cancel_search()
@@ -537,12 +674,27 @@ class EditorScreen(Screen[None]):
                     break
                 await asyncio.sleep(QUIT_POLL_SECONDS)
             if editor.saving:
-                self._confirm_bar.ask_quit(save_running=True)
+                await self._confirm_close(save_running=True)
                 return
         if editor.modified:
-            self._confirm_bar.ask_quit(save_running=False)
+            await self._confirm_close(save_running=False)
             return
         self.post_message(self.Closed())
+
+    async def _confirm_close(self, *, save_running: bool) -> None:
+        answer = await quit_question(save_running=save_running, standalone=self.standalone).run()
+        if answer is Response.DISCARD:
+            self.post_message(self.Closed())
+        else:
+            self.document.editor.focus()
+
+    async def _failure_flow(self, document: DocumentView, title: str, text: str, *, committed: bool, recheck: bool) -> None:
+        await failure_box(title, text).run()
+        if document is not self.document:
+            return
+        if recheck:
+            self._recheck_deferred_change(committed=committed)
+        document.editor.focus()
 
     def _save_to(self, path: Path, *, confirmed: bool = False) -> None:
         """Save to `path` (a save as, or the first save of a new file)."""
@@ -550,77 +702,61 @@ class EditorScreen(Screen[None]):
         path = path.expanduser().absolute()
         first_save = document.load_state == "new" and document.file_path is not None and os.path.realpath(path) == os.path.realpath(document.file_path)
         if first_save and not confirmed and check_path(path, None) is ChangeKind.CREATED:
-            self._confirm_bar.ask(ChangeKind.CREATED, path, overwrite=True, save_as=True, reload=False)
+            self._start_flow(partial(self._overwrite_flow, document, ChangeKind.CREATED, path))
             return
         document.editor.save(path, overwrite=confirmed or first_save)
 
-    def on_confirm_bar_chosen(self, message: ConfirmBar.Chosen) -> None:
-        """Carry out the answer of the confirm bar."""
-        if message.choice == "quit":
-            self.post_message(self.Closed())
-            return
-        self._refocus_editor()
-        editor = self.document.editor
-        if message.choice == "overwrite" and message.path is not None:
-            if editor.file_path is None:
-                self._save_to(message.path, confirmed=True)
-            else:
-                editor.save(message.path, overwrite=True)
-        elif message.choice == "save_as":
-            self._path_bar.open(message.path)
-        elif message.choice == "reload" and not editor.saving:
-            editor.reload()
-
     def on_nova_text_area_save_progress(self, message: NovaTextArea.SaveProgress) -> None:
-        """Show the progress of the save."""
-        self._save_bar.show_progress(message.phase, message.done, message.total)
+        """Show the progress of the save in the status line."""
+        self._note(save_progress_text(message.phase, message.done, message.total))
 
     def on_nova_text_area_saved(self, message: NovaTextArea.Saved) -> None:
         """Show the result and follow the file the document is bound to now."""
+        if not self._is_current(message.text_area):
+            return
         document = self.document
         document.load_state = "loaded"
         document.file_path = message.path
         self._show_path()
         self._request_status()
-        self._save_bar.show_result(f"Saved  {message.path.name}  {format_sizes(message.length, message.length)}")
+        self._note(f"Saved  {message.path.name}  {format_sizes(message.length, message.length)}", timed=True)
         document.deferred_change = None
 
     def on_nova_text_area_save_failed(self, message: NovaTextArea.SaveFailed) -> None:
-        """Show the failure with its stage; it stays until a key is pressed."""
+        """Acknowledge the failure, with its stage, in an error box; a change seen during the save is asked afterwards."""
+        if not self._is_current(message.text_area):
+            return
+        self._note(None)
         reason = message.error.strerror or str(message.error)
-        written = "  The file was written; press F5 to reload." if message.committed else ""
-        self._save_bar.show_failure(f"Save failed ({message.stage}): {reason}{written}  Press a key")
-        self._recheck_deferred_change(committed=message.committed)
+        written = " The file was written. Reload to read it again." if message.committed else ""
+        text = f"Save failed ({message.stage}): {reason}{written}"
+        self._start_flow(partial(self._failure_flow, self.document, "Save failed", text, committed=message.committed, recheck=True))
 
     def on_nova_text_area_save_cancelled(self, message: NovaTextArea.SaveCancelled) -> None:
         """Show that the save was cancelled."""
-        self._save_bar.show_result("Save cancelled")
+        if not self._is_current(message.text_area):
+            return
+        self._note("Save cancelled", timed=True)
         self._recheck_deferred_change()
 
     def on_nova_text_area_save_needs_confirmation(self, message: NovaTextArea.SaveNeedsConfirmation) -> None:
         """Ask before overwriting."""
-        exists = message.kind in {ChangeKind.EXISTS, ChangeKind.CREATED}
-        reload = not exists and self.document.editor.file_path is not None
-        self._confirm_bar.ask(message.kind, message.path, overwrite=True, save_as=True, reload=reload)
+        if not self._is_current(message.text_area):
+            return
+        if message.kind in {ChangeKind.EXISTS, ChangeKind.CREATED}:
+            self._start_flow(partial(self._overwrite_flow, self.document, message.kind, message.path))
+            return
+        self._queue_change(message.kind, message.path, from_save=True)  # no second question when `SourceChanged` already asked
 
     def on_nova_text_area_source_changed(self, message: NovaTextArea.SourceChanged) -> None:
         """Ask what to do about a file that changed on disk."""
-        if self.document.editor.saving:  # asking now would compete with the save: remember it, the end of the save decides
-            self.document.deferred_change = message.kind
+        if not self._is_current(message.text_area):
             return
-        self._announce_change(message.kind)
-
-    def _announce_change(self, kind: ChangeKind) -> None:
-        """Ask what to do about a file that changed on disk, unless the view is not stale any more.
-
-        A `SourceChanged` posted during a save can be handled after the save ended; when the save rebased the document onto its own file the view
-        is no longer stale and the check finds nothing, so there is nothing to ask.
-        """
-        editor = self.document.editor
-        current = editor.check_external_change()  # the stale kind while the view is stale, else a fresh check
-        if current is ChangeKind.UNCHANGED:
+        document = self.document
+        if document.editor.saving:  # asking now would compete with the save: remember it, the end of the save decides
+            document.deferred_change = message.kind
             return
-        self._confirm_bar.ask(kind, editor.file_path, overwrite=editor.modified, save_as=True, reload=editor.file_path is not None)
+        self._queue_change(message.kind)
 
     def _recheck_deferred_change(self, *, committed: bool = False) -> None:
         """After a save: announce the change that was seen while it ran unless the save rebased the document (the file is then our own)."""
@@ -631,16 +767,21 @@ class EditorScreen(Screen[None]):
             return
         kind = editor.check_external_change()  # still stale, or changed again: either way the current kind
         if kind is not ChangeKind.UNCHANGED:
-            self._announce_change(kind)
+            self._queue_change(kind)
 
     def on_nova_text_area_reloaded(self, message: NovaTextArea.Reloaded) -> None:
         """Show that the file was reloaded."""
+        if not self._is_current(message.text_area):
+            return
         self._request_status()
-        self._save_bar.show_result("Reloaded")
+        self._note("Reloaded", timed=True)
 
     def on_nova_text_area_reload_failed(self, message: NovaTextArea.ReloadFailed) -> None:
-        """Show why the file could not be reloaded."""
-        self._save_bar.show_failure(f"Reload failed: {message.error.strerror or message.error}  Press a key")
+        """Acknowledge why the file could not be reloaded."""
+        if not self._is_current(message.text_area):
+            return
+        text = f"Reload failed: {message.error.strerror or message.error}"
+        self._start_flow(partial(self._failure_flow, self.document, "Reload failed", text, committed=False, recheck=False))
 
     # Search and Go to
 
@@ -648,14 +789,14 @@ class EditorScreen(Screen[None]):
         """Search the editor for `needle` and remember it for Find Next and Find Previous.
 
         Args:
-            needle: The text to find (it may hold line breaks, which a bar cannot take).
+            needle: The text to find (it may hold line breaks, which the popup cannot take).
             backward: Search towards the start of the document.
-            case_sensitive: Distinguish case; the case state of the search bar when `None`.
+            case_sensitive: Distinguish case; the case option of the Find popup when `None`.
         """
         if not needle:
             return
         if case_sensitive is None:
-            case_sensitive = self._search_bar.case_sensitive
+            case_sensitive = self.find_popup.case_sensitive
         document = self.document
         document.needle = needle
         document.last_backward = backward
@@ -669,8 +810,9 @@ class EditorScreen(Screen[None]):
         self.search(needle, backward=backward)
 
     def action_find(self) -> None:
-        """Open the search bar."""
-        self._search_bar.open()
+        """Open the Find popup with the last needle selected."""
+        self.goto_popup.hide()
+        self.find_popup.open(self._popup_offset(FindPopup.WIDTH), self.document.needle)
 
     def action_find_next(self) -> None:
         """Repeat the last search forward."""
@@ -681,47 +823,60 @@ class EditorScreen(Screen[None]):
         self._repeat_search(backward=True)
 
     def action_goto(self) -> None:
-        """Show or hide the goto bar."""
-        goto_bar = self.query_one(GotoBar)
-        goto_bar.display = not goto_bar.display
-        if goto_bar.display:
-            goto_bar.focus()
+        """Open the Go to popup; with the popup already open it stays open."""
+        self.goto_popup.open(self._popup_offset(GotoPopup.WIDTH))
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Handle input submission from the path bar, the search bar and the goto bar."""
-        if event.input.id == "path_bar":
-            text = event.value.strip()
-            if not text:
-                self.notify("No path given", severity="warning")
-                return
-            self._path_bar.action_close()
-            self._save_to(Path(text))
-            return
-        if event.input.id == "search_bar":
-            needle = event.value
-            if not needle:
-                return
-            self._search_bar.action_close()
-            self.search(needle, case_sensitive=self._search_bar.case_sensitive)
-            return
-        if event.input.id != "goto_bar":
-            return
-
-        target = parse_goto(event.value)
-        if target is None:
-            self.notify("Invalid goto format", severity="warning")
-            return
-
+    def on_goto_popup_requested(self, message: GotoPopup.Requested) -> None:
+        """Run the jump; the widget answers with `JumpCompleted` or `JumpRejected`, or keeps the target pending (S0001 REQ-6)."""
         editor = self.document.editor
+        target = message.target
         if target.kind == "line":
             editor.goto_line(target.value)
         else:  # byte
             editor.goto_byte(target.value)
+        if editor.pending_progress is not None:  # the target lies beyond the scan: the status line shows the progress, Escape cancels it
+            self._close_popup(self.goto_popup)
 
-        goto_bar = self.query_one(GotoBar)
-        goto_bar.display = False
-        goto_bar.value = ""
-        editor.focus()
+    def on_goto_popup_dismissed(self, message: GotoPopup.Dismissed) -> None:
+        """Escape: close the popup and focus the editor."""
+        self._close_popup(self.goto_popup)
+
+    def on_find_popup_requested(self, message: FindPopup.Requested) -> None:
+        """Enter, Next or Previous in the popup: search; the popup stays open."""
+        self.search(message.needle, backward=message.backward, case_sensitive=message.case_sensitive)
+
+    def on_find_popup_dismissed(self, message: FindPopup.Dismissed) -> None:
+        """Escape: cancel a running search first, else close the popup and focus the editor."""
+        editor = self.document.editor
+        if editor.searching:
+            editor.cancel_search()
+            return
+        self._close_popup(self.find_popup)
+
+    def _close_popup(self, popup: PopupWidget) -> None:
+        """Hide a popup and give the focus to the editor (`PopupWidget.close()` is not used: it would focus whatever had the focus at `show()` time)."""
+        popup.hide()
+        self.document.editor.focus()
+
+    def _popup_offset(self, width: int) -> tuple[int, int]:
+        """The top right of the editor region: a popup covers the first rows of the text, never the menu bar or the status line."""
+        region = self.document.editor.region
+        return (max(region.x, region.right - min(width, region.width)), region.y)
+
+    def _all_popups(self) -> tuple[GotoPopup | FindPopup, ...]:
+        return (self.goto_popup, self.find_popup)
+
+    def _place_popups(self) -> None:
+        for popup in self._all_popups():
+            if popup.display:
+                popup.offset = self._popup_offset(popup.WIDTH)
+
+    def _show_search_text(self, text: str, *, final: bool) -> None:
+        """Show a search text in the Find popup while it is open, else as a note of the status line (a result is timed, a progress is not)."""
+        if self.find_popup.display:
+            self.find_popup.set_status(text)
+        else:
+            self._note(text, timed=final)
 
     def on_nova_text_area_search_progress(self, message: NovaTextArea.SearchProgress) -> None:
         """Show the progress of the search."""
@@ -729,7 +884,7 @@ class EditorScreen(Screen[None]):
             return
         percent = 100 if message.total <= 0 else round(message.done * 100 / message.total)
         sizes = format_sizes(message.done, message.total).replace(" / ", " of ")
-        self._search_status.show_progress(f"Searching {percent}% ({sizes}), Esc cancels")
+        self._show_search_text(f"Searching {percent}% ({sizes}), Esc cancels", final=False)
 
     def on_nova_text_area_search_found(self, message: NovaTextArea.SearchFound) -> None:
         """Show the result of a search that found a match."""
@@ -737,25 +892,25 @@ class EditorScreen(Screen[None]):
             text = "Found"
         else:
             text = "Wrapped to the bottom" if self.document.last_backward else "Wrapped to the top"
-        self._search_status.show_result(text)
+        self._show_search_text(text, final=True)
 
     def on_nova_text_area_search_not_found(self, message: NovaTextArea.SearchNotFound) -> None:
         """Show that nothing was found."""
         needle = message.needle
         if len(needle) > NEEDLE_SHOWN:
             needle = needle[:NEEDLE_SHOWN] + chr(0x2026)
-        self._search_status.show_result(f"Not found: {needle}")
+        self._show_search_text(f"Not found: {needle}", final=True)
 
     def on_nova_text_area_search_cancelled(self, message: NovaTextArea.SearchCancelled) -> None:
         """Show why a search ended without a result; a replaced one is followed by its successor."""
         if message.reason == "replaced":
             return
         suffix = "" if message.reason == "cancelled" else f": {message.reason}"
-        self._search_status.show_result(f"Search cancelled{suffix}")
+        self._show_search_text(f"Search cancelled{suffix}", final=True)
 
     def on_nova_text_area_search_failed(self, message: NovaTextArea.SearchFailed) -> None:
         """Show why a search failed."""
-        self._search_status.show_result(f"Search failed: {message.error}")
+        self._show_search_text(f"Search failed: {message.error}", final=True)
 
 
 def _tail_by_cells(text: str, cells: int) -> str:

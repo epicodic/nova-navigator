@@ -1,4 +1,4 @@
-"""The editor screen: composition, per-screen actions, menus, bars and document holder."""
+"""The editor screen: composition, per-screen actions, menus, popups, dialogs and document holder."""
 
 from __future__ import annotations
 
@@ -6,12 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from nova_editor.bars import GotoBar
 from nova_editor.document_view import DocumentView
 from nova_editor.screen import EditorScreen
-from nova_editor.search_bar import SearchBar
+from nova_widgets.file_dialog import FileDialogMode
 from nova_widgets.keybindings_config import KeybindingsConfig
 
+from .dialog_helpers import open_file_dialog
+from .helpers_view import wait_until
 from .screen_host import EditorScreenHost, write_keys
 
 
@@ -36,26 +37,19 @@ async def test_editor_screen_composes_menu_bar_and_hint_bar() -> None:
 
 
 @pytest.mark.asyncio
-async def test_editor_screen_composes_all_bars() -> None:
-    """The screen composes GotoBar, PathBar, SaveBar, and SearchBar."""
+async def test_editor_screen_composes_the_popups_and_no_bar() -> None:
+    """The screen composes the Go to and Find popups and none of the old bars."""
     host = EditorScreenHost(standalone=True)
     async with host.run_test() as pilot:
         await pilot.pause()
         screen = host.screen_instance
         assert screen is not None
+        from nova_editor.find_popup import FindPopup
+        from nova_editor.goto_popup import GotoPopup
 
-        from nova_editor.bars import GotoBar, PathBar, SaveBar
-        from nova_editor.search_bar import SearchBar
-
-        goto_bars = screen.query(GotoBar)
-        path_bars = screen.query(PathBar)
-        save_bars = screen.query(SaveBar)
-        search_bars = screen.query(SearchBar)
-
-        assert len(goto_bars) > 0, "GotoBar not found"
-        assert len(path_bars) > 0, "PathBar not found"
-        assert len(save_bars) > 0, "SaveBar not found"
-        assert len(search_bars) > 0, "SearchBar not found"
+        assert len(screen.query(GotoPopup)) == 1
+        assert len(screen.query(FindPopup)) == 1
+        assert len(screen.query("#goto_bar, #path_bar, #save_bar, #confirm_bar, #search_bar, #search_status")) == 0
 
 
 @pytest.mark.asyncio
@@ -230,19 +224,22 @@ async def test_document_held_by_reference_only() -> None:
 
 
 @pytest.mark.asyncio
-async def test_open_action_shows_neutral_stub_message() -> None:
-    """The Open action shows a neutral notification message."""
+async def test_open_action_opens_the_open_dialog() -> None:
+    """The Open action shows the Open file dialog."""
     host = EditorScreenHost(standalone=True)
     async with host.run_test() as pilot:
         await pilot.pause()
         screen = host.screen_instance
         assert screen is not None
-
         open_action = next(a for a in screen.ACTIONS if a.id == "editor.open")
         assert open_action.action == "open_file"
         screen.action_open_file()
-        await pilot.pause()
-        assert [n.message for n in host._notifications] == ["Open is not available yet"]
+        await wait_until(pilot, lambda: open_file_dialog(host) is not None)
+        dialog = open_file_dialog(host)
+        assert dialog is not None
+        assert dialog.mode is FileDialogMode.OPEN
+        await pilot.press("escape")
+        await wait_until(pilot, lambda: open_file_dialog(host) is None)
 
 
 @pytest.mark.asyncio
@@ -348,8 +345,8 @@ async def test_keybindings_config_applied_to_actions(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_action_save_when_file_has_no_path() -> None:
-    """Save action shows PathBar when file has no path."""
+async def test_action_save_when_file_has_no_path_opens_the_save_dialog() -> None:
+    """Save action opens the file dialog when file has no path."""
     host = EditorScreenHost(path=None, standalone=True)
     async with host.run_test() as pilot:
         await pilot.pause()
@@ -361,19 +358,12 @@ async def test_action_save_when_file_has_no_path() -> None:
 
         # Call save action
         screen.action_save()
-        await pilot.pause()
-
-        # PathBar should be displayed and focused
-        from nova_editor.bars import PathBar
-
-        path_bars = screen.query(PathBar)
-        assert len(path_bars) > 0
-        assert path_bars.first().display is True
+        await wait_until(pilot, lambda: open_file_dialog(host) is not None)
 
 
 @pytest.mark.asyncio
-async def test_action_save_as_shows_path_bar() -> None:
-    """Save As action displays PathBar."""
+async def test_action_save_as_opens_the_save_dialog() -> None:
+    """Save As action opens the file dialog."""
     host = EditorScreenHost(standalone=True)
     async with host.run_test() as pilot:
         await pilot.pause()
@@ -382,14 +372,7 @@ async def test_action_save_as_shows_path_bar() -> None:
 
         # Call save as action
         screen.action_save_as()
-        await pilot.pause()
-
-        # PathBar should be displayed
-        from nova_editor.bars import PathBar
-
-        path_bars = screen.query(PathBar)
-        assert len(path_bars) > 0
-        assert path_bars.first().display is True
+        await wait_until(pilot, lambda: open_file_dialog(host) is not None)
 
 
 @pytest.mark.asyncio
@@ -444,74 +427,18 @@ async def test_action_quit_editor_when_not_modified() -> None:
 
 
 @pytest.mark.asyncio
-async def test_confirm_bar_chosen_reload_calls_editor_reload() -> None:
-    """ConfirmBar Chosen message with reload choice calls editor.reload()."""
-    from pathlib import Path
-
-    from nova_editor.bars import ConfirmBar
-
-    host = EditorScreenHost(standalone=True)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        screen = host.screen_instance
-        assert screen is not None
-
-        confirm_bar = screen.query_one(ConfirmBar)
-
-        # Simulate user choosing to reload
-        test_path = Path("/home/test.txt")
-        confirm_bar.post_message(ConfirmBar.Chosen("reload", test_path))
-        await pilot.pause()
-
-        # The confirmation should be handled
-
-
 @pytest.mark.asyncio
-async def test_input_submitted_path_bar_calls_save_to() -> None:
-    """Input.Submitted message from PathBar calls save flow."""
-    from textual.widgets import Input
-
+async def test_action_find_shows_the_find_popup() -> None:
+    """The find action shows the Find popup."""
     host = EditorScreenHost(standalone=True)
     async with host.run_test() as pilot:
         await pilot.pause()
         screen = host.screen_instance
         assert screen is not None
-
-        path_bar = screen.query_one("#path_bar", Input)
-
-        # Show the path bar
-        path_bar.display = True
-        await pilot.pause()
-
-        # Simulate user submitting a path
-        test_path = "/home/test.txt"
-        path_bar.post_message(Input.Submitted(path_bar, value=test_path))
-        await pilot.pause()
-
-        # The path bar should be hidden
-        assert path_bar.display is False
-
-
-@pytest.mark.asyncio
-async def test_action_find_shows_search_bar() -> None:
-    """The find action shows the SearchBar."""
-    from nova_editor.search_bar import SearchBar
-
-    host = EditorScreenHost(standalone=True)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        screen = host.screen_instance
-        assert screen is not None
-
-        search_bar = screen.query_one(SearchBar)
-        assert not search_bar.display
-
-        # Call the find action
+        popup = screen.find_popup
+        assert not popup.display
         screen.action_find()
-        await pilot.pause()
-
-        # SearchBar should now be displayed and focused
-        assert search_bar.display
+        assert popup.display
 
 
 @pytest.mark.asyncio
@@ -551,89 +478,26 @@ async def test_action_find_previous_calls_search_when_has_needle() -> None:
 
 
 @pytest.mark.asyncio
-async def test_action_go_to_shows_goto_bar() -> None:
-    """The goto action shows the GotoBar."""
-    from nova_editor.bars import GotoBar
-
+async def test_action_go_to_shows_the_goto_popup() -> None:
+    """The goto action shows the GotoPopup."""
     host = EditorScreenHost(standalone=True)
     async with host.run_test() as pilot:
         await pilot.pause()
         screen = host.screen_instance
         assert screen is not None
 
-        goto_bar = screen.query_one(GotoBar)
-        assert not goto_bar.display
+        popup = screen.goto_popup
+        assert not popup.display
 
         # Call the goto action
         screen.action_goto()
         await pilot.pause()
 
-        # GotoBar should now be displayed and focused
-        assert goto_bar.display
+        # GotoPopup should now be displayed and focused
+        assert popup.display
 
 
 @pytest.mark.asyncio
-async def test_input_submitted_search_bar_triggers_search() -> None:
-    """Input.Submitted from SearchBar triggers a search."""
-    from textual.widgets import Input
-
-    host = EditorScreenHost(standalone=True)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        screen = host.screen_instance
-        assert screen is not None
-
-        search_bar = screen.query_one("#search_bar", Input)
-        editor = screen.document.editor
-
-        # Type some text into the editor
-        editor.load_text("hello world\ntest\nhello again")
-        await pilot.pause()
-
-        # Show the search bar
-        search_bar.display = True
-        search_bar.value = "hello"
-        await pilot.pause()
-
-        # Simulate user submitting a search
-        search_bar.post_message(Input.Submitted(search_bar, value="hello"))
-        await pilot.pause()
-
-        # The search term should be stored
-        assert screen.document.needle == "hello"
-
-
-@pytest.mark.asyncio
-async def test_input_submitted_goto_bar_jumps_to_line() -> None:
-    """Input.Submitted from GotoBar jumps to the specified line."""
-    from textual.widgets import Input
-
-    host = EditorScreenHost(standalone=True)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        screen = host.screen_instance
-        assert screen is not None
-
-        goto_bar = screen.query_one("#goto_bar", Input)
-        editor = screen.document.editor
-
-        # Load multiline text
-        editor.load_text("line 1\nline 2\nline 3\nline 4")
-        await pilot.pause()
-
-        # Show the goto bar
-        goto_bar.display = True
-        goto_bar.value = "3"
-        await pilot.pause()
-
-        # Simulate user submitting a line number
-        goto_bar.post_message(Input.Submitted(goto_bar, value="3"))
-        await pilot.pause()
-
-        # The goto bar should be closed
-        assert not goto_bar.display
-
-
 @pytest.mark.asyncio
 async def test_default_key_triggers_its_action(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A default key (Ctrl+S) triggers its action (save)."""
@@ -748,12 +612,11 @@ async def test_empty_override_unmaps_key(tmp_path: Path) -> None:
         assert find_action.shortcut is None
         assert find_action.shortcut_label == ""
 
-        # Press the default find key (Ctrl+F) - should not show search bar
+        # Press the default find key (Ctrl+F) - should not show the popup
         await pilot.press("ctrl+f")
         await pilot.pause()
 
-        search_bar = screen.query_one(SearchBar)
-        assert search_bar.display is False
+        assert screen.find_popup.display is False
 
         # Verify the hint bar doesn't show the old key or the unmapped action
         hint_bar = app.query_one(HintBar)
@@ -885,8 +748,8 @@ async def test_defaults_without_config_equal_req4_table(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_goto_bar_displays_when_action_triggered(tmp_path: Path) -> None:
-    """The goto action displays and focuses the GotoBar."""
+async def test_goto_popup_displays_when_action_triggered(tmp_path: Path) -> None:
+    """The goto action displays and focuses the GotoPopup."""
     from nova_editor.app import NovaEditApp
 
     # Create a test file
@@ -899,17 +762,17 @@ async def test_goto_bar_displays_when_action_triggered(tmp_path: Path) -> None:
 
         screen = app.screen
         assert isinstance(screen, EditorScreen)
-        # Initially GotoBar should not be displayed
-        goto_bar = screen.query_one(GotoBar)
-        assert goto_bar.display is False
+        # Initially GotoPopup should not be displayed
+        popup = screen.goto_popup
+        assert popup.display is False
 
         # Press Ctrl+G to trigger the goto action
         await pilot.press("ctrl+g")
         await pilot.pause()
 
-        # Verify GotoBar is displayed and focused
-        assert goto_bar.display is True
-        assert app.focused is goto_bar
+        # Verify GotoPopup is displayed and focused
+        assert popup.display is True
+        assert app.focused is popup.input
 
 
 @pytest.mark.asyncio
@@ -1074,8 +937,8 @@ async def test_key_swallowing_all_editing_actions(tmp_path: Path, monkeypatch: p
 
 
 @pytest.mark.asyncio
-async def test_input_bar_keeps_its_own_keys(tmp_path: Path) -> None:
-    """Ctrl+A in a bar moves the cursor to the start (as the Input does) and does not select the document."""
+async def test_a_popup_input_keeps_its_own_keys(tmp_path: Path) -> None:
+    """Ctrl+A in a popup moves the cursor to the start (as the Input does) and does not select the document."""
     from textual.widgets import Input
 
     from nova_editor.app import NovaEditApp
@@ -1089,7 +952,7 @@ async def test_input_bar_keeps_its_own_keys(tmp_path: Path) -> None:
         assert isinstance(screen, EditorScreen)
         await pilot.press("ctrl+f")
         await pilot.pause()
-        bar = screen.query_one(SearchBar)
+        popup = screen.find_popup
         assert isinstance(app.focused, Input)
         await pilot.press("a", "b", "c")
         assert app.focused.cursor_position == 3
@@ -1100,14 +963,13 @@ async def test_input_bar_keeps_its_own_keys(tmp_path: Path) -> None:
         await pilot.press("ctrl+e", "ctrl+w")
         await pilot.pause()
         assert app.focused.value == ""  # Ctrl+W deleted the word, it did not close the editor
-        assert bar.display
+        assert popup.display
 
 
 @pytest.mark.asyncio
 async def test_menu_items_run_their_actions(tmp_path: Path) -> None:
-    """A triggered menu item runs the same flow as its key (every item except Open)."""
+    """A triggered menu item runs the same flow as its key (every item)."""
     from nova_editor.app import NovaEditApp
-    from nova_editor.bars import PathBar
     from nova_widgets.menu import Menu
 
     test_file = tmp_path / "test.txt"
@@ -1134,15 +996,19 @@ async def test_menu_items_run_their_actions(tmp_path: Path) -> None:
         await trigger("editor.select_all")
         assert editor.selected_text == "hello world"
         await trigger("editor.find")
-        assert screen.query_one(SearchBar).display
+        assert screen.find_popup.display
         await trigger("editor.goto")
-        assert screen.query_one(GotoBar).display
+        assert screen.goto_popup.display
         await trigger("editor.save_as")
-        assert screen.query_one(PathBar).display
+        await wait_until(pilot, lambda: open_file_dialog(app) is not None)
+        await pilot.press("escape")
+        await wait_until(pilot, lambda: open_file_dialog(app) is None)
         await trigger("editor.save")
         assert editor.file_path == test_file
         await trigger("editor.reload")
         await trigger("editor.find_next")
         await trigger("editor.find_previous")
         await trigger("editor.open")
-        assert any("Open is not available yet" in n.message for n in app._notifications)
+        await wait_until(pilot, lambda: open_file_dialog(app) is not None)
+        await pilot.press("escape")
+        await wait_until(pilot, lambda: open_file_dialog(app) is None)

@@ -8,7 +8,7 @@ import pytest
 from textual.widgets.text_area import Selection
 
 from nova_editor.app import NovaEditApp
-from nova_editor.bars import SaveBar
+from tests.nova_editor.dialog_helpers import box_message, box_title, open_box
 from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.save_widget_helpers import wait_saved
 
@@ -35,9 +35,11 @@ async def test_a_missing_parent_directory_is_a_visible_failure_and_creates_nothi
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("x", "ctrl+s")
-        bar = app.query_one(SaveBar)
-        await wait_until(pilot, lambda: bar.line.startswith("Save failed"))
-        assert bar.failed
+        await wait_until(pilot, lambda: open_box(app) is not None)
+        box = open_box(app)
+        assert box is not None
+        assert box_title(box) == "Save failed"
+        assert box_message(box).startswith("Save failed (")
     assert not path.exists()
     assert not path.parent.exists()
 
@@ -69,9 +71,9 @@ async def test_an_out_of_range_goto_is_rejected_with_a_message_and_the_cursor_st
         await wait_until(pilot, lambda: app.editor is not None and app.editor.cursor_location == (4, 0))
         before = app.editor.cursor_location
         await pilot.press("ctrl+g", "9", "9", "9", "9", "9", "enter")
-        await wait_until(pilot, lambda: any("line" in note.message.lower() for note in app._notifications))
+        await wait_until(pilot, lambda: "line" in app.goto_popup.shown.lower())
         assert app.editor.cursor_location == before
-        assert any(note.severity == "warning" for note in app._notifications)
+        assert app.goto_popup.display
 
 
 @pytest.mark.asyncio

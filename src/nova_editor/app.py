@@ -17,9 +17,10 @@ from textual.app import App
 from nova_widgets.file_provider import FileProvider
 from nova_widgets.keybindings_config import KeybindingsConfig
 
-from .bars import GotoBar
 from .document._lazy_config import LazyConfig
 from .document_view import not_regular_reason
+from .find_popup import FindPopup
+from .goto_popup import GotoPopup
 from .screen import EditorScreen
 from .timed_text_area import TimedNovaTextArea
 from .widget import NovaTextArea
@@ -53,7 +54,7 @@ class NovaEditApp(App[None]):
             path: The file to open, or `None` for an empty buffer.
             file_path: Alias for `path` (for backward compatibility).
             keybindings: User keybinding overrides; `None` for defaults.
-            file_provider: FileProvider for the file dialog; defaults to InMemoryFileProvider.
+            file_provider: FileProvider for the file dialogs; defaults to the local file system provider.
             soft_wrap: Start with soft wrapping.
             config: Thresholds of the lazy document (`None`: the defaults).
             editor_class: The editor widget class; the benchmark harness passes a probe subclass.
@@ -81,37 +82,53 @@ class NovaEditApp(App[None]):
             quit_wait_seconds=self.QUIT_WAIT_SECONDS,
         )
 
+    def _editor_screen(self) -> EditorScreen:
+        """Return the editor screen, also while a dialog is on top of it.
+
+        Raises:
+            RuntimeError: If no EditorScreen is on the screen stack.
+        """
+        for screen in reversed(self.screen_stack):
+            if isinstance(screen, EditorScreen):
+                return screen
+        msg = f"Expected EditorScreen, got {type(self.screen).__name__}"
+        raise RuntimeError(msg)
+
     @property
     def editor(self) -> NovaTextArea:
-        """Get the editor widget from the current screen.
+        """Get the editor widget of the editor screen, also while a dialog is open.
 
         Returns:
             The NovaTextArea editor widget.
 
         Raises:
-            RuntimeError: If the screen is not an EditorScreen.
+            RuntimeError: If no EditorScreen is on the screen stack.
         """
-        screen = self.screen
-        if not isinstance(screen, EditorScreen):
-            msg = f"Expected EditorScreen, got {type(screen).__name__}"
-            raise RuntimeError(msg)
-        return screen.document.editor
+        return self._editor_screen().document.editor
 
     @property
-    def goto_bar(self) -> GotoBar:
-        """Get the goto bar widget from the current screen.
+    def goto_popup(self) -> GotoPopup:
+        """Get the Go to popup of the current screen.
 
         Returns:
-            The GotoBar widget.
+            The GotoPopup widget.
 
         Raises:
-            RuntimeError: If the screen is not an EditorScreen.
+            RuntimeError: If no EditorScreen is on the screen stack.
         """
-        screen = self.screen
-        if not isinstance(screen, EditorScreen):
-            msg = f"Expected EditorScreen, got {type(screen).__name__}"
-            raise RuntimeError(msg)
-        return screen.query_one(GotoBar)
+        return self._editor_screen().goto_popup
+
+    @property
+    def find_popup(self) -> FindPopup:
+        """Get the Find popup of the current screen.
+
+        Returns:
+            The FindPopup widget.
+
+        Raises:
+            RuntimeError: If no EditorScreen is on the screen stack.
+        """
+        return self._editor_screen().find_popup
 
     async def on_event(self, event: events.Event) -> None:
         """Give every raw key press to the screen's keymap first, before Textual's priority bindings."""
@@ -133,19 +150,22 @@ class NovaEditApp(App[None]):
         Args:
             needle: The text to find.
             backward: Search towards the start of the document.
-            case_sensitive: Distinguish case; the case state of the search bar when `None`.
+            case_sensitive: Distinguish case; the case option of the Find popup when `None`.
         """
         screen = self.screen
         if isinstance(screen, EditorScreen):
             screen.search(needle, backward=backward, case_sensitive=case_sensitive)
 
     async def action_quit(self) -> None:
-        """Quit: run the editor screen's quit flow (asks when edits would be lost), else exit."""
-        screen = self.screen
-        if isinstance(screen, EditorScreen):
-            await screen.action_quit_editor()
-        else:
-            self.exit()
+        """Quit: run the quit flow of the editor screen (it asks when edits would be lost), else exit.
+
+        The screen is looked up in the screen stack because a dialog may be on top of it; the screen ignores the request while a flow is open.
+        """
+        for screen in reversed(self.screen_stack):
+            if isinstance(screen, EditorScreen):
+                await screen.action_quit_editor()
+                return
+        self.exit()
 
     def on_editor_screen_closed(self, message: EditorScreen.Closed) -> None:
         """Exit when the editor screen closes."""
