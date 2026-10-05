@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from textual.app import App, ComposeResult
 
+from nova_editor.app import NovaEditApp
 from nova_editor.status_line import StatusLine, format_sizes, format_status
 from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.test_app_status import state
@@ -80,3 +83,40 @@ async def test_a_new_note_replaces_a_timed_one_and_its_timer(monkeypatch: pytest
         await pilot.pause(0.5)  # ten timer periods; a wait, not an assertion on elapsed time
         assert app.status.note == "Searching"
         assert "Searching" in app.status.text
+
+
+def test_save_progress_text_phases_and_units() -> None:
+    from nova_editor.status_line import save_progress_text
+
+    assert save_progress_text("writing", int(1.2 * GIB), 5 * GIB) == "Saving  1.2 / 5.0 GiB  24 %  Esc cancels"
+    assert save_progress_text("writing", 0, 0) == "Saving  0 / 0 B  100 %  Esc cancels"
+    assert save_progress_text("flushing", 5, 5) == "Flushing"
+    assert save_progress_text("history", 5, 5) == "Preserving undo history"
+    assert save_progress_text("finishing", 5, 5) == "Finishing"
+
+
+@pytest.mark.asyncio
+async def test_ctrl_s_on_an_unmodified_document_shows_no_changes_to_save(tmp_path: Path) -> None:
+    path = tmp_path / "f.txt"
+    path.write_text("one\n")
+    app = NovaEditApp(file_path=path)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        status = app.query_one(StatusLine)
+        await wait_until(pilot, lambda: status.note == "No changes to save")
+        await wait_until(pilot, lambda: "No changes to save" in status.text)
+
+
+@pytest.mark.asyncio
+async def test_f5_shows_reloaded(tmp_path: Path) -> None:
+    path = tmp_path / "f.txt"
+    path.write_text("one\n")
+    app = NovaEditApp(file_path=path)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        path.write_text("changed on disk\n")
+        await pilot.press("f5")
+        status = app.query_one(StatusLine)
+        await wait_until(pilot, lambda: status.note == "Reloaded")
+        assert app.editor.text == "changed on disk\n"

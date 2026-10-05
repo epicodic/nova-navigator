@@ -502,3 +502,70 @@ async def test_ctrl_q_while_a_question_is_open_is_ignored(tmp_path: Path, monkey
         await pilot.press("ctrl+q")
         quit_box = await wait_box(pilot, app)
         assert box_title(quit_box) == "Quit"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_save_is_acknowledged_in_an_error_box(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_editor.core.save import SaveIo
+    from nova_editor.status_line import StatusLine
+    from nova_editor.widget import NovaTextArea
+
+    path = make_file(tmp_path)
+
+    def refuse(_source: str, _target: str) -> None:
+        raise PermissionError(13, "no way")
+
+    monkeypatch.setattr(NovaTextArea, "save_io", SaveIo(replace=refuse))
+    app = NovaEditApp(file_path=path)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("x", "ctrl+s")
+        box = await wait_box(pilot, app)
+        assert box_title(box) == "Save failed"
+        assert box_message(box) == "Save failed (replace): no way"
+        assert box_buttons(box) == ["OK"]
+        assert app.query_one(StatusLine).note is None  # no stale "Saving ..." stays behind the dialog
+        await pilot.press("enter")
+        await wait_closed(pilot, app)
+        assert app.focused is app.editor
+    assert path.read_bytes() == b"one\ntwo\n"
+
+
+@pytest.mark.asyncio
+async def test_a_committed_failure_tells_the_file_was_written_without_naming_a_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_editor.document import LazyDocument
+
+    path = make_file(tmp_path)
+
+    def broken(*_args: object) -> None:
+        raise OSError(5, "swap failed")
+
+    monkeypatch.setattr(LazyDocument, "apply_rebase", broken)
+    app = NovaEditApp(file_path=path)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("x", "ctrl+s")
+        box = await wait_box(pilot, app)
+        message = box_message(box)
+        assert message.startswith("Save failed (")
+        assert "swap failed" in message
+        assert message.endswith("The file was written. Reload to read it again.")
+        assert "F5" not in message
+    assert path.read_bytes() == EDITED.encode()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_reload_is_acknowledged_in_an_error_box(tmp_path: Path) -> None:
+    from nova_editor.widget import NovaTextArea
+
+    path = make_file(tmp_path)
+    app = NovaEditApp(file_path=path)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        editor = app.editor
+        editor.post_message(NovaTextArea.ReloadFailed(OSError(2, "gone"), path, editor))
+        box = await wait_box(pilot, app)
+        assert box_title(box) == "Reload failed"
+        assert box_message(box) == "Reload failed: gone"
+        await pilot.press("enter")
+        await wait_closed(pilot, app)

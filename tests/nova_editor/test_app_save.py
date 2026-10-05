@@ -10,15 +10,23 @@ from pathlib import Path
 
 import pytest
 from textual import events
-from textual.pilot import Pilot
 
 from nova_editor.app import NovaEditApp, main
-from nova_editor.bars import ConfirmBar, SaveBar
+from nova_editor.bars import ConfirmBar
 from nova_editor.core.byte_source import ChangeKind
 from nova_editor.core.save import SaveIo
-from nova_editor.document._lazy_document import LazyDocument
+from nova_editor.decisions import CHANGE_TEXT
+from nova_editor.status_line import StatusLine
 from nova_editor.widget import ExternalCheck, NovaTextArea
-from tests.nova_editor.dialog_helpers import has_dialog, open_file_dialog
+from tests.nova_editor.dialog_helpers import (
+    answer,
+    box_message,
+    box_title,
+    has_dialog,
+    open_box,
+    open_file_dialog,
+    open_title,
+)
 from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.save_widget_helpers import SETTINGS, Gate, wait_saved
 
@@ -37,26 +45,12 @@ def make_file(tmp_path: Path, text: str = "one\n") -> Path:
     return path
 
 
-def bars(app: NovaEditApp) -> tuple[SaveBar, ConfirmBar]:
-    return app.query_one(SaveBar), app.query_one(ConfirmBar)
+def status_of(app: NovaEditApp) -> StatusLine:
+    return app.query_one(StatusLine)
 
 
-def counting_clock(save_bar: SaveBar, now: list[float]) -> list[int]:
-    """Give `save_bar` a clock that reads `now[0]` and counts its readings (the bar reads it once per tick while a result line waits to expire)."""
-    reads = [0]
-
-    def clock() -> float:
-        reads[0] += 1
-        return now[0]
-
-    save_bar.clock = clock
-    return reads
-
-
-async def ticks_pass(pilot: Pilot[None], reads: list[int], count: int = 3) -> None:
-    """Wait until the bar ticked `count` more times, i.e. until it had the chance to expire its line."""
-    target = reads[0] + count
-    await wait_until(pilot, lambda: reads[0] >= target)
+def bars(app: NovaEditApp) -> tuple[None, ConfirmBar]:
+    return None, app.query_one(ConfirmBar)
 
 
 @pytest.mark.asyncio
@@ -69,9 +63,8 @@ async def test_ctrl_s_saves_an_edited_file(tmp_path: Path) -> None:
         assert app.editor is not None
         await wait_until(pilot, lambda: path.read_text() == "xone\n")
         await wait_saved(pilot, app.editor)
-        save_bar, _ = bars(app)
-        assert save_bar.display
-        assert save_bar.line.startswith("Saved")
+        status = status_of(app)
+        await wait_until(pilot, lambda: status.note is not None and status.note.startswith("Saved"))
         assert not app.editor.modified
 
 
@@ -128,8 +121,8 @@ async def test_escape_cancels_a_running_save(tmp_path: Path, monkeypatch: pytest
             await pilot.press("escape")
             gate.release()
             await wait_saved(pilot, app.editor)
-            save_bar, _ = bars(app)
-            assert "cancel" in save_bar.line.lower()
+            status = status_of(app)
+            await wait_until(pilot, lambda: status.note == "Save cancelled")
             assert path.read_text() == "a" * 100 + "\n"
     finally:
         gate.release()
@@ -146,7 +139,7 @@ async def test_escape_keeps_its_pending_jump_binding(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_save_bar_shows_progress_while_the_save_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_the_note_shows_the_progress_while_the_save_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = make_file(tmp_path, "a" * 1000 + "\n")
     gate = Gate()
     real = SaveIo()
@@ -166,78 +159,42 @@ async def test_save_bar_shows_progress_while_the_save_runs(tmp_path: Path, monke
             await pilot.pause()
             await pilot.press("x", "ctrl+s")
             await wait_until(pilot, gate.reached.is_set)
-            save_bar, _ = bars(app)
-            await wait_until(pilot, lambda: save_bar.line.startswith("Saving"))
-            assert re.fullmatch(r"Saving {2}\S+ / \S+ (B|KiB|MiB|GiB) {2}\d+ % {2}Esc cancels", save_bar.line), save_bar.line
+            status = status_of(app)
+            await wait_until(pilot, lambda: status.note is not None and status.note.startswith("Saving"))
+            assert re.fullmatch(r"Saving {2}\S+ / \S+ (B|KiB|MiB|GiB) {2}\d+ % {2}Esc cancels", status.note or ""), status.note
             gate.release()
-            assert app.editor is not None
             await wait_saved(pilot, app.editor)
     finally:
         gate.release()
 
 
 @pytest.mark.asyncio
-async def test_save_bar_phases_and_units(tmp_path: Path) -> None:
+async def test_the_note_follows_the_save_phases(tmp_path: Path) -> None:
     app = NovaEditApp(file_path=make_file(tmp_path))
     async with app.run_test() as pilot:
         await pilot.pause()
         editor = app.editor
         assert editor is not None
-        save_bar, _ = bars(app)
+        status = status_of(app)
         gib = 1024**3
         editor.post_message(NovaTextArea.SaveProgress("writing", int(1.2 * gib), 5 * gib, editor))
-        await wait_until(pilot, lambda: save_bar.line.startswith("Saving"))
-        assert save_bar.line == "Saving  1.2 / 5.0 GiB  24 %  Esc cancels"
+        await wait_until(pilot, lambda: status.note == "Saving  1.2 / 5.0 GiB  24 %  Esc cancels")
         editor.post_message(NovaTextArea.SaveProgress("flushing", 5, 5, editor))
-        await wait_until(pilot, lambda: save_bar.line == "Flushing")
+        await wait_until(pilot, lambda: status.note == "Flushing")
         editor.post_message(NovaTextArea.SaveProgress("history", 5, 5, editor))
-        await wait_until(pilot, lambda: save_bar.line == "Preserving undo history")
+        await wait_until(pilot, lambda: status.note == "Preserving undo history")
 
 
 @pytest.mark.asyncio
-async def test_result_line_disappears_after_four_seconds(tmp_path: Path) -> None:
-    path = make_file(tmp_path)
-    app = NovaEditApp(file_path=path)
+async def test_the_saved_note_clears_itself(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(StatusLine, "NOTE_SECONDS", 0.5)  # long enough for the polling wait below to see the note
+    app = NovaEditApp(file_path=make_file(tmp_path))
     async with app.run_test() as pilot:
         await pilot.pause()
-        now = [1000.0]
-        save_bar, _ = bars(app)
-        reads = counting_clock(save_bar, now)
+        status = status_of(app)
         await pilot.press("x", "ctrl+s")
-        await wait_until(pilot, lambda: save_bar.line.startswith("Saved"))
-        now[0] += 3.9
-        await ticks_pass(pilot, reads)
-        assert save_bar.display
-        now[0] += 0.2
-        await wait_until(pilot, lambda: not save_bar.display)
-
-
-@pytest.mark.asyncio
-async def test_failure_stays_until_a_key_is_pressed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = make_file(tmp_path)
-
-    def refuse(_source: str, _target: str) -> None:
-        raise PermissionError(13, "no way")
-
-    monkeypatch.setattr(NovaTextArea, "save_io", SaveIo(replace=refuse))
-    app = NovaEditApp(file_path=path)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        now = [1000.0]
-        save_bar, _ = bars(app)
-        save_bar.clock = lambda: now[0]
-        await pilot.press("x", "ctrl+s")
-        await wait_until(pilot, lambda: "failed" in save_bar.line.lower())
-        assert "no way" in save_bar.line
-        assert "replace" in save_bar.line
-        now[0] += 60
-        save_bar.tick()  # the timer's own call: a failure line has no expiry
-        save_bar.tick()
-        assert save_bar.display
-        await pilot.press("y")
-        await pilot.pause()
-        assert not save_bar.display
-    assert path.read_text() == "one\n"
+        await wait_until(pilot, lambda: status.note is not None and status.note.startswith("Saved"))
+        await wait_until(pilot, lambda: status.note is None)
 
 
 def test_interim_code_is_gone() -> None:
@@ -434,24 +391,6 @@ async def test_poll_runs_in_a_thread_and_does_not_delay_keys(tmp_path: Path, mon
 
 
 @pytest.mark.asyncio
-async def test_committed_failure_tells_the_file_was_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = make_file(tmp_path)
-
-    def broken(*_args: object) -> None:
-        raise OSError(5, "swap failed")
-
-    monkeypatch.setattr(LazyDocument, "apply_rebase", broken)
-    app = NovaEditApp(file_path=path)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        save_bar, _ = bars(app)
-        await pilot.press("x", "ctrl+s")
-        await wait_until(pilot, lambda: "failed" in save_bar.line.lower())
-        assert "The file was written; press F5 to reload" in save_bar.line
-    assert path.read_text() == "xone\n"
-
-
-@pytest.mark.asyncio
 async def test_poll_applies_its_result_on_the_ui_thread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = make_file(tmp_path)
     app = NovaEditApp(file_path=path)
@@ -515,8 +454,16 @@ async def test_a_change_seen_during_a_save_is_announced_when_the_save_does_not_c
             editor.cancel_save()
         gate.release()
         await wait_saved(pilot, editor)
-        await wait_until(pilot, lambda: confirm.display)
-        assert confirm.kind is ChangeKind.MODIFIED
+        if how == "fail":
+            await wait_until(pilot, lambda: open_box(app) is not None)
+            failure = open_box(app)
+            assert failure is not None
+            assert box_title(failure) == "Save failed"  # the failure first
+            await answer(pilot, app, "OK")
+        await wait_until(pilot, lambda: open_title(app) == "File changed")  # then the change
+        box = open_box(app)
+        assert box is not None
+        assert box_message(box).startswith(CHANGE_TEXT[ChangeKind.MODIFIED])
 
 
 @pytest.mark.asyncio

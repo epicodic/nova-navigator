@@ -16,7 +16,8 @@ import asyncio, json, resource, signal, sys, time
 from pathlib import Path
 
 from nova_editor.app import NovaEditApp
-from nova_editor.bars import SaveBar
+from nova_widgets.message_box import MessageBox
+from textual.widgets import Label
 
 path = Path(sys.argv[1])
 limit = int(sys.argv[2])
@@ -31,12 +32,15 @@ async def main() -> None:
         soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
         resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
         await pilot.press("ctrl+s")
-        bar = app.query_one(SaveBar)
         deadline = time.monotonic() + 20
-        while not bar.line.startswith("Save failed") and time.monotonic() < deadline:
+        box = None
+        while box is None and time.monotonic() < deadline:
             await pilot.pause(0.02)
+            screen = app.screen
+            box = screen if isinstance(screen, MessageBox) else None
         resource.setrlimit(resource.RLIMIT_FSIZE, (soft, hard))
-        print(json.dumps({"line": bar.line, "files": sorted(p.name for p in path.parent.iterdir())}))
+        line = "" if box is None else str(box.query_one(Label).content)
+        print(json.dumps({"line": line, "files": sorted(p.name for p in path.parent.iterdir())}))
 
 
 asyncio.run(main())
