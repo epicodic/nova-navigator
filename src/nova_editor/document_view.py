@@ -49,6 +49,8 @@ class DocumentView:
     """A change that `SourceChanged` reported while a save ran: announced after the save when it did not rebase the document."""
     polling: bool = False
     """Whether a check of the file on disk runs on a worker thread."""
+    change_question: bool = False
+    """Whether a question about a change of the file is open or queued; a second message for the same cause (`SourceChanged`, then `SaveNeedsConfirmation`) must not ask twice."""
 
     @classmethod
     def open(

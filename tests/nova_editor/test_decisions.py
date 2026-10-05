@@ -2,21 +2,40 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 from textual.app import App
 from textual.pilot import Pilot
+from textual.widgets import Input
 
 from nova_editor.app import NovaEditApp
 from nova_editor.core.byte_source import ChangeKind
-from nova_editor.decisions import failure_box, file_question, open_question, quit_question, reload_question
+from nova_editor.decisions import (
+    CHANGE_TEXT,
+    failure_box,
+    file_question,
+    open_question,
+    quit_question,
+    reload_question,
+)
 from nova_widgets.flat_widgets import Button
 from nova_widgets.message_box import MessageBox
 from nova_widgets.response import Response
-from tests.nova_editor.dialog_helpers import BoxHost, answer, box_buttons, box_message, box_title, has_dialog, open_box
+from tests.nova_editor.dialog_helpers import (
+    BoxHost,
+    answer,
+    box_buttons,
+    box_message,
+    box_title,
+    has_dialog,
+    open_box,
+    open_file_dialog,
+)
 from tests.nova_editor.helpers_view import wait_until
+from tests.nova_editor.save_widget_helpers import wait_saved
 from tests.nova_editor.screen_host import EditorScreenHost
 
 TARGET = Path("/work/notes.txt")
@@ -254,3 +273,232 @@ async def test_the_embedded_screen_says_close_and_posts_closed(tmp_path: Path) -
         assert host.closed == 0
         await answer(pilot, host, "Discard & Close")
         await wait_until(pilot, lambda: host.closed == 1)
+
+
+CHANGED = "changed on disk, longer\n"
+EDITED = "xone\ntwo\n"
+
+
+async def wait_closed(pilot: Pilot[None], app: App[None]) -> None:
+    await wait_until(pilot, lambda: not has_dialog(app))
+
+
+@pytest.mark.asyncio
+async def test_reload_of_a_modified_document_asks(tmp_path: Path) -> None:
+    path = make_file(tmp_path)
+    app = NovaEditApp(file_path=path)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("x")
+        path.write_text("changed on disk\n")
+        await pilot.press("f5")
+        box = await wait_box(pilot, app)
+        assert box_title(box) == "Reload"
+        assert box_message(box) == "Discard the edits and reload?"
+        assert app.editor.text == EDITED
+        await pilot.press("escape")
+        await wait_closed(pilot, app)
+        assert app.editor.text == EDITED
+        await pilot.press("f5")
+        await wait_box(pilot, app)
+        await answer(pilot, app, "Discard & Reload")
+        await wait_until(pilot, lambda: app.editor.text == "changed on disk\n")
+        assert app.focused is app.editor
+
+
+@pytest.mark.asyncio
+async def test_saving_over_a_changed_file_asks_with_four_choices(tmp_path: Path) -> None:
+    path = make_file(tmp_path)
+    app = NovaEditApp(file_path=path)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("x")
+        path.write_text(CHANGED)
+        await pilot.press("ctrl+s")
+        box = await wait_box(pilot, app)
+        assert box_title(box) == "File changed"
+        assert box_message(box) == f"{CHANGE_TEXT[ChangeKind.MODIFIED]}\n{path}\nReloading discards your edits."
+        assert box_buttons(box) == ["Keep", "Reload", "Save As…", "Overwrite"]
+        assert path.read_text() == CHANGED
+        await pilot.press("escape")  # Keep
+        await wait_closed(pilot, app)
+        assert path.read_text() == CHANGED
+        await pilot.press("ctrl+s")  # asks again, as the bar did
+        await wait_box(pilot, app)
+        await answer(pilot, app, "Overwrite")
+        await wait_until(pilot, lambda: path.read_text() == EDITED)
+        await wait_saved(pilot, app.editor)
+        assert not has_dialog(app)
+        assert app.focused is app.editor
+
+
+@pytest.mark.asyncio
+async def test_the_changed_file_question_reloads(tmp_path: Path) -> None:
+    path = make_file(tmp_path)
+    app = NovaEditApp(file_path=path)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("x")
+        path.write_text(CHANGED)
+        await pilot.press("ctrl+s")
+        await wait_box(pilot, app)
+        await answer(pilot, app, "Reload")
+        await wait_until(pilot, lambda: app.editor.text == CHANGED)
+        assert path.read_text() == CHANGED
+
+
+@pytest.mark.asyncio
+async def test_the_changed_file_question_saves_as(tmp_path: Path) -> None:
+    path = make_file(tmp_path)
+    other = tmp_path / "other.txt"
+    app = NovaEditApp(file_path=path)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("x")
+        path.write_text(CHANGED)
+        await pilot.press("ctrl+s")
+        await wait_box(pilot, app)
+        await answer(pilot, app, "Save As…")
+        await wait_until(pilot, lambda: open_file_dialog(app) is not None)
+        await pilot.press("ctrl+e", "ctrl+u", *"other.txt", "enter")
+        await wait_until(pilot, other.exists)
+        await wait_saved(pilot, app.editor)
+        assert other.read_text() == EDITED
+        assert path.read_text() == CHANGED
+
+
+@pytest.mark.asyncio
+async def test_a_new_file_that_exists_at_save_time_asks(tmp_path: Path) -> None:
+    path = tmp_path / "new.txt"
+    app = NovaEditApp(file_path=path)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        path.write_text("from elsewhere")
+        await pilot.press("h", "i", "ctrl+s")
+        box = await wait_box(pilot, app)
+        assert box_title(box) == "Overwrite"
+        assert box_message(box) == f"{CHANGE_TEXT[ChangeKind.CREATED]}\n{path}"
+        assert box_buttons(box) == ["Cancel", "Save As…", "Overwrite"]
+        assert path.read_text() == "from elsewhere"
+        await pilot.press("escape")
+        await wait_closed(pilot, app)
+        assert path.read_text() == "from elsewhere"
+        await pilot.press("ctrl+s")
+        await wait_box(pilot, app)
+        await answer(pilot, app, "Overwrite")
+        await wait_until(pilot, lambda: path.read_text() == "hi")
+        await wait_saved(pilot, app.editor)
+
+
+@pytest.mark.asyncio
+async def test_an_external_change_asks_without_a_save(tmp_path: Path) -> None:
+    path = make_file(tmp_path)
+    app = NovaEditApp(file_path=path)
+    app.POLL_SECONDS = 0.05
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        path.write_text(CHANGED)
+        box = await wait_box(pilot, app)
+        assert box_title(box) == "File changed"
+        assert box_message(box) == f"{CHANGE_TEXT[ChangeKind.MODIFIED]}\n{path}"
+        assert box_buttons(box) == ["Keep", "Reload", "Save As…"]  # unmodified: there is nothing to overwrite
+        await answer(pilot, app, "Reload")
+        await wait_until(pilot, lambda: app.editor.text == CHANGED)
+
+
+@pytest.mark.asyncio
+async def test_save_as_onto_an_existing_file_asks_and_save_as_reopens_the_dialog(tmp_path: Path) -> None:
+    path = make_file(tmp_path)
+    other = tmp_path / "other.txt"
+    other.write_text("keep me\n")
+    third = tmp_path / "third.txt"
+    app = NovaEditApp(file_path=path)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("x", "ctrl+shift+s")
+        await wait_until(pilot, lambda: open_file_dialog(app) is not None)
+        await pilot.press("ctrl+e", "ctrl+u", *"other.txt", "enter")
+        box = await wait_box(pilot, app)
+        assert box_title(box) == "Overwrite"
+        assert box_message(box) == f"{CHANGE_TEXT[ChangeKind.EXISTS]}\n{other}"
+        await pilot.press("escape")
+        await wait_closed(pilot, app)
+        assert other.read_text() == "keep me\n"
+        assert app.editor.file_path == path
+        await pilot.press("ctrl+shift+s")
+        await wait_until(pilot, lambda: open_file_dialog(app) is not None)
+        await pilot.press("ctrl+e", "ctrl+u", *"other.txt", "enter")
+        await wait_box(pilot, app)
+        await answer(pilot, app, "Save As…")  # the question reopens the dialog from inside its own flow
+        await wait_until(pilot, lambda: open_file_dialog(app) is not None)
+        dialog = open_file_dialog(app)
+        assert dialog is not None
+        assert dialog.query_one("#filename_input", Input).value == "other.txt"
+        await pilot.press("ctrl+e", "ctrl+u", *"third.txt", "enter")
+        await wait_until(pilot, third.exists)
+        await wait_saved(pilot, app.editor)
+        assert third.read_text() == EDITED
+        assert other.read_text() == "keep me\n"
+
+
+@pytest.mark.asyncio
+async def test_save_as_onto_an_existing_file_overwrites_it_after_the_answer(tmp_path: Path) -> None:
+    path = make_file(tmp_path)
+    other = tmp_path / "other.txt"
+    other.write_text("keep me\n")
+    app = NovaEditApp(file_path=path)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("x", "ctrl+shift+s")
+        await wait_until(pilot, lambda: open_file_dialog(app) is not None)
+        await pilot.press("ctrl+e", "ctrl+u", *"other.txt", "enter")
+        await wait_box(pilot, app)
+        await answer(pilot, app, "Overwrite")
+        await wait_until(pilot, lambda: other.read_text() == EDITED)
+        await wait_saved(pilot, app.editor)
+        assert app.editor.file_path == other
+
+
+@pytest.mark.asyncio
+async def test_save_as_onto_a_symlink_replaces_the_target_and_keeps_the_link(tmp_path: Path) -> None:
+    path = make_file(tmp_path)
+    target = tmp_path / "target.txt"
+    target.write_text("old\n")
+    link = tmp_path / "link.txt"
+    link.symlink_to(target)
+    app = NovaEditApp(file_path=path)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+shift+s")
+        await wait_until(pilot, lambda: open_file_dialog(app) is not None)
+        await pilot.press("ctrl+e", "ctrl+u", *"link.txt", "enter")
+        await wait_box(pilot, app)
+        await answer(pilot, app, "Overwrite")
+        await wait_until(pilot, lambda: target.read_text() == "one\ntwo\n")
+        await wait_saved(pilot, app.editor)
+    assert link.is_symlink()
+    assert os.readlink(link) == str(target)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["reload", "changed"])
+async def test_ctrl_q_while_a_question_is_open_is_ignored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
+    exits = count_exits(monkeypatch)
+    path = make_file(tmp_path)
+    app = NovaEditApp(file_path=path)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("x")
+        path.write_text(CHANGED)
+        await pilot.press("f5" if kind == "reload" else "ctrl+s")
+        box = await wait_box(pilot, app)
+        await pilot.press("ctrl+q")
+        await pilot.pause()
+        assert exits == []
+        assert open_box(app) is box
+        await pilot.press("escape")
+        await wait_closed(pilot, app)
+        assert app.editor.text.startswith("xone")
+        await pilot.press("ctrl+q")
+        quit_box = await wait_box(pilot, app)
+        assert box_title(quit_box) == "Quit"

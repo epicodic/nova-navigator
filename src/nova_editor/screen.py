@@ -26,10 +26,10 @@ from nova_widgets.keymap import HintBar, KeymapRegistry
 from nova_widgets.menu import Menu, MenuBar
 from nova_widgets.response import Response
 
-from .bars import ConfirmBar, GotoBar, SaveBar
+from .bars import GotoBar, SaveBar
 from .core.byte_source import ChangeKind
 from .core.save import check_path
-from .decisions import quit_question
+from .decisions import file_question, quit_question, reload_question
 from .document._cursor_anchor import CursorState
 from .document._lazy_config import LazyConfig
 from .document_view import DocumentView
@@ -115,15 +115,10 @@ class EditorScreen(Screen[None]):
         display: none;
     }
 
-    #save_bar, #confirm_bar, #search_status {
+    #save_bar, #search_status {
         width: 100%;
         height: 1;
         display: none;
-    }
-
-    #confirm_bar {
-        background: $warning;
-        color: $text;
     }
     """
 
@@ -273,7 +268,6 @@ class EditorScreen(Screen[None]):
         yield self.document.editor
         yield GotoBar()
         yield SaveBar()
-        yield ConfirmBar()
         yield SearchBar()
         yield SearchStatus()
         yield StatusLine(self._status_state)
@@ -412,10 +406,6 @@ class EditorScreen(Screen[None]):
         return self.query_one(SaveBar)
 
     @property
-    def _confirm_bar(self) -> ConfirmBar:
-        return self.query_one(ConfirmBar)
-
-    @property
     def _search_bar(self) -> SearchBar:
         return self.query_one(SearchBar)
 
@@ -501,6 +491,70 @@ class EditorScreen(Screen[None]):
             self._save_to(selected)
         self.document.editor.focus()
 
+    def _is_current(self, editor: NovaTextArea) -> bool:
+        """Whether `editor` is the widget of the current document (a message of a replaced editor must change nothing)."""
+        return editor is self.document.editor
+
+    async def _reload_flow(self) -> None:
+        document = self.document
+        answer = await reload_question().run()
+        editor = document.editor
+        if answer is Response.DISCARD and document is self.document and not editor.saving:
+            editor.reload()
+        self.document.editor.focus()
+
+    async def _overwrite_flow(self, document: DocumentView, kind: ChangeKind, path: Path) -> None:
+        """Ask before saving onto a file that exists: a save as onto an existing file, or the first save of a path that appeared since the start."""
+        question = file_question(kind, path, overwrite=True, save_as=True, reload=False, modified=document.editor.modified)
+        await self._carry_out(document, await question.run(), path)
+
+    def _queue_change(self, kind: ChangeKind, path: Path | None = None, *, from_save: bool = False) -> None:
+        """Ask about a change of the file, once per document: a second request while one is open or queued returns."""
+        document = self.document
+        if document.change_question:
+            return
+        document.change_question = True
+        self._start_flow(partial(self._change_flow, document, kind, path, from_save=from_save))
+
+    async def _change_flow(self, document: DocumentView, kind: ChangeKind, path: Path | None, *, from_save: bool) -> None:
+        try:
+            asked = await self._ask_change(document, kind, path, from_save=from_save)
+        finally:
+            document.change_question = False
+        if asked is not None:
+            await self._carry_out(document, *asked)
+
+    async def _ask_change(self, document: DocumentView, kind: ChangeKind, path: Path | None, *, from_save: bool) -> tuple[Response | None, Path | None] | None:
+        """Ask what to do about a file that changed on disk, unless the view is not stale any more.
+
+        A `SourceChanged` posted during a save can be handled after the save ended; when the save rebased the document onto its own file the view is no longer stale
+        and the check finds nothing, so there is nothing to ask. A request from a save (`from_save`) already knows that the file differs and offers Overwrite.
+        """
+        editor = document.editor
+        if document is not self.document:
+            return None
+        if not from_save and editor.check_external_change() is ChangeKind.UNCHANGED:  # the stale kind while the view is stale, else a fresh check
+            return None
+        target = path if from_save else editor.file_path
+        question = file_question(kind, target, overwrite=from_save or editor.modified, save_as=True, reload=editor.file_path is not None, modified=editor.modified)
+        return await question.run(), target
+
+    async def _carry_out(self, document: DocumentView, answer: Response | None, path: Path | None) -> None:
+        """Carry out the answer to a question about a file (Overwrite, Save As, Reload); Cancel and Keep do nothing."""
+        if document is not self.document:
+            return
+        editor = document.editor
+        editor.focus()
+        if answer is Response.OVERWRITE and path is not None:
+            if editor.file_path is None:
+                self._save_to(path, confirmed=True)
+            else:
+                editor.save(path, overwrite=True)
+        elif answer is Response.SAVE:
+            await self._save_as_flow(path)
+        elif answer is Response.DISCARD and not editor.saving:
+            editor.reload()
+
     # Save, Save As, Reload, Close, Quit
 
     def action_save(self) -> None:
@@ -543,7 +597,7 @@ class EditorScreen(Screen[None]):
             self.notify("Nothing to reload", severity="warning")
             return
         if editor.modified:
-            self._confirm_bar.ask(None, editor.file_path, overwrite=False, save_as=False, reload=True)
+            self._start_flow(self._reload_flow)
             return
         editor.reload()
 
@@ -606,26 +660,9 @@ class EditorScreen(Screen[None]):
         path = path.expanduser().absolute()
         first_save = document.load_state == "new" and document.file_path is not None and os.path.realpath(path) == os.path.realpath(document.file_path)
         if first_save and not confirmed and check_path(path, None) is ChangeKind.CREATED:
-            self._confirm_bar.ask(ChangeKind.CREATED, path, overwrite=True, save_as=True, reload=False)
+            self._start_flow(partial(self._overwrite_flow, document, ChangeKind.CREATED, path))
             return
         document.editor.save(path, overwrite=confirmed or first_save)
-
-    def on_confirm_bar_chosen(self, message: ConfirmBar.Chosen) -> None:
-        """Carry out the answer of the confirm bar."""
-        if message.choice == "quit":
-            self.post_message(self.Closed())
-            return
-        self._refocus_editor()
-        editor = self.document.editor
-        if message.choice == "overwrite" and message.path is not None:
-            if editor.file_path is None:
-                self._save_to(message.path, confirmed=True)
-            else:
-                editor.save(message.path, overwrite=True)
-        elif message.choice == "save_as":
-            self._start_flow(partial(self._save_as_flow, message.path))
-        elif message.choice == "reload" and not editor.saving:
-            editor.reload()
 
     def on_nova_text_area_save_progress(self, message: NovaTextArea.SaveProgress) -> None:
         """Show the progress of the save."""
@@ -633,6 +670,8 @@ class EditorScreen(Screen[None]):
 
     def on_nova_text_area_saved(self, message: NovaTextArea.Saved) -> None:
         """Show the result and follow the file the document is bound to now."""
+        if not self._is_current(message.text_area):
+            return
         document = self.document
         document.load_state = "loaded"
         document.file_path = message.path
@@ -643,6 +682,8 @@ class EditorScreen(Screen[None]):
 
     def on_nova_text_area_save_failed(self, message: NovaTextArea.SaveFailed) -> None:
         """Show the failure with its stage; it stays until a key is pressed."""
+        if not self._is_current(message.text_area):
+            return
         reason = message.error.strerror or str(message.error)
         written = "  The file was written; press F5 to reload." if message.committed else ""
         self._save_bar.show_failure(f"Save failed ({message.stage}): {reason}{written}  Press a key")
@@ -650,33 +691,29 @@ class EditorScreen(Screen[None]):
 
     def on_nova_text_area_save_cancelled(self, message: NovaTextArea.SaveCancelled) -> None:
         """Show that the save was cancelled."""
+        if not self._is_current(message.text_area):
+            return
         self._save_bar.show_result("Save cancelled")
         self._recheck_deferred_change()
 
     def on_nova_text_area_save_needs_confirmation(self, message: NovaTextArea.SaveNeedsConfirmation) -> None:
         """Ask before overwriting."""
-        exists = message.kind in {ChangeKind.EXISTS, ChangeKind.CREATED}
-        reload = not exists and self.document.editor.file_path is not None
-        self._confirm_bar.ask(message.kind, message.path, overwrite=True, save_as=True, reload=reload)
+        if not self._is_current(message.text_area):
+            return
+        if message.kind in {ChangeKind.EXISTS, ChangeKind.CREATED}:
+            self._start_flow(partial(self._overwrite_flow, self.document, message.kind, message.path))
+            return
+        self._queue_change(message.kind, message.path, from_save=True)  # no second question when `SourceChanged` already asked
 
     def on_nova_text_area_source_changed(self, message: NovaTextArea.SourceChanged) -> None:
         """Ask what to do about a file that changed on disk."""
-        if self.document.editor.saving:  # asking now would compete with the save: remember it, the end of the save decides
-            self.document.deferred_change = message.kind
+        if not self._is_current(message.text_area):
             return
-        self._announce_change(message.kind)
-
-    def _announce_change(self, kind: ChangeKind) -> None:
-        """Ask what to do about a file that changed on disk, unless the view is not stale any more.
-
-        A `SourceChanged` posted during a save can be handled after the save ended; when the save rebased the document onto its own file the view
-        is no longer stale and the check finds nothing, so there is nothing to ask.
-        """
-        editor = self.document.editor
-        current = editor.check_external_change()  # the stale kind while the view is stale, else a fresh check
-        if current is ChangeKind.UNCHANGED:
+        document = self.document
+        if document.editor.saving:  # asking now would compete with the save: remember it, the end of the save decides
+            document.deferred_change = message.kind
             return
-        self._confirm_bar.ask(kind, editor.file_path, overwrite=editor.modified, save_as=True, reload=editor.file_path is not None)
+        self._queue_change(message.kind)
 
     def _recheck_deferred_change(self, *, committed: bool = False) -> None:
         """After a save: announce the change that was seen while it ran unless the save rebased the document (the file is then our own)."""
@@ -687,15 +724,19 @@ class EditorScreen(Screen[None]):
             return
         kind = editor.check_external_change()  # still stale, or changed again: either way the current kind
         if kind is not ChangeKind.UNCHANGED:
-            self._announce_change(kind)
+            self._queue_change(kind)
 
     def on_nova_text_area_reloaded(self, message: NovaTextArea.Reloaded) -> None:
         """Show that the file was reloaded."""
+        if not self._is_current(message.text_area):
+            return
         self._request_status()
         self._save_bar.show_result("Reloaded")
 
     def on_nova_text_area_reload_failed(self, message: NovaTextArea.ReloadFailed) -> None:
         """Show why the file could not be reloaded."""
+        if not self._is_current(message.text_area):
+            return
         self._save_bar.show_failure(f"Reload failed: {message.error.strerror or message.error}  Press a key")
 
     # Search and Go to
