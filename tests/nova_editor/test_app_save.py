@@ -1,4 +1,4 @@
-"""Pilot tests of the nova_edit save, reload and external-change UI (bars, keys, poll, quit)."""
+"""Pilot tests of the nova_edit save, reload and external-change UI (popups, dialogs, keys, poll, quit)."""
 
 from __future__ import annotations
 
