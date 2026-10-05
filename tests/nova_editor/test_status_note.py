@@ -80,7 +80,10 @@ async def test_a_new_note_replaces_a_timed_one_and_its_timer(monkeypatch: pytest
         await pilot.pause()
         app.status.set_note("Saved", timed=True)
         app.status.set_note("Searching")  # untimed: the timer of "Saved" must not clear it
-        await pilot.pause(0.5)  # ten timer periods; a wait, not an assertion on elapsed time
+        fired: list[bool] = []
+        # A sentinel timer with a later deadline than the 0.05 s note timer: timers fire in deadline order, so once it has fired the note timer has had its turn.
+        app.set_timer(0.2, lambda: fired.append(True))
+        await wait_until(pilot, lambda: bool(fired))
         assert app.status.note == "Searching"
         assert "Searching" in app.status.text
 
