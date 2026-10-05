@@ -159,6 +159,9 @@ class KeybindingsDialog(Dialog):
         self._table.add_columns("Action", "Key Binding")
         self._key_map = self._config.resolve(self._actions)
         for action in self._actions:
+            if action.id and action.id not in self._key_map and action.initial_shortcut is not None:
+                self._deleted_names.add(action.id)
+        for action in self._actions:
             key = self._key_map.get(action.id or "") if action.id else None
             self._table.add_row(action.text, _format_key_sequence_badges(key, self._key_display_style))
         if self._actions:
