@@ -489,3 +489,62 @@ def test_file_dialog_with_filters() -> None:
         filters=filters,
     )
     assert dialog is not None
+
+
+@pytest.mark.asyncio
+async def test_filename_prefills_the_input_and_takes_the_focus(tmp_path: pathlib.Path) -> None:
+    (tmp_path / "a.txt").write_text("a")
+    dialog = FileDialog(mode=FileDialogMode.SAVE, start_path=tmp_path, title="Save", filename="draft.txt")
+    app = _DialogApp(dialog)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        inp = app.screen.query_one("#filename_input", Input)
+        assert inp.value == "draft.txt"
+        assert app.focused is inp
+
+
+@pytest.mark.asyncio
+async def test_enter_accepts_the_prefilled_name(tmp_path: pathlib.Path) -> None:
+    dialog = FileDialog(mode=FileDialogMode.SAVE, start_path=tmp_path, title="Save", filename="draft.txt")
+    app = _CapturingApp(dialog)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen is not dialog
+    assert dialog.selected_path == tmp_path / "draft.txt"
+
+
+@pytest.mark.asyncio
+async def test_a_later_highlight_replaces_the_prefill(tmp_path: pathlib.Path) -> None:
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "a.txt").write_text("a")
+    dialog = FileDialog(mode=FileDialogMode.SAVE, start_path=tmp_path, title="Save", filename="draft.txt")
+    app = _DialogApp(dialog)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.screen.query_one("#listing").focus()
+        await pilot.press("down", "down")  # `..`, then `sub`, then `a.txt`
+        await pilot.pause()
+        assert app.screen.query_one("#filename_input", Input).value == "a.txt"
+
+
+@pytest.mark.asyncio
+async def test_without_filename_the_listing_keeps_the_focus(tmp_path: pathlib.Path) -> None:
+    dialog = FileDialog(mode=FileDialogMode.SAVE, start_path=tmp_path, title="Save")
+    app = _DialogApp(dialog)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.screen.query_one("#filename_input", Input).value == ""
+        assert app.focused is app.screen.query_one("#listing")
+
+
+@pytest.mark.asyncio
+async def test_filename_is_ignored_outside_save_mode(tmp_path: pathlib.Path) -> None:
+    dialog = FileDialog(mode=FileDialogMode.OPEN, start_path=tmp_path, title="Open", filename="draft.txt")
+    app = _DialogApp(dialog)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.screen.query_one("#filename_input", Input).value == ""
+        assert app.focused is app.screen.query_one("#listing")

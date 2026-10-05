@@ -572,7 +572,8 @@ This design allows a Textual app to embed multiple editor screens with different
 2. The menu bar is built with those actions, showing the current binding in each menu item.
 3. The `KeymapRegistry` manages dispatch.
 4. The host forwards every raw `Key` event to `EditorScreen.press_key` (from `App.on_event`, before Textual's priority bindings); the registry dispatches to the action method.
-   While an `Input` bar has the focus, `press_key` leaves its own keys and the editing actions to the `Input`.
+   While the `Input` of a popup has the focus, `press_key` leaves its own keys and the editing actions to the `Input`; every other key reaches the registry first, so F3, Ctrl+F, Ctrl+G, Ctrl+S and Ctrl+Q work with a popup open.
+With a dialog on top of the screen the host does not call `press_key` (only an `EditorScreen` on top gets it), so the keys belong to the dialog; Textual's own Ctrl+Q binding still reaches `NovaEditApp.action_quit`, which asks the screen and is ignored while a flow is open.
 
 ### Amendment B2 Defect (Workaround)
 

@@ -41,6 +41,9 @@ The following modules are native to `nova_editor` and are not copies of upstream
 | `core/pieces.py` | `Piece`, `Aggregate`, `Content`, the `PieceSource` protocol and the junction rules (ACT4). |
 | `core/piece_tree.py` | `PieceTree`, the counted B+ tree of pieces (ACT4); a replace deletes its piece range in one pass through `_delete_pieces`, `_delete_range` and `_repair_children` (ACT7). |
 | `status_line.py` | `StatusState`, `format_status` and `StatusLine`, the one-row status line of `nova_edit` (ACT7). |
+| `goto_popup.py` | `GotoPopup`, the inline popup of the `nova_edit` goto (ACT6). |
+| `find_popup.py` | `FindPopup`, the inline popup of the `nova_edit` search (ACT6). |
+| `decisions.py` | `MessageBox` helpers for the `nova_edit` flows (ACT6). |
 | `core/add_store.py` | `AddStore` and `AddSegment`, the append-only store of added bytes (ACT4). |
 | `core/original_source.py` | `OriginalSource` and `RowNotIndexed`, the row oracle of the original file on top of `LineIndex` (ACT4). |
 | `core/piece_table.py` | `PieceTable`, the editable document with row queries and the open tail (ACT4). |
@@ -53,7 +56,6 @@ The following modules are native to `nova_editor` and are not copies of upstream
 | `core/casefold.py` | `fold1`, the static ASCII table and the lazily built table of case variants (ACT6). |
 | `core/search.py` | `compile_matcher`, `Matcher`, `SearchJob`, `SearchSpec`, `SearchSettings`, `SearchPlan`, `SearchPlanner`, `SearchResult`, `SearchProgress` and the errors (ACT6). |
 | `widget/_search_run.py` | `SearchRun`, `SearchOutcome` and `run_search_thread`, the state and thread body of one widget search (ACT6). |
-| `search_bar.py` | `SearchBar` and `SearchStatus`, the inline widgets of the `nova_edit` search (ACT6). |
 | `document/_lazy_config.py` | Tunable thresholds for lazy documents (`LazyConfig` dataclass). |
 | `document/_lazy_document.py` | Editable document over `PieceTable` (read-only in ACT3); ACT5 added the edit lock, `plan`, `prepare_rebase`, `apply_rebase` and the save registration; ACT6 added `search_plan` and `revision`. |
 | `document/_lazy_wrapped_document.py` | Wrapping layer for lazy documents with grid wrap and a sparse height estimate; imports `compute_wrap_offsets` from `document/_wrap.py` (ACT7). |
@@ -128,8 +130,7 @@ This is native code, not vendored.
 - It yields a `StatusLine` built from `_status_state()` and refreshes it on selection, text, index progress, indexing complete, jump completed and reload messages, and on changes of `pending_progress` and `soft_wrap`.
 - `JumpRejected` is shown as a warning notification.
 - The header sub title holds the file path, and a save to a new path updates it.
-- `action_quit` cancels a search, a pending jump and a running save, then asks through `ConfirmBar.ask_quit` when a save still runs or the document is modified.
-- The new `quit` choice of the confirm bar (key `Q`) exits.
+- `action_quit` cancels a search, a pending jump and a running save, then asks through a `MessageBox` (`decisions.quit_question`) when a save still runs or the document is modified.
 - The constructor takes the keywords `soft_wrap`, `config` (a `LazyConfig`) and `editor_class` (a `TimedNovaTextArea` subclass, used by the benchmark probe).
 
 ### `widget/_text_area.py`

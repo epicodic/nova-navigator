@@ -253,6 +253,11 @@ class FileDialog(Dialog):
     Dismisses with ``Response.OK`` or ``Response.CANCEL`` (and similar).
     After a ``Response.OK`` dismissal, ``selected_path`` holds the resolved
     ``pathlib.Path``.
+
+    Args:
+        filename: SAVE mode only; the file name that the input starts with.
+            The input then also gets the initial focus. None (the default)
+            leaves the input empty and the listing focused.
     """
 
     DEFAULT_CSS = """
@@ -296,6 +301,8 @@ class FileDialog(Dialog):
         provider: FileProvider | None = None,
         icon_provider: Callable[[str], Icon] | None = None,
         id: str | None = None,
+        *,
+        filename: str | None = None,
     ) -> None:
         super().__init__(title=title, id=id, buttons=[DefaultButton.OK, DefaultButton.CANCEL])
         self._mode = mode
@@ -303,6 +310,8 @@ class FileDialog(Dialog):
         self.selected_path = None
         self._provider = provider or default_file_provider()
         self._icon_provider = icon_provider
+        self._prefill = filename if mode == FileDialogMode.SAVE else None
+        self._prefill_pending = self._prefill is not None
 
         # Normalize start_path to PurePath
         if start_path is None:
@@ -348,12 +357,22 @@ class FileDialog(Dialog):
         yield Checkbox("Show hidden files", id="show_hidden_cb")
 
     def on_mount(self) -> None:
-        self.query_one("#listing").focus()
+        if self._prefill is None:
+            self.query_one("#listing").focus()
+            return
+        name_input = self.query_one("#filename_input", Input)
+        name_input.value = self._prefill
+        name_input.focus()
 
     # ── Event handlers ────────────────────────────────────────────────────
 
     def on__file_listing_cursor_moved(self, event: _FileListing.CursorMoved) -> None:
         inp = self.query_one("#filename_input", Input)
+        if self._prefill_pending and self._prefill is not None:
+            self._prefill_pending = False
+            inp.value = self._prefill
+            self.selected_path = None
+            return
         if self._mode == FileDialogMode.DIR:
             if event.path is not None and self._provider.is_dir(event.path):
                 inp.value = event.path.name

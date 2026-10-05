@@ -8,19 +8,18 @@ import pytest
 from textual.pilot import Pilot
 
 from nova_editor.app import NovaEditApp
-from nova_editor.bars import ConfirmBar
 from nova_editor.core.save import SaveIo
 from nova_editor.screen import EditorScreen
+from nova_editor.status_line import StatusLine
 from nova_editor.widget import NovaTextArea
+from tests.nova_editor.dialog_helpers import box_title, open_box
+from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.save_widget_helpers import wait_saved
 
 
 async def settle(pilot: Pilot[None], app: NovaEditApp) -> None:
     """Let a started save end and its messages arrive."""
-    screen = app.screen
-    assert isinstance(screen, EditorScreen)
-    assert screen.document.editor is not None
-    await wait_saved(pilot, screen.document.editor)
+    await wait_saved(pilot, app.editor)
 
 
 @pytest.mark.asyncio
@@ -137,17 +136,6 @@ async def test_ctrl_s_key_saves_eager_file(tmp_path: Path) -> None:
         await pilot.press("ctrl+s")
         await settle(pilot, app)
     assert path.read_text() == "xinitial"
-
-
-@pytest.mark.asyncio
-async def test_ctrl_q_key_quits() -> None:
-    """Pressing ctrl+q exits the app."""
-    app = NovaEditApp(path=None)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("ctrl+q")
-        await pilot.pause()
-        assert app._exit
 
 
 @pytest.mark.asyncio
@@ -287,10 +275,10 @@ async def test_save_refuses_a_file_that_appeared_before_the_first_save(tmp_path:
         path.write_text("from elsewhere")
         await pilot.press("h", "i")
         await pilot.press("ctrl+s")
-        await settle(pilot, app)
-
-        confirm_bar = app.query_one(ConfirmBar)
-        assert confirm_bar.display  # the file is not overwritten without consent
+        await wait_until(pilot, lambda: open_box(app) is not None)  # the file is not overwritten without consent
+        box = open_box(app)
+        assert box is not None
+        assert box_title(box) == "Overwrite"
 
     assert path.read_text() == "from elsewhere"
 
@@ -327,9 +315,10 @@ async def test_failed_save_removes_the_temp_file(tmp_path: Path, monkeypatch: py
         await pilot.pause()
         await pilot.press("x")
         await pilot.press("ctrl+s")
-        await settle(pilot, app)
-        save_bar = app.query_one("#save_bar")
-        assert save_bar.display
+        await wait_until(pilot, lambda: open_box(app) is not None)
+        box = open_box(app)
+        assert box is not None
+        assert box_title(box) == "Save failed"
 
     assert path.read_text() == "one"
     assert [p.name for p in tmp_path.iterdir()] == ["f.txt"]
@@ -337,7 +326,7 @@ async def test_failed_save_removes_the_temp_file(tmp_path: Path, monkeypatch: py
 
 @pytest.mark.asyncio
 async def test_save_small_file_shows_the_result_line(tmp_path: Path) -> None:
-    """A save shows a result line in the save bar and no notification about an interim save."""
+    """A save shows a result line in the status line and no notification about an interim save."""
     path = tmp_path / "save_notify.txt"
     path.write_text("initial")
 
@@ -346,9 +335,8 @@ async def test_save_small_file_shows_the_result_line(tmp_path: Path) -> None:
         await pilot.pause()
         await pilot.press("n", "e", "w")
         await pilot.press("ctrl+s")
-        await settle(pilot, app)
-        save_bar = app.query_one("#save_bar")
-        assert save_bar.display
+        status = app.query_one(StatusLine)
+        await wait_until(pilot, lambda: status.note is not None and status.note.startswith("Saved"))
 
     assert path.read_text() == "newinitial"
 
