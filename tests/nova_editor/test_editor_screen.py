@@ -1,4 +1,4 @@
-"""The editor screen: composition, per-screen actions, menus, bars and document holder."""
+"""The editor screen: composition, per-screen actions, menus, popups, dialogs and document holder."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""The editor screen: menu bar, editor, bars, status line and hint bar with the `editor.*` actions."""
+"""The editor screen: menu bar, editor, popups, status line and hint bar with the `editor.*` actions and the flows that ask through dialogs."""
 
 from __future__ import annotations
 
@@ -69,9 +69,9 @@ _MIN_LABEL_CELLS = 2
 
 
 class EditorScreen(Screen[None]):
-    """The editor: a menu bar with File, Edit, Search and View, the editor widget, the bars, the status line and a hint bar.
+    """The editor: a menu bar with File, Edit, Search and View, the editor widget, the Go to and Find popups, the status line and a hint bar.
 
-    The screen holds the actions, the menus, the keymap and the bars; everything about the open document lives in its `DocumentView`.
+    The screen holds the actions, the menus, the keymap and the flows (dialogs and popups); everything about the open document lives in its `DocumentView`.
     Wrap mode and line numbers are reactive properties of the widget, not stored here.
     A host must forward `Key` events to `press_key` from `App.on_event`, because the keymap registry has to see a key before Textual's priority bindings do.
     """
@@ -405,11 +405,6 @@ class EditorScreen(Screen[None]):
             popup.reject(message.reason)
         else:
             self.notify(message.reason, severity="warning")
-
-    # Bars
-
-    def _refocus_editor(self) -> None:
-        self.document.editor.focus()
 
     # Polling
 
