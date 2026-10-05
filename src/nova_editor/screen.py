@@ -24,9 +24,9 @@ from nova_widgets.key_types import KeyChord, KeySequence
 from nova_widgets.keybindings_config import KeybindingsConfig
 from nova_widgets.keymap import HintBar, KeymapRegistry
 from nova_widgets.menu import Menu, MenuBar
+from nova_widgets.popup_widget import PopupWidget
 from nova_widgets.response import Response
 
-from .bars import GotoBar
 from .core.byte_source import ChangeKind
 from .core.save import check_path
 from .decisions import failure_box, file_question, quit_question, reload_question
@@ -35,7 +35,7 @@ from .document._lazy_config import LazyConfig
 from .document_view import DocumentView
 from .editor_actions import build_editor_actions
 from .editor_menus import build_menu_bar
-from .goto_popup import parse_goto
+from .goto_popup import GotoPopup
 from .search_bar import SearchBar, SearchStatus
 from .status_line import StatusLine, StatusState, byte_percent, format_sizes, row_is_known, save_progress_text
 from .timed_text_area import TimedNovaTextArea
@@ -101,13 +101,6 @@ class EditorScreen(Screen[None]):
         color: $text;
     }
 
-    #goto_bar {
-        width: 100%;
-        height: 1;
-        border: solid $primary;
-        display: none;
-    }
-
     #search_bar {
         width: 100%;
         height: 1;
@@ -165,6 +158,7 @@ class EditorScreen(Screen[None]):
         self._by_id: dict[str, Action] = {a.id: a for a in self.ACTIONS if a.id is not None}
         self._swallowed: set[KeySequence] = set()
         self.hint_bar: HintBar = HintBar()
+        self.goto_popup: GotoPopup = GotoPopup()
         self.keymap_registry: KeymapRegistry = KeymapRegistry(self.hint_bar)
         self._apply_keymap()
         self.menu_bar: MenuBar = build_menu_bar(self._by_id, standalone=standalone)
@@ -241,8 +235,11 @@ class EditorScreen(Screen[None]):
         return any(self._by_id[action_id].shortcut == chord for action_id in _EDITING_ACTIONS)
 
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
-        """The hint bar follows the focus."""
+        """The hint bar follows the focus; a visible popup closes when the focus lands outside it (the controlled form of `CLOSE_ON_BLUR`)."""
         self.keymap_registry.on_focus_changed(self.focused)
+        focused = self.focused
+        if focused is not None and self.goto_popup.display and self.goto_popup not in focused.ancestors_with_self:
+            self.goto_popup.hide()
 
     async def on_menu_triggered(self, event: Menu.Triggered) -> None:
         """A menu item runs the same action as its key: the editor widget first, then the screen."""
@@ -262,11 +259,11 @@ class EditorScreen(Screen[None]):
         """Compose the menu bar, the editor, the bars, the status line and the hint bar."""
         yield self.menu_bar
         yield self.document.editor
-        yield GotoBar()
         yield SearchBar()
         yield SearchStatus()
         yield StatusLine(self._status_state)
         yield self.hint_bar
+        yield self.goto_popup
 
     def on_mount(self) -> None:
         """Show the path, start the poll for external changes and mirror the widget state in the menu."""
@@ -283,6 +280,7 @@ class EditorScreen(Screen[None]):
     def on_resize(self, event: events.Resize) -> None:
         """Adjust the path label when the terminal is resized."""
         self._constrain_path_label()
+        self._place_popups()
 
     def _show_path(self) -> None:
         """Show the path of the document in the menu bar and the sub title of the app."""
@@ -392,12 +390,20 @@ class EditorScreen(Screen[None]):
         self._request_status()
 
     def on_nova_text_area_jump_completed(self, message: NovaTextArea.JumpCompleted) -> None:
-        """Refresh the status line."""
+        """Refresh the status line; a jump that the popup started closes it."""
         self._request_status()
+        popup = self.goto_popup
+        if popup.display and popup.awaiting:
+            popup.awaiting = False
+            self._close_popup(popup)
 
     def on_nova_text_area_jump_rejected(self, message: NovaTextArea.JumpRejected) -> None:
-        """Show why a goto was rejected; the cursor did not move."""
-        self.notify(message.reason, severity="warning")
+        """Show why a goto was rejected (the cursor did not move): in the popup that asked, else as a toast."""
+        popup = self.goto_popup
+        if popup.display and popup.awaiting:
+            popup.reject(message.reason)
+        else:
+            self.notify(message.reason, severity="warning")
 
     # Bars
 
@@ -784,14 +790,40 @@ class EditorScreen(Screen[None]):
         self._repeat_search(backward=True)
 
     def action_goto(self) -> None:
-        """Show or hide the goto bar."""
-        goto_bar = self.query_one(GotoBar)
-        goto_bar.display = not goto_bar.display
-        if goto_bar.display:
-            goto_bar.focus()
+        """Open the Go to popup; with the popup already open it stays open."""
+        self.goto_popup.open(self._popup_offset(GotoPopup.WIDTH))
+
+    def on_goto_popup_requested(self, message: GotoPopup.Requested) -> None:
+        """Run the jump; the widget answers with `JumpCompleted` or `JumpRejected`, or keeps the target pending (S0001 REQ-6)."""
+        editor = self.document.editor
+        target = message.target
+        if target.kind == "line":
+            editor.goto_line(target.value)
+        else:  # byte
+            editor.goto_byte(target.value)
+        if editor.pending_progress is not None:  # the target lies beyond the scan: the status line shows the progress, Escape cancels it
+            self._close_popup(self.goto_popup)
+
+    def on_goto_popup_dismissed(self, message: GotoPopup.Dismissed) -> None:
+        """Escape: close the popup and focus the editor."""
+        self._close_popup(self.goto_popup)
+
+    def _close_popup(self, popup: PopupWidget) -> None:
+        """Hide a popup and give the focus to the editor (`PopupWidget.close()` is not used: it would focus whatever had the focus at `show()` time)."""
+        popup.hide()
+        self.document.editor.focus()
+
+    def _popup_offset(self, width: int) -> tuple[int, int]:
+        """The top right of the editor region: a popup covers the first rows of the text, never the menu bar or the status line."""
+        region = self.document.editor.region
+        return (max(region.x, region.right - min(width, region.width)), region.y)
+
+    def _place_popups(self) -> None:
+        if self.goto_popup.display:
+            self.goto_popup.offset = self._popup_offset(GotoPopup.WIDTH)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Handle input submission from the search bar and the goto bar."""
+        """Handle input submission from the search bar."""
         if event.input.id == "search_bar":
             needle = event.value
             if not needle:
@@ -799,24 +831,6 @@ class EditorScreen(Screen[None]):
             self._search_bar.action_close()
             self.search(needle, case_sensitive=self._search_bar.case_sensitive)
             return
-        if event.input.id != "goto_bar":
-            return
-
-        target = parse_goto(event.value)
-        if target is None:
-            self.notify("Invalid goto format", severity="warning")
-            return
-
-        editor = self.document.editor
-        if target.kind == "line":
-            editor.goto_line(target.value)
-        else:  # byte
-            editor.goto_byte(target.value)
-
-        goto_bar = self.query_one(GotoBar)
-        goto_bar.display = False
-        goto_bar.value = ""
-        editor.focus()
 
     def on_nova_text_area_search_progress(self, message: NovaTextArea.SearchProgress) -> None:
         """Show the progress of the search."""

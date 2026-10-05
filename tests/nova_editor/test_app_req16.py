@@ -71,9 +71,9 @@ async def test_an_out_of_range_goto_is_rejected_with_a_message_and_the_cursor_st
         await wait_until(pilot, lambda: app.editor is not None and app.editor.cursor_location == (4, 0))
         before = app.editor.cursor_location
         await pilot.press("ctrl+g", "9", "9", "9", "9", "9", "enter")
-        await wait_until(pilot, lambda: any("line" in note.message.lower() for note in app._notifications))
+        await wait_until(pilot, lambda: "line" in app.goto_popup.shown.lower())
         assert app.editor.cursor_location == before
-        assert any(note.severity == "warning" for note in app._notifications)
+        assert app.goto_popup.display
 
 
 @pytest.mark.asyncio
