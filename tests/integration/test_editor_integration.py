@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import zipfile
+from pathlib import Path
 
 import pytest
 
+from nova_editor.core.byte_source import ChangeKind
 from nova_editor.screen import EditorScreen
+from nova_navigator.dialogs.response_dialog import ResponseDialog
+from nova_navigator.local_copies import CopyEntry, CopyStatus, LocalCopyManager
 from nova_navigator.nova_navigator import MainScreen
-from nova_navigator.vfs.filesystems import LocalFilesystem
+from nova_navigator.vfs.filesystems import ArchiveFilesystem, LocalFilesystem
 from nova_navigator.vfs.vpath import VPath
-from nova_widgets import MessageBox
+from nova_widgets import DataTable, MessageBox, Response
+from tests._utils.local_copy_helpers import RefusingFs, SchemeFs, ScriptedRunner, overwrite
 from tests.integration.conftest import AppCtx, poll_until, set_panels
 
 
@@ -139,6 +145,270 @@ async def test_edit_user_menu_file_opens_the_editor_screen_on_the_config_file(ap
 
     assert screen.document.file_path == app_ctx.src_dir.parent / "config" / "usermenu.toml"
     assert app_ctx.app.local_copies.entries == []
+
+
+# ---------------------------------------------------------------------------
+# Non-local files: the editor edits a local copy and a save is written back (REQ-21)
+# ---------------------------------------------------------------------------
+
+
+def install_manager(ctx: AppCtx, tmp_path: Path, runner: ScriptedRunner) -> LocalCopyManager:
+    """Give the app a real copy manager rooted in `tmp_path` whose jobs run without dialogs."""
+    manager = LocalCopyManager(tmp_path / "copies", runner, poll_interval=0.05, settle_time=0.05)
+    ctx.app.local_copies = manager
+    return manager
+
+
+async def open_in_editor(ctx: AppCtx, source: VPath) -> EditorScreen:
+    await ctx.app.open_editor(source)
+    await poll_until(ctx.pilot, lambda: isinstance(ctx.app.screen, EditorScreen))
+    return editor_of(ctx)
+
+
+def capture_notices(ctx: AppCtx, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record the toasts of the app instead of showing them."""
+    notices: list[str] = []
+
+    def record(message: str, **_options: object) -> None:
+        notices.append(message)
+
+    monkeypatch.setattr(ctx.app, "notify", record)
+    return notices
+
+
+def only_entry(manager: LocalCopyManager) -> CopyEntry:
+    assert len(manager.entries) == 1
+    return manager.entries[0]
+
+
+def content(fs: SchemeFs, path: str) -> bytes:
+    return fs.read(fs.path(path)).read(1000)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_an_ssh_file_is_edited_through_its_copy_and_written_back_once(app_ctx: AppCtx, tmp_path: Path) -> None:
+    fs = SchemeFs({"/d/f.txt": b"remote\n"})
+    runner = ScriptedRunner()
+    manager = install_manager(app_ctx, tmp_path, runner)
+
+    screen = await open_in_editor(app_ctx, fs.path("/d/f.txt"))
+    entry = only_entry(manager)
+    assert screen.document.file_path == entry.copy.path
+    assert screen.document.editor.text == "remote\n"
+
+    await app_ctx.pilot.press("x", "ctrl+s")
+    await poll_until(app_ctx.pilot, lambda: content(fs, "/d/f.txt") == b"xremote\n")
+    await poll_until(app_ctx.pilot, lambda: entry.status is CopyStatus.SYNCED)
+    assert screen.document.editor.check_external_change() is ChangeKind.UNCHANGED
+    assert isinstance(app_ctx.app.screen, EditorScreen)
+
+    await app_ctx.pilot.press("ctrl+w")
+    await back_in_the_list(app_ctx)
+    await poll_until(app_ctx.pilot, lambda: entry.detector is None)
+
+    assert entry.status is CopyStatus.SYNCED
+    assert len(runner.sync_jobs) == 1
+    assert manager.unsynced() == []
+    assert content(fs, "/d/f.txt") == b"xremote\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_closing_right_after_a_save_loses_nothing_and_syncs_once(app_ctx: AppCtx, tmp_path: Path) -> None:
+    fs = SchemeFs({"/d/f.txt": b"remote\n"})
+    runner = ScriptedRunner()
+    manager = install_manager(app_ctx, tmp_path, runner)
+    await open_in_editor(app_ctx, fs.path("/d/f.txt"))
+
+    await app_ctx.pilot.press("x", "ctrl+s", "ctrl+w")
+    await back_in_the_list(app_ctx)
+    await poll_until(app_ctx.pilot, lambda: content(fs, "/d/f.txt") == b"xremote\n")
+    await manager.wait_idle(max_wait=3)
+
+    assert len(runner.sync_jobs) == 1
+    assert only_entry(manager).status is CopyStatus.SYNCED
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_the_local_copies_dialog_shows_the_closed_copy(app_ctx: AppCtx, tmp_path: Path) -> None:
+    fs = SchemeFs({"/d/f.txt": b"remote\n"})
+    manager = install_manager(app_ctx, tmp_path, ScriptedRunner())
+    await open_in_editor(app_ctx, fs.path("/d/f.txt"))
+    await app_ctx.pilot.press("ctrl+w")
+    await back_in_the_list(app_ctx)
+    entry = only_entry(manager)
+    await poll_until(app_ctx.pilot, lambda: entry.detector is None)
+
+    await app_ctx.pilot.press("ctrl+e")
+    await poll_until(app_ctx.pilot, lambda: not isinstance(app_ctx.app.screen, MainScreen))
+    table = app_ctx.app.screen.query(DataTable).first()
+
+    assert table.get_row_at(0)[2] == "synced (closed)"
+    await app_ctx.pilot.press("escape")
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_member_of_a_writable_zip_is_written_back_into_the_zip(app_ctx: AppCtx, tmp_path: Path) -> None:
+    zip_path = tmp_path / "x.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("a.txt", "member\n")
+    local = LocalFilesystem.singleton()
+    member = ArchiveFilesystem(local.path(tmp_path), local.path(zip_path)).path("/a.txt")
+    manager = install_manager(app_ctx, tmp_path, ScriptedRunner())
+
+    await open_in_editor(app_ctx, member)
+    await app_ctx.pilot.press("x", "ctrl+s", "ctrl+w")
+    await back_in_the_list(app_ctx)
+    await manager.wait_idle(max_wait=5)
+
+    with zipfile.ZipFile(zip_path) as zf:
+        assert zf.read("a.txt") == b"xmember\n"
+    assert only_entry(manager).status is CopyStatus.SYNCED
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_jar_member_opens_view_only_and_nothing_is_written(app_ctx: AppCtx, tmp_path: Path) -> None:
+    jar = tmp_path / "x.jar"
+    with zipfile.ZipFile(jar, "w") as zf:
+        zf.writestr("a.txt", "member\n")
+    before = jar.read_bytes()
+    local = LocalFilesystem.singleton()
+    member = ArchiveFilesystem(local.path(tmp_path), local.path(jar)).path("/a.txt")
+    runner = ScriptedRunner()
+    manager = install_manager(app_ctx, tmp_path, runner)
+
+    screen = await open_in_editor(app_ctx, member)
+    assert screen.document.editor.read_only
+    await app_ctx.pilot.press("x", "ctrl+s")
+    await app_ctx.pilot.pause()
+
+    assert screen.document.editor.text == "member\n"
+    assert not screen.document.editor.modified
+    await app_ctx.pilot.press("ctrl+w")
+    await back_in_the_list(app_ctx)
+    assert only_entry(manager).status is CopyStatus.READ_ONLY
+    assert runner.sync_jobs == []
+    assert jar.read_bytes() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_conflict_answered_with_skip_leaves_the_source_and_is_reported_at_close(app_ctx: AppCtx, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    notices = capture_notices(app_ctx, monkeypatch)
+    fs = SchemeFs({"/d/f.txt": b"remote\n"})
+    runner = ScriptedRunner([Response.SKIP])
+    manager = install_manager(app_ctx, tmp_path, runner)
+    await open_in_editor(app_ctx, fs.path("/d/f.txt"))
+    entry = only_entry(manager)
+    overwrite(fs, "/d/f.txt", b"server\n")
+
+    await app_ctx.pilot.press("x", "ctrl+s")
+    await poll_until(app_ctx.pilot, lambda: entry.status is CopyStatus.CONFLICT)
+    assert isinstance(app_ctx.app.screen, EditorScreen)
+    await app_ctx.pilot.press("ctrl+w")
+    await back_in_the_list(app_ctx)
+
+    await poll_until(app_ctx.pilot, lambda: any("changed on the source" in n for n in notices))
+    assert content(fs, "/d/f.txt") == b"server\n"
+    assert entry.status is CopyStatus.CONFLICT
+    assert manager.unsynced() == [entry]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_failed_write_back_is_reported_at_close_and_the_copy_keeps_the_text(app_ctx: AppCtx, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    notices = capture_notices(app_ctx, monkeypatch)
+    fs = RefusingFs({"/d/f.txt": b"remote\n"})
+    manager = install_manager(app_ctx, tmp_path, ScriptedRunner())
+    await open_in_editor(app_ctx, fs.path("/d/f.txt"))
+    entry = only_entry(manager)
+
+    await app_ctx.pilot.press("x", "ctrl+s", "ctrl+w")
+    await back_in_the_list(app_ctx)
+    await poll_until(app_ctx.pilot, lambda: entry.status is CopyStatus.FAILED)
+
+    await poll_until(app_ctx.pilot, lambda: any("Could not write f.txt back" in n for n in notices))
+    assert entry.error is not None
+    assert entry.copy.path.read_bytes() == b"xremote\n"
+    assert app_ctx.app.is_running
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_opening_the_same_file_again_reuses_the_copy_and_shows_the_saved_text(app_ctx: AppCtx, tmp_path: Path) -> None:
+    fs = SchemeFs({"/d/f.txt": b"remote\n"})
+    manager = install_manager(app_ctx, tmp_path, ScriptedRunner())
+    await open_in_editor(app_ctx, fs.path("/d/f.txt"))
+    await app_ctx.pilot.press("x", "ctrl+s", "ctrl+w")
+    await back_in_the_list(app_ctx)
+    await manager.wait_idle(max_wait=3)
+
+    screen = await open_in_editor(app_ctx, fs.path("/d/f.txt"))
+
+    assert len(manager.entries) == 1
+    assert screen.document.editor.text == "xremote\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_sync_question_over_the_editor_is_answered_before_the_editor_is_popped(app_ctx: AppCtx, tmp_path: Path) -> None:
+    fs = SchemeFs({"/d/f.txt": b"remote\n"})
+    manager = LocalCopyManager(tmp_path / "copies", app_ctx.app.start_job, poll_interval=0.05, settle_time=0.05)
+    app_ctx.app.local_copies = manager
+    screen = await open_in_editor(app_ctx, fs.path("/d/f.txt"))
+    entry = only_entry(manager)
+    overwrite(fs, "/d/f.txt", b"server\n")
+
+    await app_ctx.pilot.press("x", "ctrl+s")
+    await poll_until(app_ctx.pilot, lambda: isinstance(app_ctx.app.screen, ResponseDialog))
+    await screen.action_close_editor()
+    await app_ctx.pilot.pause(delay=0.3)
+    assert isinstance(app_ctx.app.screen, ResponseDialog)
+    assert screen in app_ctx.app.screen_stack
+
+    await app_ctx.pilot.click("#SKIP")
+    await back_in_the_list(app_ctx)
+
+    assert screen not in app_ctx.app.screen_stack
+    assert entry.status is CopyStatus.CONFLICT
+    assert content(fs, "/d/f.txt") == b"server\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_opening_a_copy_says_where_saves_go_and_a_local_file_says_nothing(app_ctx: AppCtx, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    notices = capture_notices(app_ctx, monkeypatch)
+    fs = SchemeFs({"/d/f.txt": b"remote\n"})
+    install_manager(app_ctx, tmp_path, ScriptedRunner())
+    await open_in_editor(app_ctx, fs.path("/d/f.txt"))
+    assert notices == ["Local copy of ssh://user@host:2222/d/f.txt. Saves are written back to the source."]
+    await app_ctx.pilot.press("ctrl+w")
+    await back_in_the_list(app_ctx)
+
+    notices.clear()
+    local = tmp_path / "local.txt"
+    local.write_text("x")
+    await open_in_editor(app_ctx, VPath(local, LocalFilesystem.singleton()))
+    assert notices == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_opening_a_read_only_copy_says_it_is_never_written_back(app_ctx: AppCtx, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    notices = capture_notices(app_ctx, monkeypatch)
+    jar = tmp_path / "x.jar"
+    with zipfile.ZipFile(jar, "w") as zf:
+        zf.writestr("a.txt", "member\n")
+    local = LocalFilesystem.singleton()
+    install_manager(app_ctx, tmp_path, ScriptedRunner())
+
+    await open_in_editor(app_ctx, ArchiveFilesystem(local.path(tmp_path), local.path(jar)).path("/a.txt"))
+
+    assert notices == ["a.txt is read-only: it is never written back. Save As writes a local file."]
 
 
 @pytest.mark.asyncio

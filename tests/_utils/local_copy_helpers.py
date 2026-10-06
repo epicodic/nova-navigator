@@ -6,6 +6,7 @@ import asyncio
 from pathlib import PurePath
 
 from nova_navigator.scheduler import Job, ResponseRequest
+from nova_navigator.vfs.filesystem import AtomicWriterLike
 from nova_navigator.vfs.vpath import VPath
 from nova_widgets import Response
 
@@ -24,6 +25,13 @@ def overwrite(fs: MockFilesystem, path: str, data: bytes) -> None:
     writer = fs.write(VPath(path, fs))
     writer.write(data)
     writer.close()
+
+
+class RefusingFs(SchemeFs):
+    """SchemeFs whose write-back always fails without touching the source, like an unreachable server."""
+
+    def write_atomic(self, path: VPath) -> AtomicWriterLike:
+        raise OSError("disk full")
 
 
 class ScriptedRunner:
