@@ -13,7 +13,8 @@ from nova_navigator.local_copies import LocalCopyManager
 from nova_navigator.nerd_font_detect import detect_nerd_font
 from nova_navigator.scheduler import Job
 from nova_navigator.vfs import VPath
-from nova_navigator.vfs.filesystems import ArchiveFilesystem, LocalFilesystem
+from nova_navigator.vfs.filesystems import ArchiveFilesystem
+from nova_navigator.vfs.local_copy import is_local_source
 from nova_navigator.vfs.process_root import process_root
 from nova_navigator.vfs.scheme_registry import register_common_schemes
 from nova_widgets.menu import SYMBOL_TABLE, set_icon_provider
@@ -85,10 +86,7 @@ class NovaNavigatorCore:
             await self.set_panel_directory(path, panel)
             return
 
-        # ArchiveFilesystem.unwrap() currently returns the archive filesystem itself, so the first
-        # check alone already rejects archive members. The explicit exclusion keeps archive members
-        # treated as non-local even if unwrap() is ever changed to return the container's filesystem.
-        is_non_local = not isinstance(path.filesystem.unwrap(), LocalFilesystem) or isinstance(path.filesystem, ArchiveFilesystem)
+        is_non_local = not is_local_source(path)
 
         if archive.is_supported_archive(path.path):
             if not is_non_local:

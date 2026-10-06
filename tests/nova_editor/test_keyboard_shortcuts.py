@@ -12,9 +12,10 @@ from textual.pilot import Pilot
 from nova_editor.app import build_app
 from nova_editor.screen import EditorScreen
 from nova_widgets.data_table import DataTable
+from nova_widgets.key_types import KeySequence
 from nova_widgets.keybindings_dialog import KeybindingsDialog
 from tests.nova_editor.helpers_view import wait_until
-from tests.nova_editor.screen_host import EditorScreenHost
+from tests.nova_editor.screen_host import EditorScreenHost, write_keys
 from tests.nova_editor.view_menu import open_view_menu
 
 WIDE = (160, 24)
@@ -106,3 +107,21 @@ async def test_escape_closes_the_dialog_and_changes_nothing(tmp_path: Path) -> N
         await wait_until(pilot, lambda: dialog_of(app) is None)
         assert not (tmp_path / "keybindings.toml").exists()
         assert {a.id: a.shortcut_label for a in screen.ACTIONS}["editor.find"] == "Ctrl+F"
+
+
+@pytest.mark.asyncio
+async def test_a_config_without_the_item_applies_overrides_and_offers_no_dialog(tmp_path: Path) -> None:
+    config = write_keys(tmp_path, {"editor.find": KeySequence.parse("ctrl+k"), "editor.goto": None})
+    host = EditorScreenHost(keybindings=config, keyboard_shortcuts_item=False, standalone=True)
+    async with host.run_test(size=WIDE) as pilot:
+        await pilot.pause()
+        screen = host.screen_instance
+        assert screen is not None
+        assert len(screen.ACTIONS) == 18
+        assert [a.id for a in screen.menu_bar.actions[3].actions] == ["editor.line_numbers", "editor.wrap_mode"]
+        labels = {a.id: a.shortcut_label for a in screen.ACTIONS}
+        assert labels["editor.find"] == "Ctrl+K"
+        assert labels["editor.goto"] == ""
+        screen.action_keyboard_shortcuts()
+        await pilot.pause(delay=0.3)
+        assert host.screen is screen

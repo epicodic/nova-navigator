@@ -111,6 +111,7 @@ class EditorScreen(Screen[None]):
         path: Path | None = None,
         *,
         keybindings: KeybindingsConfig | None = None,
+        keyboard_shortcuts_item: bool = True,
         file_provider: FileProvider | None = None,
         soft_wrap: bool = False,
         config: LazyConfig | None = None,
@@ -124,6 +125,7 @@ class EditorScreen(Screen[None]):
         Args:
             path: The file to open, or `None` for an empty buffer.
             keybindings: User keybinding overrides; `None` for defaults.
+            keyboard_shortcuts_item: Offer View > Keyboard Shortcuts… when `keybindings` is given; an embedding host that edits the key file itself passes `False`.
             file_provider: FileProvider for the file dialogs; defaults to the local file system provider.
             soft_wrap: Start with soft wrapping enabled.
             config: Thresholds of the lazy document; `None` for defaults.
@@ -143,8 +145,8 @@ class EditorScreen(Screen[None]):
         self._open_flows = 0
 
         self.ACTIONS: list[Action] = build_editor_actions()
-        """The 18 `editor.*` actions of this screen, plus Keyboard Shortcuts… when the screen has a key config; the menus, the keymap registry and the handlers use these very objects."""
-        if keybindings is not None:
+        """The 18 `editor.*` actions of this screen, plus Keyboard Shortcuts… with a key config and `keyboard_shortcuts_item`; the menus, the registry and the handlers use these very objects."""
+        if keybindings is not None and keyboard_shortcuts_item:
             self.ACTIONS.append(build_keyboard_shortcuts_action())
         self._by_id: dict[str, Action] = {a.id: a for a in self.ACTIONS if a.id is not None}
         self._swallowed: set[KeySequence] = set()
@@ -377,7 +379,7 @@ class EditorScreen(Screen[None]):
 
     def action_keyboard_shortcuts(self) -> None:
         """Keyboard Shortcuts…: edit the editor key bindings in the shared dialog; a save applies at once."""
-        if self._keybindings is not None:
+        if "editor.keyboard_shortcuts" in self._by_id:
             self._start_flow(self._keyboard_shortcuts_flow)
 
     # Status refresh

@@ -398,3 +398,191 @@ async def test_shutdown_closes_cached_archive_mounts(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="closed"):
         archive_fs.refresh_from_source()
+
+
+# ---------------------------------------------------------------------------
+# release(): the end of a built-in editor session (the external-application paths use close()/sync_now())
+# ---------------------------------------------------------------------------
+
+
+def _sync_jobs(runner: _Runner) -> list[Job]:
+    return [job for job in runner.jobs if job.title.startswith("Sync:")]
+
+
+@pytest.mark.asyncio
+async def test_release_right_after_a_save_syncs_exactly_once(tmp_path: Path) -> None:
+    fs = SchemeFs({"/d/f.txt": b"old"})
+    runner = _Runner()
+    manager = await _manager(tmp_path, runner)
+    entry = await manager.open(fs.path("/d/f.txt"))
+    assert entry is not None
+    entry.copy.path.write_bytes(b"new")
+
+    await manager.release(entry)
+    await manager.wait_idle(max_wait=3)
+
+    assert fs.read(fs.path("/d/f.txt")).read(10) == b"new"
+    assert entry.status is CopyStatus.SYNCED
+    assert entry.detector is None
+    assert len(_sync_jobs(runner)) == 1
+    assert manager.unsynced() == []
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_release_waits_for_a_running_sync_and_then_writes_a_later_save(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fs = SchemeFs({"/d/f.txt": b"old"})
+    _slow_to_write(monkeypatch, fs, delay=0.3)
+    runner = _Runner()
+    manager = await _manager(tmp_path, runner)
+    entry = await manager.open(fs.path("/d/f.txt"))
+    assert entry is not None
+    entry.copy.path.write_bytes(b"first")
+    await _wait_until(lambda: entry.status is CopyStatus.SYNCING, max_wait=3)
+    entry.copy.path.write_bytes(b"second")
+
+    await manager.release(entry)
+
+    assert fs.read(fs.path("/d/f.txt")).read(10) == b"second"
+    assert entry.status is CopyStatus.SYNCED
+    assert entry.sync_task is None
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_release_of_an_unmodified_copy_starts_no_sync_and_stops_watching(tmp_path: Path) -> None:
+    fs = SchemeFs({"/d/f.txt": b"old"})
+    runner = _Runner()
+    manager = await _manager(tmp_path, runner)
+    entry = await manager.open(fs.path("/d/f.txt"))
+    assert entry is not None
+
+    await manager.release(entry)
+
+    assert _sync_jobs(runner) == []
+    assert entry.detector is None
+    assert entry.status is CopyStatus.SYNCED
+    assert manager.entries == [entry]
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_release_does_not_overwrite_a_conflicting_source(tmp_path: Path) -> None:
+    fs = SchemeFs({"/d/f.txt": b"old"})
+    runner = _Runner([Response.SKIP])
+    manager = await _manager(tmp_path, runner)
+    entry = await manager.open(fs.path("/d/f.txt"))
+    assert entry is not None
+    overwrite(fs, "/d/f.txt", b"server")
+    entry.copy.path.write_bytes(b"local")
+    await manager.wait_idle(max_wait=3)
+    assert entry.status is CopyStatus.CONFLICT
+    jobs_before = len(_sync_jobs(runner))
+
+    await manager.release(entry)
+
+    assert entry.status is CopyStatus.CONFLICT
+    assert len(_sync_jobs(runner)) == jobs_before
+    assert fs.read(fs.path("/d/f.txt")).read(10) == b"server"
+    assert entry.copy.path.read_bytes() == b"local"
+    assert manager.unsynced() == [entry]
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_release_reports_a_failed_sync_and_keeps_the_copy(tmp_path: Path) -> None:
+    fs = SchemeFs({"/d/f.txt": b"old"}, write_errors={"/d/f.txt": OSError("disk full")})
+    manager = await _manager(tmp_path, _Runner())
+    entry = await manager.open(fs.path("/d/f.txt"))
+    assert entry is not None
+    entry.copy.path.write_bytes(b"new")
+
+    await manager.release(entry)
+
+    assert entry.status is CopyStatus.FAILED
+    assert entry.error
+    assert entry.copy.path.read_bytes() == b"new"
+    assert entry.detector is None
+    assert manager.unsynced() == [entry]
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_release_of_a_read_only_copy_syncs_nothing(tmp_path: Path) -> None:
+    fs = _ReadOnlyFs({"/d/f.txt": b"old"})
+    runner = _Runner()
+    manager = await _manager(tmp_path, runner)
+    entry = await manager.open(fs.path("/d/f.txt"))
+    assert entry is not None
+
+    await manager.release(entry)
+
+    assert _sync_jobs(runner) == []
+    assert entry.status is CopyStatus.READ_ONLY
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_release_twice_is_safe(tmp_path: Path) -> None:
+    fs = SchemeFs({"/d/f.txt": b"old"})
+    runner = _Runner()
+    manager = await _manager(tmp_path, runner)
+    entry = await manager.open(fs.path("/d/f.txt"))
+    assert entry is not None
+    entry.copy.path.write_bytes(b"new")
+
+    await manager.release(entry)
+    await manager.release(entry)
+
+    assert len(_sync_jobs(runner)) == 1
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_released_copy_is_watched_again_when_it_is_reopened(tmp_path: Path) -> None:
+    fs = SchemeFs({"/d/f.txt": b"old"})
+    manager = await _manager(tmp_path, _Runner())
+    entry = await manager.open(fs.path("/d/f.txt"))
+    assert entry is not None
+    await manager.release(entry)
+
+    again = await manager.open(fs.path("/d/f.txt"))
+
+    assert again is entry
+    assert entry.detector is not None
+    await manager.shutdown()
+
+
+# Pins of the external-application paths that release() must not change.
+
+
+@pytest.mark.asyncio
+async def test_close_still_syncs_then_stops_watching(tmp_path: Path) -> None:
+    fs = SchemeFs({"/d/f.txt": b"old"})
+    manager = await _manager(tmp_path, _Runner())
+    entry = await manager.open(fs.path("/d/f.txt"))
+    assert entry is not None
+    entry.copy.path.write_bytes(b"new")
+
+    await manager.close(entry)
+
+    assert fs.read(fs.path("/d/f.txt")).read(10) == b"new"
+    assert entry.detector is None
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_close_still_forces_the_overwrite_of_a_conflict_entry(tmp_path: Path) -> None:
+    fs = SchemeFs({"/d/f.txt": b"old"})
+    manager = await _manager(tmp_path, _Runner([Response.SKIP]))
+    entry = await manager.open(fs.path("/d/f.txt"))
+    assert entry is not None
+    overwrite(fs, "/d/f.txt", b"server")
+    entry.copy.path.write_bytes(b"local")
+    await manager.wait_idle(max_wait=3)
+    assert entry.status is CopyStatus.CONFLICT
+
+    await manager.close(entry)
+
+    assert fs.read(fs.path("/d/f.txt")).read(10) == b"local"
+    await manager.shutdown()

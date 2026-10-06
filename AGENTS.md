@@ -79,7 +79,7 @@ Key documents in `docs/` — read every one whose topic overlaps with your task:
 | File | Topic |
 |------|-------|
 | `docs/coding_conventions.md` | Naming, style, and code patterns for this project |
-| `docs/editor.md` | Text editor package (`nova_editor`) — architecture, layering, vendoring policy, and update instructions |
+| `docs/editor.md` | Text editor package (`nova_editor`) — architecture, layering, vendoring policy, and update instructions; also read before touching `NovaNavigator.open_editor` |
 | `docs/dialog.md` | Dialog base class — read before creating new dialogs |
 | `docs/scheduler.md` | Async task scheduler framework — read before touching `scheduler/` or long-running operations |
 | `docs/directory_browser.md` | Directory browser widget design — read before touching `widgets/directory_browser.py` |
@@ -94,9 +94,10 @@ Key documents in `docs/` — read every one whose topic overlaps with your task:
 
 ## Architecture
 
-The codebase lives under `src/` and contains two packages:
+The codebase lives under `src/` and contains three packages:
 
 - **`nova_navigator/`** — the main application
+- **`nova_editor/`** — the text editor: widget, lazy document, `EditorScreen` and the standalone `nova_edit` app (see `docs/editor.md`)
 - **`nova_widgets/`** — reusable Textual widgets (menu bar, icon rendering), developed alongside the app
 
 ### Key layers
@@ -126,6 +127,9 @@ The codebase lives under `src/` and contains two packages:
 - `terminal.py` — `Terminal` Textual widget (pyte rendering, draining, event handling)
 
 **Commands:** `nova_navigator/commands/` — Textual-free `CommandRunner` service that runs a final shell script in a terminal or as a background job. See `docs/commands.md`.
+
+**Editor:** `NovaNavigator.open_editor` (`nova_navigator/nova_navigator.py`) pushes the `nova_editor` `EditorScreen`; `nova_navigator/local_copies/editor_session.py` (Textual-free) decides local file or local copy and ends the session with `LocalCopyManager.release`; `nova_navigator/embedded_editor_keys.py` lists the editor actions in the keybindings dialog.
+See `docs/editor.md` ("Embedding in the navigator") and `docs/local_copies.md`.
 
 **User menu:** `nova_navigator/usermenu/` — F2 user menu: config parsing, condition evaluation and placeholder expansion (Textual-free), plus the `UserMenuPopup` widget in `popup.py`. See `docs/user_menu.md`.
 
