@@ -17,8 +17,8 @@ from tests.integration.conftest import AppCtx, set_panels
 async def test_f4_on_directory_shows_error_dialog(app_ctx: AppCtx) -> None:
     """Pressing F4 (Edit) on a directory shows an error dialog instead of crashing.
 
-    Editor.open() raises IsADirectoryError for directories; the global exception
-    handler must catch it and display a MessageBox rather than terminating.
+    NovaNavigator.open_editor() raises IsADirectoryError for directories; the global
+    exception handler must catch it and display a MessageBox rather than terminating.
     """
     subdir = app_ctx.src_dir / "subdir"
     subdir.mkdir()
@@ -30,7 +30,7 @@ async def test_f4_on_directory_shows_error_dialog(app_ctx: AppCtx) -> None:
     # An error dialog (ModalScreen) should now be on top of the screen stack.
     assert any(isinstance(s, ModalScreen) for s in app_ctx.pilot.app.screen_stack)
 
-    # Dismiss the error dialog (Continue).  The Editor is popped before the
-    # dialog appears, so only MainScreen remains afterwards.
+    # Dismiss the error dialog (Continue).  No editor screen is pushed for
+    # a directory, so only MainScreen remains afterwards.
     await app_ctx.pilot.press("escape")
     await app_ctx.pilot.pause()
