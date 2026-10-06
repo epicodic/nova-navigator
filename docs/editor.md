@@ -363,6 +363,10 @@ class MyEditorApp(App):
 - `editor_class` is the editor widget class; a probe subclass can be passed in.
 - `NovaEditApp.search(needle, *, backward=False, case_sensitive=None)` starts a search and remembers the needle for F3.
 
+`build_app(argv: Sequence[str]) -> NovaEditApp` parses the command line and builds the app with the key file of the config directory loaded (a missing file means the defaults).
+
+`default_config_dir(home: Path | None = None) -> Path` returns the directory of the nova_edit key file: `~/.config/nova-edit` (REQ-5).
+
 ---
 
 ## Running the Editor
@@ -370,8 +374,10 @@ class MyEditorApp(App):
 ```sh
 uv run nova_edit                    # Open editor with no file
 uv run nova_edit /path/to/file.txt  # Open a specific file
+uv run nova_edit --config-dir DIR   # Use a custom directory for keybindings.toml
 ```
 
+The key file is `~/.config/nova-edit/keybindings.toml` by default (REQ-5).
 A path that exists but is not a regular file (a FIFO, a device, a directory) is refused: `main()` prints `nova_edit: <path>: not a regular file` to stderr and exits with status 1.
 A path that does not exist opens an empty buffer that the first save creates (see "EditorScreen").
 Every file is opened through `NovaTextArea.open`; there is no eager path.
@@ -416,7 +422,7 @@ EditorScreen(
 
 **Parameters:**
 - `path` — File to open, or `None` for an empty buffer.
-- `keybindings` — User keybinding overrides from `~/.config/nova-navigator/keybindings.toml`; `None` for defaults.
+- `keybindings` — User keybinding overrides; the standalone host passes `KeybindingsConfig` of `~/.config/nova-edit/keybindings.toml` and the navigator's config is never read; `None` for defaults.
 - `file_provider` — FileProvider for the file dialogs of Open and Save As; defaults to the local file system provider (`default_file_provider()`). A host with another file system passes its own provider.
 - `soft_wrap` — Start with soft wrapping enabled (default `False`).
 - `config` — Tunable thresholds of the lazy document (`LazyConfig`); `None` for defaults.
@@ -429,7 +435,7 @@ EditorScreen(
 
 The screen builds these components on construction:
 
-1. **ACTIONS** — Fresh list of 18 `Action` objects (built by `build_editor_actions()`).
+1. **ACTIONS** — Fresh list of 18 `Action` objects (built by `build_editor_actions()`), plus Keyboard Shortcuts… when the screen has a key config.
 2. **MenuBar** — Menu bar with File, Edit, Search, View menus (built by `build_menu_bar()`).
 3. **HintBar** — Key hint display (one per screen).
 4. **KeymapRegistry** — Manages keybindings and dispatches actions (one per screen).
@@ -438,7 +444,7 @@ The screen builds these components on construction:
 Each screen instance has its own action registry, menu bar, and keybinding registry.
 This allows multiple EditorScreen instances in different Textual screens to have independent key bindings and menu states.
 
-### The 18 Editor Actions
+### The 18 Editor Actions (19 with a config)
 
 **File operations:**
 | Action | ID | Key | Description |
@@ -486,7 +492,11 @@ Actions with `show=True` appear in the hint bar; checkable actions maintain stat
 
 **Default keys** are defined in `build_editor_actions()`.
 
-**User overrides** come from the `KeybindingsConfig` the host passes in (hosts supply the config directory). Example file content:
+**User overrides** come from the `KeybindingsConfig` the host passes in (hosts supply the config directory).
+
+**The nova_edit key file** is `~/.config/nova-edit/keybindings.toml` (REQ-5); a missing file means the defaults; an empty string (`""`) in the `[bindings]` section unmaps the action.
+
+Example file content:
 
 ```toml
 [bindings]
@@ -507,6 +517,14 @@ When one of these actions is moved or unmapped, `press_key` swallows its old def
 **Popup inputs:** while an `Input` of a popup has the focus, `press_key` leaves every key that the `Input` binds itself (Ctrl+A is home, Ctrl+W deletes a word, Ctrl+X/C/V cut, copy and paste) and the keys of the editing actions to the `Input`; the editing actions never run from a popup.
 All other keys (Ctrl+F, Ctrl+G, F3, Shift+F3, Ctrl+S, F5, Ctrl+Q) reach the keymap first, so they work with a popup open.
 Escape, Enter and Alt+C are not mapped to an action and reach the popup.
+
+### Keyboard Shortcuts dialog
+
+The dialog is opened from View > "Keyboard Shortcuts…" (`editor.keyboard_shortcuts` id, no default key).
+It exists only when the screen has a `KeybindingsConfig`, so the 18-action list, the REQ-4 table and a config-less host stay exactly as they are.
+The dialog lists the `editor.*` actions (all 19 including itself) and their effective bindings from the config.
+After the dialog is dismissed (OK or Cancel), the flow calls `reload_keymap()`, which re-reads the file, runs `_apply_keymap()` and re-measures the menus, applying at once any changes to the key, the menu label, the hint bar, B1 swallowing and unmap handling.
+The navigator config is never read.
 
 ### Menu Bar
 
@@ -536,6 +554,7 @@ The menu bar has four menus:
 **View Menu:**
 - Line Numbers (F11, checkable)
 - Wrap Mode (F10, checkable)
+- Keyboard Shortcuts… (no default key; shown only when the screen has a key config)
 
 Checkable menu items start with the state of the widget, which is checked for Line Numbers and unchecked for Wrap Mode, and are kept in sync with the widget's reactive properties (`soft_wrap`, `show_line_numbers`).
 

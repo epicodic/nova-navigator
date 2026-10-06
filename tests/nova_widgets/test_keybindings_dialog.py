@@ -104,3 +104,42 @@ def test_keybindings_dialog_forwards_key_display_style(tmp_path: Path) -> None:
         key_display_style=KeyFormatStyle.EMACS,
     )
     assert dialog._key_display_style == KeyFormatStyle.EMACS
+
+
+async def _accept_dialog(dialog: KeybindingsDialog) -> None:
+    from textual.app import App, ComposeResult
+
+    class HostApp(App[None]):
+        def compose(self) -> ComposeResult:
+            return iter([])
+
+        async def on_mount(self) -> None:
+            await self.push_screen(dialog)
+
+    app = HostApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not isinstance(app.screen, KeybindingsDialog)
+
+
+@pytest.mark.asyncio
+async def test_saving_keeps_an_unmapped_action_unmapped(tmp_path: Path) -> None:
+    config = KeybindingsConfig(tmp_path)
+    config.save({"browser.copy": None})
+    actions = _make_actions()
+    await _accept_dialog(KeybindingsDialog(actions=actions, config=config))
+    reloaded = KeybindingsConfig(tmp_path).resolve(actions)
+    assert "browser.copy" not in reloaded
+    assert str(reloaded["browser.move"]) == "f6"
+
+
+@pytest.mark.asyncio
+async def test_saving_writes_nothing_for_an_action_without_default_and_override(
+    tmp_path: Path,
+) -> None:
+    config = KeybindingsConfig(tmp_path)
+    actions = [*_make_actions(), Action("Extra", id="browser.extra", action="extra")]
+    await _accept_dialog(KeybindingsDialog(actions=actions, config=config))
+    assert "browser.extra" not in (tmp_path / "keybindings.toml").read_text()
