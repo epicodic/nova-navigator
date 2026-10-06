@@ -25,18 +25,20 @@ The implementation is split across two packages.
 ## Action Definition
 
 Every dispatchable command is described by an `Action` object defined in `nova_widgets/action.py`.
-The keymap-relevant fields added to `Action` are:
+The keymap-relevant fields of the constructor are:
 
-| Field | Type | Meaning |
-|-------|------|---------|
-| `name` | `str \| None` | Stable dot-namespaced identifier, e.g. `"browser.copy"` |
+| Parameter | Type | Meaning |
+|-----------|------|---------|
+| `text` | `str \| None` | Display label for menus, e.g. `"Open…"` |
+| `id` | `str \| None` | Stable dot-namespaced identifier, e.g. `"browser.copy"` |
 | `action` | `str \| None` | Textual action string dispatched on activation, e.g. `"copy_or_move_files(False)"` |
 | `description` | `str` | Human-readable description shown in the keybindings dialog |
-| `default_key` | `str \| None` | Default key sequence in Textual notation, e.g. `"f5"` or `"ctrl+x ctrl+s"` |
-| `show_in_bar` | `bool` | Whether the action appears in the `HintBar` |
+| `shortcut` | `str \| None` | Default key sequence in Textual notation, e.g. `"f5"` or `"ctrl+x ctrl+s"` |
+| `show` | `bool` | Whether the action appears in the `HintBar` |
 | `bar_priority` | `int` | Sort order in the `HintBar` (lower = further left) |
-| `initial_shortcut` | `KeySequence \| None` | The shortcut set at construction time; frozen, never mutated |
-| `set_shortcut` | method | Set the displayed shortcut after loading user config |
+
+The `initial_shortcut` property holds the shortcut set at construction time (frozen, never mutated).
+The `set_shortcut()` method sets the displayed shortcut after loading user config.
 
 Actions are declared as `ACTIONS: ClassVar[list[Action]]` on a `Screen` or `Widget` subclass.
 Nova Navigator declares them on `MainScreen` and `DirectoryBrowser`.
@@ -47,11 +49,11 @@ Nova Navigator declares them on `MainScreen` and `DirectoryBrowser`.
 ACTIONS: ClassVar[list[Action]] = [
     Action(
         "Copy",
-        name="browser.copy",
+        id="browser.copy",
         action="copy_or_move_files(False)",
         description="Copy selected files to the other panel",
-        default_key="f5",
-        show_in_bar=True,
+        shortcut="f5",
+        show=True,
         bar_priority=20,
     ),
 ]
@@ -162,7 +164,7 @@ Call this before or after `reload`.
 
 ### `handle_key(key, app) -> bool`
 
-Called from `MainScreen._on_key` before any other key handling.
+Called from `NovaNavigator.on_event` before Textual's priority bindings.
 Returns `True` if the key was consumed.
 
 `key` is a Textual key name string such as `"ctrl+x"` or `"f5"`.
@@ -261,9 +263,9 @@ This is the map passed to `KeymapRegistry.reload()`.
    - Collects `ACTIONS` from `MainScreen` and `DirectoryBrowser`.
    - Calls `KeybindingsConfig.resolve(actions)` to get the effective binding map.
    - Calls `KeymapRegistry.reload(bindings, actions)`, which writes shortcut strings back into `Action` objects, rebuilds the trie, and refreshes the hint bar.
-3. On every key event, `MainScreen._on_key` calls `KeymapRegistry.handle_key(key, app)`.
+3. On every key event, `NovaNavigator.on_event` calls `KeymapRegistry.handle_key(key, app)` when a `MainScreen` is the active screen.
    If consumed, the event is stopped.
-   Otherwise, it falls through to terminal key forwarding.
+   Otherwise, it falls through to terminal and panel key handling.
 4. `MainScreen.on_focus` calls `KeymapRegistry.on_focus_changed(self.app.focused)` on every focus change.
 5. `MainScreen.on_hints_changed` calls `KeymapRegistry.update_hint_priorities(event.widget, event.priorities)` when any widget posts a `HintsChanged` message.
 
@@ -303,7 +305,7 @@ Actions with neither default nor override are not written.
 
 ## EditorScreen (nova_editor integration)
 
-`EditorScreen` (in `nova_editor/screen.py`) uses a per-screen keymap registry to support independent key bindings across multiple editor instances (REQ-3).
+`EditorScreen` (in `nova_editor/screen.py`) uses a per-screen keymap registry to support independent key bindings across multiple editor instances.
 
 ### Architecture
 
@@ -322,12 +324,12 @@ This design allows a Textual app to embed multiple editor screens with different
 3. The `KeymapRegistry` manages dispatch.
 4. The host forwards every raw `Key` event to `EditorScreen.press_key` (from `App.on_event`, before Textual's priority bindings); the registry dispatches to the action method.
    While the `Input` of a popup has the focus, `press_key` leaves its own keys and the editing actions to the `Input`; every other key reaches the registry first, so F3, Ctrl+F, Ctrl+G, Ctrl+S and Ctrl+Q work with a popup open.
-With a dialog on top of the screen the host does not call `press_key` (only an `EditorScreen` on top gets it), so the keys belong to the dialog; Textual's own Ctrl+Q binding still reaches `NovaEditApp.action_quit`, which asks the screen and is ignored while a flow is open.
+   With a dialog on top of the screen the host does not call `press_key` (only an `EditorScreen` on top gets it), so the keys belong to the dialog; Textual's own Ctrl+Q binding still reaches `NovaEditApp.action_quit`, which asks the screen and is ignored while a flow is open.
 
 ### Save and Apply Flow
 
 Opening View > "Keyboard Shortcuts…" shows the shared `KeybindingsDialog` with the `editor.*` actions.
-After the dialog is dismissed, the flow calls `reload_keymap()`, which re-reads the config file, runs `_apply_keymap()` and re-measures the menus, applying at once any changes to the key, the menu label, the hint bar, B1 swallowing and unmap handling.
+After the dialog is dismissed, the flow calls `reload_keymap()`, which re-reads the config file, runs `_apply_keymap()` and re-measures the menus, applying at once any changes to the key, the menu label, the hint bar, the swallowing of old editing keys and unmap handling.
 
 ### Navigator integration
 
