@@ -468,7 +468,7 @@ class ContextResolver(Protocol):
 
 `KeybindingsConfig` in `nova_widgets/keybindings_config.py` loads and saves per-user overrides.
 
-**File location:** `~/.config/nova-navigator/keybindings.toml`
+**File location:** `~/.config/nova-navigator/keybindings.toml` (navigator); `nova_edit` uses `~/.config/nova-edit/keybindings.toml`.
 
 **File format:**
 
@@ -486,6 +486,11 @@ Setting a value to an empty string (`""`) unmaps the default binding entirely.
 
 Merges `Action.default_key` values with file overrides and returns the effective `{action_name: key_sequence}` map.
 This is the map passed to `KeymapRegistry.reload()`.
+
+### Dialog fix
+
+The dialog keeps unmapped actions unmapped on save: an action that has an initial default key but no entry in the resolved map joins the deleted names, so the save writes it as `None` again.
+Actions with neither default nor override are not written.
 
 ---
 
@@ -559,7 +564,7 @@ After the dialog is dismissed, `MainScreen._reload_keymap` is called to apply an
 ### Architecture
 
 Each `EditorScreen` instance builds:
-1. **ACTIONS** — 18 editor actions (File, Edit, Search, View).
+1. **ACTIONS** — 18 editor actions (File, Edit, Search, View), plus Keyboard Shortcuts… when the screen has a key config.
 2. **KeymapRegistry** — Per-screen registry for those actions (not shared).
 3. **MenuBar** — Per-screen menu bar with current bindings.
 4. **HintBar** — Per-screen hint bar.
@@ -575,6 +580,11 @@ This design allows a Textual app to embed multiple editor screens with different
    While the `Input` of a popup has the focus, `press_key` leaves its own keys and the editing actions to the `Input`; every other key reaches the registry first, so F3, Ctrl+F, Ctrl+G, Ctrl+S and Ctrl+Q work with a popup open.
 With a dialog on top of the screen the host does not call `press_key` (only an `EditorScreen` on top gets it), so the keys belong to the dialog; Textual's own Ctrl+Q binding still reaches `NovaEditApp.action_quit`, which asks the screen and is ignored while a flow is open.
 
+### Save and Apply Flow
+
+Opening View > "Keyboard Shortcuts…" shows the shared `KeybindingsDialog` with the `editor.*` actions.
+After the dialog is dismissed, the flow calls `reload_keymap()`, which re-reads the config file, runs `_apply_keymap()` and re-measures the menus, applying at once any changes to the key, the menu label, the hint bar, B1 swallowing and unmap handling.
+
 ### Amendment B2 Defect (Workaround)
 
 **The problem:** `KeymapRegistry.reload()` puts the default key of an unmapped action back instead of showing nothing.
@@ -584,5 +594,6 @@ For example, if `editor.save` is unmapped (empty string) in keybindings, the hin
 
 **Workaround:** `_apply_keymap` calls `action.set_shortcut(None)` for every action without an effective binding after `reload()`.
 The menu and the hint bar then show no key for it.
+The defect stays deferred with the screen workaround, because fixing it in the registry changes the navigator's behaviour.
 
 ---
