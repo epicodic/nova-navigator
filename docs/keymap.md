@@ -20,17 +20,11 @@ The implementation is split across two packages.
 | `keybindings_config.py` | `KeybindingsConfig` (TOML persistence) |
 | `keybindings_dialog.py` | `KeybindingsDialog`, `KeyCaptureDialog` |
 
-**`nova_navigator/keymap/`** — app-specific context and wiring:
-
-| Module | Contents |
-|--------|----------|
-| `context.py` | `NovaContextResolver` — resolves the active context for the app |
-
 ---
 
 ## Action Definition
 
-Every dispatchable command is described by an `Action` object defined in `nova_widgets/menu/_action.py`.
+Every dispatchable command is described by an `Action` object defined in `nova_widgets/action.py`.
 The keymap-relevant fields added to `Action` are:
 
 | Field | Type | Meaning |
@@ -40,7 +34,9 @@ The keymap-relevant fields added to `Action` are:
 | `description` | `str` | Human-readable description shown in the keybindings dialog |
 | `default_key` | `str \| None` | Default key sequence in Textual notation, e.g. `"f5"` or `"ctrl+x ctrl+s"` |
 | `show_in_bar` | `bool` | Whether the action appears in the `HintBar` |
-| `bar_priority` | `int` | Default sort order in the `HintBar` (lower = further left) |
+| `bar_priority` | `int` | Sort order in the `HintBar` (lower = further left) |
+| `initial_shortcut` | `KeySequence \| None` | The shortcut set at construction time; frozen, never mutated |
+| `set_shortcut` | method | Set the displayed shortcut after loading user config |
 
 Actions are declared as `ACTIONS: ClassVar[list[Action]]` on a `Screen` or `Widget` subclass.
 Nova Navigator declares them on `MainScreen` and `DirectoryBrowser`.
@@ -250,35 +246,10 @@ app.quit = "ctrl+q"
 Only overrides need to be listed; actions absent from the file fall back to their `default_key`.
 Setting a value to an empty string (`""`) unmaps the default binding entirely.
 
-### `resolve(actions) -> dict[str, str]`
+### `resolve(actions) -> dict[str, KeySequence]`
 
 Merges `Action.default_key` values with file overrides and returns the effective `{action_name: key_sequence}` map.
 This is the map passed to `KeymapRegistry.reload()`.
-
----
-
-## HintBar
-
-`HintBar` in `nova_widgets/keymap/hint_bar.py` is a Textual widget docked to the bottom of the screen (height 1).
-It replaces the old `Footer` widget.
-
-It operates in two modes:
-
-**Normal mode** — displays `[KEY] Label` badges for all actions in the pre-sorted list supplied by `set_hints`.
-`KeymapRegistry._refresh_hint_bar` calls `set_hints` with a list already filtered to `show_in_bar=True` and sorted by effective priority (default `bar_priority` overridden by any widget-specific priorities).
-
-**Chord-pending mode** — when the user has pressed the first chord of a multi-chord sequence, the bar switches to display the pressed prefix and available continuation keys.
-Pressing `Escape` cancels and returns to normal mode.
-
-### Key display styles
-
-Configured via `GeneralSettings.key_display_style` (`KeyDisplayStyle`):
-
-| Style | Example |
-|-------|---------|
-| `classic` | `Ctrl+C` |
-| `emacs` | `C-c` |
-| `caret` | `^C` |
 
 ---
 
@@ -323,242 +294,10 @@ The navigator lists `MainScreen.ACTIONS` followed by the 18 editor actions of `e
 The ids stay `editor.*`, so the overrides land under the same names in `keybindings.toml` as in the standalone editor.
 Every `editor.*` id must be in the list, because a save replaces the overrides in the file with the map of the listed actions.
 
----
+### Unmapped actions behavior
 
-## Action Definition
-
-Every dispatchable command is described by an `Action` object defined in `nova_widgets/menu/_action.py`.
-The keymap-relevant fields added to `Action` are:
-
-| Field | Type | Meaning |
-|-------|------|---------|
-| `name` | `str \| None` | Stable dot-namespaced identifier, e.g. `"browser.copy"` |
-| `action` | `str \| None` | Textual action string dispatched on activation, e.g. `"copy_or_move_files(False)"` |
-| `description` | `str` | Human-readable description shown in the keybindings dialog |
-| `contexts` | `list[str]` | Contexts in which this action is active (see [Contexts](#contexts)) |
-| `default_key` | `str \| None` | Default key sequence in Textual notation, e.g. `"f5"` or `"ctrl+x ctrl+s"` |
-| `show_in_bar` | `bool` | Whether the action appears in the `HintBar` |
-| `bar_priority` | `int` | Sort order in the `HintBar` (lower = further left) |
-
-Actions are declared as `ACTIONS: ClassVar[list[Action]]` on a `Screen` or `Widget` subclass.
-Nova Navigator declares them on `MainScreen` and `DirectoryBrowser`.
-
-### Example
-
-```python
-ACTIONS: ClassVar[list[Action]] = [
-    Action(
-        "Copy",
-        name="browser.copy",
-        action="copy_or_move_files(False)",
-        description="Copy selected files to the other panel",
-        contexts=["browser", "browser.selection"],
-        default_key="f5",
-        show_in_bar=True,
-        bar_priority=20,
-    ),
-]
-```
-
----
-
-## Contexts
-
-A **context** is a string that describes the current application state.
-`NovaContextResolver.resolve()` returns one of:
-
-| Context | When active |
-|---------|-------------|
-| `"dialog"` | A `Dialog` modal screen is open |
-| `"terminal"` | The embedded terminal widget has keyboard focus |
-| `"browser.selection"` | A `DirectoryBrowser` has focus **and** has selected items |
-| `"browser"` | A `DirectoryBrowser` has focus with no selection |
-
-### Hierarchical matching
-
-Context matching is **hierarchical**.
-An action registered under `contexts=["browser"]` will fire in both `"browser"` and `"browser.selection"`.
-The rule is: a registered context `c` matches the current context `ctx` if `ctx == c` or `ctx.startswith(c + ".")`.
-
-This means an action that should be available in all browser states only needs `contexts=["browser"]`.
-An action that must be restricted to the selection state uses `contexts=["browser.selection"]`.
-
----
-
-## Key Sequences
-
-Key names follow Textual notation: `"f5"`, `"ctrl+c"`, `"alt+left"`, `"shift+enter"`.
-Multi-chord sequences are space-separated: `"ctrl+x ctrl+s"`.
-
----
-
-## Chord State Machine (`ChordStateMachine`)
-
-The state machine lives in `nova_widgets/keymap/chord.py`.
-It maintains a trie of key sequences and tracks the current position within it.
-
-### How it works
-
-1. `build_trie(bindings)` inserts every `(key_sequence, contexts)` pair into the trie.
-   Each leaf node stores the action name and the set of contexts in which it is active.
-   Each interior (prefix) node accumulates the union of all descendant contexts so the machine can reject a prefix early when the current context cannot reach any leaf below it.
-
-2. `feed(key, context)` processes one key press:
-   - If `"escape"` is pressed, the state machine resets to IDLE and returns `consumed=False` (escape is never consumed).
-   - If the key matches a child of the current node **and** the context matches (hierarchically), the machine advances.
-     - **Leaf hit**: the action name is returned and the machine resets to IDLE.
-     - **Prefix hit**: the machine enters a pending state and returns the list of valid next keys (`continuations`).
-   - If no match, the machine resets to IDLE and returns `consumed=False`.
-
-3. `reset()` unconditionally returns to IDLE.
-
-### ChordResult fields
-
-| Field | Meaning |
-|-------|---------|
-| `consumed` | `True` if the key was handled (action fired or prefix accepted) |
-| `action_name` | Set when a complete sequence was recognised |
-| `continuations` | Set on a prefix hit; list of `(key, action_name)` for next chord |
-
----
-
-## Registry (`KeymapRegistry`)
-
-`KeymapRegistry` in `nova_widgets/keymap/registry.py` is the central coordinator.
-`MainScreen` owns one instance and holds a reference to it.
-
-### `reload(bindings, actions)`
-
-Called after startup and after the user edits keybindings.
-It:
-
-1. Stores the `{action_name: key_sequence}` mapping.
-2. Iterates over `actions`, writing the effective shortcut back into each `Action.shortcut` so menus and the hint bar display the current binding.
-3. Rebuilds the chord trie.
-
-### `handle_key(key, app) -> bool`
-
-Called from `MainScreen._on_key` before any other key handling.
-Returns `True` if the key was consumed.
-
-Dispatch order when a complete chord is resolved:
-
-1. `app.run_action(action, app.focused)` — tries the focused widget first (e.g. `DirectoryBrowser._action_insert_select`).
-2. `app.run_action(action, app.screen)` — tries the active screen (e.g. `MainScreen._action_rename`).
-3. `app.run_action(action)` — falls back to the app itself.
-
-Textual's `_dispatch_action` tries `_action_{name}` before `action_{name}` on each target, so private implementation methods are found without public wrappers.
-
----
-
-## Context Resolver (`NovaContextResolver`)
-
-`NovaContextResolver` in `nova_navigator/keymap/context.py` implements the `ContextResolver` protocol.
-It is instantiated in `MainScreen.on_mount` and passed to `KeymapRegistry`.
-
-```python
-class ContextResolver(Protocol):
-    def resolve(self) -> str: ...
-    def hover_context(self) -> str | None: ...
-```
-
-`resolve()` inspects the live Textual widget tree to determine the active context (see [Contexts](#contexts) above).
-
----
-
-## Keybindings Config (`KeybindingsConfig`)
-
-`KeybindingsConfig` in `nova_widgets/keybindings_config.py` loads and saves per-user overrides.
-
-**File location:** `~/.config/nova-navigator/keybindings.toml` (navigator); `nova_edit` uses `~/.config/nova-edit/keybindings.toml`.
-
-**File format:**
-
-```toml
-[bindings]
-browser.copy = "f5"
-browser.delete = "delete"
-app.quit = "ctrl+q"
-```
-
-Only overrides need to be listed; actions absent from the file fall back to their `default_key`.
-Setting a value to an empty string (`""`) unmaps the default binding entirely.
-
-### `resolve(actions) -> dict[str, str]`
-
-Merges `Action.default_key` values with file overrides and returns the effective `{action_name: key_sequence}` map.
-This is the map passed to `KeymapRegistry.reload()`.
-
-### Dialog fix
-
-The dialog keeps unmapped actions unmapped on save: an action that has an initial default key but no entry in the resolved map joins the deleted names, so the save writes it as `None` again.
+The dialog keeps unmapped actions unmapped on save: an action that has an initial default key but no entry in the resolved map joins the deleted names, so the save writes it as an empty string.
 Actions with neither default nor override are not written.
-
----
-
-## HintBar
-
-`HintBar` in `nova_widgets/keymap/hint_bar.py` is a Textual widget docked to the bottom of the screen (height 1).
-It replaces the old `Footer` widget.
-
-It operates in two modes:
-
-**Normal mode** — displays `[KEY] Label` badges for all actions whose `show_in_bar=True` and which have an active shortcut.
-Badges are sorted by `bar_priority`.
-
-**Chord-pending mode** — when the user has pressed the first chord of a multi-chord sequence, the bar switches to display the pressed prefix and available continuation keys.
-Pressing `Escape` cancels and returns to normal mode.
-
-### Key display styles
-
-Configured via `GeneralSettings.key_display_style` (`KeyDisplayStyle`):
-
-| Style | Example |
-|-------|---------|
-| `classic` | `Ctrl+C` |
-| `emacs` | `C-c` |
-| `caret` | `^C` |
-
----
-
-## Startup flow
-
-1. `MainScreen.on_mount` creates `NovaContextResolver` and `KeymapRegistry`.
-2. `MainScreen._reload_keymap` is called:
-   - Collects `ACTIONS` from `MainScreen` and `DirectoryBrowser`.
-   - Calls `KeybindingsConfig.resolve(actions)` to get the effective binding map.
-   - Calls `KeymapRegistry.reload(bindings, actions)` which writes shortcut strings back into `Action` objects and rebuilds the trie.
-   - Updates the `HintBar` with actions that are `show_in_bar=True` for the current context.
-3. On every key event, `MainScreen._on_key` calls `KeymapRegistry.handle_key(key, app)`.
-   If consumed, the event is stopped.
-   Otherwise, it falls through to terminal key forwarding in `_handle_key`.
-
-`_reload_keymap` is also called after the `KeybindingsDialog` is dismissed.
-
----
-
-## Adding a new action
-
-1. Add an `Action(...)` entry to `ACTIONS` on the appropriate class (`MainScreen` or `DirectoryBrowser`).
-   Choose a dot-namespaced `name`, set `contexts`, `default_key`, and the Textual `action` string.
-
-2. Implement `_action_{name}` (or `action_{name}`) on the same class.
-   Textual's dispatch tries the private form first.
-
-3. If it should appear in the keybindings dialog, `KeybindingsConfig` will pick it up automatically.
-   No further registration is needed.
-
----
-
-## Keybindings Dialog
-
-`KeybindingsDialog` in `nova_widgets/keybindings_dialog.py` lists all known actions with their current shortcut in a data table.
-It is opened from the `𑁔` system menu under **Key Bindings…** or programmatically via `action_keybindings`.
-
-After the dialog is dismissed, `MainScreen._reload_keymap` is called to apply any changes.
-The navigator lists `MainScreen.ACTIONS` followed by the 18 editor actions of `editor_key_actions()` (`nova_navigator/embedded_editor_keys.py`), labelled `Editor: <text>`.
-The ids stay `editor.*`, so the overrides land under the same names in `keybindings.toml` as in the standalone editor.
-Every `editor.*` id must be in the list, because a save replaces the overrides in the file with the map of the listed actions.
 
 ---
 
@@ -597,16 +336,13 @@ The editor actions live in the screen's own registry; the navigator's registry i
 The overrides are applied when the editor is opened; the dialog is not reachable while an editor is open, so `reload_keymap()` is not called.
 While the editor is the active screen, `NovaNavigator.on_event` gives raw keys to `EditorScreen.press_key` and the `MainScreen` registry is not consulted, so equal default keys never collide.
 
-### Amendment B2 Defect (Workaround)
+### Unmapped actions in `KeymapRegistry.reload`
 
-**The problem:** `KeymapRegistry.reload()` puts the default key of an unmapped action back instead of showing nothing.
+`KeymapRegistry.reload()` puts the default key of an unmapped action back instead of showing nothing.
 For example, if `editor.save` is unmapped (empty string) in keybindings, the hint bar would still show `Ctrl+S`.
-
-**Status:** This is a known defect in `nova_widgets` (not in `EditorScreen`).
-
-**Workaround:** `_apply_keymap` calls `action.set_shortcut(None)` for every action without an effective binding after `reload()`.
+This is a known limitation in `nova_widgets`.
+`_apply_keymap` works around this by calling `action.set_shortcut(None)` for every action without an effective binding after `reload()`.
 The menu and the hint bar then show no key for it.
-The defect stays deferred with the screen workaround, because fixing it in the registry changes the navigator's behaviour.
-The navigator integration does not need the fix: the editor actions are never given to the navigator's registry, so only the display of the navigator's own unmapped actions is affected.
+The workaround is sufficient for the navigator integration because the editor actions are never given to the navigator's registry.
 
 ---
