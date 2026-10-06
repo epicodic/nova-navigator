@@ -1388,24 +1388,32 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
             )
 
     def on_editor_screen_closed(self, message: EditorScreen.Closed) -> None:
-        """The editor asked to close: end the session in a worker (the screen may be covered by a dialog for a moment)."""
+        """The editor asked to close: end the session in a worker."""
         session = self._editor_session
         if session is None:
             return
         self._editor_session = None
-        self.run_worker(self._end_editor_session_with_error_handling(session), group="editor_session", exit_on_error=False)
+        self.run_worker(
+            self._end_editor_session_with_error_handling(session),
+            group="editor_session",
+            exit_on_error=True,
+        )
 
-    async def _end_editor_session_with_error_handling(self, session: _EditorSession) -> None:
-        """End the editor session, handling cleanup errors via the recoverable error dialog.
+    async def _end_editor_session_with_error_handling(
+        self, session: _EditorSession
+    ) -> None:
+        """End the editor session, routing cleanup errors through the recoverable dialog.
 
-        Catches exceptions from pop_screen(), reload_panels(), and other cleanup operations.
-        The copy is already released in _end_editor_session's finally block before this catches.
+        Routes exceptions from pop_screen(), reload_panels(), and other cleanup
+        operations to the recoverable error dialog. The copy is released in the inner
+        finally block of _end_editor_session regardless of exceptions.
         """
         try:
             await self._end_editor_session(session)
-        except (RuntimeError, OSError, ValueError) as error:
-            # Catch exceptions from screen/panel cleanup operations and show recovery dialog
-            await self._handle_exception_recoverable(error)
+        except Exception as error:
+            should_terminate = await self._handle_exception_recoverable(error)
+            if should_terminate:
+                raise
 
     async def _end_editor_session(self, session: _EditorSession) -> None:
         try:
