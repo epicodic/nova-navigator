@@ -17,12 +17,13 @@ It fills its full width with `─` (box-drawing) characters and uses the `$text-
 Mount `Separator` between any two widgets where a visual dividing line is needed.
 
 ```python
+from textual.widgets import Label
 from nova_navigator.widgets.separator import Separator
 
 def compose(self) -> ComposeResult:
-    yield HeaderWidget()
+    yield Label("Header")
     yield Separator()
-    yield BodyWidget()
+    yield Label("Body")
 ```
 
 ---
@@ -134,6 +135,8 @@ class MyPopup(PopupWidget):
     def compose(self) -> ComposeResult:
         yield Label("Hello from popup")
 ```
+
+`FindPopup` and `GotoPopup` are concrete examples in the editor package (`src/nova_editor/find_popup.py` and `src/nova_editor/goto_popup.py`) that inherit from `PopupWidget` to provide inline search and line navigation.
 
 ---
 
