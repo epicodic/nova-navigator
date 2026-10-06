@@ -1399,9 +1399,7 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
             exit_on_error=True,
         )
 
-    async def _end_editor_session_with_error_handling(
-        self, session: _EditorSession
-    ) -> None:
+    async def _end_editor_session_with_error_handling(self, session: _EditorSession) -> None:
         """End the editor session, routing cleanup errors through the recoverable dialog.
 
         Routes exceptions from pop_screen(), reload_panels(), and other cleanup

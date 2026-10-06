@@ -458,13 +458,19 @@ async def test_copy_is_released_when_push_screen_fails(app_ctx: AppCtx, tmp_path
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_copy_is_released_when_closing_editor_even_if_error_after_pop(app_ctx: AppCtx, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """finish_editing is called even if an error occurs after pop_screen during
-    _end_editor_session.
+@pytest.mark.parametrize("exception_class", [RuntimeError, KeyError])
+async def test_copy_is_released_when_closing_editor_even_if_error_after_pop(
+    app_ctx: AppCtx,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exception_class: type[BaseException],
+) -> None:
+    """finish_editing is called even if an error occurs during editor close.
 
-    When reload_panels fails, _end_editor_session still calls finish_editing
-    (releasing the copy) before propagating the exception to the recoverable error
-    dialog. The test closes that dialog and verifies the app is still running.
+    When reload_panels fails, the cleanup still calls finish_editing (releasing
+    the copy) before propagating the exception to the recoverable error dialog.
+    The test dismisses that dialog and verifies the editor busy flag is reset
+    and the file can be opened again.
     """
     fs = SchemeFs({"/d/f.txt": b"remote\n"})
     runner = ScriptedRunner()
@@ -475,7 +481,7 @@ async def test_copy_is_released_when_closing_editor_even_if_error_after_pop(app_
 
     # Make reload_panels fail to trigger error propagation
     def failing_reload() -> None:
-        raise RuntimeError("reload_panels failed")
+        raise exception_class("reload_panels failed")
 
     monkeypatch.setattr(app_ctx.screen, "reload_panels", failing_reload)
 
@@ -495,5 +501,10 @@ async def test_copy_is_released_when_closing_editor_even_if_error_after_pop(app_
     await app_ctx.pilot.press("escape")
     await poll_until(app_ctx.pilot, lambda: isinstance(app_ctx.app.screen, MainScreen))
 
-    # Verify we're back at the main screen
+    # Verify we're back at the main screen with no editor screens on the stack
     assert isinstance(app_ctx.app.screen, MainScreen)
+    assert not any(isinstance(s, EditorScreen) for s in app_ctx.app.screen_stack)
+
+    # Verify the file can be opened again (busy flag was reset)
+    new_editor = await open_in_editor(app_ctx, fs.path("/d/f.txt"))
+    assert isinstance(new_editor, EditorScreen)
