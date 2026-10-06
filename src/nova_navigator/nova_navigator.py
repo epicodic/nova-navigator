@@ -1341,6 +1341,7 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
             return
         self._editor_busy = True
         pushed = False
+        target: EditorTarget | None = None
         try:
             # A worker, because the watcher of a local copy starts its sync jobs from the context of this call, and a job can only show its
             # Overwrite/Skip question (push_screen_wait) from a context that belongs to a worker.
@@ -1355,13 +1356,21 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
                 raise failed.error from None
             if target is None:
                 return
-            screen = EditorScreen(path=target.path, keybindings=self._main_screen.keymap_config, keyboard_shortcuts_item=False)
-            screen.keymap_registry.set_key_display_style(conf_.settings.general.key_display_style)
-            if target.read_only:
-                screen.document.editor.read_only = True
-            self._editor_session = _EditorSession(screen, target, self.sub_title)
-            self.push_screen(screen)
-            pushed = True
+            try:
+                screen = EditorScreen(path=target.path, keybindings=self._main_screen.keymap_config, keyboard_shortcuts_item=False)
+                screen.keymap_registry.set_key_display_style(conf_.settings.general.key_display_style)
+                if target.read_only:
+                    screen.document.editor.read_only = True
+                self._editor_session = _EditorSession(screen, target, self.sub_title)
+                self.push_screen(screen)
+                pushed = True
+            except Exception:
+                # If an exception occurs after target was obtained but before the screen was pushed,
+                # release the copy that the manager opened.
+                notice = await finish_editing(self.local_copies, target)
+                if notice is not None:
+                    self.notify(notice.message, title="Local copy", severity=notice.severity, timeout=15)
+                raise
         finally:
             if not pushed:
                 self._editor_busy = False
@@ -1387,14 +1396,20 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
 
     async def _end_editor_session(self, session: _EditorSession) -> None:
         try:
-            await self._wait_until_on_top(session.screen)
-            if session.screen in self.screen_stack:
-                self.sub_title = session.previous_sub_title
-                await self.pop_screen()
-                self._main_screen.reload_panels()
-            notice = await finish_editing(self.local_copies, session.target)
-            if notice is not None:
-                self.notify(notice.message, title="Local copy", severity=notice.severity, timeout=15)
+            try:
+                await self._wait_until_on_top(session.screen)
+                if session.screen in self.screen_stack:
+                    self.sub_title = session.previous_sub_title
+                    await self.pop_screen()
+                    self._main_screen.reload_panels()
+            except Exception:
+                # Log the error but don't re-raise; we still need to run finish_editing.
+                _logger.exception("Error while closing editor screen")
+            finally:
+                # Always run finish_editing (final sync and release) even when pop/reload fails.
+                notice = await finish_editing(self.local_copies, session.target)
+                if notice is not None:
+                    self.notify(notice.message, title="Local copy", severity=notice.severity, timeout=15)
         finally:
             self._editor_busy = False
 

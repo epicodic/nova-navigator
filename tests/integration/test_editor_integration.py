@@ -423,3 +423,76 @@ async def test_a_second_request_while_the_editor_is_opening_pushes_no_second_edi
     await app_ctx.pilot.pause()
 
     assert sum(isinstance(s, EditorScreen) for s in app_ctx.app.screen_stack) == 1
+
+
+# ---------------------------------------------------------------------------
+# Error recovery: copy released when open_editor fails
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_copy_is_released_when_push_screen_fails(app_ctx: AppCtx, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """If push_screen raises after open_for_editing succeeds, the copy is still released."""
+    fs = SchemeFs({"/d/f.txt": b"remote\n"})
+    runner = ScriptedRunner()
+    manager = install_manager(app_ctx, tmp_path, runner)
+
+    # Mock push_screen to raise an exception after the copy was opened
+    def failing_push_screen(_screen: object) -> None:
+        raise RuntimeError("push_screen failed")
+
+    monkeypatch.setattr(app_ctx.app, "push_screen", failing_push_screen)
+
+    # Try to open the editor; it should fail but the copy should be released
+    with pytest.raises(RuntimeError, match="push_screen failed"):
+        await app_ctx.app.open_editor(fs.path("/d/f.txt"))
+    await app_ctx.pilot.pause(delay=0.1)
+
+    # Verify that the copy entry was opened and released (detector should be None after release)
+    await manager.wait_idle(max_wait=3)
+    entry = only_entry(manager)
+    assert entry.detector is None, "Copy should be released even though push_screen failed"
+    assert entry.status is CopyStatus.SYNCED
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_copy_is_released_when_closing_editor_even_if_error_after_pop(app_ctx: AppCtx, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """finish_editing is called even if an error occurs after pop_screen during _end_editor_session."""
+    fs = SchemeFs({"/d/f.txt": b"remote\n"})
+    runner = ScriptedRunner()
+    manager = install_manager(app_ctx, tmp_path, runner)
+
+    await open_in_editor(app_ctx, fs.path("/d/f.txt"))
+    entry = only_entry(manager)
+
+    # Track whether an exception was raised in the inner try block by making reload_panels fail
+    exception_in_try = False
+
+    def failing_reload() -> None:
+        nonlocal exception_in_try
+        exception_in_try = True
+        raise RuntimeError("reload_panels failed")
+
+    monkeypatch.setattr(app_ctx.screen, "reload_panels", failing_reload)
+
+    # Suppress exceptions from the worker so the test doesn't fail at teardown
+    original_handle_exception_recoverable = app_ctx.app._handle_exception_recoverable
+
+    async def suppress_worker_exception(error: Exception) -> bool:
+        if isinstance(error, RuntimeError) and "reload_panels failed" in str(error):
+            return True
+        return await original_handle_exception_recoverable(error)
+
+    monkeypatch.setattr(app_ctx.app, "_handle_exception_recoverable", suppress_worker_exception)
+
+    # Close the editor
+    await app_ctx.pilot.press("ctrl+w")
+    # Wait for reload_panels to raise and for finish_editing to run
+    await poll_until(app_ctx.pilot, lambda: entry.detector is None, max_wait=3)
+
+    # Verify that finish_editing was called (detector should be None, meaning the copy was released)
+    assert exception_in_try, "reload_panels should have raised"
+    assert entry.detector is None, "Copy should be released even though reload_panels raised"
+    assert entry.status is CopyStatus.SYNCED
