@@ -10,6 +10,7 @@ from typing import Literal
 
 from nova_editor.core.byte_source import ChangeKind
 from nova_editor.document._lazy_config import LazyConfig
+from nova_editor.languages import language_for_path
 from nova_editor.timed_text_area import TimedNovaTextArea
 from nova_editor.widget import NovaTextArea
 
@@ -78,7 +79,7 @@ class DocumentView:
         if reason is not None:
             return cls(empty(), path, "failed"), f"Error loading file: {reason}"
         try:
-            editor = editor_class.open(path, id="editor", soft_wrap=soft_wrap, show_line_numbers=show_line_numbers, config=config, timing_file=timing_file)
+            editor = editor_class.open(path, language=language_for_path(path), id="editor", soft_wrap=soft_wrap, show_line_numbers=show_line_numbers, config=config, timing_file=timing_file)
         except OSError as error:
             state: LoadState = "new" if isinstance(error, FileNotFoundError) else "failed"
             return cls(empty(), path, state), f"Error loading file: {error}"

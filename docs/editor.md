@@ -239,6 +239,7 @@ The widget's members and messages are listed in "Public API".
 `status_line.py` holds `StatusLine`, `StatusState` and the pure function `format_status`.
 `goto_popup.py` and `find_popup.py` hold the two inline popups.
 `decisions.py` builds the `MessageBox` of every question of the screen.
+`languages.py` holds `language_for_path`, which maps a file path to the highlight language.
 `timed_text_area.py` holds `TimedNovaTextArea`.
 All of them import the widget layer, `nova_widgets` and Textual, and nothing from `nova_navigator` or the VFS.
 The app is described in "nova_edit".
@@ -714,6 +715,14 @@ Returns a tuple of `(document_view, error_text)`.
 - If the file exists but cannot be read (or is not a regular file), `load_state == "failed"` and `error_text` is `"Error loading file: ..."`.
 
 The screen shows `error_text` as an error notification when it mounts.
+
+**Syntax highlighting:**
+`open` picks the highlight language with `language_for_path(path)` (`nova_editor/languages.py`) and passes it to the widget's `open()`.
+The function looks up the lowercased file name in a table of dotfile names (`.bashrc`, ...), then the suffix in a table of extensions.
+It returns `None` for an unknown file, which stays unhighlighted.
+Every language in the tables must be installed with `textual[syntax]`; `test_languages.py` checks this.
+Both tables are hardcoded for now and are meant to become configurable.
+Files above `highlight_limit` are not highlighted whatever the language.
 Open shows it in an error box and keeps the old document.
 
 ### Load States
@@ -1961,6 +1970,7 @@ Tests are located under `tests/nova_editor/` and `tests/tools/`.
 - `test_stock_characterization.py`, `test_lazy_characterization.py` — golden traces (`golden/`) that the converged widget and the unedited lazy path must still match.
 - `test_convergence.py` — `text=`, `load_text` and small files on the lazy document, and the removal of the stock widget path.
 - `test_lazy_widget.py`, `test_lazy_cursor.py`, `test_jump.py`, `test_highlight_limit.py` — lazy rendering, cursor, goto and highlighting.
+- `test_languages.py` — the path to highlight language mapping.
 - `test_wrapped_cursor_end.py` — the stale-height refresh in `scroll_cursor_visible`.
 - `test_lazy_edit_widget.py`, `test_lazy_clipboard.py`, `test_lazy_edit_long_row_memory.py` — editing, refusal, undo, redo, clipboard and memory on long rows through the widget.
 - `test_widget_save.py`, `test_widget_save_rebase.py`, `test_widget_save_efbig.py`, `test_widget_external_change.py`, `test_save_long_row_cursor.py` — the widget API of saving, the rebase of the widget, a real write error, external changes and the cursor on a long row across a save.
