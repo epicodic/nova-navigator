@@ -154,6 +154,7 @@ The `TaskScheduler` in `task.py` bridges between worker threads and the Textual 
 A separate package in `src/nova_widgets/` providing:
 - `menu/` — `MenuBar`, `Menu`, `Action` widgets with keyboard shortcuts and checkable items
 - `keymap/` — key sequence types, registry, and hint bar widget
+- `action.py` — `Action` class for keybindings and menu items, including `ActionGroup` for radio-button groups
 - `icon.py` — icon rendering with NerdFont support
 - `dialog.py` — the `Dialog` base class with `ButtonSpec` and `DefaultButton`
 - `message_box.py` — `MessageBox` (alias `MessageDialog`), the generic confirmation and message dialog
@@ -165,6 +166,12 @@ A separate package in `src/nova_widgets/` providing:
 - `file_dialog.py` — `FileDialog` for selecting files or directories with pluggable filesystem provider
 - The package must not import `nova_navigator` (enforced by `tests/test_package_independence.py`)
 - Used in `main.py` via `from nova_widgets.menu import ...`
+
+### `nova_editor` package
+
+A separate package in `src/nova_editor/` providing a standalone text editor with app, screen, document view, and popups.
+The package must not import `nova_navigator` or `vfs` modules (enforced by `tests/test_package_independence.py`).
+See `docs/editor.md` for the complete architecture.
 
 ---
 
