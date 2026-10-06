@@ -410,6 +410,7 @@ EditorScreen(
     path: Path | None = None,
     *,
     keybindings: KeybindingsConfig | None = None,
+    keyboard_shortcuts_item: bool = True,
     file_provider: FileProvider | None = None,
     soft_wrap: bool = False,
     config: LazyConfig | None = None,
@@ -422,7 +423,12 @@ EditorScreen(
 
 **Parameters:**
 - `path` — File to open, or `None` for an empty buffer.
-- `keybindings` — User keybinding overrides; the standalone host passes `KeybindingsConfig` of `~/.config/nova-edit/keybindings.toml` and the navigator's config is never read; `None` for defaults.
+- `keybindings` — User keybinding overrides; `None` for defaults.
+  The standalone host passes the `KeybindingsConfig` of `~/.config/nova-edit/keybindings.toml`.
+  The navigator passes its own `KeybindingsConfig`, so the `editor.*` overrides live in `~/.config/nova-navigator/keybindings.toml`.
+- `keyboard_shortcuts_item` — With a config, add View > "Keyboard Shortcuts…" (default `True`).
+  A host that edits the key file itself passes `False`.
+  The navigator does, because its own dialog lists the editor actions together with its own, and an editor-only save would drop the navigator's entries from the file.
 - `file_provider` — FileProvider for the file dialogs of Open and Save As; defaults to the local file system provider (`default_file_provider()`). A host with another file system passes its own provider.
 - `soft_wrap` — Start with soft wrapping enabled (default `False`).
 - `config` — Tunable thresholds of the lazy document (`LazyConfig`); `None` for defaults.
@@ -521,10 +527,11 @@ Escape, Enter and Alt+C are not mapped to an action and reach the popup.
 ### Keyboard Shortcuts dialog
 
 The dialog is opened from View > "Keyboard Shortcuts…" (`editor.keyboard_shortcuts` id, no default key).
-It exists only when the screen has a `KeybindingsConfig`, so the 18-action list, the REQ-4 table and a config-less host stay exactly as they are.
+It exists only when the screen has a `KeybindingsConfig` and `keyboard_shortcuts_item` is true, so the 18-action list, the REQ-4 table and a config-less host stay exactly as they are.
 The dialog lists the `editor.*` actions (all 19 including itself) and their effective bindings from the config.
 After the dialog is dismissed (OK or Cancel), the flow calls `reload_keymap()`, which re-reads the file, runs `_apply_keymap()` and re-measures the menus, applying at once any changes to the key, the menu label, the hint bar, B1 swallowing and unmap handling.
-The navigator config is never read.
+The standalone host passes the nova-edit file.
+The navigator passes its own file with `keyboard_shortcuts_item=False`; see "Embedding in the navigator".
 
 ### Menu Bar
 
@@ -623,6 +630,41 @@ When the screen mounts (`on_mount()`), it:
 ### Document View
 
 See the "DocumentView" section below.
+
+### Embedding in the navigator
+
+`nova_navigator` opens the screen from F4 and from the user menu entry "Edit User Menu File" (`NovaNavigator.open_editor`).
+Enter on a file keeps running the configured filetype command.
+The editor is a full-screen modal screen: only the screen on top receives keys, so the navigator's keys cannot fire while it is open, and equal default keys (Ctrl+O, Ctrl+G, Ctrl+Q) never collide.
+`NovaNavigator.on_event` forwards raw `Key` events to `EditorScreen.press_key` while the editor is the active screen.
+`NovaNavigator.on_app_focus` calls `poll()`, and `NovaNavigator.action_quit` asks the editor instead of exiting.
+
+**Which file is edited.**
+A local file is opened in place, with no copy.
+A directory raises `IsADirectoryError`, and a missing or unreadable file raises the `OSError` of `open()`, before any screen is pushed; the navigator's global handler shows the error dialog.
+Any other file (SSH, Azure, an archive member, an archive over SSH) is edited through its local copy (`docs/local_copies.md`).
+The screen opens the copy's path, a save writes the copy, and the copy mechanism writes it back to the source.
+The editor never touches the VFS; the host passes a path.
+The file provider of the dialogs stays the local one, so Open and Save As browse the local file system, starting in the directory of the file.
+A Save As to another local path leaves the copy, and later saves are not written back.
+
+**Read-only copies.**
+A copy that is never written back (JAR, WAR, EAR, APK, WHL, an archive on a read-only source) opens view-only.
+The host sets `NovaTextArea.read_only` before the screen is pushed and shows a notice.
+Typing, Cut, Paste and Ctrl+S change nothing; search, Go to, Copy, Save As and Open work.
+The widget stays view-only after a Save As until another file is opened.
+
+**Closing.**
+The screen posts `EditorScreen.Closed` when nothing is left to ask.
+`NovaNavigator.on_editor_screen_closed` starts a worker that waits until the editor is the active screen again (a question of a running sync may be on top), restores the title, pops the screen, reloads both panels and ends the copy session with `LocalCopyManager.release`.
+A failed or conflicting final write-back is reported in a notice; the copy keeps the changes.
+A second F4 is ignored while a session opens, is open or ends.
+
+**Keys.**
+The navigator's keybindings dialog lists the 18 `editor.*` actions after its own, labelled `Editor: <text>`, and stores them in its own `keybindings.toml`.
+The `KeybindingsConfig` of the navigator is passed to every new `EditorScreen` with `keyboard_shortcuts_item=False`, so there is no second dialog that could overwrite the file.
+The overrides are applied when the editor is opened; the dialog is not reachable while an editor is open, so no live reload is needed.
+If `editor.quit` is moved or unmapped, Ctrl+Q still reaches the editor, because `NovaNavigator.action_quit` asks the screen instead of exiting.
 
 ---
 
@@ -2003,9 +2045,3 @@ git grep -nE "^\s*(from|import) +textual\.(_|document|widgets\._text_area)" -- s
 
 A failing drift test means that the upstream wrap code changed and the vendored copy must be updated.
 A non-empty grep means that a private import came back.
-
----
-
-## Future Work
-
-- **Integration:** Embed in `nova_navigator` as an editor dialog for large file viewing and light editing.

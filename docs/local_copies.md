@@ -2,7 +2,8 @@
 
 Opening a file from SSH, Azure, or an archive with an external application works on a local copy.
 Every save of that copy is written back to its source automatically.
-The built-in F4 editor and executing a local executable file are unchanged; only opening a *non-local* file with an external command goes through this mechanism.
+Executing a local executable file and opening a local file are unchanged.
+Opening a *non-local* file with an external command goes through this mechanism, and so does editing a non-local file in the built-in F4 editor.
 An executable on a non-local filesystem is opened through a local copy too, rather than being executed remotely.
 
 This page has a user part and a developer part.
@@ -14,6 +15,23 @@ This page has a user part and a developer part.
 Opening a file from SSH, Azure, or an archive (including an archive reached over SSH) downloads it below a private per-process directory and launches the configured filetype command on that local path.
 A file already on the local filesystem is never copied: it is opened directly, and nothing below appears in the Local Copies dialog for it.
 Saving the local copy in the external application is detected automatically, and the change is written back to the source without any extra step.
+
+### Editing in the built-in editor
+
+F4 on a file, and the user menu entry "Edit User Menu File", open the built-in editor as a full-screen screen over the file list.
+Enter on a file is unchanged: it runs the configured filetype command, through a local copy for a non-local file.
+A file on the local filesystem is edited in place; it is never copied and nothing appears in the Local Copies dialog for it.
+A file from SSH, Azure, or an archive (including an archive reached over SSH) is edited through a local copy, and a notice names the source.
+Every save in the editor is detected like a save of an external application and written back once; the editor does not ask "file changed" after that write-back.
+Closing the editor (File > Close, Ctrl+W, or Quit) returns to the file list, stops watching the copy and writes a save that was not synced yet, once.
+The entry then shows ` (closed)` in the Local Copies dialog; the local file stays for fast reuse.
+Sync now, Reopen (which runs the external command) and Discard work as for any closed copy, and opening the same file in the editor again reuses the copy under the reopen rules below.
+If the source changed since the copy was made, the sync asks Overwrite or Skip over the editor, as for external applications.
+After Skip the entry is `conflict` and the editor keeps working on the copy.
+Closing the editor never overwrites the source: a notice says that the copy was not written back, and Sync now resolves it (see Conflicts).
+If the final write-back fails, a notice says so, the copy keeps your changes, the entry stays `failed`, and the quit prompt still protects it.
+A copy that is never written back (see Read-only sources) opens view-only with a notice: typing, Cut, Paste and Ctrl+S change nothing, and Save As writes a local file.
+A Save As to another path leaves the copy, and later saves there are not written back.
 
 ### The Local Copies dialog
 
@@ -100,6 +118,7 @@ An empty one is removed silently; one that still holds files produces a notifica
 | Local copy | `vfs/local_copy.py` | Map a `VPath` to a local file, record baselines, download, write back. |
 | Change detection | `vfs/change_detector.py` | Report settled content changes of one local file. |
 | Copy manager | `local_copies/manager.py`, `local_copies/tasks.py` | Registry of open copies and their detectors; runs open/sync jobs through the scheduler; Textual-free. |
+| Editor session | `local_copies/editor_session.py` | Decide local file or local copy for the built-in editor, pre-check a local file, end the session with `release()` and report a failed or conflicting write-back; Textual-free. |
 | UI | `dialogs/local_copies_dialog.py`, `nova_navigator.py` | Local Copies dialog, quit prompt, startup orphan notice. |
 
 ### `write_atomic()` and `version_tag()`
@@ -121,6 +140,7 @@ The default implementation spools the written bytes to a local temporary file an
 
 `LocalCopy.create(source, root, read_only=..., progress=...)` downloads `source` below `root` in bounded-memory chunks and records a `Baseline` (a `SourceFingerprint` — size, modification time, and `version_tag()` — plus the local digest).
 A source already on the local filesystem, and not an archive member, is a pass-through: `path` is the source file itself and nothing is copied.
+`is_local_source(source)` is the one predicate for it (a plain local file, never an archive member); `LocalCopy.create`, `NovaNavigatorCore.open_path` and the editor session use it.
 `relative_copy_path(source)` maps a source `VPath` to its path below the process root, sanitising every segment (`sanitize_segment`) against empty/`.`/`..` segments and shortening overlong ones with a hash suffix.
 `is_modified()` compares the local digest with the baseline; `source_changed()` compares a fresh `SourceFingerprint` with the baseline; `reuse_action()` combines both into a `ReuseAction` (`REUSE`, `REFRESH`, or `CONFLICT`) for the reopen flow.
 `write_back()` uploads through `write_atomic()` and advances the baseline; `refresh()` re-downloads and resets it; `discard()` deletes the local file, never the source.
@@ -142,6 +162,17 @@ A settled `ChangeDetector` change starts a `sync_copy_task`; a change arriving w
 A sync conflict sets `CopyStatus.CONFLICT` and pauses automatic syncing for that entry; `sync_now()` retries with `force=True` when the entry is already in `CONFLICT`, skipping the prompt.
 `mount_archive()` mounts a local archive directly (matching `LocalCopy.create()`'s own pass-through) or, for a non-local archive, downloads it as a `LocalCopy` and wraps it in an `ArchiveFilesystem`, caching the instance by source URI so sibling-member rebasing can match archive filesystems by identity.
 `unsynced()`, `close()`, `discard()`, and `shutdown()` back the dialog actions and the quit prompt; `shutdown()` is idempotent, so an explicit quit-time shutdown is not undone by the app's unconditional cleanup on unmount.
+`release(entry)` ends a built-in editor session: it stops the detector first, waits for a running sync, and then syncs a modified copy once unless the entry is read-only or in `CONFLICT`.
+It never forces the overwrite of a conflicting copy and never queues a second upload for a save that settles while it runs, which is why the editor session does not use `close()`.
+External applications never call it.
+
+### Editor session (`local_copies/editor_session.py`)
+
+`open_for_editing(manager, source)` returns an `EditorTarget` (source, the local path to edit, and the `CopyEntry` or `None`).
+A directory raises `IsADirectoryError`; a local file is checked by `check_readable()` and edited in place without a manager call; any other file goes through `LocalCopyManager.open()`.
+`finish_editing(manager, target)` calls `release()` and returns a `SessionNotice` for a failed or conflicting write-back.
+`NovaNavigator.open_editor` runs `open_for_editing` in a Textual worker.
+The watcher of a copy starts its sync jobs from the context of the call that started it, and a job can only show its Overwrite/Skip question from a context that belongs to a worker.
 
 ### Writable archives
 
