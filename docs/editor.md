@@ -21,7 +21,7 @@ Saving streams the document to a temporary file on a worker thread and replaces 
 After a save the document stands on the saved file, and undo still works (see "Rebase After a Save").
 A change of the file on disk is detected and never overwritten silently (see "External Changes").
 A literal search runs over the whole document on a worker thread (see "Search").
-The standalone app `nova_edit` wraps the widget with a status line, a footer, popups, dialogs and a quit confirmation (see "nova_edit").
+The standalone app `nova_edit` wraps the widget with a menu bar, a status line, a HintBar, popups, dialogs and a quit confirmation (see "nova_edit").
 
 **Where to look:**
 
@@ -356,8 +356,11 @@ class MyEditorApp(App):
 
 ### The app class
 
-`NovaEditApp(file_path=None, *, soft_wrap=False, config=None, editor_class=TimedNovaTextArea)`:
-- `file_path` is the only positional parameter; `None` opens an empty buffer.
+`NovaEditApp(path=None, *, file_path=None, keybindings=None, file_provider=None, soft_wrap=False, config=None, editor_class=TimedNovaTextArea)`:
+- `path` is the only positional parameter; `None` opens an empty buffer.
+- `file_path` is an alias for `path` (for backward compatibility).
+- `keybindings` user keybinding overrides; `None` for defaults.
+- `file_provider` FileProvider for the file dialogs; defaults to the local file system provider.
 - `soft_wrap` starts with soft wrapping.
 - `config` is a `LazyConfig` (`None` means the defaults).
 - `editor_class` is the editor widget class; a probe subclass can be passed in.
@@ -365,7 +368,7 @@ class MyEditorApp(App):
 
 `build_app(argv: Sequence[str]) -> NovaEditApp` parses the command line and builds the app with the key file of the config directory loaded (a missing file means the defaults).
 
-`default_config_dir(home: Path | None = None) -> Path` returns the directory of the nova_edit key file: `~/.config/nova-edit` (REQ-5).
+`default_config_dir(home: Path | None = None) -> Path` returns the directory of the nova_edit key file: `~/.config/nova-edit`.
 
 ---
 
@@ -377,7 +380,7 @@ uv run nova_edit /path/to/file.txt  # Open a specific file
 uv run nova_edit --config-dir DIR   # Use a custom directory for keybindings.toml
 ```
 
-The key file is `~/.config/nova-edit/keybindings.toml` by default (REQ-5).
+The key file is `~/.config/nova-edit/keybindings.toml` by default.
 A path that exists but is not a regular file (a FIFO, a device, a directory) is refused: `main()` prints `nova_edit: <path>: not a regular file` to stderr and exits with status 1.
 A path that does not exist opens an empty buffer that the first save creates (see "EditorScreen").
 Every file is opened through `NovaTextArea.open`; there is no eager path.
@@ -389,7 +392,7 @@ The environment variable `NOVA_EDIT_TIMING_FILE` makes `TimedNovaTextArea` write
 
 ### Overview
 
-`EditorScreen` is a Textual `Screen` that provides a complete editing UI (REQ-1, REQ-2, ADR-3).
+`EditorScreen` is a Textual `Screen` that provides a complete editing UI.
 It can be used as a standalone app (`nova_edit`) or embedded in other Textual applications.
 
 The screen holds:
@@ -486,11 +489,11 @@ This allows multiple EditorScreen instances in different Textual screens to have
 | Line Numbers | `editor.line_numbers` | F11 | Show/hide line numbers (checkable) |
 | Wrap Mode | `editor.wrap_mode` | F10 | Toggle soft wrap (checkable) |
 
-The line number gutter is shown when the editor screen starts (REQ-11).
+The line number gutter is shown when the editor screen starts.
 `EditorScreen` passes `show_line_numbers=True` to `DocumentView.open()`; the reusable `NovaTextArea` still starts without a gutter.
 A row whose number is not known yet is drawn blank, and so is every wrapped continuation row; a known row shows its own number.
 Line Numbers (F11) and View > Line Numbers flip `NovaTextArea.show_line_numbers` for the current session only.
-Nothing is written to a configuration file, and a new session starts with the gutter shown (REQ-12).
+Nothing is written to a configuration file, and a new session starts with the gutter shown.
 
 Actions with `show=True` appear in the hint bar; checkable actions maintain state with the widget.
 
@@ -500,7 +503,7 @@ Actions with `show=True` appear in the hint bar; checkable actions maintain stat
 
 **User overrides** come from the `KeybindingsConfig` the host passes in (hosts supply the config directory).
 
-**The nova_edit key file** is `~/.config/nova-edit/keybindings.toml` (REQ-5); a missing file means the defaults; an empty string (`""`) in the `[bindings]` section unmaps the action.
+**The nova_edit key file** is `~/.config/nova-edit/keybindings.toml`; a missing file means the defaults; an empty string (`""`) in the `[bindings]` section unmaps the action.
 
 Example file content:
 
@@ -511,13 +514,13 @@ editor.find = "ctrl+f"
 editor.wrap_mode = ""   # Empty string unmaps the action
 ```
 
-When `EditorScreen` is constructed with a `KeybindingsConfig`, it applies overrides to each action before building the menus (REQ-3); the defaults are the REQ-4 table.
+When `EditorScreen` is constructed with a `KeybindingsConfig`, it applies overrides to each action before building the menus; the defaults are the default key table.
 
-**Amendment B2 defect (workaround):** `KeymapRegistry.reload()` puts the default key of an unmapped action back, so the menu and the hint bar would show it.
+**Unmapped actions (workaround):** `KeymapRegistry.reload()` puts the default key of an unmapped action back, so the menu and the hint bar would show it.
 This is a known `nova_widgets` defect.
 `EditorScreen._apply_keymap` works around it by calling `action.set_shortcut(None)` for every action that has no effective binding after `reload()`.
 
-**Moved editing keys:** the editor widget binds Ctrl+Z, Ctrl+Y, Ctrl+X, Ctrl+C, Ctrl+V and Ctrl+A itself.
+**Moved editing keys:** the editor widget binds Ctrl+Z, Ctrl+Y, Ctrl+X, Ctrl+C, Ctrl+V and Ctrl+A (to line start) itself.
 When one of these actions is moved or unmapped, `press_key` swallows its old default key while the editor has the focus.
 
 **Popup inputs:** while an `Input` of a popup has the focus, `press_key` leaves every key that the `Input` binds itself (Ctrl+A is home, Ctrl+W deletes a word, Ctrl+X/C/V cut, copy and paste) and the keys of the editing actions to the `Input`; the editing actions never run from a popup.
@@ -527,9 +530,9 @@ Escape, Enter and Alt+C are not mapped to an action and reach the popup.
 ### Keyboard Shortcuts dialog
 
 The dialog is opened from View > "Keyboard Shortcuts…" (`editor.keyboard_shortcuts` id, no default key).
-It exists only when the screen has a `KeybindingsConfig` and `keyboard_shortcuts_item` is true, so the 18-action list, the REQ-4 table and a config-less host stay exactly as they are.
+It exists only when the screen has a `KeybindingsConfig` and `keyboard_shortcuts_item` is true, so the 18-action list, the default key table and a config-less host stay exactly as they are.
 The dialog lists the `editor.*` actions (all 19 including itself) and their effective bindings from the config.
-After the dialog is dismissed (OK or Cancel), the flow calls `reload_keymap()`, which re-reads the file, runs `_apply_keymap()` and re-measures the menus, applying at once any changes to the key, the menu label, the hint bar, B1 swallowing and unmap handling.
+After the dialog is dismissed (OK or Cancel), the flow calls `reload_keymap()`, which re-reads the file, runs `_apply_keymap()` and re-measures the menus, applying at once any changes to the key, the menu label, the hint bar, the swallowing of old editing keys and unmap handling.
 The standalone host passes the nova-edit file.
 The navigator passes its own file with `keyboard_shortcuts_item=False`; see "Embedding in the navigator".
 
@@ -571,7 +574,7 @@ Tests are in `tests/nova_editor/test_menu_path_label.py`.
 ### Popups and dialogs
 
 **Go to popup** (`GotoPopup`, Ctrl+G) — Go to a line or a byte offset.
-- Input: `N` for a line, `@N` for a byte offset (S0001 REQ-7).
+- Input: `N` for a line, `@N` for a byte offset.
 - Enter jumps and closes the popup; Escape closes it and gives the focus back to the editor.
 - Text that is no target shows `Not a line number or @byte offset (for example 120 or @4096)` in the popup.
 - A target that the widget rejects (`line N is beyond the last line (COUNT)` and the other texts of "Goto messages") keeps the popup open with that reason and the input selected.
@@ -584,7 +587,7 @@ Tests are in `tests/nova_editor/test_menu_path_label.py`.
 - Escape cancels a running search first, then closes the popup and gives the focus back to the editor.
 - The progress and the result of the search (`Searching 42% (2.1 of 5.0 GiB), Esc cancels`, `Found`, `Wrapped to the top`, `Not found: <needle>`, ...) appear in the status row while the popup is open, and as a note of the status line while it is closed.
 
-**Dialogs** (`nova_widgets`, ADR-1) — the screen shows each as a modal screen from a worker (`run_worker` and `await dialog.run()`), one at a time (see "Flows").
+**Dialogs** (`nova_widgets`) — the screen shows each as a modal screen from a worker (`run_worker` and `await dialog.run()`), one at a time (see "Flows").
 - Open and Save As use `FileDialog` with the host's file provider; Save As starts in the directory of the file with its name (an unnamed buffer starts in the home of the provider).
 - Every question is a `MessageBox` built in `decisions.py`: quit and close with edits, a save that still runs, open over edits, reload of a modified document, overwrite of a file that exists, and a change of the file on disk.
 - The first button is the harmless one (Cancel or Keep): it holds the focus, Enter presses it and Escape answers it.
@@ -723,7 +726,7 @@ Open shows it in an error box and keeps the old document.
 
 A successful save sets the state to `"loaded"` and binds the document to the saved path.
 
-The screen holds one view at a time; Open replaces it (REQ-15).
+The screen holds one view at a time; Open replaces it.
 
 ### Usage
 
@@ -785,7 +788,7 @@ At most 20 updates happen per second, the last state is always shown, and no wor
 
 The progress and the result of a save, a search or a reload are the note of the status line (the texts are `Saving  1.2 / 5.0 GiB  24 %  Esc cancels`, `Flushing`, `Preserving undo history`, `Finishing`, `Saved  <name>  <size>`, `Save cancelled`, `No changes to save`, `Reloaded`); failures are error boxes.
 
-### Footer and keys
+### HintBar and keys
 
 The keys are the `editor.*` actions of the `EditorScreen`; the `KeymapRegistry` runs them, and `NovaEditApp.on_event` hands every raw key press to `EditorScreen.press_key` first.
 The `HintBar` shows `Ctrl+S Save`, `Ctrl+Q Quit`, `Ctrl+F Find…`, `Ctrl+G Go to…`, `F5 Reload`, `Ctrl+Shift+S Save As…`, `F10 Wrap Mode`, `F3 Find Next` and `Shift+F3 Find Previous`.
@@ -798,14 +801,22 @@ When an editing action (Undo, Redo, Cut, Copy, Paste, Select All) is moved or un
 | `Ctrl+O` | Open: pick a file in the Open dialog |
 | `Ctrl+Shift+S` | Save As dialog, prefilled with the current name; Enter saves and Escape cancels |
 | `F5` | Reload; a modified document asks first; during a save it shows a warning |
-| `Ctrl+G` | Go to popup: `N` for a line, `@N` for a byte offset; Enter jumps and closes, Escape closes |
+| `Ctrl+W` | Close the editor |
+| `Ctrl+Q` | Quit (see "Quit flow") |
+| `Ctrl+Z` | Undo the last edit |
+| `Ctrl+Y` | Redo the last undone edit |
+| `Ctrl+X` | Cut the selection |
+| `Ctrl+C` | Copy the selection |
+| `Ctrl+V` | Paste from the clipboard |
+| `Ctrl+A` | Select the whole document |
 | `Ctrl+F` | Find popup; Enter and Next search forward, Previous backward, Escape closes it |
 | `F3` | Repeat the search forward, with the popup open or closed; without a needle it opens the popup |
+| `Shift+F3` | Repeat the search backward, with the popup open or closed |
+| `Ctrl+G` | Go to popup: `N` for a line, `@N` for a byte offset; Enter jumps and closes, Escape closes |
+| `F11` | Show or hide the line numbers (checkable) |
+| `F10` | Toggle soft wrap |
 | `Alt+C` | In the Find popup: toggle between match case and ignore case |
 | `Escape` | Close the popup that has the focus; cancel a running search first, then a running save and a pending jump |
-| `F10` | Toggle soft wrap |
-| `Ctrl+Q` | Quit (see "Quit flow") |
-| `Ctrl+Z`, `Ctrl+Y`, `Ctrl+X`, `Ctrl+C`, `Ctrl+V` | Stock undo, redo, cut, copy and paste |
 
 ### Quit flow
 
@@ -1579,7 +1590,7 @@ Maximum `RssAnon` of a scripted session (open, wait for indexing, 300 page downs
 
 The eager path of the small-file row no longer exists.
 
-**Editing memory (REQ-2):**
+**Editing memory:**
 Maximum `RssAnon` over the session select, delete of 1,000,000,000 bytes, undo, redo, copy, paste, undo with window verification: 40.0 MiB (5 GB, wrap off), 40.7 MiB (5 GB, wrap on), 48.0 MiB (200 MB line, wrap off), 48.4 MiB (200 MB line, wrap on).
 1,000 scattered edits in the 200 MB row peaked at 112.7 MiB (after Enter at column 100,000,000) and left 57 MiB; the 5 GB file stayed at 53.1 MiB.
 The delete of 1,000,000,000 bytes took 7.8 to 14.6 ms with wrap off and 11.8 to 12.7 ms with wrap on, on the earlier per-piece delete over a document with few pieces; the bulk delete is not measured.
@@ -1963,7 +1974,7 @@ Tests are located under `tests/nova_editor/` and `tests/tools/`.
 - `test_line_numbers.py` — the gutter at the start, F11 and the View item, the check marks, the session only rule, no config file and the wrap indicator.
 - `test_gutter_rows.py` — the gutter cells of rows that are not known yet and of wrapped continuation rows.
 - `test_menu_path_label.py` — the path label on the menu bar sized to the available width and truncated keeping its end behind an ellipsis.
-- `test_app_footer.py` — the footer keys.
+- `test_app_footer.py` — the HintBar keys.
 - `test_app_quit.py` — the quit flow and its two questions.
 - `test_app_search.py`, `test_find_popup.py`, `test_goto_popup.py`, `test_popups.py` — the Find and Go to popups, their keys, texts and options.
 - `test_decisions.py`, `test_decision_races.py` — every question as a `MessageBox` (texts, buttons, answers), Ctrl+Q with a dialog open, the single question for one change, changes while a dialog is open.
