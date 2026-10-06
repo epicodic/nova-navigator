@@ -250,6 +250,24 @@ class LocalCopyManager:
 
     # -- Close / discard / bulk ----------------------------------------------
 
+    async def release(self, entry: CopyEntry) -> None:
+        """End a built-in editor session on *entry*: stop watching, wait for a running sync, then sync a modified copy once.
+
+        Unlike :meth:`close`, the detector is stopped first, so a save that settles during the final sync cannot
+        queue a second identical upload, and an entry in ``CONFLICT`` is left alone instead of being overwritten
+        without asking. A failed sync leaves the status ``FAILED`` with the copy's changes kept. Safe to call twice.
+        """
+        if entry.detector is not None:
+            await entry.detector.stop()
+            entry.detector = None
+        task = entry.sync_task
+        if task is not None and not task.done():
+            await asyncio.wait({task})
+        if entry.copy.read_only or entry.status is CopyStatus.CONFLICT:
+            return
+        if entry.copy.is_modified():
+            await self.sync_now(entry)
+
     async def close(self, entry: CopyEntry) -> None:
         """Sync unsynced changes, then stop watching; the local file stays for fast reuse."""
         if not entry.copy.read_only and entry.copy.is_modified():

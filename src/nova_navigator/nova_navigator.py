@@ -21,7 +21,9 @@ from textual.geometry import Offset
 from textual.logging import TextualHandler
 from textual.screen import Screen
 from textual.widgets import Input
+from textual.worker import WorkerFailed
 
+from nova_editor.screen import EditorScreen
 from nova_navigator import debug_analytics
 from nova_navigator.archive.terminal import ARCHIVE_PLUGIN
 from nova_navigator.clipboard import ClipboardOperation, PathClipboard
@@ -47,10 +49,11 @@ from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
 from nova_navigator.dialogs.response_dialog import make_response_dialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
 from nova_navigator.dialogs.user_menu_input_dialog import InputField, UserMenuInputDialog
-from nova_navigator.editor import Editor
+from nova_navigator.embedded_editor_keys import editor_key_actions
 from nova_navigator.filemanager.compare import CompareMode, compare_directories
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
 from nova_navigator.filemanager.tasks import dummy_task
+from nova_navigator.local_copies.editor_session import EditorTarget, finish_editing, open_for_editing
 from nova_navigator.nova_navigator_core import (
     NovaNavigatorCore,
     PanelRef,
@@ -373,6 +376,16 @@ class MainScreen(ActionsSupport, Screen[None]):
     async def on_mount(self) -> None:
         self._keymap_registry = KeymapRegistry(self._hint_bar)
         self._reload_keymap()
+
+    @property
+    def keymap_config(self) -> KeybindingsConfig:
+        """The key overrides of the navigator; the embedded editor reads its `editor.*` keys from the same file."""
+        return self._keymap_config
+
+    def reload_panels(self) -> None:
+        """Reload the listing of both panels."""
+        self._left_panel.reload()
+        self._right_panel.reload()
 
     def _reload_keymap(self) -> None:
         assert self._keymap_registry is not None
@@ -1092,13 +1105,12 @@ class MainScreen(ActionsSupport, Screen[None]):
             conf_.bookmarks.save()
 
     def _action_refresh(self) -> None:
-        self._left_panel.reload()
-        self._right_panel.reload()
+        self.reload_panels()
 
     @work
     async def action_keybindings(self) -> None:
         dialog = KeybindingsDialog(
-            actions=list(type(self).ACTIONS),
+            actions=[*type(self).ACTIONS, *editor_key_actions()],
             config=self._keymap_config,
             key_display_style=conf_.settings.general.key_display_style,
         )
@@ -1148,6 +1160,15 @@ class MainScreen(ActionsSupport, Screen[None]):
     # endregion
 
 
+@dataclass(frozen=True)
+class _EditorSession:
+    """One open editor screen with what the host needs to end it."""
+
+    screen: EditorScreen
+    target: EditorTarget
+    previous_sub_title: str
+
+
 class NovaNavigator(NovaNavigatorCore, App[None]):
     """Nova Navigator App."""
 
@@ -1161,6 +1182,8 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         self._config_dir = config_dir
         self._path_clipboard = PathClipboard(self)
         self._showing_exception_dialog = False
+        self._editor_busy = False
+        self._editor_session: _EditorSession | None = None
         register_remote_scheme(conf_.remotes)
 
     def action_help_quit(self) -> None:
@@ -1174,7 +1197,23 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
             screen = self.screen
             if isinstance(screen, MainScreen) and screen._keymap_registry is not None and await screen._keymap_registry.handle_key(event.key, self):
                 return
+            if isinstance(screen, EditorScreen) and not event.is_forwarded and await screen.press_key(event.key):
+                return
         await super().on_event(event)
+
+    def on_app_focus(self, event: events.AppFocus) -> None:
+        """The terminal got the focus back: the edited file may have changed meanwhile."""
+        screen = self.screen
+        if isinstance(screen, EditorScreen):
+            screen.poll()
+
+    async def action_quit(self) -> None:
+        """Quit: with an editor screen open the editor asks about unsaved text, else exit as Textual does."""
+        for screen in reversed(self.screen_stack):
+            if isinstance(screen, EditorScreen):
+                await screen.action_quit_editor()
+                return
+        await super().action_quit()
 
     def _handle_exception(self, error: Exception) -> None:
         sys.settrace(debug_analytics.trace_handler)
@@ -1293,13 +1332,116 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
             _logger.warning("Timed out shutting down local copies; continuing exit")
 
     async def open_editor(self, path: VPath) -> None:
-        editor_screen = Editor()
-        self.push_screen(editor_screen)
+        """Open *path* in the built-in editor screen: a local file directly, any other file through its local copy.
+
+        Pushes the screen and returns; `on_editor_screen_closed` ends the session.
+        A second request while a session is opening, open or ending is ignored.
+        """
+        if self._editor_busy:
+            return
+        self._editor_busy = True
+        pushed = False
+        target: EditorTarget | None = None
         try:
-            editor_screen.open(path)
-        except Exception:
-            self.pop_screen()
-            raise
+            # A worker, because the watcher of a local copy starts its sync jobs from the context of this call, and a job can only show its
+            # Overwrite/Skip question (push_screen_wait) from a context that belongs to a worker.
+            worker = self.run_worker(
+                open_for_editing(self.local_copies, path),
+                group="editor_open",
+                exit_on_error=False,
+            )
+            try:
+                target = await worker.wait()
+            except WorkerFailed as failed:
+                raise failed.error from None
+            if target is None:
+                return
+            try:
+                screen = EditorScreen(path=target.path, keybindings=self._main_screen.keymap_config, keyboard_shortcuts_item=False)
+                screen.keymap_registry.set_key_display_style(conf_.settings.general.key_display_style)
+                if target.read_only:
+                    screen.document.editor.read_only = True
+                self._editor_session = _EditorSession(screen, target, self.sub_title)
+                self.push_screen(screen)
+                pushed = True
+            except Exception:
+                # If an exception occurs after target was obtained but before the screen was pushed,
+                # release the copy that the manager opened.
+                self._editor_session = None
+                notice = await finish_editing(self.local_copies, target)
+                if notice is not None:
+                    self.notify(notice.message, title="Local copy", severity=notice.severity, timeout=15)
+                raise
+        finally:
+            if not pushed:
+                self._editor_busy = False
+        if target.read_only:
+            self.notify(
+                f"{path.name} is read-only: it is never written back. Save As writes a local file.",
+                title="Local copy",
+                severity="warning",
+            )
+        elif target.entry is not None:
+            self.notify(
+                f"Local copy of {target.entry.key}. Saves are written back to the source.",
+                title="Local copy",
+            )
+
+    def on_editor_screen_closed(self, message: EditorScreen.Closed) -> None:
+        """The editor asked to close: end the session in a worker."""
+        session = self._editor_session
+        if session is None:
+            return
+        self._editor_session = None
+        self.run_worker(
+            self._end_editor_session_with_error_handling(session),
+            group="editor_session",
+            exit_on_error=True,
+        )
+
+    async def _end_editor_session_with_error_handling(self, session: _EditorSession) -> None:
+        """End the editor session, routing cleanup errors through the recoverable dialog.
+
+        Routes exceptions from pop_screen(), reload_panels(), and other cleanup
+        operations to the recoverable error dialog. The copy is released in the inner
+        finally block of _end_editor_session regardless of exceptions.
+        """
+        try:
+            await self._end_editor_session(session)
+        except Exception as error:
+            should_terminate = await self._handle_exception_recoverable(error)
+            if should_terminate:
+                raise
+
+    async def _end_editor_session(self, session: _EditorSession) -> None:
+        try:
+            try:
+                await self._wait_until_on_top(session.screen)
+                if session.screen in self.screen_stack:
+                    self.sub_title = session.previous_sub_title
+                    await self.pop_screen()
+                    self._main_screen.reload_panels()
+            finally:
+                # Always run finish_editing (final sync and release) even when pop/reload fails.
+                notice = await finish_editing(self.local_copies, session.target)
+                if notice is not None:
+                    self.notify(notice.message, title="Local copy", severity=notice.severity, timeout=15)
+        finally:
+            self._editor_busy = False
+
+    async def _wait_until_on_top(self, screen: Screen[None]) -> None:
+        """Wait until *screen* is the active screen again, or has left the stack.
+
+        A question of a running sync can be on top of the editor when it closes; `pop_screen` would pop that question instead of the editor.
+        """
+        changed = asyncio.Event()
+        self.screen_change_signal.subscribe(self, lambda _screen: changed.set(), immediate=True)
+        try:
+            while self.screen is not screen and screen in self.screen_stack:
+                changed.clear()
+                await changed.wait()
+        finally:
+            self.screen_change_signal.unsubscribe(self)
 
     async def action_local_copies(self) -> None:
         dialog = LocalCopiesDialog(self.local_copies, reopen=lambda entry: self.open_path(entry.copy.source))

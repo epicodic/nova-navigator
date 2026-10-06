@@ -204,3 +204,31 @@ def test_resolve_nerd_font_auto_uses_detection_result(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(core_mod, "detect_nerd_font", lambda: False)
     assert _resolve_nerd_font_variant(NerdFontMode.AUTO) is IconSet.Variants.UNICODE
+
+
+class _ReleaseRecordingCopies(_FakeLocalCopies):
+    """Records release(), which only the built-in editor session may call."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.released: list[CopyEntry] = []
+
+    async def release(self, entry: CopyEntry) -> None:
+        self.released.append(entry)
+
+
+def test_open_path_for_an_external_application_never_releases_the_copy(tmp_path: Path) -> None:
+    fs = MockFilesystem({"/some/file.txt": b"content"})
+    path = VPath("/some/file.txt", fs)
+    local_path = tmp_path / "file.txt"
+    local_path.write_bytes(b"content")
+    core = _StubCore()
+    fake = _ReleaseRecordingCopies()
+    fake.entry_to_return = _make_copy_entry(path, local_path)
+    core.local_copies = fake
+
+    asyncio.run(core.open_path(path))
+
+    assert fake.opened == [path]
+    assert fake.checked == [fake.entry_to_return]
+    assert fake.released == []
