@@ -162,9 +162,9 @@ It:
 Updates the `KeyFormatStyle` and immediately refreshes the hint bar.
 Call this before or after `reload`.
 
-### `handle_key(key, app) -> bool`
+### `async handle_key(key, app) -> bool`
 
-Called from `NovaNavigator.on_event` before Textual's priority bindings.
+Called from `NovaNavigator.on_event` before Textual's priority bindings and awaited.
 Returns `True` if the key was consumed.
 
 `key` is a Textual key name string such as `"ctrl+x"` or `"f5"`.
@@ -245,12 +245,12 @@ browser.delete = "delete"
 app.quit = "ctrl+q"
 ```
 
-Only overrides need to be listed; actions absent from the file fall back to their `default_key`.
+Only overrides need to be listed; actions absent from the file fall back to their `initial_shortcut`.
 Setting a value to an empty string (`""`) unmaps the default binding entirely.
 
 ### `resolve(actions) -> dict[str, KeySequence]`
 
-Merges `Action.default_key` values with file overrides and returns the effective `{action_name: key_sequence}` map.
+Merges `Action.initial_shortcut` values with file overrides and returns the effective `{action_name: key_sequence}` map.
 This is the map passed to `KeymapRegistry.reload()`.
 
 ---
@@ -276,7 +276,7 @@ This is the map passed to `KeymapRegistry.reload()`.
 ## Adding a new action
 
 1. Add an `Action(...)` entry to `ACTIONS` on the appropriate class (`MainScreen` or `DirectoryBrowser`).
-   Choose a dot-namespaced `name`, set `default_key`, `show_in_bar`, and the Textual `action` string.
+   Choose a dot-namespaced `id`, set `shortcut`, `show`, and the Textual `action` string.
 
 2. Implement `_action_{name}` (or `action_{name}`) on the same class.
    Textual's dispatch tries the private form first.
