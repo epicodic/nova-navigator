@@ -467,25 +467,15 @@ async def test_copy_is_released_when_closing_editor_even_if_error_after_pop(app_
     await open_in_editor(app_ctx, fs.path("/d/f.txt"))
     entry = only_entry(manager)
 
-    # Track whether an exception was raised in the inner try block by making reload_panels fail
-    exception_in_try = False
+    # Track whether reload_panels was called by making it fail
+    reload_call_count = 0
 
     def failing_reload() -> None:
-        nonlocal exception_in_try
-        exception_in_try = True
+        nonlocal reload_call_count
+        reload_call_count += 1
         raise RuntimeError("reload_panels failed")
 
     monkeypatch.setattr(app_ctx.screen, "reload_panels", failing_reload)
-
-    # Suppress exceptions from the worker so the test doesn't fail at teardown
-    original_handle_exception_recoverable = app_ctx.app._handle_exception_recoverable
-
-    async def suppress_worker_exception(error: Exception) -> bool:
-        if isinstance(error, RuntimeError) and "reload_panels failed" in str(error):
-            return True
-        return await original_handle_exception_recoverable(error)
-
-    monkeypatch.setattr(app_ctx.app, "_handle_exception_recoverable", suppress_worker_exception)
 
     # Close the editor
     await app_ctx.pilot.press("ctrl+w")
@@ -493,6 +483,6 @@ async def test_copy_is_released_when_closing_editor_even_if_error_after_pop(app_
     await poll_until(app_ctx.pilot, lambda: entry.detector is None, max_wait=3)
 
     # Verify that finish_editing was called (detector should be None, meaning the copy was released)
-    assert exception_in_try, "reload_panels should have raised"
+    assert reload_call_count > 0, "reload_panels should have been called"
     assert entry.detector is None, "Copy should be released even though reload_panels raised"
     assert entry.status is CopyStatus.SYNCED
