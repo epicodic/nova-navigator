@@ -1367,6 +1367,7 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
             except Exception:
                 # If an exception occurs after target was obtained but before the screen was pushed,
                 # release the copy that the manager opened.
+                self._editor_session = None
                 notice = await finish_editing(self.local_copies, target)
                 if notice is not None:
                     self.notify(notice.message, title="Local copy", severity=notice.severity, timeout=15)

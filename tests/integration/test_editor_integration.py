@@ -447,13 +447,13 @@ async def test_copy_is_released_when_push_screen_fails(app_ctx: AppCtx, tmp_path
     # Try to open the editor; it should fail but the copy should be released
     with pytest.raises(RuntimeError, match="push_screen failed"):
         await app_ctx.app.open_editor(fs.path("/d/f.txt"))
-    await app_ctx.pilot.pause(delay=0.1)
 
     # Verify that the copy entry was opened and released (detector should be None after release)
     await manager.wait_idle(max_wait=3)
     entry = only_entry(manager)
     assert entry.detector is None, "Copy should be released even though push_screen failed"
     assert entry.status is CopyStatus.SYNCED
+    assert not any(isinstance(s, EditorScreen) for s in app_ctx.app.screen_stack), "No EditorScreen should be in the stack"
 
 
 @pytest.mark.asyncio
