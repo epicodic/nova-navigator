@@ -21,7 +21,7 @@ Saving streams the document to a temporary file on a worker thread and replaces 
 After a save the document stands on the saved file, and undo still works (see "Rebase After a Save").
 A change of the file on disk is detected and never overwritten silently (see "External Changes").
 A literal search runs over the whole document on a worker thread (see "Search").
-The standalone app `nova_edit` wraps the widget with a status line, a footer, popups, dialogs and a quit confirmation (see "nova_edit").
+The standalone app `nova_edit` wraps the widget with a menu bar, a status line, a HintBar, popups, dialogs and a quit confirmation (see "nova_edit").
 
 **Where to look:**
 
@@ -356,8 +356,11 @@ class MyEditorApp(App):
 
 ### The app class
 
-`NovaEditApp(file_path=None, *, soft_wrap=False, config=None, editor_class=TimedNovaTextArea)`:
-- `file_path` is the only positional parameter; `None` opens an empty buffer.
+`NovaEditApp(path=None, *, file_path=None, keybindings=None, file_provider=None, soft_wrap=False, config=None, editor_class=TimedNovaTextArea)`:
+- `path` is the only positional parameter; `None` opens an empty buffer.
+- `file_path` is an alias for `path` (for backward compatibility).
+- `keybindings` user keybinding overrides; `None` for defaults.
+- `file_provider` FileProvider for the file dialogs; defaults to the local file system provider.
 - `soft_wrap` starts with soft wrapping.
 - `config` is a `LazyConfig` (`None` means the defaults).
 - `editor_class` is the editor widget class; a probe subclass can be passed in.
@@ -785,7 +788,7 @@ At most 20 updates happen per second, the last state is always shown, and no wor
 
 The progress and the result of a save, a search or a reload are the note of the status line (the texts are `Saving  1.2 / 5.0 GiB  24 %  Esc cancels`, `Flushing`, `Preserving undo history`, `Finishing`, `Saved  <name>  <size>`, `Save cancelled`, `No changes to save`, `Reloaded`); failures are error boxes.
 
-### Footer and keys
+### HintBar and keys
 
 The keys are the `editor.*` actions of the `EditorScreen`; the `KeymapRegistry` runs them, and `NovaEditApp.on_event` hands every raw key press to `EditorScreen.press_key` first.
 The `HintBar` shows `Ctrl+S Save`, `Ctrl+Q Quit`, `Ctrl+F Find…`, `Ctrl+G Go to…`, `F5 Reload`, `Ctrl+Shift+S Save As…`, `F10 Wrap Mode`, `F3 Find Next` and `Shift+F3 Find Previous`.
@@ -798,14 +801,22 @@ When an editing action (Undo, Redo, Cut, Copy, Paste, Select All) is moved or un
 | `Ctrl+O` | Open: pick a file in the Open dialog |
 | `Ctrl+Shift+S` | Save As dialog, prefilled with the current name; Enter saves and Escape cancels |
 | `F5` | Reload; a modified document asks first; during a save it shows a warning |
-| `Ctrl+G` | Go to popup: `N` for a line, `@N` for a byte offset; Enter jumps and closes, Escape closes |
+| `Ctrl+W` | Close the editor |
+| `Ctrl+Q` | Quit (see "Quit flow") |
+| `Ctrl+Z` | Undo the last edit |
+| `Ctrl+Y` | Redo the last undone edit |
+| `Ctrl+X` | Cut the selection |
+| `Ctrl+C` | Copy the selection |
+| `Ctrl+V` | Paste from the clipboard |
+| `Ctrl+A` | Select the whole document |
 | `Ctrl+F` | Find popup; Enter and Next search forward, Previous backward, Escape closes it |
 | `F3` | Repeat the search forward, with the popup open or closed; without a needle it opens the popup |
+| `Shift+F3` | Repeat the search backward, with the popup open or closed |
+| `Ctrl+G` | Go to popup: `N` for a line, `@N` for a byte offset; Enter jumps and closes, Escape closes |
+| `F11` | Show or hide the line numbers (checkable) |
+| `F10` | Toggle soft wrap |
 | `Alt+C` | In the Find popup: toggle between match case and ignore case |
 | `Escape` | Close the popup that has the focus; cancel a running search first, then a running save and a pending jump |
-| `F10` | Toggle soft wrap |
-| `Ctrl+Q` | Quit (see "Quit flow") |
-| `Ctrl+Z`, `Ctrl+Y`, `Ctrl+X`, `Ctrl+C`, `Ctrl+V` | Stock undo, redo, cut, copy and paste |
 
 ### Quit flow
 
@@ -1963,7 +1974,7 @@ Tests are located under `tests/nova_editor/` and `tests/tools/`.
 - `test_line_numbers.py` — the gutter at the start, F11 and the View item, the check marks, the session only rule, no config file and the wrap indicator.
 - `test_gutter_rows.py` — the gutter cells of rows that are not known yet and of wrapped continuation rows.
 - `test_menu_path_label.py` — the path label on the menu bar sized to the available width and truncated keeping its end behind an ellipsis.
-- `test_app_footer.py` — the footer keys.
+- `test_app_footer.py` — the HintBar keys.
 - `test_app_quit.py` — the quit flow and its two questions.
 - `test_app_search.py`, `test_find_popup.py`, `test_goto_popup.py`, `test_popups.py` — the Find and Go to popups, their keys, texts and options.
 - `test_decisions.py`, `test_decision_races.py` — every question as a `MessageBox` (texts, buttons, answers), Ctrl+Q with a dialog open, the single question for one change, changes while a dialog is open.
