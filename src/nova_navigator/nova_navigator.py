@@ -21,6 +21,7 @@ from textual.geometry import Offset
 from textual.logging import TextualHandler
 from textual.screen import Screen
 from textual.widgets import Input
+from textual.worker import WorkerFailed
 
 from nova_editor.screen import EditorScreen
 from nova_navigator import debug_analytics
@@ -1335,17 +1336,40 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         self._editor_busy = True
         pushed = False
         try:
-            target = await open_for_editing(self.local_copies, path)
+            # A worker, because the watcher of a local copy starts its sync jobs from the context of this call, and a job can only show its
+            # Overwrite/Skip question (push_screen_wait) from a context that belongs to a worker.
+            worker = self.run_worker(
+                open_for_editing(self.local_copies, path),
+                group="editor_open",
+                exit_on_error=False,
+            )
+            try:
+                target = await worker.wait()
+            except WorkerFailed as failed:
+                raise failed.error from None
             if target is None:
                 return
             screen = EditorScreen(path=target.path)
             screen.keymap_registry.set_key_display_style(conf_.settings.general.key_display_style)
+            if target.read_only:
+                screen.document.editor.read_only = True
             self._editor_session = _EditorSession(screen, target, self.sub_title)
             self.push_screen(screen)
             pushed = True
         finally:
             if not pushed:
                 self._editor_busy = False
+        if target.read_only:
+            self.notify(
+                f"{path.name} is read-only: it is never written back. Save As writes a local file.",
+                title="Local copy",
+                severity="warning",
+            )
+        elif target.entry is not None:
+            self.notify(
+                f"Local copy of {target.entry.key}. Saves are written back to the source.",
+                title="Local copy",
+            )
 
     def on_editor_screen_closed(self, message: EditorScreen.Closed) -> None:
         """The editor asked to close: end the session in a worker (the screen may be covered by a dialog for a moment)."""
