@@ -93,6 +93,17 @@ class Baseline:
 ProgressCallback = Callable[[int], None]
 
 
+def is_local_source(source: VPath) -> bool:
+    """True if *source* is a plain file of the local filesystem: it needs no local copy.
+
+    An archive member is never local, even a member of a local archive.
+    """
+    # ArchiveFilesystem.unwrap() currently returns the archive filesystem itself, so the first
+    # check alone already rejects archive members. The explicit exclusion keeps members of local
+    # archives non-local even if unwrap() is ever changed to return the container's filesystem.
+    return isinstance(source.filesystem.unwrap(), LocalFilesystem) and not isinstance(source.filesystem, ArchiveFilesystem)
+
+
 class LocalCopy:
     """A local file standing in for a VFS source, with a baseline for change decisions."""
 
@@ -126,10 +137,7 @@ class LocalCopy:
         even one mounted from a local archive) is a pass-through: ``path``
         is the source file itself and nothing is copied or created below *root*.
         """
-        # ArchiveFilesystem.unwrap() currently returns the archive filesystem itself, so the first
-        # check alone already rejects archive members. The explicit exclusion keeps members of local
-        # archives non-pass-through even if unwrap() is ever changed to return the container's filesystem.
-        if isinstance(source.filesystem.unwrap(), LocalFilesystem) and not isinstance(source.filesystem, ArchiveFilesystem):
+        if is_local_source(source):
             path = Path(source.path)
             return cls(source, path, Baseline(SourceFingerprint.of(source), ""), read_only=read_only, pass_through=True)
         path = root / relative_copy_path(source)

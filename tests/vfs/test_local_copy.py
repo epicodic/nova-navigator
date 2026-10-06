@@ -10,7 +10,7 @@ import pytest
 
 from nova_navigator.vfs.filesystems.archive import ArchiveFilesystem
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
-from nova_navigator.vfs.local_copy import LocalCopy, ReuseAction, relative_copy_path, sanitize_segment
+from nova_navigator.vfs.local_copy import LocalCopy, ReuseAction, is_local_source, relative_copy_path, sanitize_segment
 from tests._utils.local_copy_helpers import SchemeFs, overwrite
 
 # ---------------------------------------------------------------------------
@@ -146,3 +146,16 @@ def test_zip_member_content_change_detected_via_crc(tmp_path: Path) -> None:
     archive_fs.reload()
 
     assert copy.source_changed()
+
+
+def test_is_local_source_is_true_only_for_a_plain_local_file(tmp_path: Path) -> None:
+    real = tmp_path / "real.txt"
+    real.write_bytes(b"x")
+    zip_path = tmp_path / "x.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("a.txt", "hi")
+    local = LocalFilesystem.singleton()
+    archive_fs = ArchiveFilesystem(local.path(tmp_path), local.path(zip_path))
+    assert is_local_source(local.path(real))
+    assert not is_local_source(SchemeFs({"/d/f.txt": b"x"}).path("/d/f.txt"))
+    assert not is_local_source(archive_fs.path("/a.txt"))
