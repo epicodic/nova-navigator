@@ -319,7 +319,9 @@ Configured via `GeneralSettings.key_display_style` (`KeyDisplayStyle`):
 It is opened from the system menu under **Key Bindings…** or programmatically via `action_keybindings`.
 
 After the dialog is dismissed, `MainScreen._reload_keymap` is called to apply any changes.
-
+The navigator lists `MainScreen.ACTIONS` followed by the 18 editor actions of `editor_key_actions()` (`nova_navigator/embedded_editor_keys.py`), labelled `Editor: <text>`.
+The ids stay `editor.*`, so the overrides land under the same names in `keybindings.toml` as in the standalone editor.
+Every `editor.*` id must be in the list, because a save replaces the overrides in the file with the map of the listed actions.
 
 ---
 
@@ -554,6 +556,9 @@ Configured via `GeneralSettings.key_display_style` (`KeyDisplayStyle`):
 It is opened from the `𑁔` system menu under **Key Bindings…** or programmatically via `action_keybindings`.
 
 After the dialog is dismissed, `MainScreen._reload_keymap` is called to apply any changes.
+The navigator lists `MainScreen.ACTIONS` followed by the 18 editor actions of `editor_key_actions()` (`nova_navigator/embedded_editor_keys.py`), labelled `Editor: <text>`.
+The ids stay `editor.*`, so the overrides land under the same names in `keybindings.toml` as in the standalone editor.
+Every `editor.*` id must be in the list, because a save replaces the overrides in the file with the map of the listed actions.
 
 ---
 
@@ -585,6 +590,13 @@ With a dialog on top of the screen the host does not call `press_key` (only an `
 Opening View > "Keyboard Shortcuts…" shows the shared `KeybindingsDialog` with the `editor.*` actions.
 After the dialog is dismissed, the flow calls `reload_keymap()`, which re-reads the config file, runs `_apply_keymap()` and re-measures the menus, applying at once any changes to the key, the menu label, the hint bar, B1 swallowing and unmap handling.
 
+### Navigator integration
+
+The navigator passes the `KeybindingsConfig` of its own `keybindings.toml` to every new `EditorScreen` with `keyboard_shortcuts_item=False`, so the standalone "Keyboard Shortcuts…" item is absent and an editor-only save can never overwrite the navigator's file.
+The editor actions live in the screen's own registry; the navigator's registry is loaded only from `MainScreen.ACTIONS` and `DirectoryBrowser.ACTIONS` and never sees them.
+The overrides are applied when the editor is opened; the dialog is not reachable while an editor is open, so `reload_keymap()` is not called.
+While the editor is the active screen, `NovaNavigator.on_event` gives raw keys to `EditorScreen.press_key` and the `MainScreen` registry is not consulted, so equal default keys never collide.
+
 ### Amendment B2 Defect (Workaround)
 
 **The problem:** `KeymapRegistry.reload()` puts the default key of an unmapped action back instead of showing nothing.
@@ -595,5 +607,6 @@ For example, if `editor.save` is unmapped (empty string) in keybindings, the hin
 **Workaround:** `_apply_keymap` calls `action.set_shortcut(None)` for every action without an effective binding after `reload()`.
 The menu and the hint bar then show no key for it.
 The defect stays deferred with the screen workaround, because fixing it in the registry changes the navigator's behaviour.
+The navigator integration does not need the fix: the editor actions are never given to the navigator's registry, so only the display of the navigator's own unmapped actions is affected.
 
 ---
