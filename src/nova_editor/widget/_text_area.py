@@ -3107,7 +3107,8 @@ NovaTextArea {
         console = self.app.console
         text_strip = Strip(line.render(console), cell_length=line.cell_len)
         if not self.soft_wrap:
-            text_strip = text_strip.crop(scroll_x, scroll_x + min(virtual_width, target_width))
+            # Bounded by the viewport only: the virtual width of a lazy document is an estimate that grows while rows are scanned.
+            text_strip = text_strip.crop(scroll_x, scroll_x + target_width)
 
         # Stylize the line the cursor is currently on.
         if cursor_row == line_index and self.highlight_cursor_line:
