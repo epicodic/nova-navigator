@@ -49,6 +49,7 @@ from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
 from nova_navigator.dialogs.response_dialog import make_response_dialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
 from nova_navigator.dialogs.user_menu_input_dialog import InputField, UserMenuInputDialog
+from nova_navigator.embedded_editor_keys import editor_key_actions
 from nova_navigator.filemanager.compare import CompareMode, compare_directories
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
 from nova_navigator.filemanager.tasks import dummy_task
@@ -375,6 +376,11 @@ class MainScreen(ActionsSupport, Screen[None]):
     async def on_mount(self) -> None:
         self._keymap_registry = KeymapRegistry(self._hint_bar)
         self._reload_keymap()
+
+    @property
+    def keymap_config(self) -> KeybindingsConfig:
+        """The key overrides of the navigator; the embedded editor reads its `editor.*` keys from the same file."""
+        return self._keymap_config
 
     def reload_panels(self) -> None:
         """Reload the listing of both panels."""
@@ -1104,7 +1110,7 @@ class MainScreen(ActionsSupport, Screen[None]):
     @work
     async def action_keybindings(self) -> None:
         dialog = KeybindingsDialog(
-            actions=list(type(self).ACTIONS),
+            actions=[*type(self).ACTIONS, *editor_key_actions()],
             config=self._keymap_config,
             key_display_style=conf_.settings.general.key_display_style,
         )
@@ -1349,7 +1355,7 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
                 raise failed.error from None
             if target is None:
                 return
-            screen = EditorScreen(path=target.path)
+            screen = EditorScreen(path=target.path, keybindings=self._main_screen.keymap_config, keyboard_shortcuts_item=False)
             screen.keymap_registry.set_key_display_style(conf_.settings.general.key_display_style)
             if target.read_only:
                 screen.document.editor.read_only = True
