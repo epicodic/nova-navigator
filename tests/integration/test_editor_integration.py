@@ -459,7 +459,12 @@ async def test_copy_is_released_when_push_screen_fails(app_ctx: AppCtx, tmp_path
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_copy_is_released_when_closing_editor_even_if_error_after_pop(app_ctx: AppCtx, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """finish_editing is called even if an error occurs after pop_screen during _end_editor_session."""
+    """finish_editing is called even if an error occurs after pop_screen during _end_editor_session.
+
+    When reload_panels fails, _end_editor_session still calls finish_editing (releasing the copy)
+    before propagating the exception to the worker's exit_on_error handler, which shows a recoverable
+    error dialog. The test closes that dialog and verifies the app is still running.
+    """
     fs = SchemeFs({"/d/f.txt": b"remote\n"})
     runner = ScriptedRunner()
     manager = install_manager(app_ctx, tmp_path, runner)
@@ -467,22 +472,27 @@ async def test_copy_is_released_when_closing_editor_even_if_error_after_pop(app_
     await open_in_editor(app_ctx, fs.path("/d/f.txt"))
     entry = only_entry(manager)
 
-    # Track whether reload_panels was called by making it fail
-    reload_call_count = 0
-
+    # Make reload_panels fail to trigger error propagation
     def failing_reload() -> None:
-        nonlocal reload_call_count
-        reload_call_count += 1
         raise RuntimeError("reload_panels failed")
 
     monkeypatch.setattr(app_ctx.screen, "reload_panels", failing_reload)
 
-    # Close the editor
+    # Close the editor; reload_panels fails but finish_editing still runs
     await app_ctx.pilot.press("ctrl+w")
-    # Wait for reload_panels to raise and for finish_editing to run
-    await poll_until(app_ctx.pilot, lambda: entry.detector is None, max_wait=3)
-
-    # Verify that finish_editing was called (detector should be None, meaning the copy was released)
-    assert reload_call_count > 0, "reload_panels should have been called"
+    # Poll until the error dialog appears on the screen stack
+    await poll_until(
+        app_ctx.pilot,
+        lambda: any(isinstance(s, MessageBox) for s in app_ctx.app.screen_stack),
+        max_wait=3,
+    )
+    # Verify that the copy was released (detector is None) before we dismiss the dialog
     assert entry.detector is None, "Copy should be released even though reload_panels raised"
     assert entry.status is CopyStatus.SYNCED
+
+    # Dismiss the error dialog via Escape (selects "Continue")
+    await app_ctx.pilot.press("escape")
+    await poll_until(app_ctx.pilot, lambda: isinstance(app_ctx.app.screen, MainScreen))
+
+    # Verify the app is still running and we're back at the main screen
+    assert app_ctx.app.is_running

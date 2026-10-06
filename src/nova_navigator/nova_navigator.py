@@ -1393,7 +1393,19 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         if session is None:
             return
         self._editor_session = None
-        self.run_worker(self._end_editor_session(session), group="editor_session", exit_on_error=True)
+        self.run_worker(self._end_editor_session_with_error_handling(session), group="editor_session", exit_on_error=False)
+
+    async def _end_editor_session_with_error_handling(self, session: _EditorSession) -> None:
+        """End the editor session, handling cleanup errors via the recoverable error dialog.
+
+        Catches exceptions from pop_screen(), reload_panels(), and other cleanup operations.
+        The copy is already released in _end_editor_session's finally block before this catches.
+        """
+        try:
+            await self._end_editor_session(session)
+        except (RuntimeError, OSError, ValueError) as error:
+            # Catch exceptions from screen/panel cleanup operations and show recovery dialog
+            await self._handle_exception_recoverable(error)
 
     async def _end_editor_session(self, session: _EditorSession) -> None:
         try:
@@ -1403,9 +1415,6 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
                     self.sub_title = session.previous_sub_title
                     await self.pop_screen()
                     self._main_screen.reload_panels()
-            except Exception:
-                # Log the error but don't re-raise; we still need to run finish_editing.
-                _logger.exception("Error while closing editor screen")
             finally:
                 # Always run finish_editing (final sync and release) even when pop/reload fails.
                 notice = await finish_editing(self.local_copies, session.target)
