@@ -306,7 +306,11 @@ class MyEditorApp(App):
 - `cursor_location` — the row and column of the cursor; an estimate while `PROVISIONAL`.
 - `pending_progress` — fraction in [0, 1) of a deferred jump; `None` when nothing is pending.
 - `goto_line(line)` — go to a 1-based line; returns `None`, and a line the scan has not reached stays pending.
-- `goto_document_start()`, `goto_document_end()` — the actions of Ctrl+Home and Ctrl+End; the end stays pending until the scan is complete.
+- `goto_document_start(select=False)`, `goto_document_end(select=False)` — the actions of Ctrl+Home and Ctrl+End; the end stays pending until the scan is complete.
+  With `select=True` (Shift+Ctrl+Home and Shift+Ctrl+End) the selection runs from the selection start at the time of the key to the target.
+  The selection stays unchanged while the jump is pending and is set once when the target is reached; Escape cancels the jump and keeps the old selection.
+- Shift+PageUp and Shift+PageDown extend the selection by one page.
+  Shift+Ctrl+Home and Shift+Ctrl+End reach the app only from a terminal that reports modified keys (kitty keyboard protocol or xterm `modifyOtherKeys`); other terminals send the same bytes as Ctrl+Home and Ctrl+End.
 - `goto_byte(offset)` — go to an absolute byte offset; returns `None`, and an offset beyond the scanned frontier stays pending.
 - `cancel_pending()` — cancel a pending jump or deferred cursor operation; the action is bound to Escape while one is pending or a search runs.
 - `toggle_wrap()` — flip `soft_wrap`; `nova_edit` binds it to F10.
@@ -821,6 +825,8 @@ When an editing action (Undo, Redo, Cut, Copy, Paste, Select All) is moved or un
 | `Esc` | Close the editor (embedded only; a save, a pending jump or search, a popup and a menu take it first) |
 | `Ctrl+Home` | Move the cursor to the start of the document |
 | `Ctrl+End` | Move the cursor to the end of the document; stays pending until the scan reaches the end (Esc cancels) |
+| `Shift+PageUp`, `Shift+PageDown` | Extend the selection by one page |
+| `Shift+Ctrl+Home`, `Shift+Ctrl+End` | Select to the start or the end of the document; the end stays pending until the scan reaches it (Esc cancels) |
 | `Ctrl+Q` | Quit (see "Quit flow") |
 | `Ctrl+Z` | Undo the last edit |
 | `Ctrl+Y` | Redo the last undone edit |
@@ -1982,6 +1988,7 @@ Tests are located under `tests/nova_editor/` and `tests/tools/`.
 - `test_lazy_widget.py`, `test_lazy_cursor.py`, `test_jump.py`, `test_highlight_limit.py` — lazy rendering, cursor, goto and highlighting.
 - `test_languages.py` — the path to highlight language mapping.
 - `test_escape_and_document_keys.py` — Esc closing the embedded editor, Ctrl+Home and Ctrl+End.
+- `test_keyboard_selection.py` — Shift+PageUp, Shift+PageDown, Shift+Ctrl+Home and Shift+Ctrl+End, including the pending case.
 - `test_wrapped_cursor_end.py` — the stale-height refresh in `scroll_cursor_visible`.
 - `test_lazy_edit_widget.py`, `test_lazy_clipboard.py`, `test_lazy_edit_long_row_memory.py` — editing, refusal, undo, redo, clipboard and memory on long rows through the widget.
 - `test_widget_save.py`, `test_widget_save_rebase.py`, `test_widget_save_efbig.py`, `test_widget_external_change.py`, `test_save_long_row_cursor.py` — the widget API of saving, the rebase of the widget, a real write error, external changes and the cursor on a long row across a save.
