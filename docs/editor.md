@@ -306,6 +306,7 @@ class MyEditorApp(App):
 - `cursor_location` — the row and column of the cursor; an estimate while `PROVISIONAL`.
 - `pending_progress` — fraction in [0, 1) of a deferred jump; `None` when nothing is pending.
 - `goto_line(line)` — go to a 1-based line; returns `None`, and a line the scan has not reached stays pending.
+- `goto_document_start()`, `goto_document_end()` — the actions of Ctrl+Home and Ctrl+End; the end stays pending until the scan is complete.
 - `goto_byte(offset)` — go to an absolute byte offset; returns `None`, and an offset beyond the scanned frontier stays pending.
 - `cancel_pending()` — cancel a pending jump or deferred cursor operation; the action is bound to Escape while one is pending or a search runs.
 - `toggle_wrap()` — flip `soft_wrap`; `nova_edit` binds it to F10.
@@ -376,13 +377,13 @@ class MyEditorApp(App):
 ## Running the Editor
 
 ```sh
-uv run nova_edit                    # Open editor with no file
-uv run nova_edit /path/to/file.txt  # Open a specific file
-uv run nova_edit --config-dir DIR   # Use a custom directory for keybindings.toml
+uv run ned                    # Open editor with no file
+uv run ned /path/to/file.txt  # Open a specific file
+uv run ned --config-dir DIR   # Use a custom directory for keybindings.toml
 ```
 
 The key file is `~/.config/nova-edit/keybindings.toml` by default.
-A path that exists but is not a regular file (a FIFO, a device, a directory) is refused: `main()` prints `nova_edit: <path>: not a regular file` to stderr and exits with status 1.
+A path that exists but is not a regular file (a FIFO, a device, a directory) is refused: `main()` prints `ned: <path>: not a regular file` to stderr and exits with status 1.
 A path that does not exist opens an empty buffer that the first save creates (see "EditorScreen").
 Every file is opened through `NovaTextArea.open`; there is no eager path.
 The environment variable `NOVA_EDIT_TIMING_FILE` makes `TimedNovaTextArea` write `FIRST_CONTENT <ns>` when content first renders (used by the benchmark harness).
@@ -394,7 +395,7 @@ The environment variable `NOVA_EDIT_TIMING_FILE` makes `TimedNovaTextArea` write
 ### Overview
 
 `EditorScreen` is a Textual `Screen` that provides a complete editing UI.
-It can be used as a standalone app (`nova_edit`) or embedded in other Textual applications.
+It can be used as a standalone app (`ned`) or embedded in other Textual applications.
 
 The screen holds:
 - **Per-screen action registry** (18 editor actions, built fresh per screen instance)
@@ -670,6 +671,12 @@ The `KeybindingsConfig` of the navigator is passed to every new `EditorScreen` w
 The overrides are applied when the editor is opened; the dialog is not reachable while an editor is open, so no live reload is needed.
 If `editor.quit` is moved or unmapped, Ctrl+Q still reaches the editor, because `NovaNavigator.action_quit` asks the screen instead of exiting.
 
+**Closing with Esc.**
+An embedded editor (`standalone=False`) also closes with Esc, through the `close_embedded` binding of `EditorScreen`; it runs the same flow as Close, so unsaved edits still ask first.
+It is a screen binding, not a keymap action, because the keymap sees every key before the widgets.
+A running save (Esc cancels it), a pending jump or search, a popup and a menu take Esc before the screen, so each Esc has one meaning.
+The standalone editor does not close with Esc.
+
 ---
 
 ## DocumentView
@@ -811,6 +818,9 @@ When an editing action (Undo, Redo, Cut, Copy, Paste, Select All) is moved or un
 | `Ctrl+Shift+S` | Save As dialog, prefilled with the current name; Enter saves and Escape cancels |
 | `F5` | Reload; a modified document asks first; during a save it shows a warning |
 | `Ctrl+W` | Close the editor |
+| `Esc` | Close the editor (embedded only; a save, a pending jump or search, a popup and a menu take it first) |
+| `Ctrl+Home` | Move the cursor to the start of the document |
+| `Ctrl+End` | Move the cursor to the end of the document; stays pending until the scan reaches the end (Esc cancels) |
 | `Ctrl+Q` | Quit (see "Quit flow") |
 | `Ctrl+Z` | Undo the last edit |
 | `Ctrl+Y` | Redo the last undone edit |
@@ -1971,6 +1981,7 @@ Tests are located under `tests/nova_editor/` and `tests/tools/`.
 - `test_convergence.py` — `text=`, `load_text` and small files on the lazy document, and the removal of the stock widget path.
 - `test_lazy_widget.py`, `test_lazy_cursor.py`, `test_jump.py`, `test_highlight_limit.py` — lazy rendering, cursor, goto and highlighting.
 - `test_languages.py` — the path to highlight language mapping.
+- `test_escape_and_document_keys.py` — Esc closing the embedded editor, Ctrl+Home and Ctrl+End.
 - `test_wrapped_cursor_end.py` — the stale-height refresh in `scroll_cursor_visible`.
 - `test_lazy_edit_widget.py`, `test_lazy_clipboard.py`, `test_lazy_edit_long_row_memory.py` — editing, refusal, undo, redo, clipboard and memory on long rows through the widget.
 - `test_widget_save.py`, `test_widget_save_rebase.py`, `test_widget_save_efbig.py`, `test_widget_external_change.py`, `test_save_long_row_cursor.py` — the widget API of saving, the rebase of the widget, a real write error, external changes and the cursor on a long row across a save.
