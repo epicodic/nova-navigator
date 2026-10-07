@@ -104,7 +104,10 @@ class EditorScreen(Screen[None]):
 
     """
 
-    BINDINGS: ClassVar[list[Binding]] = [Binding("escape", "cancel_save", "Cancel save", show=False)]
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("escape", "cancel_save", "Cancel save", show=False),
+        Binding("escape", "close_embedded", "Close", show=False),
+    ]
 
     def __init__(
         self,
@@ -659,10 +662,16 @@ class EditorScreen(Screen[None]):
         self.document.editor.cancel_save()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """Keep Esc for the widget and the popups unless a save runs."""
+        """Keep Esc for the widget and the popups unless a save runs; an embedded editor closes with Esc."""
         if action == "cancel_save":
             return self.document.editor.saving
+        if action == "close_embedded":
+            return not self.standalone
         return super().check_action(action, parameters)
+
+    async def action_close_embedded(self) -> None:
+        """Close the embedded editor (Esc); popups, menus, the widget and a running save take Esc first."""
+        self._request_close()
 
     async def action_close_editor(self) -> None:
         """Close: the same flow as Quit."""

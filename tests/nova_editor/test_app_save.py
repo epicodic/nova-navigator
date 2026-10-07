@@ -209,7 +209,7 @@ async def test_fifo_is_refused_without_blocking(tmp_path: Path) -> None:
 def test_main_refuses_a_fifo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     fifo = tmp_path / "pipe"
     os.mkfifo(fifo)
-    monkeypatch.setattr("sys.argv", ["nova_edit", str(fifo)])
+    monkeypatch.setattr("sys.argv", ["ned", str(fifo)])
     with pytest.raises(SystemExit) as info:
         main()
     assert info.value.code != 0

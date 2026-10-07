@@ -39,10 +39,10 @@ def test_new_bindings_do_not_collide() -> None:
     # every key of the screen belongs to exactly one action
     shortcuts = [str(shortcut) for shortcut in screen_keys.values() if shortcut is not None]
     assert len(shortcuts) == len(set(shortcuts))
-    # Escape: the widget cancels a pending jump (active only then), the screen cancels a running save (active only then)
+    # Escape: the widget cancels a pending jump (active only then), the screen cancels a running save (active only then) or closes an embedded editor
     screen_binding_keys = keys(EditorScreen.BINDINGS)
     assert keys(NovaTextArea.BINDINGS).count("escape") == 1
-    assert screen_binding_keys.count("escape") == 1
+    assert screen_binding_keys.count("escape") == 2  # cancel_save and close_embedded, each active only in its own case
     assert EditorScreen.check_action is not Screen.check_action
     # Alt+C toggles the case in the Find popup and is used nowhere else
     assert keys(FindPopup.BINDINGS).count("alt+c") == 1

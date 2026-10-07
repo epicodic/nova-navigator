@@ -32,8 +32,8 @@ def test_every_feature_has_a_shown_binding() -> None:
 
 
 def test_escape_stays_hidden() -> None:
-    """Escape is not a hint bar action; the screen binds it hidden."""
-    assert [b.show for b in EditorScreen.BINDINGS if b.key == "escape"] == [False]
+    """Escape is not a hint bar action; the screen binds it hidden (cancel save, close embedded)."""
+    assert [b.show for b in EditorScreen.BINDINGS if b.key == "escape"] == [False, False]
     assert all(str(a.shortcut) != "escape" for a in EditorScreen().ACTIONS)
 
 

@@ -128,6 +128,8 @@ class _Jump:
     """A search placement of a backward match: the cursor goes to the start of the match."""
     wrapped: bool = False
     """A search placement of a match that was found after wrapping around; `SearchFound` carries it."""
+    to_end: bool = False
+    """A goto of the end of the document: `byte` is not used, the target is the length."""
 
     @property
     def is_search(self) -> bool:
@@ -502,6 +504,18 @@ NovaTextArea {
             show=False,
         ),
         Binding(
+            "ctrl+home",
+            "cursor_document_start",
+            "Cursor document start",
+            show=False,
+        ),
+        Binding(
+            "ctrl+end",
+            "cursor_document_end",
+            "Cursor document end",
+            show=False,
+        ),
+        Binding(
             "pageup",
             "cursor_page_up",
             "Cursor page up",
@@ -663,6 +677,8 @@ NovaTextArea {
     | ctrl+shift+right       | Move the cursor to the end of the word and select.      |
     | home,ctrl+a            | Move the cursor to the start of the line.    |
     | end,ctrl+e             | Move the cursor to the end of the line.      |
+    | ctrl+home              | Move the cursor to the start of the document.|
+    | ctrl+end               | Move the cursor to the end of the document.  |
     | shift+home             | Move the cursor to the start of the line and select.      |
     | shift+end              | Move the cursor to the end of the line and select.      |
     | pageup                 | Move the cursor one page up.                 |
@@ -1623,6 +1639,17 @@ NovaTextArea {
         """
         self._start_jump(_Jump(row=line - 1) if line >= 1 else None, f"line {line} is not a line number (lines start at 1)")
 
+    def goto_document_start(self) -> None:
+        """Move the cursor to the start of the document (Ctrl+Home)."""
+        self.goto_line(1)
+
+    def goto_document_end(self) -> None:
+        """Move the cursor to the end of the document (Ctrl+End).
+
+        The end is known only when the scan is complete, so the jump stays pending (`pending_progress` grows) until then.
+        """
+        self._start_jump(_Jump(to_end=True), "the end of the document cannot be reached")
+
     def goto_byte(self, offset: int) -> None:
         """Move the cursor to a byte offset of the document.
 
@@ -1685,6 +1712,8 @@ NovaTextArea {
             return self._drive_search(jump, snap.scanned_bytes, complete=snap.complete)
         if jump.row is not None:
             return self._drive_line(jump.row, snap.count, complete=snap.complete)
+        if jump.to_end:
+            return self._drive_byte(lazy, lazy.length, snap.scanned_bytes, complete=snap.complete, allow_end=True)
         return self._drive_byte(lazy, jump.byte or 0, snap.scanned_bytes, complete=snap.complete)
 
     def _drive_line(self, row: int, count: int, *, complete: bool) -> float | None:
@@ -1697,8 +1726,8 @@ NovaTextArea {
             return None
         return min(count / (row + 1), PROGRESS_BELOW_ONE)
 
-    def _drive_byte(self, lazy: LazyDocument, offset: int, scanned: int, *, complete: bool) -> float | None:
-        placed = self._resolve_byte(lazy, offset, scanned, complete=complete, allow_end=False)
+    def _drive_byte(self, lazy: LazyDocument, offset: int, scanned: int, *, complete: bool, allow_end: bool = False) -> float | None:
+        placed = self._resolve_byte(lazy, offset, scanned, complete=complete, allow_end=allow_end)
         if isinstance(placed, _Rejection):
             self._reject(placed.reason)
             return None
@@ -4525,6 +4554,22 @@ NovaTextArea {
             The (row, column) location of the start of the cursors current line.
         """
         return self.navigator.get_location_home(self.cursor_location, smart_home=smart_home)
+
+    @_guard_source(None)
+    def action_cursor_document_start(self) -> None:
+        """Move the cursor to the start of the document."""
+        if not self._has_cursor:
+            self.scroll_home()
+            return
+        self.goto_document_start()
+
+    @_guard_source(None)
+    def action_cursor_document_end(self) -> None:
+        """Move the cursor to the end of the document."""
+        if not self._has_cursor:
+            self.scroll_end()
+            return
+        self.goto_document_end()
 
     @_guard_source(None)
     def action_cursor_word_left(self, select: bool = False) -> None:

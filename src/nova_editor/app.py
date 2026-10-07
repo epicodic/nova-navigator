@@ -189,7 +189,7 @@ def build_app(argv: Sequence[str]) -> NovaEditApp:
         defaults).
     """
     parser = argparse.ArgumentParser(
-        prog="nova_edit",
+        prog="ned",
         description="Nova Editor - a Textual-based text editor",
     )
     parser.add_argument(
@@ -211,7 +211,7 @@ def build_app(argv: Sequence[str]) -> NovaEditApp:
         file_path = Path(args.file)
         reason = not_regular_reason(file_path)
         if reason is not None:
-            sys.stderr.write(f"nova_edit: {reason}\n")
+            sys.stderr.write(f"ned: {reason}\n")
             sys.exit(1)
 
     config_dir = args.config_dir if args.config_dir is not None else default_config_dir()
@@ -219,7 +219,7 @@ def build_app(argv: Sequence[str]) -> NovaEditApp:
 
 
 def main() -> None:
-    """Entry point for the nova_edit command."""
+    """Entry point for the ned command."""
     build_app(sys.argv[1:]).run()
 
 
