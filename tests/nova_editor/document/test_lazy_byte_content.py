@@ -71,6 +71,45 @@ def test_content_between_empty_and_whole() -> None:
     doc.close()
 
 
+@pytest.mark.parametrize(
+    ("start", "end", "expected", "breaks", "tail"),
+    [
+        (2, 3, b"\n", 1, 0),  # the LF of a CRLF
+        (1, 2, b"\r", 1, 0),  # the CR of a CRLF
+        (2, 4, b"\nb", 1, 1),  # starts between CR and LF
+        (0, 2, b"a\r", 1, 0),  # ends between CR and LF
+        (1, 3, b"\r\n", 1, 0),  # the whole pair
+    ],
+)
+def test_content_between_is_exact_at_a_boundary_inside_a_crlf(start: int, end: int, expected: bytes, breaks: int, tail: int) -> None:
+    doc = LazyDocument.from_bytes(b"a\r\nb", SMALL)
+    content = doc.content_between(start, end)
+    assert doc._table.content_bytes(content, 0, content.length) == expected
+    assert content.length == len(expected)
+    assert content.breaks == breaks
+    assert content.tail_chars == tail
+    doc.close()
+
+
+def test_content_between_with_both_boundaries_inside_crlf_pairs() -> None:
+    doc = LazyDocument.from_bytes(b"a\r\n\r\nb", SMALL)
+    content = doc.content_between(2, 4)  # the LF of the first pair and the CR of the second
+    assert doc._table.content_bytes(content, 0, content.length) == b"\n\r"
+    assert content.breaks == 2
+    assert content.tail_chars == 0
+    doc.close()
+
+
+def test_content_between_of_half_a_crlf_splices_back_byte_for_byte() -> None:
+    doc = LazyDocument.from_bytes(b"a\r\nb", SMALL)
+    lf = doc.content_between(2, 3)
+    cr = doc.content_between(1, 2)
+    doc.splice_bytes(4, 4, lf)
+    doc.splice_bytes(5, 5, cr)
+    assert doc.read_bytes(0, doc.length) == b"a\r\nb\n\r"
+    doc.close()
+
+
 def test_content_between_does_not_read_the_range_except_the_tail(monkeypatch: pytest.MonkeyPatch) -> None:
     reads: list[tuple[int, int]] = []
     doc = LazyDocument.from_bytes(b"ab\n" + b"c" * 40 + b"\n" + b"d" * 10, SMALL)
@@ -88,14 +127,14 @@ def test_content_between_does_not_read_the_range_except_the_tail(monkeypatch: py
     doc.close()
 
 
-def test_content_between_takes_the_crlf_halves_along() -> None:
+def test_content_between_keeps_only_the_half_inside_the_range() -> None:
     doc = LazyDocument.from_bytes(b"a\r\nb", SMALL)
     inside_start = doc.content_between(2, 4)  # starts between CR and LF
-    assert inside_start.length == 3
+    assert inside_start.length == 2
     inside_end = doc.content_between(0, 2)  # ends between CR and LF
-    assert inside_end.length == 3
-    assert doc._table.content_bytes(inside_start, 0, 3) == b"\r\nb"
-    assert doc._table.content_bytes(inside_end, 0, 3) == b"a\r\n"
+    assert inside_end.length == 2
+    assert doc._table.content_bytes(inside_start, 0, 2) == b"\nb"
+    assert doc._table.content_bytes(inside_end, 0, 2) == b"a\r"
     doc.close()
 
 

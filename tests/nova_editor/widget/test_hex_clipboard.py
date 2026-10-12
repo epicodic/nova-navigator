@@ -374,3 +374,39 @@ async def test_reloading_the_text_clears_the_internal_record(tmp_path: Path) -> 
         view.set_cursor(4)
         await pilot.press("ctrl+v")  # falls back to the system text "61 62"
         assert editor.document.read_bytes(0, editor.document.length) == b"zzzzab"
+
+
+# -- half of a CRLF is copied exactly (REQ-15, REQ-16) -----------------------------------------------------------------------
+
+CRLF_DOC = b"a\r\nb"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("start", "end", "pair"), [(1, 2, "0D"), (2, 3, "0A")])
+async def test_copy_and_paste_of_half_a_crlf_is_exactly_that_byte(tmp_path: Path, start: int, end: int, pair: str) -> None:
+    async with session(tmp_path, CRLF_DOC) as s:
+        select(s, start, end)
+        await s.press("ctrl+c")
+        assert s.host.clipboard == pair
+        s.view.set_cursor(len(CRLF_DOC))
+        await s.press("ctrl+v")
+        assert s.data() == CRLF_DOC + CRLF_DOC[start:end]
+        await s.press("ctrl+z")
+        assert s.data() == CRLF_DOC
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("start", "end", "pair", "left"), [(1, 2, "0D", b"a\nb"), (2, 3, "0A", b"a\rb")])
+async def test_cut_and_paste_of_half_a_crlf_stores_exactly_that_byte(tmp_path: Path, start: int, end: int, pair: str, left: bytes) -> None:
+    async with session(tmp_path, CRLF_DOC) as s:
+        select(s, start, end)
+        await s.press("ctrl+x")
+        assert s.host.clipboard == pair
+        assert s.data() == left
+        s.view.set_cursor(len(left))
+        await s.press("ctrl+v")
+        assert s.data() == left + CRLF_DOC[start:end]
+        await s.press("ctrl+z")
+        assert s.data() == left
+        await s.press("ctrl+z")
+        assert s.data() == CRLF_DOC

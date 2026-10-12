@@ -176,7 +176,7 @@ The package exports `EditsLocked`, `LazyDocument` and `RowUnavailable`.
 - `LazyDocument` — editable document over a `PieceTable`; decodes rows on demand with capability methods that never wait.
   Its edit methods are `replace_range` (text), `splice` (piece references between locations) and `splice_bytes` (piece references between byte offsets, used by undo and redo).
   `selection_content` returns the bytes of a selection as piece references without reading them.
-  `content_of_bytes(data)` stores bytes in the add store and returns them as `Content`; `content_between(start, end)` returns the bytes of a byte range as piece references at any scan state, reading only the break-free tail, and takes the other half of a CR LF pair along when a boundary falls inside it (both are used by the hex view).
+  `content_of_bytes(data)` stores bytes in the add store and returns them as `Content`; `content_between(start, end)` returns the bytes of a byte range as piece references at any scan state, reading only the break-free tail, and returns exactly that range: half a CR LF pair is the lone CR or LF byte (both are used by the hex view).
   `search_plan(offset, limit)` returns a `SearchPlan` (revision, length and parts) in one lock hold, and `revision` counts the committed edits (see "Search").
   `newline` is the terminator of the first row (the one that new line breaks use).
 - `LazyWrappedDocument` — wrapping layer over `LazyDocument`; manages grid wrap sections and a sparse vertical size estimate.

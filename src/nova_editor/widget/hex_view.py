@@ -552,22 +552,21 @@ HexView {
         """Undo or redo one batch through the history of the document, then bring the view in step.
 
         A refused step (the edit lock) rings the bell and warns; the history is then unchanged. A step that could not be rolled back
-        puts the document in the failed state, like a changed file.
+        puts the document in the failed state, like a changed file; a changed file is reported once, as for an edit.
         """
         self._sync()
         document = self._document_provider()
         history = document.history
         try:
             step = history.undo(document) if direction == "undo" else history.redo(document)
+        except SourceChanged as error:
+            self._source_changed(error)
+            return
         except RowUnavailable as error:
             self._refuse(str(error))
             return
         except HistoryRolledBack as error:
-            reason = f"an undo or redo could not be rolled back: {error}"
-            if not self._reported:
-                self._reported = True
-                if self.on_source_changed is not None:
-                    self.on_source_changed(SourceChanged(reason))
+            self._source_changed(SourceChanged(f"an undo or redo could not be rolled back: {error}"))
             self._refuse(str(error))
             return
         if step is None:

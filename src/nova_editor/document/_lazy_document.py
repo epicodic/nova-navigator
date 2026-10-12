@@ -50,7 +50,7 @@ from nova_editor.core.inplace_layout import inplace_ranges
 from nova_editor.core.line_index import call_subscriber
 from nova_editor.core.long_line_index import SPLICE_SYNC_BYTES
 from nova_editor.core.long_line_index import Edit as LongEdit
-from nova_editor.core.pieces import MAX_GENERATION
+from nova_editor.core.pieces import MAX_GENERATION, Piece
 from nova_editor.core.rebase import UNDO_COPY_LIMIT
 from nova_editor.core.save import PlanPart, SaveResult
 from nova_editor.core.search import SearchPlan
@@ -1231,7 +1231,8 @@ class LazyDocument(DocumentBase):
     def content_between(self, start_byte: int, end_byte: int) -> Content:
         """The bytes `[start_byte, end_byte)` as piece references at any scan state (hex copy and cut); only the break-free tail is read.
 
-        A boundary inside a CR LF pair takes the other half along, as `splice_bytes` does, so the content can be spliced back byte for byte.
+        The content is exactly `[start_byte, end_byte)`: a boundary inside a CR LF pair keeps only the half in the range (the lone CR or LF is one piece),
+        so copying and cutting half a pair stores that one byte; `splice_bytes` takes the other half along by itself when the content is spliced.
 
         Raises:
             RowUnavailable: The document is closed or a piece cannot be split within the read budget.
@@ -1245,15 +1246,25 @@ class LazyDocument(DocumentBase):
             if end_byte > self._table.length:
                 msg = f"byte {end_byte} is beyond the document"
                 raise ValueError(msg)
-            if start_byte > 0 and self._table.read(start_byte - 1, 2) == _CRLF:
-                start_byte -= 1
-            if end_byte > 0 and self._table.read(end_byte - 1, 2) == _CRLF:
-                end_byte += 1
+            if start_byte == end_byte:
+                return _EMPTY
+            head: tuple[Piece, ...] = ()
+            tail: tuple[Piece, ...] = ()
             try:
-                return self._table.content(start_byte, end_byte)
+                # A half pair cannot be a boundary of `table.content`: take its byte as a piece of its own.
+                if start_byte > 0 and self._table.read(start_byte - 1, 2) == _CRLF:
+                    head = self._table.byte_content(start_byte).pieces
+                    start_byte += 1
+                if self._table.read(end_byte - 1, 2) == _CRLF:
+                    tail = self._table.byte_content(end_byte - 1).pieces
+                    end_byte -= 1
+                middle = self._table.content(start_byte, end_byte) if start_byte < end_byte else _EMPTY
             except RowNotIndexed as error:
                 msg = f"offset {end_byte} is not scanned yet"
                 raise RowUnavailable(msg) from error
+            if not head and not tail:
+                return middle
+            return Content.from_pieces([*head, *middle.pieces, *tail], 0 if tail else middle.tail_chars)
 
     def content_text(self, content: Content) -> str:
         """The decoded text of `content` (invalid bytes as U+DC80 to U+DCFF); it reads every byte, so ask only for small contents."""

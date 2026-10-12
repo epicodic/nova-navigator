@@ -227,6 +227,24 @@ async def test_a_rolled_back_step_reports_the_failed_state(tmp_path: Path) -> No
         s.notify.assert_called_once()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("direction", ["undo", "redo"])
+async def test_a_source_change_during_undo_or_redo_is_reported_like_an_edit(tmp_path: Path, direction: str) -> None:
+    async with session(tmp_path, bytes(4)) as s:
+        reported: list[SourceChanged] = []
+        s.view.on_source_changed = reported.append
+        await s.press("4")
+        if direction == "redo":
+            await s.press("ctrl+z")
+        with patch.object(s.document.history, direction, side_effect=SourceChanged("file changed")):
+            await s.press("ctrl+z" if direction == "undo" else "ctrl+y")
+            await s.press("ctrl+z" if direction == "undo" else "ctrl+y")
+        assert len(reported) == 1  # once per document, like an edit
+        assert str(reported[0]) == "file changed"
+        s.bell.assert_not_called()
+        s.notify.assert_not_called()
+
+
 # -- REQ-13 cross-view acceptance -------------------------------------------------------------------------------------------
 
 ORIGINAL = "one\ntwo\n"
