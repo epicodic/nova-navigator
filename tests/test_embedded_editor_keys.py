@@ -5,6 +5,7 @@ from __future__ import annotations
 from nova_editor.editor_actions import build_editor_actions
 from nova_navigator.embedded_editor_keys import EDITOR_LABEL_PREFIX, editor_key_actions
 from nova_navigator.nova_navigator import MainScreen
+from nova_widgets.key_types import KeySequence
 
 
 def test_every_editor_action_is_listed_with_its_id_default_key_and_description() -> None:
@@ -13,7 +14,7 @@ def test_every_editor_action_is_listed_with_its_id_default_key_and_description()
     assert [a.id for a in rows] == [a.id for a in editor]
     assert [a.initial_shortcut for a in rows] == [a.initial_shortcut for a in editor]
     assert [a.description for a in rows] == [a.description for a in editor]
-    assert len(rows) == 18
+    assert len(rows) == 19
 
 
 def test_the_labels_are_prefixed_so_they_differ_from_the_navigators() -> None:
@@ -35,3 +36,9 @@ def test_every_call_builds_new_actions() -> None:
     assert all(a is not b for a, b in zip(first, second, strict=True))
     first[0].set_shortcut(None)
     assert second[0].shortcut == second[0].initial_shortcut
+
+
+def test_the_hex_mode_row_is_listed_with_f4() -> None:
+    row = next(a for a in editor_key_actions() if a.id == "editor.hex_mode")
+    assert row.text == "Editor: Hex Mode"
+    assert row.initial_shortcut == KeySequence.parse("f4")

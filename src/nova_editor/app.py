@@ -24,7 +24,7 @@ from .find_popup import FindPopup
 from .goto_popup import GotoPopup
 from .screen import EditorScreen
 from .timed_text_area import TimedNovaTextArea
-from .widget import NovaTextArea
+from .widget import HexView, NovaTextArea
 
 
 class NovaEditApp(App[None]):
@@ -106,6 +106,18 @@ class NovaEditApp(App[None]):
             RuntimeError: If no EditorScreen is on the screen stack.
         """
         return self._editor_screen().document.editor
+
+    @property
+    def hex_view(self) -> HexView:
+        """Get the hex view of the editor screen (shown in hex mode, hidden otherwise), also while a dialog is open.
+
+        Returns:
+            The HexView widget of the current document.
+
+        Raises:
+            RuntimeError: If no EditorScreen is on the screen stack.
+        """
+        return self._editor_screen().document.hex_view
 
     @property
     def goto_popup(self) -> GotoPopup:

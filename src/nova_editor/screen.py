@@ -40,7 +40,7 @@ from .find_popup import FindPopup
 from .goto_popup import GotoPopup
 from .status_line import StatusLine, StatusState, byte_percent, format_sizes, row_is_known, save_progress_text
 from .timed_text_area import TimedNovaTextArea
-from .widget import ExternalCheck, NovaTextArea
+from .widget import ExternalCheck, HexView, NovaTextArea
 
 QUIT_POLL_SECONDS = 0.02
 NEEDLE_SHOWN = 40
@@ -90,7 +90,7 @@ class EditorScreen(Screen[None]):
         padding: 0 1;
     }
 
-    #editor {
+    #editor, #hex_view {
         width: 1fr;
         height: 1fr;
     }
@@ -148,7 +148,7 @@ class EditorScreen(Screen[None]):
         self._open_flows = 0
 
         self.ACTIONS: list[Action] = build_editor_actions()
-        """The 18 `editor.*` actions of this screen, plus Keyboard Shortcuts… with a key config and `keyboard_shortcuts_item`; the menus, the registry and the handlers use these very objects."""
+        """The 19 `editor.*` actions of this screen, plus Keyboard Shortcuts… with a key config and `keyboard_shortcuts_item`; the menus, the registry and the handlers use these very objects."""
         if keybindings is not None and keyboard_shortcuts_item:
             self.ACTIONS.append(build_keyboard_shortcuts_action())
         self._by_id: dict[str, Action] = {a.id: a for a in self.ACTIONS if a.id is not None}
@@ -215,7 +215,7 @@ class EditorScreen(Screen[None]):
             return False
         if await self.keymap_registry.handle_key(key, self.app):
             return True
-        if self._swallowed and self.focused is self.document.editor:
+        if self._swallowed and self.focused is self.document.shown:
             return KeySequence((KeyChord.parse(key),)) in self._swallowed
         return False
 
@@ -235,14 +235,14 @@ class EditorScreen(Screen[None]):
                 popup.hide()
 
     async def on_menu_triggered(self, event: Menu.Triggered) -> None:
-        """A menu item runs the same action as its key: the editor widget first, then the screen."""
+        """A menu item runs the same action as its key: the shown widget (text or hex) first, then the screen."""
         name = event.action.action
         if name is None:
             return
-        editor = self.document.editor
+        shown = self.document.shown
         if self.focused is None:
-            editor.focus()
-        if await self.app.run_action(name, editor):
+            shown.focus()
+        if await self.app.run_action(name, shown):
             return
         await self.app.run_action(name, self)
 
@@ -252,6 +252,7 @@ class EditorScreen(Screen[None]):
         """Compose the menu bar, the editor, the popups, the status line and the hint bar."""
         yield self.menu_bar
         yield self.document.editor
+        yield self.document.hex_view
         yield StatusLine(self._status_state)
         yield self.hint_bar
         yield self.goto_popup
@@ -364,6 +365,7 @@ class EditorScreen(Screen[None]):
         editor = self.document.editor
         self._by_id["editor.wrap_mode"].set_checked(editor.soft_wrap)
         self._by_id["editor.line_numbers"].set_checked(editor.show_line_numbers)
+        self._by_id["editor.hex_mode"].set_checked(self.document.hex_mode)
 
     def action_toggle_wrap(self) -> None:
         """Wrap Mode: flip `soft_wrap` of the widget."""
@@ -375,6 +377,24 @@ class EditorScreen(Screen[None]):
         editor = self.document.editor
         editor.show_line_numbers = not editor.show_line_numbers
         self._sync_view_actions()
+
+    def action_hex_mode(self) -> None:
+        """Hex Mode: show the document as bytes or as text; the cursor follows by byte offset (REQ-1, REQ-2).
+
+        Ignored while the document closes or is replaced (one of its two widgets is no longer attached); allowed while a save runs, because it only swaps the displays.
+        """
+        document = self.document
+        if not (document.editor.is_attached and document.hex_view.is_attached):
+            return
+        self.goto_popup.hide()
+        self.find_popup.hide()
+        document.show_hex(not document.hex_mode)
+        self._sync_view_actions()
+        self._request_status()
+
+    def on_hex_view_moved(self, message: HexView.Moved) -> None:
+        """Refresh the status line."""
+        self._request_status()
 
     def action_open_file(self) -> None:
         """Open: pick a file in the file dialog; the document is replaced after the unsaved-changes question."""
@@ -490,37 +510,42 @@ class EditorScreen(Screen[None]):
         answer = await dialog.run()
         selected = dialog.selected_path
         if answer is not Response.OK or selected is None or document is not self.document:
-            self.document.editor.focus()
+            self.document.focus_shown()
             return
         if editor.modified and await open_question(selected.name).run() is not Response.DISCARD:
-            self.document.editor.focus()
+            self.document.focus_shown()
             return
         if document is not self.document or editor.saving:
             return
         view, error = self._open_view(selected, soft_wrap=editor.soft_wrap, show_line_numbers=editor.show_line_numbers)
         if error is not None:  # unreadable, vanished or not a regular file: nothing was replaced
             await failure_box("Open", error).run()
-            self.document.editor.focus()
+            self.document.focus_shown()
             return
         await self._swap_document(view)
 
     async def _swap_document(self, view: DocumentView) -> None:
-        """Replace the document by `view`: remove the old editor, mount the new one and re-establish everything the screen derived from the old one."""
+        """Replace the document by `view`: remove the old widgets, mount the new ones and re-establish everything the screen derived from the old one.
+
+        The hex view is removed first: the text widget closes the document when it is removed. The new document starts in text mode.
+        """
         editor = self.document.editor
+        hex_view = self.document.hex_view
         if editor.searching:
             editor.cancel_search()
         editor.cancel_pending()
         self.goto_popup.hide()
         self.find_popup.hide()
+        await hex_view.remove()
         await editor.remove()
         self.document = view
-        await self.mount(view.editor, after=self.menu_bar)
+        await self.mount(view.editor, view.hex_view, after=self.menu_bar)
         self._watch_editor()
         self._show_path()
         self._sync_view_actions()
         self._note(None)
         self._request_status()
-        view.editor.focus()
+        view.focus_shown()
 
     async def _keyboard_shortcuts_flow(self) -> None:
         """Keyboard Shortcuts: open the keyboard shortcuts dialog and apply the saved config."""
@@ -545,7 +570,7 @@ class EditorScreen(Screen[None]):
         selected = dialog.selected_path
         if answer is Response.OK and selected is not None and document is self.document:
             self._save_to(selected)
-        self.document.editor.focus()
+        self.document.focus_shown()
 
     def _is_current(self, editor: NovaTextArea) -> bool:
         """Whether `editor` is the widget of the current document (a message of a replaced editor must change nothing)."""
@@ -557,7 +582,7 @@ class EditorScreen(Screen[None]):
         editor = document.editor
         if answer is Response.DISCARD and document is self.document and not editor.saving:
             editor.reload()
-        self.document.editor.focus()
+        self.document.focus_shown()
 
     async def _overwrite_flow(self, document: DocumentView, kind: ChangeKind, path: Path) -> None:
         """Ask before saving onto a file that exists: a save as onto an existing file, or the first save of a path that appeared since the start."""
@@ -600,7 +625,7 @@ class EditorScreen(Screen[None]):
         if document is not self.document:
             return
         editor = document.editor
-        editor.focus()
+        document.focus_shown()
         if answer is Response.OVERWRITE and path is not None:
             if editor.file_path is None:
                 self._save_to(path, confirmed=True)
@@ -714,7 +739,7 @@ class EditorScreen(Screen[None]):
         if answer is Response.DISCARD:
             self.post_message(self.Closed())
         else:
-            self.document.editor.focus()
+            self.document.focus_shown()
 
     async def _failure_flow(self, document: DocumentView, title: str, text: str, *, committed: bool, recheck: bool) -> None:
         await failure_box(title, text).run()
@@ -722,7 +747,7 @@ class EditorScreen(Screen[None]):
             return
         if recheck:
             self._recheck_deferred_change(committed=committed)
-        document.editor.focus()
+        document.focus_shown()
 
     def _save_to(self, path: Path, *, confirmed: bool = False) -> None:
         """Save to `path` (a save as, or the first save of a new file)."""
@@ -800,9 +825,10 @@ class EditorScreen(Screen[None]):
             self._queue_change(kind)
 
     def on_nova_text_area_reloaded(self, message: NovaTextArea.Reloaded) -> None:
-        """Show that the file was reloaded."""
+        """Show that the file was reloaded; the hex view follows the new document at once."""
         if not self._is_current(message.text_area):
             return
+        self.document.hex_view.follow_document()
         self._request_status()
         self._note("Reloaded", timed=True)
 
@@ -839,21 +865,39 @@ class EditorScreen(Screen[None]):
             return
         self.search(needle, backward=backward)
 
+    def _hex_guard(self) -> bool:
+        """Whether the hex view is shown: Find, Find Next, Find Previous and Go to are not available there yet and show a note instead.
+
+        The popups would act on the hidden text widget (ACT6 adds the hex search and goto and removes this guard).
+        """
+        if not self.document.hex_mode:
+            return False
+        self._note("Not available in the hex view yet", timed=True)
+        return True
+
     def action_find(self) -> None:
-        """Open the Find popup with the last needle selected."""
+        """Open the Find popup with the last needle selected (not in the hex view yet)."""
+        if self._hex_guard():
+            return
         self.goto_popup.hide()
         self.find_popup.open(self._popup_offset(FindPopup.WIDTH), self.document.needle)
 
     def action_find_next(self) -> None:
-        """Repeat the last search forward."""
+        """Repeat the last search forward (not in the hex view yet)."""
+        if self._hex_guard():
+            return
         self._repeat_search(backward=False)
 
     def action_find_previous(self) -> None:
-        """Repeat the last search backward."""
+        """Repeat the last search backward (not in the hex view yet)."""
+        if self._hex_guard():
+            return
         self._repeat_search(backward=True)
 
     def action_goto(self) -> None:
-        """Open the Go to popup; with the popup already open it stays open."""
+        """Open the Go to popup; with the popup already open it stays open (not in the hex view yet)."""
+        if self._hex_guard():
+            return
         self.goto_popup.open(self._popup_offset(GotoPopup.WIDTH))
 
     def on_goto_popup_requested(self, message: GotoPopup.Requested) -> None:
@@ -884,13 +928,13 @@ class EditorScreen(Screen[None]):
         self._close_popup(self.find_popup)
 
     def _close_popup(self, popup: PopupWidget) -> None:
-        """Hide a popup and give the focus to the editor (`PopupWidget.close()` is not used: it would focus whatever had the focus at `show()` time)."""
+        """Hide a popup and give the focus to the shown widget (`PopupWidget.close()` is not used: it would focus whatever had the focus at `show()` time)."""
         popup.hide()
-        self.document.editor.focus()
+        self.document.focus_shown()
 
     def _popup_offset(self, width: int) -> tuple[int, int]:
-        """The top right of the editor region: a popup covers the first rows of the text, never the menu bar or the status line."""
-        region = self.document.editor.region
+        """The top right of the region of the shown widget: a popup covers its first rows, never the menu bar or the status line."""
+        region = self.document.shown.region
         return (max(region.x, region.right - min(width, region.width)), region.y)
 
     def _all_popups(self) -> tuple[GotoPopup | FindPopup, ...]:

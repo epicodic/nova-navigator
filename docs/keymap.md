@@ -292,7 +292,9 @@ This is the map passed to `KeymapRegistry.reload()`.
 It is opened from the system menu under **Key Bindings…** or programmatically via `action_keybindings`.
 
 After the dialog is dismissed, `MainScreen._reload_keymap` is called to apply any changes.
-The navigator lists `MainScreen.ACTIONS` followed by the 18 editor actions of `editor_key_actions()` (`nova_navigator/embedded_editor_keys.py`), labelled `Editor: <text>`.
+The navigator lists `MainScreen.ACTIONS` followed by the 19 editor actions of `editor_key_actions()` (`nova_navigator/embedded_editor_keys.py`), labelled `Editor: <text>`.
+One of them is Hex Mode (`editor.hex_mode`, F4).
+The default F4 is also the key of the navigator's `browser.open_editor`; the two do not clash, because the editor screen and the file browser are different scopes, and the dialog lists both.
 The ids stay `editor.*`, so the overrides land under the same names in `keybindings.toml` as in the standalone editor.
 Every `editor.*` id must be in the list, because a save replaces the overrides in the file with the map of the listed actions.
 
@@ -310,7 +312,7 @@ Actions with neither default nor override are not written.
 ### Architecture
 
 Each `EditorScreen` instance builds:
-1. **ACTIONS** — 18 editor actions (File, Edit, Search, View), plus Keyboard Shortcuts… when the screen has a key config.
+1. **ACTIONS** — 19 editor actions (File, Edit, Search, View; View has Hex Mode on F4), plus Keyboard Shortcuts… when the screen has a key config.
 2. **KeymapRegistry** — Per-screen registry for those actions (not shared).
 3. **MenuBar** — Per-screen menu bar with current bindings.
 4. **HintBar** — Per-screen hint bar.
