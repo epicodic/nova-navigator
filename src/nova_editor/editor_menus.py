@@ -47,6 +47,7 @@ def build_menu_bar(actions: dict[str, Action], *, standalone: bool) -> MenuBar:
     view_items = [
         actions["editor.line_numbers"],
         actions["editor.wrap_mode"],
+        actions["editor.hex_mode"],
     ]
     if "editor.keyboard_shortcuts" in actions:
         view_items.append(actions["editor.keyboard_shortcuts"])

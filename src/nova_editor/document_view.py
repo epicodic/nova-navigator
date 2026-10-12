@@ -12,7 +12,7 @@ from nova_editor.core.byte_source import ChangeKind
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.languages import language_for_path
 from nova_editor.timed_text_area import TimedNovaTextArea
-from nova_editor.widget import NovaTextArea
+from nova_editor.widget import HexView, NovaTextArea
 
 LoadState = Literal["loaded", "new", "failed"]
 """`loaded`: the editor shows the file; `new`: the file did not exist at start; `failed`: it exists but could not be read."""
@@ -34,10 +34,12 @@ class DocumentView:
     """All state of one open document; the screen owns a reference and nothing else about the document.
 
     Wrap mode and line numbers are not here: the widget reactives `soft_wrap` and `show_line_numbers` own them.
+    The view holds two widgets over the same document: `editor`, the text widget that owns the document and stays mounted for its whole life,
+    and `hex_view`, shown instead of it in hex mode; exactly one of them is displayed (`shown`).
     """
 
     editor: NovaTextArea
-    """The widget that shows the document."""
+    """The text widget: it owns the document (save, reload, the external-change check, search) also while the hex view is shown."""
     file_path: Path | None = None
     """The file the document is bound to (also set when it did not exist or could not be read)."""
     load_state: LoadState = "loaded"
@@ -52,6 +54,63 @@ class DocumentView:
     """Whether a check of the file on disk runs on a worker thread."""
     change_question: bool = False
     """Whether a question about a change of the file is open or queued; a second message for the same cause (`SourceChanged`, then `SaveNeedsConfirmation`) must not ask twice."""
+
+    def __post_init__(self) -> None:
+        self.hex_view: HexView = HexView(lambda: self.editor.document, id="hex_view")
+        """The hex view over the document of `editor` (it follows a replaced document); hidden in text mode. A plain attribute, not a field."""
+        self.hex_view.display = False
+        self.hex_view.on_source_changed = self.editor.report_source_changed
+
+    @property
+    def hex_mode(self) -> bool:
+        """Whether the hex view is shown instead of the text widget."""
+        return self.hex_view.display
+
+    @property
+    def shown(self) -> NovaTextArea | HexView:
+        """The widget the user sees: the target of the focus, the menu actions and the popup position."""
+        return self.hex_view if self.hex_mode else self.editor
+
+    def focus_shown(self) -> None:
+        """Give the focus to the widget the user sees."""
+        self.shown.focus()
+
+    def show_hex(self, on: bool) -> None:
+        """Show the hex view (`on`) or the text widget; the cursor follows by byte offset and the selection is not carried (REQ-2).
+
+        Does nothing when the requested view is shown already. A history checkpoint is set first, so that an undo never joins edits across a switch.
+        Leaving the text view cancels a pending jump and a running search, which would move the hidden cursor later.
+        The cursor is placed and the focus moved after the next refresh, once the widget that becomes visible has its size.
+        """
+        if on == self.hex_mode:
+            return
+        editor = self.editor
+        hex_view = self.hex_view
+        editor.document.history.checkpoint()
+        if on:
+            editor.cancel_pending()
+            if editor.searching:
+                editor.cancel_search()
+            offset = editor.cursor_byte_offset
+            editor.display = False
+            hex_view.display = True
+
+            def finish_hex() -> None:
+                hex_view.set_cursor(hex_view.cursor.offset if offset is None else offset)
+                hex_view.scroll_to_cursor(center=True)
+                hex_view.focus()
+
+            editor.call_after_refresh(finish_hex)
+            return
+        editor.refresh_if_changed()
+        hex_view.display = False
+        editor.display = True
+
+        def finish_text() -> None:
+            editor.place_cursor_at_byte(hex_view.cursor.offset)
+            editor.focus()
+
+        editor.call_after_refresh(finish_text)
 
     @classmethod
     def open(
