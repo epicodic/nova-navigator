@@ -6,13 +6,15 @@ is reported as `None` (or an empty slice) and the caller asks again after a subs
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import logging
 import re
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, NamedTuple, overload
 
@@ -48,6 +50,7 @@ from nova_editor.core.search import SearchPlan
 from nova_editor.core.text_width import SURROGATE_ESCAPE, advance_disp, locate_cover, utf8_len
 from nova_editor.document._document import DocumentBase, EditResult, Location, Newline
 from nova_editor.document._errors import EditsLocked, RowUnavailable
+from nova_editor.document._history import EditHistory
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.document._long_row_anchor import LongRowAnchorIndex
 
@@ -191,6 +194,19 @@ def index_step(config: LazyConfig) -> int:
     return max(1, min(config.checkpoint_chars, MAX_WINDOW_CHARS))
 
 
+@dataclass(frozen=True)
+class DocumentChange:
+    """One committed splice (or a save rebase) of a `LazyDocument`, as the change listeners receive it."""
+
+    kind: Literal["edit", "undo", "redo", "save"]
+    """Why the document changed; `save` is a rebase onto the saved file (the bytes stay the same)."""
+    start_byte: int
+    removed_length: int
+    inserted_length: int
+    revision: int
+    """The document revision after the change."""
+
+
 class LazyDocument(DocumentBase):
     """Read-only document backed by a `ByteSource`, a `LineIndex` and one `LongLineIndex` per displayed long row.
 
@@ -210,6 +226,10 @@ class LazyDocument(DocumentBase):
         self._saving = False
         self._save_edits: int | None = None
         self._edit_count = 0
+        self.history: EditHistory = EditHistory()
+        """The one edit history of the document; every view records into it and undoes and redoes through it."""
+        self._change_listeners: list[Callable[[DocumentChange], None]] = []
+        self._change_kind: Literal["edit", "undo", "redo", "save"] = "edit"
         self._close_done = threading.Event()
         self._reapers: list[threading.Thread] = []
         self._rebase_closers: list[threading.Thread] = []
@@ -531,6 +551,7 @@ class LazyDocument(DocumentBase):
             source.close()
             return
         self._finish_install(swap, line_index)
+        self._announce_save()
 
     @property
     def rebase_installed(self) -> bool:
@@ -975,6 +996,7 @@ class LazyDocument(DocumentBase):
         if mirror is not None:
             mirror.replace_range(top, bottom, text)
         self._notify_subscribers()
+        self._announce(result)
         return result
 
     def splice(self, start: Location, end: Location, content: Content) -> EditResult:
@@ -1053,6 +1075,7 @@ class LazyDocument(DocumentBase):
                 result = self._splice_blind(start_byte, end_byte, content)
         if blind:
             self._notify_subscribers()
+            self._announce(result)
             return result
         return self._splice_located(first, last, content)
 
@@ -1094,6 +1117,7 @@ class LazyDocument(DocumentBase):
         if mirror is not None:
             mirror.replace_range((first.row, first.column), (last.row, last.column), inserted.decode("utf-8", SURROGATE_ESCAPE))
         self._notify_subscribers()
+        self._announce(result)
         return result
 
     def _locate_offset(self, offset: int) -> _Located:
@@ -1121,6 +1145,53 @@ class LazyDocument(DocumentBase):
         if self._closed:
             msg = "document is closed"
             raise RowUnavailable(msg)
+
+    def add_change_listener(self, callback: Callable[[DocumentChange], None]) -> Callable[[], None]:
+        """Call `callback` with a `DocumentChange` after every committed splice and every save rebase (UI thread, outside the document lock).
+
+        A listener that raises is logged and does not stop the edit or the other listeners.
+
+        Returns:
+            A function that removes the listener again (calling it twice is harmless).
+        """
+        with self._lock:
+            self._change_listeners.append(callback)
+
+        def remove() -> None:
+            with self._lock:
+                if callback in self._change_listeners:
+                    self._change_listeners.remove(callback)
+
+        return remove
+
+    @contextlib.contextmanager
+    def change_kind(self, kind: Literal["edit", "undo", "redo", "save"]) -> Iterator[None]:
+        """Label the changes announced inside the block with `kind` (`EditHistory.undo` and `redo` use it; UI thread)."""
+        previous = self._change_kind
+        self._change_kind = kind
+        try:
+            yield
+        finally:
+            self._change_kind = previous
+
+    def _announce(self, result: EditResult) -> None:
+        """Tell the change listeners about a committed splice; the caller does not hold the lock."""
+        removed = 0 if result.removed is None else result.removed.length
+        inserted = 0 if result.inserted is None else result.inserted.length
+        self._deliver(DocumentChange(self._change_kind, 0 if result.start_byte is None else result.start_byte, removed, inserted, self.revision))
+
+    def _announce_save(self) -> None:
+        """Tell the change listeners that the document was rebased onto a saved file; the caller does not hold the lock."""
+        self._deliver(DocumentChange("save", 0, 0, 0, self.revision))
+
+    def _deliver(self, change: DocumentChange) -> None:
+        with self._lock:
+            listeners = list(self._change_listeners)
+        for callback in listeners:
+            try:
+                callback(change)
+            except Exception:
+                _LOGGER.exception("change listener failed")
 
     def _notify_subscribers(self) -> None:
         with self._lock:

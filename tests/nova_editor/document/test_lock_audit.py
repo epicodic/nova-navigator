@@ -162,7 +162,21 @@ CALLS: dict[str, Call] = {
     "require_not_saving": _gated(lambda d, _: d.require_not_saving("audit")),
     "saving": lambda d, _: d.saving,
 }
-ATTRIBUTES = frozenset({"attach_syntax", "call_log", "foreground", "from_bytes", "from_path", "from_text", "rebase_installed", "rebase_problems"})
+ATTRIBUTES = frozenset(
+    {
+        "add_change_listener",
+        "attach_syntax",
+        "call_log",
+        "change_kind",
+        "foreground",
+        "from_bytes",
+        "from_path",
+        "from_text",
+        "history",
+        "rebase_installed",
+        "rebase_problems",
+    }
+)
 """Public members that are not driven: constructors, plain attributes and the syntax mirror hook and the diagnostics of the last rebase (none touches the table)."""
 
 

@@ -268,16 +268,17 @@ class EditHistory:
         move = mover or _document_mover(document)
         applied: list[ByteEdit] = []
         results: list[EditResult] = []
-        try:
-            for entry in reversed(batch):
-                results.append(move(entry, "undo"))
-                applied.append(entry)
-        except RowUnavailable as error:
-            failure = self._reverse(applied, "redo", move)
-            self._restore_undo(batch)
-            if failure is not None:
-                raise HistoryRolledBack(str(failure)) from error
-            raise
+        with document.change_kind("undo"):
+            try:
+                for entry in reversed(batch):
+                    results.append(move(entry, "undo"))
+                    applied.append(entry)
+            except RowUnavailable as error:
+                failure = self._reverse(applied, "redo", move)
+                self._restore_undo(batch)
+                if failure is not None:
+                    raise HistoryRolledBack(str(failure)) from error
+                raise
         return self._step("undo", batch, applied, results)
 
     def redo(self, document: LazyDocument, mover: Mover | None = None) -> HistoryStep | None:
@@ -288,16 +289,17 @@ class EditHistory:
         move = mover or _document_mover(document)
         applied: list[ByteEdit] = []
         results: list[EditResult] = []
-        try:
-            for entry in batch:
-                results.append(move(entry, "redo"))
-                applied.append(entry)
-        except RowUnavailable as error:
-            failure = self._reverse(applied, "undo", move)
-            self._restore_redo(batch)
-            if failure is not None:
-                raise HistoryRolledBack(str(failure)) from error
-            raise
+        with document.change_kind("redo"):
+            try:
+                for entry in batch:
+                    results.append(move(entry, "redo"))
+                    applied.append(entry)
+            except RowUnavailable as error:
+                failure = self._reverse(applied, "undo", move)
+                self._restore_redo(batch)
+                if failure is not None:
+                    raise HistoryRolledBack(str(failure)) from error
+                raise
         return self._step("redo", batch, applied, results)
 
     @staticmethod
