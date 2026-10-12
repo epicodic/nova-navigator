@@ -47,6 +47,7 @@ from nova_editor.core.save import PlanPart, SaveResult
 from nova_editor.core.search import SearchPlan
 from nova_editor.core.text_width import SURROGATE_ESCAPE, advance_disp, locate_cover, utf8_len
 from nova_editor.document._document import DocumentBase, EditResult, Location, Newline
+from nova_editor.document._errors import EditsLocked, RowUnavailable
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.document._long_row_anchor import LongRowAnchorIndex
 
@@ -79,14 +80,6 @@ RowClass = Literal["short", "medium", "long"]
 
 class WholeLineAccess(AssertionError):
     """A caller asked for the whole text of a long row (or of the whole document)."""
-
-
-class RowUnavailable(RuntimeError):
-    """The row exists but its byte range is not resolvable yet: the scan has not reached its end, or the read budget was exceeded."""
-
-
-class EditsLocked(RowUnavailable):
-    """The document refuses edits at the moment (`LazyDocument.lock_edits`); the message holds the reason."""
 
 
 class _Swap(NamedTuple):
