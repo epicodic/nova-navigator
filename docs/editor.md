@@ -924,10 +924,11 @@ The document is the byte string that results from concatenating pieces in order.
 Original bytes are never copied: a piece only names a range of a source.
 
 **Piece:**
-A `Piece` is `(src, a, b, breaks, row0, first_is_lf, last_is_cr)`.
+A `Piece` is `(src, a, b, breaks, row0, first_is_lf, last_is_cr, unknown)`.
 `src` is `0` for the original file or `k >= 1` for add segment `k`, and `[a, b)` is a non-empty byte range of that source.
 `breaks` counts the terminators of those bytes read on their own, and `row0` is the row, inside the source, that contains byte `a`.
 The two flags tell whether the first byte is LF and whether the last byte is CR.
+A piece of the original file beyond the scan frontier is *unknown*: its `breaks` and `row0` are not stored (both 0) and must not be read, but the two flags are always exact because they are single-byte reads. Only pieces of an original file can be unknown; add segments always know their breaks.
 
 **Content:**
 `Content` is an immutable tuple of pieces with its byte length, break count and `tail_chars`, the characters after its last break.
@@ -937,7 +938,8 @@ Undo records, the clipboard and `splice` exchange `Content`, so no text is copie
 A B+ tree (fan-out 32) keeps the pieces in parallel `array` columns, 37 bytes per piece in the leaf columns.
 That is the leaf slot only.
 The total per piece, with the inner nodes and the `Piece` object, is about 99 bytes (see "Performance (measured)" and "Known Limits"); the design target of below 80 bytes was missed.
-Every node carries the piece count and an aggregate `(length, breaks, first_is_lf, last_is_cr)`.
+Every node carries the piece count and an aggregate `(length, breaks, first_is_lf, last_is_cr, unknown, lead_breaks, first_unknown, last_unknown)`.
+`breaks` is a lower bound while `unknown > 0`; `lead_breaks` is the number of breaks before the first unknown piece, so rows `0 .. lead_breaks - 1` are exact. A CR|LF junction is subtracted only between two known pieces; the subtraction is applied when the scan fills the unknown piece in.
 The aggregates combine associatively, so offsets and breaks are found in O(log n).
 `splice(start, end, content)` replaces a byte range, returns the removed `Content`, merges adjacent pieces that are contiguous in one source, and rebalances.
 Typing therefore extends one piece instead of adding one piece per key.
@@ -966,21 +968,17 @@ It raises `RowNotIndexed` when the index cannot answer yet.
 The start of row `r` is the end of the `r`-th break: the tree descends by break count, picks the piece, and asks its source for the row start.
 The terminator length of a row is read from at most two bytes before its end.
 Each answer keeps the per-call read budget of 4 MiB.
-While the document is exactly the original (one original piece), every query goes straight to the `LineIndex`, so an unedited document costs what the index costs.
+While the document is exactly the original (one original piece), every query goes straight to the `LineIndex`, so an unedited document costs what the index costs. A document edited beyond the scan frontier answers rows below the first unknown piece only.
 
-**Open tail:**
-While the original scan is incomplete, the last original piece `[t, L)` stays outside the tree, because its break count is not final.
-Its rows come from the original index on demand.
-A position inside the scanned part cuts the tail at that position, which moves `[t, x)` into the tree with exact counts.
-A position beyond the scanned part is not accepted for an edit.
-When the scan completes, the next call folds the tail into the tree.
-Row counts are lower bounds until then.
+**Unknown pieces and the fill:**
+The document is the pieces of the tree; there is no separate tail. At open the tree holds one unknown piece for the whole original file. A byte splice is accepted at any offset in `[0, length]`, scanned or not, and never waits for the scan; `length` and `read` never consult the scan. `PieceTable._fill` runs on every call: it takes the first unknown piece in document order, and when that piece lies below the scan frontier it cuts it at the frontier and replaces the lower part by a known piece (at most 64 pieces per call). Unknown pieces behind the first one wait until it is filled, because only the first unknown piece limits which rows can be answered. Row queries answer only rows before the first unknown piece (`lead_breaks`); the open row and everything after it return `None`/unavailable, and the row count is a lower bound. `snapshot().complete` is true only when no unknown piece is left and the scan has finished. Pieces of an old original that was replaced by a save (a retained generation) are never filled; rows through them stay unavailable (see "Known Limits").
 
 **Junction rules:**
 A boundary between a CR and an LF is rejected by the tree with `ValueError`.
 The aggregate counts breaks over junctions between sources exactly, so the row count always equals a split of the joined bytes on `\r\n|\n|\r`.
 A deletion can join a CR and an LF into one CRLF; the aggregate then reports one break fewer, and the document rebuilds its row caches from the row above the edit.
 Undo and redo take the other half of a CRLF along when a recorded boundary falls inside one.
+Next to an unknown piece the CR or LF half is counted once on the known side; the junction subtraction is applied when the scan fills the unknown piece in. Deleting bytes so that a CR meets an LF inside an unknown region changes no known count.
 
 **Merge guard:**
 Decoding is defined over the whole row, not per piece, so an edit can merge bytes into other characters (a truncated UTF-8 lead byte followed by inserted continuation bytes).
@@ -1171,6 +1169,7 @@ After the replace the document must stand on the saved file, so that the old ori
 `LongLineIndex.rebased` is `spliced` with an identity edit at the end of the row.
 Checkpoints are kept, an unfinished scan resumes from its frontier, and row numbers, columns and cached measurements stay valid.
 `apply_rebase` raises `ValueError` when the document changed since the save started; the widget then closes the new source and reports `SaveFailed` with stage `internal`.
+An orphan part of an old original whose rows were not scanned yet is kept as an unknown piece of the retained generation instead of falling back to retaining everything.
 
 A document opened with `text=` or from a small file stands on an adopted file descriptor after its first save.
 
@@ -1446,6 +1445,7 @@ Memory is bounded by the structures, not by the document size.
 **Pieces:**
 The piece table costs about 99 bytes per piece (see "Performance (measured)").
 Typing extends one piece, so a piece is added by an edit that splits or separates text, not by a keystroke.
+An edit at any offset of a file that is still being scanned adds at most two pieces and the added bytes; nothing allocates in proportion to the file size.
 
 **Undo records:**
 A record holds piece references, so its size does not depend on the size of the edit.
@@ -1692,7 +1692,13 @@ See `src/tools/measure_view.py` for usage.
 
 | Limit | Cause | Bound | Where measured |
 |---|---|---|---|
-| Edits refused at unresolved positions | The scan has not reached the position | Until the scan covers it | Tests; REQ numbers measured at resolved positions |
+| Text edits refused at unresolved rows | The text API needs a row and column; the scan has not reached the position | Until the scan covers it; byte edits (`LazyDocument.splice_bytes`, undo and redo) are accepted at any offset | Tests |
+| Rows after a blind byte edit | The first unknown piece limits the answerable rows | Row count is a lower bound and line numbers after the edit are unavailable until the scan fills the piece in | Tests (`test_lazy_byte_edit.py`) |
+| Syntax highlighting after a blind byte edit | The syntax mirror cannot follow an edit without rows | The mirror is dropped; only a document that has a mirror (at most `highlight_limit` bytes, default 1 MiB) is affected | Test `test_blind_edit_detaches_the_syntax_mirror` (R7) |
+| Unknown pieces of a replaced original are never filled | A save replaces the original; the old index is not continued | Rows through those pieces stay unavailable; bytes are exact | Test in `test_rebase_unknown.py` (R4) |
+| `EditResult.end_location` of a byte edit | A blind edit has no row | Meaningless for `splice_bytes` offsets the index cannot resolve; callers in byte mode ignore it (R6) | Not tested |
+| History batching treats unknown content as break-free | `Content.breaks` is a lower bound while `unknown > 0` | `_history.py:113` may merge such edits; ACT2 must test `unknown > 0` as "may contain breaks" (R5) | Not applicable |
+| `complete` lags after the scan ends | The fill handles 64 pieces per call | `complete` stays false for a few calls until the fill finishes | Test `test_fill_is_batched` |
 | Tab stops in edited rows over 1 MiB | Splice shifts checkpoints by the width delta only | `abs(stale - exact) < tab width` | Test `test_tab_alignment_behind_an_edit_is_kept_from_before_the_edit` |
 | Mixed line endings show the first style | No per-row counting in the scan | Display only; bytes are never changed | Unmeasured by design |
 | `text` above 8 MiB is `""` | Reading costs O(size) | `TEXT_LIMIT` = 8 MiB | Not applicable |
