@@ -4107,10 +4107,13 @@ NovaTextArea {
 
         An offset inside a multi-byte character lands on that character, the end of the document is accepted, and an offset the line scan
         has not reached stays a pending jump (`pending_progress`) that completes when the scan arrives.
+        A selection is dropped at once (collapsed on the cursor), also while the jump is pending: the switch does not carry it.
 
         Args:
             offset: byte offset from the start of the document, at most its length.
         """
+        if not self.selection.is_empty:
+            self.selection = Selection.cursor(self.selection.end)
         self._place_cursor_at_byte(offset)
 
     def refresh_if_changed(self) -> bool:

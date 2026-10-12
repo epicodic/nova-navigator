@@ -504,3 +504,23 @@ async def test_nova_edit_exposes_hex_view(tmp_path: Path) -> None:
         screen = screen_of(app)
         assert app.hex_view is screen.document.hex_view
         assert app.editor is screen.document.editor
+
+
+@pytest.mark.asyncio
+async def test_two_hex_mode_actions_before_a_refresh_keep_the_hex_cursor(tmp_path: Path) -> None:
+    """Two F4 handled in one batch (key repeat): the second switch must not read the text cursor the first one has not placed yet."""
+    app = NovaEditApp(file_path=make_file(tmp_path, "".join(f"row {n:04d}\n" for n in range(400))))
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        screen = screen_of(app)
+        document = screen.document
+        await toggle(pilot, screen)
+        document.hex_view.set_cursor(1000)
+        screen.action_hex_mode()
+        screen.action_hex_mode()
+        await wait_until(pilot, lambda: document.hex_mode and screen.focused is document.hex_view)
+        await pilot.pause()
+        assert document.hex_view.cursor.offset == 1000
+        await toggle(pilot, screen)
+        await wait_until(pilot, lambda: document.editor.pending_progress is None)
+        assert document.editor.cursor_byte_offset == 1000

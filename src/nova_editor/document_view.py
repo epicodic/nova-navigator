@@ -60,6 +60,10 @@ class DocumentView:
         """The hex view over the document of `editor` (it follows a replaced document); hidden in text mode. A plain attribute, not a field."""
         self.hex_view.display = False
         self.hex_view.on_source_changed = self.editor.report_source_changed
+        self._transfer: int | None = None
+        """The byte offset that a scheduled switch puts the cursor on, until it runs; a switch before then carries it on instead of reading the stale cursor of the widget it leaves."""
+        self._switches = 0
+        """Count of the switches; a scheduled finish step that a later switch superseded does nothing."""
 
     @property
     def hex_mode(self) -> bool:
@@ -81,33 +85,45 @@ class DocumentView:
         Does nothing when the requested view is shown already. A history checkpoint is set first, so that an undo never joins edits across a switch.
         Leaving the text view cancels a pending jump and a running search, which would move the hidden cursor later.
         The cursor is placed and the focus moved after the next refresh, once the widget that becomes visible has its size.
+        A switch before that refresh (two quick toggles) carries the offset of the scheduled one on, and only the last finish step runs.
         """
         if on == self.hex_mode:
             return
         editor = self.editor
         hex_view = self.hex_view
         editor.document.history.checkpoint()
+        self._switches += 1
+        switch = self._switches
         if on:
             editor.cancel_pending()
             if editor.searching:
                 editor.cancel_search()
-            offset = editor.cursor_byte_offset
+            offset = editor.cursor_byte_offset if self._transfer is None else self._transfer
+            self._transfer = offset
             editor.display = False
             hex_view.display = True
 
             def finish_hex() -> None:
+                if switch != self._switches:
+                    return
+                self._transfer = None
                 hex_view.set_cursor(hex_view.cursor.offset if offset is None else offset)
                 hex_view.scroll_to_cursor(center=True)
                 hex_view.focus()
 
             editor.call_after_refresh(finish_hex)
             return
+        target = hex_view.cursor.offset if self._transfer is None else self._transfer
+        self._transfer = target
         editor.refresh_if_changed()
         hex_view.display = False
         editor.display = True
 
         def finish_text() -> None:
-            editor.place_cursor_at_byte(hex_view.cursor.offset)
+            if switch != self._switches:
+                return
+            self._transfer = None
+            editor.place_cursor_at_byte(target)
             editor.focus()
 
         editor.call_after_refresh(finish_text)

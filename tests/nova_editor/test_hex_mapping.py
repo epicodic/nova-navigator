@@ -231,3 +231,91 @@ async def test_a_far_offset_is_scrolled_into_view_in_both_directions(tmp_path: P
         assert view.hex_view.cursor.offset == data.index(b"row 0450")
         hex_top = view.hex_view.scroll_offset.y
         assert hex_top <= hex_row < hex_top + view.hex_view.scrollable_content_region.height
+
+
+# Rapid toggles: a second switch before the first one finished must not read the stale cursor of the widget it leaves
+
+
+LONG = b"".join(b"row %04d\n" % n for n in range(400))
+
+
+async def settle(pilot: Pilot[None], view: DocumentView) -> None:
+    """Wait until the shown widget has the focus and the text jump (if any) ended."""
+    await wait_until(pilot, lambda: pilot.app.focused is view.shown and view.editor.pending_progress is None)
+    await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_a_double_toggle_from_hex_keeps_the_hex_cursor(tmp_path: Path) -> None:
+    view = view_of(tmp_path, LONG)
+    async with ViewHost(view).run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await to_hex(pilot, view)
+        view.hex_view.set_cursor(1000)
+        view.show_hex(False)
+        view.show_hex(True)  # before the refresh that would place the text cursor
+        await settle(pilot, view)
+        assert view.hex_mode
+        assert view.hex_view.cursor.offset == 1000
+        await to_text(pilot, view)
+        await settle(pilot, view)
+        assert view.editor.cursor_byte_offset == 1000
+
+
+@pytest.mark.asyncio
+async def test_a_double_toggle_from_text_keeps_the_text_cursor(tmp_path: Path) -> None:
+    view = view_of(tmp_path, LONG)
+    async with ViewHost(view).run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await to_hex(pilot, view)
+        view.hex_view.set_cursor(0)
+        await to_text(pilot, view)
+        view.editor.cursor_location = (111, 3)
+        await pilot.pause()
+        offset = view.editor.cursor_byte_offset
+        assert offset == 111 * 9 + 3
+        view.show_hex(True)
+        view.show_hex(False)  # before the refresh that would place the hex cursor
+        await settle(pilot, view)
+        assert not view.hex_mode
+        assert view.editor.cursor_byte_offset == offset
+        assert view.editor.cursor_location == (111, 3)
+
+
+@pytest.mark.asyncio
+async def test_a_triple_toggle_from_hex_ends_in_text_on_the_hex_byte(tmp_path: Path) -> None:
+    view = view_of(tmp_path, LONG)
+    async with ViewHost(view).run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await to_hex(pilot, view)
+        view.hex_view.set_cursor(1000)
+        view.show_hex(False)
+        view.show_hex(True)
+        view.show_hex(False)
+        await settle(pilot, view)
+        assert not view.hex_mode
+        assert view.editor.cursor_byte_offset == 1000
+
+
+@pytest.mark.asyncio
+async def test_a_pending_switch_to_text_drops_the_old_text_selection_at_once(tmp_path: Path) -> None:
+    area, path = open_with_gated_line_scan(tmp_path, rows=3000)
+    area.id = "editor"
+    target = path.read_bytes().index(b"row 2500")
+    view = DocumentView(area, path)
+    async with ViewHost(view).run_test(size=SIZE) as pilot:
+        try:
+            await wait_until(pilot, gated_source(area).blocked.is_set)
+            area.selection = Selection((0, 1), (1, 2))
+            await pilot.pause()
+            await to_hex(pilot, view)
+            view.hex_view.set_cursor(target)
+            await to_text(pilot, view)
+            assert area.pending_progress is not None
+            assert area.selection.is_empty
+            release_line_scan(area)
+            await wait_until(pilot, lambda: area.pending_progress is None and area.cursor_byte_offset == target)
+            assert area.selection.is_empty
+            assert area.cursor_location == (2500, 0)
+        finally:
+            release_line_scan(area)

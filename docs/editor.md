@@ -853,6 +853,8 @@ A click outside both panes on a row does nothing.
 - It sets a history checkpoint first, so that an undo does not join edits across a switch.
 - To hex: it cancels a pending jump and a running search, hides the text widget, shows the hex view, and after the next refresh puts the hex cursor on `cursor_byte_offset` and centers it.
 - To text: it calls `refresh_if_changed()` on the text widget (the document may have changed in the hex view), swaps the displays, and after the next refresh puts the text cursor on the hex cursor's byte (`place_cursor_at_byte`).
+  `place_cursor_at_byte` drops a text selection at once, also while the jump to an unscanned offset is pending.
+- A switch before that refresh (two quick F4 presses, key repeat) does not read the cursor of the widget it leaves, which is not placed yet: the view keeps the scheduled offset (`_transfer`) and carries it on, and only the finish step of the last switch runs.
 - The mapping is by byte offset.
   The selection is not carried over.
 - The focus goes to the widget that becomes visible (`focus_shown()`).
