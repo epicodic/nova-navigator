@@ -17,18 +17,18 @@ The Notes column says what differs from upstream, and what ACT3, ACT4, ACT5, ACT
 
 | Vendored Path | Upstream Path | Notes |
 |---|---|---|
-| `widget/_text_area.py` | `src/textual/widgets/_text_area.py` | Class renamed `TextArea` to `NovaTextArea`; imports updated; lazy document support, cursor state machine, long-row handling and new messages added; ACT4 removed the stock `Document` path and added editing on piece tables, refusal and the clipboard; ACT5 added saving, reload, external change detection and the save messages; ACT6 added the search glue, its messages and the select-all key move; ACT7 imports `TREE_SITTER` and `get_language` from `widget/_tree_sitter.py`, guards `_refresh_size` in `scroll_cursor_visible`, added `line_ending` and `indexing_progress`, and made `cursor_byte_offset` return `None` while the row is unresolved (see below); S0002 ACT5 made `_watch_show_line_numbers` survive an unresolved cursor row |
+| `widget/_text_area.py` | `src/textual/widgets/_text_area.py` | Class renamed `TextArea` to `NovaTextArea`; imports updated; lazy document support, cursor state machine, long-row handling and new messages added; ACT4 removed the stock `Document` path and added editing on piece tables, refusal and the clipboard; ACT5 added saving, reload, external change detection and the save messages; ACT6 added the search glue, its messages and the select-all key move; ACT7 imports `TREE_SITTER` and `get_language` from `widget/_tree_sitter.py`, guards `_refresh_size` in `scroll_cursor_visible`, added `line_ending` and `indexing_progress`, and made `cursor_byte_offset` return `None` while the row is unresolved (see below); S0002 ACT5 made `_watch_show_line_numbers` survive an unresolved cursor row; S0003 ACT2 made `history` a property of the document, moved the undo/redo apply loop into `EditHistory`, added `_Jump.allow_end` and the change listener |
 | `widget/_text_area_theme.py` | `src/textual/_text_area_theme.py` | Imports updated to reference `NovaTextArea`; unchanged by ACT3 |
 | `document/_document.py` | `src/textual/document/_document.py` | Capability methods added; `cell_len` now comes from `rich.cells`; `EditResult` gained `removed`, `start_byte` and `inserted` (ACT4); unchanged by ACT5 |
 | `document/_document_navigator.py` | `src/textual/document/_document_navigator.py` | Lazy-document branches added (see below); `cell_len` now comes from `rich.cells` |
-| `document/_edit.py` | `src/textual/document/_edit.py` | Imports updated to reference `NovaTextArea`; ACT4 made `Edit` record piece references and added coalescing; ACT5 added `contents` and `rewrite` (see below) |
-| `document/_history.py` | `src/textual/document/_history.py` | Imports updated to use the vendored document package; ACT4 changed the batching defaults, `record` and added restore helpers; ACT5 added revisions, branches and the modified state (see below) |
+| `document/_edit.py` | `src/textual/document/_edit.py` | Imports updated to reference `NovaTextArea`; ACT4 made `Edit` record piece references and added coalescing; ACT5 added `contents` and `rewrite` (see below); S0003 ACT2: `Edit` subclasses the native `ByteEdit`, added `shape()`, the unknown rule and the origin guard in `coalesce` |
+| `document/_history.py` | `src/textual/document/_history.py` | Imports updated to use the vendored document package; ACT4 changed the batching defaults, `record` and added restore helpers; ACT5 added revisions, branches and the modified state (see below); S0003 ACT2: entries are `ByteEdit`, `record` uses `shape()` and an origin batch rule, added `undo`/`redo(document, mover)`, `HistoryStep`, `HistoryRolledBack`, `references`/`rewrite_references`/`map_references`/`original_ranges`, `set_max_checkpoints`; `HistoryException` moved to `_byte_edit.py` and re-exported |
 | `document/_syntax_aware_document.py` | `src/textual/document/_syntax_aware_document.py` | Imports updated to use the vendored document package; unchanged by ACT3 and ACT4; now only the highlighting mirror of a lazy document |
 | `document/_wrapped_document.py` | `src/textual/document/_wrapped_document.py` | Imports use the vendored document package; ACT7 took `cell_len` from `rich.cells` and the wrap helpers from `document/_wrap.py` |
 | `document/_wrap.py` | `src/textual/_wrap.py`, `src/textual/_cells.py::cell_width_to_column_index`, `src/textual/_loop.py::loop_last` | Carries `chunks`, `compute_wrap_offsets` and the `cell_width_to_column_index` helper; docstrings written for ruff, `cell_len` and `get_character_cell_size` from `rich.cells`, `loop_last` inlined as `_loop_last`, and the prefix sum and the folding of an over-wide chunk split out of `compute_wrap_offsets` as `_cumulative_tab_widths` and `_fold_chunk` (ACT7) |
 | `widget/_tree_sitter.py` | `src/textual/_tree_sitter.py` | Provides `TREE_SITTER` and `get_language`; the optional `tree_sitter` import goes through `import_module` behind a guard (so ty needs no suppression), and the module and `TREE_SITTER` docstrings were added (ACT7) |
 | `__init__.py` (package root) | none | Native: exports `NovaTextArea`, `LazyConfig` and `DEFAULT_HIGHLIGHT_LIMIT` lazily through PEP 562 `__getattr__` and `__dir__`, so importing `nova_editor.core` does not load Textual (ACT7) |
-| `document/__init__.py` | `src/textual/document/__init__.py` | Empty at the end of ACT4; ACT5 exports `EditsLocked`, `LazyDocument` and `RowUnavailable` (not upstream's exports); unchanged by ACT6 |
+| `document/__init__.py` | `src/textual/document/__init__.py` | Empty at the end of ACT4; ACT5 exports `EditsLocked`, `LazyDocument` and `RowUnavailable` (not upstream's exports); unchanged by ACT6; ACT2 also exports `ByteEdit`, `DocumentChange`, `HistoryStep` |
 
 ## New Files (Not Vendored)
 
@@ -57,7 +57,9 @@ The following modules are native to `nova_editor` and are not copies of upstream
 | `core/search.py` | `compile_matcher`, `Matcher`, `SearchJob`, `SearchSpec`, `SearchSettings`, `SearchPlan`, `SearchPlanner`, `SearchResult`, `SearchProgress` and the errors (ACT6). |
 | `widget/_search_run.py` | `SearchRun`, `SearchOutcome` and `run_search_thread`, the state and thread body of one widget search (ACT6). |
 | `document/_lazy_config.py` | Tunable thresholds for lazy documents (`LazyConfig` dataclass). |
-| `document/_lazy_document.py` | Editable document over `PieceTable` (read-only in ACT3); ACT5 added the edit lock, `plan`, `prepare_rebase`, `apply_rebase` and the save registration; ACT6 added `search_plan` and `revision`. |
+| `document/_byte_edit.py` | `ByteEdit`, `EditShape`, `HistoryException` (S0003 ACT2). |
+| `document/_errors.py` | `RowUnavailable`, `EditsLocked`, moved out of `_lazy_document.py` to break the import cycle (S0003 ACT2). |
+| `document/_lazy_document.py` | Editable document over `PieceTable` (read-only in ACT3); ACT5 added the edit lock, `plan`, `prepare_rebase`, `apply_rebase` and the save registration; ACT6 added `search_plan` and `revision`; S0003 ACT2 added `history`, `add_change_listener`, `change_kind`, `DocumentChange`. |
 | `document/_lazy_wrapped_document.py` | Wrapping layer for lazy documents with grid wrap and a sparse height estimate; imports `compute_wrap_offsets` from `document/_wrap.py` (ACT7). |
 | `document/_cursor_anchor.py` | Cursor state machine for long rows (`RESOLVED`, `PROVISIONAL`, `PENDING`). |
 | `document/_long_row_anchor.py` | Adapter from a long-line index to the cursor machine; ACT5 added `rebind`. |
@@ -190,15 +192,24 @@ The widget has one document type, `LazyDocument`.
 - New function `_open_source(path)`, which returns a `BytesSource` up to `SMALL_FILE_LIMIT` and a `PreadSource` otherwise.
 - New message `EditRefused`.
 - New class attribute `clipboard_cap = 2_097_152` and the dataclass `_ClipboardRecord`.
-- New members: `_unresolved_reason`, `_refuse_edit`, `_reset_cursor_machine`, `_roll_back`, `_store_clipboard`, `_internal_clipboard`, `_search_matching_bracket`.
+- New members: `_unresolved_reason`, `_refuse_edit`, `_reset_cursor_machine`, `_store_clipboard`, `_internal_clipboard`, `_search_matching_bracket`.
 - New attributes: `_clipboard_record` and `_edit_refused`.
+- Removed in S0003 ACT2: `_roll_back`, replaced by the shared history's all-or-nothing rollback in `EditHistory.undo` and `redo`.
+
+Removed in S0003 ACT2: `_undo_batch` and `_redo_batch`, replaced by `_move_history`, `_move_entry`, `_after_step`, `_after_foreign_step`, `_after_refused_step`, `_start_location` and `_place_cursor_at_byte`.
 
 **ACT4: edited upstream members.**
-- Edit paths: `edit` (refusal, cursor machine reset, `wrap_range`), `undo`, `redo`, `_undo_batch`, `_redo_batch` (both return whether the batch was applied; a refused batch is restored in the history), `_replace_via_keyboard`, `_delete_via_keyboard`.
+- Edit paths: `edit` (refusal, cursor machine reset, `wrap_range`), `undo`, `redo` (both go through `_move_history`; a refused batch is restored in the history), `_replace_via_keyboard`, `_delete_via_keyboard`.
 - Clipboard: `action_cut`, `action_copy`, `action_paste`.
 - Documents and text: `__init__`, `code_editor`, `_set_document`, `load_text`, `text`, `open` (small files in memory, scan on the calling thread), `close`, `find_matching_bracket` (bounded by `BRACKET_SEARCH_LIMIT`).
 - Rendering: `render_line`, `_render_line`, `get_line` (invalid bytes are drawn as U+FFFD in the strip text only).
 - Lazy machinery that lost its stock branch: `_drive_lazy`, `_run_jump`, `_lazy_move`, `_reconcile_cursor`, `_track_cursor`, `_refresh_size`, `_estimate_tick`, `_reestimate` and the other cursor and estimate helpers.
+
+**ACT2:** `history` is a property that returns `document.history`, so the view holds no history of its own.
+`undo` and `redo` run through `_move_history`, which calls `EditHistory.undo` or `redo` with `_move_entry` as the mover.
+A batch of another origin is placed by `_after_foreign_step`, which places the cursor with `_place_cursor_at_byte`.
+`_Jump.allow_end` accepts the end of the document for a byte jump.
+The change listener `_on_document_change` is added in `__init__` and `_replace_document`, removed in `_replace_document` and `close`, and sets `_stale`; it ignores announcements made while `_own_change` is set (by `edit` and `_move_history`) and `save` announcements.
 
 ### `widget/_text_area.py` (ACT5)
 
@@ -207,7 +218,8 @@ The widget has one document type, `LazyDocument`.
 **New messages:** `Reloaded`, `ReloadFailed`, `SaveProgress`, `Saved`, `SaveFailed`, `SaveCancelled` and `SaveNeedsConfirmation`; `SourceChanged` gained `kind`.
 **New class attributes:** `save_settings`, `save_io` and `save_clock`.
 **New names:** `ExternalCheck` (the pure part of an external-change check), `_SEVERITY` (the order of the kinds that `_fail_source` keeps) and `_save_epoch`.
-**New members:** `modified`, `saving`, `save`, `check_external_change`, `reload`, `cancel_save`, `begin_external_check`, `apply_external_check`, `refresh_after_rebase`, and the private `_reachable_edits`, `_reachable_contents`, `_apply_translated`, `_start_save`, `_save_thread`, `_post_save_outcome`, `_on_save_report`, `_announce_save_progress`, `_end_save`, `_finish_save`, `_conclude_save`, `_discard_reloaded`, `_lift_stale` and `_abandon_save`.
+**New members:** `modified`, `saving`, `save`, `check_external_change`, `reload`, `cancel_save`, `begin_external_check`, `apply_external_check`, `refresh_after_rebase`, and the private `_reachable_contents`, `_apply_translated`, `_start_save`, `_save_thread`, `_post_save_outcome`, `_on_save_report`, `_announce_save_progress`, `_end_save`, `_finish_save`, `_conclude_save`, `_discard_reloaded`, `_lift_stale` and `_abandon_save`.
+The private `_reachable_edits` was removed in S0003 ACT2; the history now owns the reference API (`references`, `rewrite_references`, `map_references`).
 **New attributes:** `file_path`, `_held_identity`, `_stale_kind`, `_save_run` and `_open_config`.
 **Edited members:** `__init__`, `open` (records the path, the held identity and the configuration), `close` (abandons a running save), `_replace_document` and `load_text` (refused during a save), `_fail_source` and `_guard_source` (carry the `ChangeKind` and set the edit lock), `edit`, `_render_line_guarded`, `_reestimate`, `cursor_byte_offset`, `_run_jump`, `_track_cursor`, `_reconcile_cursor` and `_mouse_target` (pass the kind of a `SourceChanged`), and `_store_clipboard` (keeps no record during a save).
 
@@ -276,6 +288,10 @@ The widget has one document type, `LazyDocument`.
 **New members:** `coalesce(later)` merges adjacent insertions and adjacent backspace or delete runs, `characters` is the size the history counts for batching, and the module helpers `_has_escape` and `_join`.
 **Modified members:** `do` splices piece references for a lazy document (redo uses `splice_bytes`) and records them; `undo` replaces the inserted span by the removed pieces without reading text.
 
+**ACT2:** `Edit` subclasses `ByteEdit` (`document/_byte_edit.py`) and sets `origin` to `text`.
+`shape()` returns the batching facts, and a piece with unknown bytes counts as a possible line break.
+`coalesce` refuses unknown content and an entry of another origin.
+
 ### `document/_history.py`
 
 **`__post_init__`:** besides the undo and redo stacks it initialises the ACT5 state: `_revision`, `_branch`, `_next_branch` and `_saved`; the undo stack holds `Batch` lists.
@@ -284,6 +300,11 @@ The widget has one document type, `LazyDocument`.
 **New members:** `_restore_undo` and `_restore_redo`, which put back a batch that the widget refused.
 **ACT5:** batches are `Batch` lists that store `revision_before`, `revision_after`, `branch_before` and `branch`; new members `revision`, `branch`, `mark_saved()` and `modified`; a record after an undo opens a new branch.
 The batching rules are unchanged.
+
+**ACT2:** entries are `ByteEdit`, and `record` calls `shape()` and starts a new batch when the origin differs from the latest entry's origin.
+`undo(document, mover)` and `redo` move one batch all or nothing and return a `HistoryStep`; a refused step is reversed, and `HistoryRolledBack` is raised only when the reversal is refused too.
+`references`, `rewrite_references`, `map_references` and `original_ranges` form the reference API, and `set_max_checkpoints` limits the undo stack.
+`HistoryException` moved to `_byte_edit.py` and is re-exported from here.
 
 ### `document/_document.py` (ACT4)
 
@@ -343,7 +364,7 @@ To upgrade from a newer version of Textual:
    - The `NovaTextArea` class name (instead of `TextArea`).
    - All import paths pointing to `nova_editor` packages.
    - All capability method additions (on `DocumentBase` and `DocumentNavigator`).
-4. Re-apply the lazy branches guarded by `is_long` and the capability method calls listed in "Nova Editor Changes to Vendored Code" above.
+4. Re-apply the lazy branches guarded by `is_long` and the capability method calls listed in "Nova Editor Changes to Vendored Code" above. The history now lives on the document: re-apply the `record`, `Batch` and step-API changes, not a widget attribute.
 5. Test thoroughly using `uv run qa`, `uv run pytest tests/nova_editor/document/test_wrap_parity.py -q` (merge any drift into `document/_wrap.py` and `widget/_tree_sitter.py`) and manual testing.
 6. Update the version reference at the top of this file.
 

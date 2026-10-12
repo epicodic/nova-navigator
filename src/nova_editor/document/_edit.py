@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from nova_editor.core.pieces import Content, merge_pieces
+from nova_editor.document._byte_edit import ByteEdit, EditShape, HistoryException
 from nova_editor.document._document import EditResult, Location, Selection
 from nova_editor.document._lazy_document import LazyDocument
 
@@ -13,8 +14,11 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class Edit:
+class Edit(ByteEdit):
     """Implements the Undoable protocol to replace text at some range within a document."""
+
+    origin = "text"
+    """Edits made by the text view; entries of other origins never merge into them."""
 
     text: str
     """The text to insert. An empty string is equivalent to deletion."""
@@ -185,7 +189,27 @@ class Edit:
             text_area.selection = self._updated_selection
         text_area.record_cursor_width()
 
-    def coalesce(self, later: Edit) -> bool:
+    def shape(self) -> EditShape | None:
+        """The batching facts of the performed edit, or `None` for a no-op.
+
+        Raises:
+            HistoryException: The edit was not performed with `Edit.do` yet.
+        """
+        edit_result = self._edit_result
+        if edit_result is None:
+            raise HistoryException("Cannot add an edit to history before it has been performed using `Edit.do`.")
+        removed = edit_result.removed
+        if removed is not None and self.inserted is not None:
+            # Lazy documents: the removed text may be too large to be reported, so the lengths and breaks of the pieces decide.
+            if self.inserted.length == 0 and removed.length == 0:
+                return None
+            newline = self.inserted.breaks > 0 or removed.breaks > 0 or self.inserted.unknown > 0 or removed.unknown > 0
+            return EditShape(removed.length > 0, newline)
+        if self.text == "" and edit_result.replaced_text == "":
+            return None
+        return EditShape(bool(edit_result.replaced_text), "\n" in self.text or "\n" in edit_result.replaced_text)
+
+    def coalesce(self, later: ByteEdit) -> bool:
         """Merge `later`, performed right after this edit, into this edit when both are pure insertions or both pure deletions that touch.
 
         Args:
@@ -194,6 +218,8 @@ class Edit:
         Returns:
             True when `later` was absorbed (the caller drops it), False when the two stay separate.
         """
+        if not isinstance(later, Edit) or later.origin != self.origin:
+            return False
         start, removed, inserted, result = self.start_byte, self.removed, self.inserted, self._edit_result
         later_start, later_removed, later_inserted, later_result = later.start_byte, later.removed, later.inserted, later._edit_result
         if start is None or removed is None or inserted is None or result is None:
@@ -201,6 +227,8 @@ class Edit:
         if later_start is None or later_removed is None or later_inserted is None or later_result is None:
             return False
         if removed.breaks or inserted.breaks or later_removed.breaks or later_inserted.breaks:
+            return False
+        if removed.unknown or inserted.unknown or later_removed.unknown or later_inserted.unknown:
             return False
         if removed.length == 0 and later_removed.length == 0 and inserted.length and later_inserted.length:
             if later_start != start + inserted.length or _has_escape(later.text):
