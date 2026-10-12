@@ -218,6 +218,39 @@ async def test_a_shortened_file_clamps_the_scroll_and_the_cursor(tmp_path: Path)
             assert texts[7].strip() == ""
 
 
+@pytest.mark.asyncio
+async def test_a_foreign_shrink_scrolls_the_clamped_cursor_into_view(tmp_path: Path) -> None:
+    with opened(write_file(tmp_path, bytes(4000))) as document:
+        view = HexView(lambda: document)
+        async with HexHost(view).run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            view.cursor = HexCursor(3900, 0, "hex")  # set without scrolling: the view stays at the top
+            document.splice_bytes(2000, 4000, EMPTY)
+            view.follow_document()
+            await pilot.pause()
+            await pilot.pause()
+            row = view.cursor.offset // view.hex_layout.bytes_per_row
+            assert view.cursor.offset == 2000
+            assert view.scroll_offset.y <= row < view.scroll_offset.y + view.scrollable_content_region.height
+
+
+@pytest.mark.asyncio
+async def test_a_reload_scrolls_the_clamped_cursor_into_view(tmp_path: Path) -> None:
+    with opened(write_file(tmp_path, bytes(4000), "a.bin")) as first, opened(write_file(tmp_path, bytes(2000), "b.bin")) as second:
+        current: list[LazyDocument] = [first]
+        view = HexView(lambda: current[0])
+        async with HexHost(view).run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            view.cursor = HexCursor(3900, 0, "hex")
+            current[0] = second
+            view.follow_document()
+            await pilot.pause()
+            await pilot.pause()
+            row = view.cursor.offset // view.hex_layout.bytes_per_row
+            assert view.cursor.offset == 2000
+            assert view.scroll_offset.y <= row < view.scroll_offset.y + view.scrollable_content_region.height
+
+
 # -- task 3: cursor, selection, navigation keys, mouse ------------------------------------------------------------------
 
 

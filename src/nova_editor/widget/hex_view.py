@@ -22,6 +22,7 @@ from textual.strip import Strip
 
 from nova_editor.core import Content, SourceChanged
 from nova_editor.document import HexEdit, LazyDocument, RowUnavailable
+from nova_editor.document._history import HistoryRolledBack
 from nova_editor.widget.hex_input import plan_digit
 from nova_editor.widget.hex_layout import HexLayout, Pane, choose_layout, format_row, total_rows
 
@@ -154,10 +155,12 @@ HexView {
         Binding("insert", "toggle_insert", show=False),
         Binding("delete", "delete_forward", show=False),
         Binding("backspace", "delete_backward", show=False),
+        Binding("ctrl+z,super+z", "undo", show=False),
+        Binding("ctrl+y,super+y", "redo", show=False),
     ]
-    """Navigation, Select All, Insert, Delete and Backspace; typed digits and characters are handled by `_on_key`.
+    """Navigation, Select All, Insert, Delete, Backspace, Undo and Redo; typed digits and characters are handled by `_on_key`.
 
-    Undo, redo and the clipboard are not bound here yet."""
+    The clipboard is not bound here yet."""
 
     class Moved(Message):
         """The cursor or the selection changed."""
@@ -229,6 +232,8 @@ HexView {
         """The byte pressed at the start of a drag, or `None` for a Shift-press that extends the selection."""
         self._drag_left = False
         """Whether the pointer has left the pressed byte during the drag (a click alone selects nothing)."""
+        self._reveal = False
+        """Whether `_sync` moved the cursor and a scroll to it is scheduled."""
         self._half: tuple[int, int] | None = None
         """`(offset, revision)` of a byte whose high digit was typed just now and still waits for its low digit, or `None`."""
 
@@ -370,6 +375,10 @@ HexView {
     def _move(self, offset: int, nibble: Literal[0, 1], pane: Pane | None, select: bool) -> None:
         """Move the cursor and scroll it into view; a target more than one screen outside the view is centred."""
         self.set_cursor(offset, nibble, pane=pane, select=select)
+        self._reveal_cursor()
+
+    def _reveal_cursor(self) -> None:
+        """Scroll the cursor into view; a cursor more than one screen outside the view is centred."""
         height = self.scrollable_content_region.height
         row = self.cursor.offset // self._layout.bytes_per_row
         top = self.scroll_offset.y
@@ -523,6 +532,47 @@ HexView {
         self.post_message(self.Edited())
         return True
 
+    def action_undo(self) -> None:
+        """Undo the most recent batch of edits, also those made in the text view (Ctrl+Z); the cursor goes to the place of the edit."""
+        self._move_history("undo")
+
+    def action_redo(self) -> None:
+        """Redo the most recently undone batch of edits (Ctrl+Y); the cursor goes behind the redone bytes."""
+        self._move_history("redo")
+
+    def _move_history(self, direction: Literal["undo", "redo"]) -> None:
+        """Undo or redo one batch through the history of the document, then bring the view in step.
+
+        A refused step (the edit lock) rings the bell and warns; the history is then unchanged. A step that could not be rolled back
+        puts the document in the failed state, like a changed file.
+        """
+        self._sync()
+        document = self._document_provider()
+        history = document.history
+        try:
+            step = history.undo(document) if direction == "undo" else history.redo(document)
+        except RowUnavailable as error:
+            self._refuse(str(error))
+            return
+        except HistoryRolledBack as error:
+            reason = f"an undo or redo could not be rolled back: {error}"
+            if not self._reported:
+                self._reported = True
+                if self.on_source_changed is not None:
+                    self.on_source_changed(SourceChanged(reason))
+            self._refuse(str(error))
+            return
+        if step is None:
+            return
+        self._adopt_own_change()
+        self._anchor = None
+        self._half = None
+        self.cursor = HexCursor(max(0, min(step.byte, self._length)), 0, self.cursor.pane)
+        self._reveal_cursor()
+        self.refresh()
+        self.post_message(self.Moved(self.cursor, None))
+        self.post_message(self.Edited())
+
     def _adopt_own_change(self) -> None:
         """Take over the revision and length of an edit made here; the view keeps the byte offset at the top."""
         document = self._document_provider()
@@ -550,16 +600,32 @@ HexView {
             self._revision = document.revision
             self._length = document.length
             self._drop_window()
+            before = self.cursor
             self.cursor = HexCursor(min(self.cursor.offset, self._length), 0, self.cursor.pane)
             self._relayout(width)
+            if self.cursor != before:
+                self._schedule_reveal()
         elif document.revision != self._revision:
             self._revision = document.revision
             self._length = document.length
             self._drop_window()
+            before = self.cursor
             self._clamp_cursor()
             self._relayout(width)
+            if self.cursor != before:
+                self._schedule_reveal()
         elif width != self._width:
             self._relayout(width)
+
+    def _schedule_reveal(self) -> None:
+        """Scroll to the cursor after the next refresh (once), because `_sync` moved it and may run while the view renders."""
+        if not self._reveal:
+            self._reveal = True
+            self.call_after_refresh(self._do_reveal)
+
+    def _do_reveal(self) -> None:
+        self._reveal = False
+        self._reveal_cursor()
 
     def _clamp_cursor(self) -> None:
         """Clamp the cursor and the anchor to `[0, length]`; the end-of-document position has no low digit."""
