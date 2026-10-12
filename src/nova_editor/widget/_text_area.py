@@ -1246,7 +1246,7 @@ NovaTextArea {
         """True while the widget itself changes the document (an edit, undo or redo), so the change listener ignores the announcement."""
 
         self._stale = False
-        """True once another view changed the document behind the widget's back; cleared when the document is replaced (the hex view reads it)."""
+        """True once another view changed the document behind the widget's back; cleared only when the document is replaced (nothing reads it until ACT4)."""
 
         self._selecting = False
         """True if we're currently selecting text using the mouse, otherwise False."""

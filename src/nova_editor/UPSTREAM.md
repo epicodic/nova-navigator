@@ -192,11 +192,14 @@ The widget has one document type, `LazyDocument`.
 - New function `_open_source(path)`, which returns a `BytesSource` up to `SMALL_FILE_LIMIT` and a `PreadSource` otherwise.
 - New message `EditRefused`.
 - New class attribute `clipboard_cap = 2_097_152` and the dataclass `_ClipboardRecord`.
-- New members: `_unresolved_reason`, `_refuse_edit`, `_reset_cursor_machine`, `_roll_back`, `_store_clipboard`, `_internal_clipboard`, `_search_matching_bracket`.
+- New members: `_unresolved_reason`, `_refuse_edit`, `_reset_cursor_machine`, `_store_clipboard`, `_internal_clipboard`, `_search_matching_bracket`.
 - New attributes: `_clipboard_record` and `_edit_refused`.
+- Removed in S0003 ACT2: `_roll_back`, replaced by the shared history's all-or-nothing rollback in `EditHistory.undo` and `redo`.
+
+Removed in S0003 ACT2: `_undo_batch` and `_redo_batch`, replaced by `_move_history`, `_move_entry`, `_after_step`, `_after_foreign_step`, `_after_refused_step`, `_start_location` and `_place_cursor_at_byte`.
 
 **ACT4: edited upstream members.**
-- Edit paths: `edit` (refusal, cursor machine reset, `wrap_range`), `undo`, `redo`, `_undo_batch`, `_redo_batch` (both return whether the batch was applied; a refused batch is restored in the history), `_replace_via_keyboard`, `_delete_via_keyboard`.
+- Edit paths: `edit` (refusal, cursor machine reset, `wrap_range`), `undo`, `redo` (both go through `_move_history`; a refused batch is restored in the history), `_replace_via_keyboard`, `_delete_via_keyboard`.
 - Clipboard: `action_cut`, `action_copy`, `action_paste`.
 - Documents and text: `__init__`, `code_editor`, `_set_document`, `load_text`, `text`, `open` (small files in memory, scan on the calling thread), `close`, `find_matching_bracket` (bounded by `BRACKET_SEARCH_LIMIT`).
 - Rendering: `render_line`, `_render_line`, `get_line` (invalid bytes are drawn as U+FFFD in the strip text only).
@@ -215,7 +218,8 @@ The change listener `_on_document_change` is added in `__init__` and `_replace_d
 **New messages:** `Reloaded`, `ReloadFailed`, `SaveProgress`, `Saved`, `SaveFailed`, `SaveCancelled` and `SaveNeedsConfirmation`; `SourceChanged` gained `kind`.
 **New class attributes:** `save_settings`, `save_io` and `save_clock`.
 **New names:** `ExternalCheck` (the pure part of an external-change check), `_SEVERITY` (the order of the kinds that `_fail_source` keeps) and `_save_epoch`.
-**New members:** `modified`, `saving`, `save`, `check_external_change`, `reload`, `cancel_save`, `begin_external_check`, `apply_external_check`, `refresh_after_rebase`, and the private `_reachable_edits`, `_reachable_contents`, `_apply_translated`, `_start_save`, `_save_thread`, `_post_save_outcome`, `_on_save_report`, `_announce_save_progress`, `_end_save`, `_finish_save`, `_conclude_save`, `_discard_reloaded`, `_lift_stale` and `_abandon_save`.
+**New members:** `modified`, `saving`, `save`, `check_external_change`, `reload`, `cancel_save`, `begin_external_check`, `apply_external_check`, `refresh_after_rebase`, and the private `_reachable_contents`, `_apply_translated`, `_start_save`, `_save_thread`, `_post_save_outcome`, `_on_save_report`, `_announce_save_progress`, `_end_save`, `_finish_save`, `_conclude_save`, `_discard_reloaded`, `_lift_stale` and `_abandon_save`.
+The private `_reachable_edits` was removed in S0003 ACT2; the history now owns the reference API (`references`, `rewrite_references`, `map_references`).
 **New attributes:** `file_path`, `_held_identity`, `_stale_kind`, `_save_run` and `_open_config`.
 **Edited members:** `__init__`, `open` (records the path, the held identity and the configuration), `close` (abandons a running save), `_replace_document` and `load_text` (refused during a save), `_fail_source` and `_guard_source` (carry the `ChangeKind` and set the edit lock), `edit`, `_render_line_guarded`, `_reestimate`, `cursor_byte_offset`, `_run_jump`, `_track_cursor`, `_reconcile_cursor` and `_mouse_target` (pass the kind of a `SourceChanged`), and `_store_clipboard` (keeps no record during a save).
 

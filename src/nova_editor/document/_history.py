@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from collections import deque
 from collections.abc import Callable, Iterator
@@ -10,10 +11,11 @@ from typing import TYPE_CHECKING, Any, Literal
 from nova_editor.core.pieces import Content, generation_of, segment_of
 from nova_editor.document._byte_edit import ByteEdit, HistoryException
 from nova_editor.document._document import EditResult
-from nova_editor.document._errors import RowUnavailable
 
 if TYPE_CHECKING:
     from nova_editor.document._lazy_document import LazyDocument
+
+_LOGGER = logging.getLogger(__name__)
 
 __all__ = ["Batch", "EditHistory", "HistoryException", "HistoryRolledBack", "HistoryStep", "Mover"]
 
@@ -104,6 +106,12 @@ class EditHistory:
     If an edit removes any text from the document at all, it's considered a replacement.
     Every other edit is considered a pure insertion.
     """
+
+    _redo_evicted: Batch | None = field(init=False, default=None)
+    """The oldest undo batch that the last `_pop_redo` pushed out of a full undo stack, for `_restore_redo`."""
+
+    _redo_flag_before: bool = field(init=False, default=False)
+    """The `_force_end_batch` flag as it was before the last `_pop_redo`, for `_restore_redo`."""
 
     def __post_init__(self) -> None:
         self._revision = 0
@@ -224,6 +232,9 @@ class EditHistory:
         redo_stack = self._redo_stack
         if redo_stack:
             batch = redo_stack.pop()
+            self._redo_flag_before = self._force_end_batch
+            full = undo_stack.maxlen is not None and len(undo_stack) == undo_stack.maxlen
+            self._redo_evicted = undo_stack[0] if full else None
             undo_stack.append(batch)
             self._revision = batch.revision_after
             self._branch = batch.branch
@@ -244,6 +255,10 @@ class EditHistory:
         """Put back a batch that `_pop_redo` returned but that was refused (it is again the top of the redo stack)."""
         if self._undo_stack and self._undo_stack[-1] is batch:
             self._undo_stack.pop()
+        if self._redo_evicted is not None:
+            self._undo_stack.appendleft(self._redo_evicted)
+            self._redo_evicted = None
+        self._force_end_batch = self._redo_flag_before
         self._redo_stack.append(batch)
         self._revision = batch.revision_before
         self._branch = batch.branch_before
@@ -260,6 +275,7 @@ class EditHistory:
 
         Raises:
             RowUnavailable: An entry was refused; the entries applied so far were reversed and the history is unchanged.
+            Exception: Any other failure of an entry is handled the same way (all or nothing) and re-raised unchanged.
             HistoryRolledBack: The reversal itself was refused; the document no longer matches the history.
         """
         batch = self._pop_undo()
@@ -273,7 +289,7 @@ class EditHistory:
                 for entry in reversed(batch):
                     results.append(move(entry, "undo"))
                     applied.append(entry)
-            except RowUnavailable as error:
+            except Exception as error:
                 failure = self._reverse(applied, "redo", move)
                 self._restore_undo(batch)
                 if failure is not None:
@@ -294,7 +310,7 @@ class EditHistory:
                 for entry in batch:
                     results.append(move(entry, "redo"))
                     applied.append(entry)
-            except RowUnavailable as error:
+            except Exception as error:
                 failure = self._reverse(applied, "undo", move)
                 self._restore_redo(batch)
                 if failure is not None:
@@ -303,16 +319,17 @@ class EditHistory:
         return self._step("redo", batch, applied, results)
 
     @staticmethod
-    def _reverse(applied: list[ByteEdit], direction: Literal["undo", "redo"], move: Mover) -> RowUnavailable | None:
-        """Move the entries applied before a refusal back, newest first.
+    def _reverse(applied: list[ByteEdit], direction: Literal["undo", "redo"], move: Mover) -> Exception | None:
+        """Move the entries applied before a failure back, newest first.
 
         Returns:
-            The refusal that stopped the reversal, or `None` when the document is as before.
+            The failure that stopped the reversal, or `None` when the document is as before.
         """
         try:
             for entry in reversed(applied):
                 move(entry, direction)
-        except RowUnavailable as failure:
+        except Exception as failure:
+            _LOGGER.exception("history: reversing the applied entries failed")
             return failure
         return None
 

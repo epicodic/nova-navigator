@@ -1055,7 +1055,7 @@ An undo or redo that needs an unresolved position is refused as a whole, and an 
 **Shared history:**
 Byte entries (`ByteEdit`) are shared by both views, because the history belongs to the document.
 `EditHistory.undo(document, mover)` and `redo` return a `HistoryStep` (`byte`, `low`, `high_old`, `high_new`), or `None` when there is nothing to move.
-A refused entry (`RowUnavailable`) reverses the entries applied so far and leaves the history unchanged; an undo or redo whose reversal is refused too raises `HistoryRolledBack`.
+An entry that fails (`RowUnavailable` or any other exception) reverses the entries applied so far and leaves the history unchanged (all-or-nothing for any exception, which is re-raised); an undo or redo whose reversal is refused too raises `HistoryRolledBack`.
 Entries of different origins (`text`, `hex`) never share a batch.
 An entry whose removed or inserted content holds unknown pieces may contain a break, so it ends its batch and is never coalesced.
 Closed in S0003 ACT2 (R5): unknown content counts as possibly containing a break; tests `test_byte_edit.py`.
