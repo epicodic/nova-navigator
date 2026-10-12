@@ -10,7 +10,7 @@ import stat
 import threading
 import time
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -39,6 +39,7 @@ from nova_editor.core.save import SaveProgress as CoreSaveProgress
 from nova_editor.core.search import SearchError, SearchJob, SearchPlan, SearchSettings, SearchSpec
 from nova_editor.core.search import SearchProgress as CoreSearchProgress
 from nova_editor.core.text_width import SURROGATE_ESCAPE, utf8_len
+from nova_editor.document._byte_edit import ByteEdit
 from nova_editor.document._cursor_anchor import CursorMachine, CursorState, Op, Verdict
 from nova_editor.document._document import (
     EditResult,
@@ -48,7 +49,7 @@ from nova_editor.document._document import (
 )
 from nova_editor.document._document_navigator import DocumentNavigator
 from nova_editor.document._edit import Edit
-from nova_editor.document._history import EditHistory
+from nova_editor.document._history import EditHistory, HistoryRolledBack, HistoryStep
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.document._lazy_document import LazyDocument, RowUnavailable, WholeLineAccess
 from nova_editor.document._lazy_wrapped_document import LazyWrappedDocument
@@ -1230,12 +1231,14 @@ NovaTextArea {
         self._word_pattern = re.compile(r"(?<=\W)(?=\w)|(?<=\w)(?=\W)")
         """Compiled regular expression for what we consider to be a 'word'."""
 
-        self.history: EditHistory = EditHistory(
-            max_checkpoints=max_checkpoints,
-            checkpoint_timer=2.0,
-            checkpoint_max_characters=100,
-        )
-        """A stack (the end of the list is the top of the stack) for tracking edits."""
+        self._max_checkpoints = max_checkpoints
+        """The limit of undo checkpoints; it is applied to the history of every document the widget gets."""
+
+        self._step_direction: Literal["undo", "redo"] = "undo"
+        """The direction of the undo or redo step that runs, for `_move_entry`."""
+
+        self._step_top: Location = (0, 0)
+        """The smallest top location of the entries the running step moved."""
 
         self._selecting = False
         """True if we're currently selecting text using the mouse, otherwise False."""
@@ -1304,6 +1307,9 @@ NovaTextArea {
 
         self.document: LazyDocument = _prebuilt_document if _prebuilt_document is not None else self._text_document(text, _DEFAULT_INDENT_WIDTH)
         """The document this widget is currently editing: always a lazy document over a piece table (`text=` and small files included)."""
+
+        if max_checkpoints is not None:
+            self.document.history.set_max_checkpoints(max_checkpoints)
 
         self.wrapped_document: LazyWrappedDocument = LazyWrappedDocument(self.document, tab_width=_DEFAULT_INDENT_WIDTH)
         """The wrapped view of the document."""
@@ -2666,6 +2672,8 @@ NovaTextArea {
         self._indexing_announced = False
         self._line_cache.clear()
         self.document = document
+        if self._max_checkpoints is not None:
+            document.history.set_max_checkpoints(self._max_checkpoints)
         self.wrapped_document = wrapped
         self.navigator = navigator
         self._long_cursor = long_cursor
@@ -3312,6 +3320,11 @@ NovaTextArea {
         self.post_message(self.EditRefused(reason, self))
 
     @property
+    def history(self) -> EditHistory:
+        """The edit history of the current document (shared with every other view of it)."""
+        return self.document.history
+
+    @property
     def modified(self) -> bool:
         """Whether the text differs from the state of the last save (or of the opening state until the first one)."""
         return self.history.modified
@@ -3484,14 +3497,9 @@ NovaTextArea {
         if run is not None and run.job is not None:
             run.job.cancel()
 
-    def _reachable_edits(self) -> Iterator[Edit]:
-        """Every edit of the undo and redo stacks, oldest first: the one order of `_reachable_contents` and `_apply_translated`."""
-        for batch in (*self.history.undo_stack, *self.history.redo_stack):
-            yield from batch
-
     def _reachable_contents(self) -> list[PieceContent]:
         """Every `Content` that refers to pieces of the document and outlives a save: those of the history (see `Edit.contents`), then the clipboard record."""
-        found = [content for edit in self._reachable_edits() for content in edit.contents()]
+        found = self.history.references()
         record = self._clipboard_record
         if record is not None:
             found.append(record.content)
@@ -3500,8 +3508,7 @@ NovaTextArea {
     def _apply_translated(self, contents: Sequence[PieceContent]) -> None:
         """Write the translated contents back into the history and the clipboard record, in the order of `_reachable_contents`."""
         translated = iter(contents)
-        for edit in self._reachable_edits():
-            edit.rewrite(translated)
+        self.history.rewrite_references(translated)
         record = self._clipboard_record
         if record is not None:
             record.content = next(translated)
@@ -3900,12 +3907,7 @@ NovaTextArea {
 
         Refused (see `edit`) when a position it needs is not resolved yet; the history is then unchanged.
         """
-        if (reason := self._unresolved_reason()) is not None:
-            self._refuse_edit(reason)
-            return
-        if edits := self.history._pop_undo():
-            if not self._undo_batch(edits):
-                self.history._restore_undo(edits)
+        self._move_history("undo")
 
     def action_undo(self) -> None:
         """Undo the edits since the last checkpoint (the most recent batch of edits)."""
@@ -3916,50 +3918,62 @@ NovaTextArea {
 
         Refused (see `edit`) when a position it needs is not resolved yet; the history is then unchanged.
         """
-        if (reason := self._unresolved_reason()) is not None:
-            self._refuse_edit(reason)
-            return
-        if edits := self.history._pop_redo():
-            if not self._redo_batch(edits):
-                self.history._restore_redo(edits)
+        self._move_history("redo")
 
     def action_redo(self) -> None:
         """Redo the most recently undone batch of edits."""
         self.redo()
 
-    def _undo_batch(self, edits: Sequence[Edit]) -> bool:
-        """Undo a batch of Edits.
-
-        The sequence must be chronologically ordered by edit time.
-
-        There must be no edits missing from the sequence, or the resulting content
-        will be incorrect.
-
-        Args:
-            edits: The edits to undo, in the order they were originally performed.
-
-        Returns:
-            False when a position was not resolved: the batch is refused and the document is unchanged.
-        """
-        if not edits:
-            return True
-
+    def _move_history(self, direction: Literal["undo", "redo"]) -> None:
+        """Undo or redo one batch through the history of the document, then bring the view in step."""
+        if (reason := self._unresolved_reason()) is not None:
+            self._refuse_edit(reason)
+            return
+        history = self.history
+        batch = history.peek_undo() if direction == "undo" else history.peek_redo()
+        if not batch:
+            return
+        self._step_direction = direction
+        self._step_top = batch[-1].top if direction == "undo" else batch[0].top
         old_gutter_width = self.gutter_width
-        minimum_top = edits[-1].top
+        try:
+            step = history.undo(self.document, self._move_entry) if direction == "undo" else history.redo(self.document, self._move_entry)
+        except RowUnavailable as error:
+            self._after_refused_step(self._step_top, str(error))
+            return
+        except HistoryRolledBack as error:
+            self._fail_source(f"an undo or redo could not be rolled back: {error}")
+            self._after_refused_step(self._step_top, str(error))
+            return
+        if step is not None:
+            self._after_step(step, old_gutter_width)
+
+    def _move_entry(self, entry: ByteEdit, direction: Literal["undo", "redo"]) -> EditResult:
+        """Move one history entry the way the text view does (the selection follows) and note where a refused step has to wrap again."""
+        if not isinstance(entry, Edit):
+            return entry.revert(self.document) if direction == "undo" else entry.apply(self.document)
+        result = entry.undo(self) if direction == "undo" else entry.do(self, record_selection=False)
+        if direction == self._step_direction:  # not the move back of a rollback
+            self._step_top = min(self._step_top, entry.top)
+        return result
+
+    def _after_step(self, step: HistoryStep, old_gutter_width: int) -> None:
+        """Refresh the view after an undo or redo of a whole batch."""
+        edits = [entry for entry in step.batch if isinstance(entry, Edit)]
+        minimum_top = step.batch[-1].top if step.direction == "undo" else step.batch[0].top
         maximum_old_bottom = (0, 0)
         maximum_new_bottom = (0, 0)
-        done: list[Edit] = []
-        try:
-            for edit in reversed(edits):
-                edit.undo(self)
-                done.append(edit)
-                end_location = edit._edit_result.end_location if edit._edit_result else (0, 0)
-                minimum_top = min(minimum_top, edit.top)
+        for edit in step.applied:
+            if not isinstance(edit, Edit):
+                continue
+            end_location = edit._edit_result.end_location if edit._edit_result else (0, 0)
+            minimum_top = min(minimum_top, edit.top)
+            if step.direction == "undo":
                 maximum_old_bottom = max(maximum_old_bottom, end_location)
                 maximum_new_bottom = max(maximum_new_bottom, edit.bottom)
-        except RowUnavailable as error:
-            self._roll_back(done, minimum_top, str(error))
-            return False
+            else:
+                maximum_new_bottom = max(maximum_new_bottom, end_location)
+                maximum_old_bottom = max(maximum_old_bottom, edit.bottom)
 
         self._after_text_change()
         new_gutter_width = self.gutter_width
@@ -3969,78 +3983,14 @@ NovaTextArea {
             self.wrapped_document.wrap_range(minimum_top, maximum_old_bottom, maximum_new_bottom)
 
         self._refresh_size()
-        for edit in reversed(edits):
+        for edit in reversed(edits) if step.direction == "undo" else edits:
             edit.after(self)
         self._build_highlight_map()
         self.post_message(self.Changed(self))
         self.update_suggestion()
-        return True
 
-    def _redo_batch(self, edits: Sequence[Edit]) -> bool:
-        """Redo a batch of Edits in order.
-
-        The sequence must be chronologically ordered by edit time.
-
-        Edits are applied from the start of the sequence to the end.
-
-        There must be no edits missing from the sequence, or the resulting content
-        will be incorrect.
-
-        Args:
-            edits: The edits to redo.
-
-        Returns:
-            False when a position was not resolved: the batch is refused and the document is unchanged.
-        """
-        if not edits:
-            return True
-
-        old_gutter_width = self.gutter_width
-        minimum_top = edits[0].top
-        maximum_old_bottom = (0, 0)
-        maximum_new_bottom = (0, 0)
-        done: list[Edit] = []
-        try:
-            for edit in edits:
-                edit.do(self, record_selection=False)
-                done.append(edit)
-                end_location = edit._edit_result.end_location if edit._edit_result else (0, 0)
-                minimum_top = min(minimum_top, edit.top)
-                maximum_new_bottom = max(maximum_new_bottom, end_location)
-                maximum_old_bottom = max(maximum_old_bottom, edit.bottom)
-        except RowUnavailable as error:
-            self._roll_back(done, minimum_top, str(error), redo=True)
-            return False
-
-        self._after_text_change()
-        new_gutter_width = self.gutter_width
-        if old_gutter_width != new_gutter_width:
-            self.wrapped_document.wrap(self.wrap_width, self.indent_width)
-        else:
-            self.wrapped_document.wrap_range(
-                minimum_top,
-                maximum_old_bottom,
-                maximum_new_bottom,
-            )
-
-        self._refresh_size()
-        for edit in edits:
-            edit.after(self)
-        self._build_highlight_map()
-        self.post_message(self.Changed(self))
-        self.update_suggestion()
-        return True
-
-    def _roll_back(self, done: Sequence[Edit], top: Location, reason: str, *, redo: bool = False) -> None:
-        """Reverse the applied part of a refused undo batch (`redo=True`: of a redo batch) so that the document is unchanged, then report the refusal."""
-        try:
-            for edit in reversed(done):
-                if redo:
-                    edit.undo(self)
-                else:
-                    edit.do(self, record_selection=False)
-        except RowUnavailable as error:
-            self._fail_source(f"an undo or redo could not be rolled back: {error}")
+    def _after_refused_step(self, top: Location, reason: str) -> None:
+        """The history reversed what a refused undo or redo had applied: wrap the touched rows again and report the refusal."""
         self._after_text_change()
         self.wrapped_document.wrap_range(top, top, top)
         self._refresh_size()
