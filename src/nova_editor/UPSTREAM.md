@@ -17,7 +17,7 @@ The Notes column says what differs from upstream, and what ACT3, ACT4, ACT5, ACT
 
 | Vendored Path | Upstream Path | Notes |
 |---|---|---|
-| `widget/_text_area.py` | `src/textual/widgets/_text_area.py` | Class renamed `TextArea` to `NovaTextArea`; imports updated; lazy document support, cursor state machine, long-row handling and new messages added; ACT4 removed the stock `Document` path and added editing on piece tables, refusal and the clipboard; ACT5 added saving, reload, external change detection and the save messages; ACT6 added the search glue, its messages and the select-all key move; ACT7 imports `TREE_SITTER` and `get_language` from `widget/_tree_sitter.py`, guards `_refresh_size` in `scroll_cursor_visible`, added `line_ending` and `indexing_progress`, and made `cursor_byte_offset` return `None` while the row is unresolved (see below); S0002 ACT5 made `_watch_show_line_numbers` survive an unresolved cursor row; S0003 ACT2 made `history` a property of the document, moved the undo/redo apply loop into `EditHistory`, added `_Jump.allow_end` and the change listener; S0003 ACT4 added `place_cursor_at_byte`, `refresh_if_changed` and `report_source_changed` |
+| `widget/_text_area.py` | `src/textual/widgets/_text_area.py` | Class renamed `TextArea` to `NovaTextArea`; imports updated; lazy document support, cursor state machine, long-row handling and new messages added; ACT4 removed the stock `Document` path and added editing on piece tables, refusal and the clipboard; ACT5 added saving, reload, external change detection and the save messages; ACT6 added the search glue, its messages and the select-all key move; ACT7 imports `TREE_SITTER` and `get_language` from `widget/_tree_sitter.py`, guards `_refresh_size` in `scroll_cursor_visible`, added `line_ending` and `indexing_progress`, and made `cursor_byte_offset` return `None` while the row is unresolved (see below); S0002 ACT5 made `_watch_show_line_numbers` survive an unresolved cursor row; S0003 ACT2 made `history` a property of the document, moved the undo/redo apply loop into `EditHistory`, added `_Jump.allow_end` and the change listener; S0003 ACT4 added `place_cursor_at_byte`, `refresh_if_changed` and `report_source_changed`; S0003 ACT5 added `store_clipboard_bytes`, `internal_clipboard` and `_set_clipboard_record` |
 | `widget/_text_area_theme.py` | `src/textual/_text_area_theme.py` | Imports updated to reference `NovaTextArea`; unchanged by ACT3 |
 | `document/_document.py` | `src/textual/document/_document.py` | Capability methods added; `cell_len` now comes from `rich.cells`; `EditResult` gained `removed`, `start_byte` and `inserted` (ACT4); unchanged by ACT5 |
 | `document/_document_navigator.py` | `src/textual/document/_document_navigator.py` | Lazy-document branches added (see below); `cell_len` now comes from `rich.cells` |
@@ -64,6 +64,8 @@ The following modules are native to `nova_editor` and are not copies of upstream
 | `document/_cursor_anchor.py` | Cursor state machine for long rows (`RESOLVED`, `PROVISIONAL`, `PENDING`). |
 | `document/_long_row_anchor.py` | Adapter from a long-line index to the cursor machine; ACT5 added `rebind`. |
 | `widget/hex_view.py` | none | `HexView`, `HexCursor` and `ByteSelection`: the byte view over a bounded window (S0003 ACT4). |
+| `widget/hex_input.py` | none | `plan_digit`, `DigitPlan`, `format_hex_pairs`, `parse_hex_text` and `HexTextError`: the pure input rules of the hex view (S0003 ACT5). |
+| `document/_hex_edit.py` | none | `HexEdit`, the history entry of the hex view (S0003 ACT5). |
 | `widget/hex_layout.py` | none | `HexLayout`, `choose_layout`, `total_rows` and `format_row`: the pure, Textual-free row layout of the hex view (S0003 ACT4). |
 | `widget/_lazy_window.py` | Windowed text of medium and long rows. |
 | `widget/_long_row_cursor.py` | Cursor machine holder and provisional window layout for long rows; ACT5 added `rebase`. |
@@ -252,6 +254,13 @@ Wiring only: the widget dispatches on what the document decides (`LazyDocument.p
 **New private members:** `_streaming_job` (the old job construction, moved out of `_start_save`), `_save_job` (the save thread builds the `InPlaceJob` when the document has a plan, else the streaming job, and passes on an early cancel), `_redirect_after_patch` (save thread), `_adopt_failed_patch`, `_conclude_in_place` and `_redirect_references` (UI thread).
 **Edited members:** `save` (an in-place candidate is a plain save of an unchanged file: no path, no `overwrite`, held identity known), `cancel_save` and `_abandon_save` (set `cancel_requested` under the run lock; a close after the first in-place write posts `SaveFailed(partial=True)`), `_start_save` (the `in_place_candidate` argument, the held identity), `_save_thread` (the in-place branch), `_announce_save_progress` (passes `started`) and `_conclude_save` (the in-place branch; a failure adopts `SaveFailed.identity` and follows `SaveFailed.change` through `_fail_source`).
 The streaming branches of these members are unchanged.
+
+### `widget/_text_area.py` (S0003 ACT5, hex clipboard)
+
+Three additive items so that the hex view shares the clipboard record of the text view and ACT3's redirect covers hex copies without a change.
+**New public methods:** `store_clipboard_bytes(content, system_text, size)` (applies `clipboard_cap` to `size`, writes the system clipboard or warns, keeps the record) and `internal_clipboard()` (public wrapper of `_internal_clipboard`).
+**New private method:** `_set_clipboard_record(content, system_text)`: the last lines of `_store_clipboard` (drop the record while a save runs, else create the `_ClipboardRecord`) moved out unchanged; `_store_clipboard` calls it.
+Text-view behaviour is identical.
 
 ### `document/_edit.py` (ACT5)
 
