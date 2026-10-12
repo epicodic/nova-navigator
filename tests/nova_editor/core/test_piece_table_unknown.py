@@ -8,8 +8,8 @@ from nova_editor.core import AddStore, BytesSource, Content, LineIndex, PieceTab
 from nova_editor.core.piece_table import FILL_BATCH
 
 from .helpers import CountingSource, reference_rows
-from .reference import inside_crlf
-from .test_piece_table import Harness, StepSource
+from .reference import StepSource, inside_crlf
+from .test_piece_table import Harness
 
 EMPTY = Content.from_pieces((), 0)
 

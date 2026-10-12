@@ -343,11 +343,17 @@ class PieceTable:
     def byte_content(self, offset: int) -> Content:
         """Return the single byte at `offset` as `Content` (one piece, no data read); unlike `content` the byte may be half of a CRLF.
 
+        A byte the line scan has not reached is an unknown piece.
+
         Raises:
             ValueError: when `offset` is outside the document.
         """
         for piece, lo, _ in self.iter_range(offset, offset + 1):
-            sub = make_piece(self._source_of(piece.src), piece.src, piece.a + lo, piece.a + lo + 1)
+            source, a = self._source_of(piece.src), piece.a + lo
+            try:
+                sub = make_piece(source, piece.src, a, a + 1)
+            except RowNotIndexed:
+                sub = make_unknown_piece(source, piece.src, a, a + 1)
             return Content.from_pieces([sub], 0)
         raise ValueError(f"offset {offset} outside 0..{self.length}")
 

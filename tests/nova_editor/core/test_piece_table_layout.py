@@ -8,8 +8,8 @@ from nova_editor.core import AddStore, BytesSource, Content, LineIndex, Original
 from nova_editor.core.pieces import MAX_GENERATION, SEGMENT_MASK, generation_of, make_src, segment_of
 
 from .helpers import CountingSource, reference_rows
-from .reference import ORIGINALS, inside_crlf
-from .test_piece_table import Harness, StepSource
+from .reference import ORIGINALS, StepSource, inside_crlf
+from .test_piece_table import Harness
 
 SEEDS = range(6)
 STEPS = 80

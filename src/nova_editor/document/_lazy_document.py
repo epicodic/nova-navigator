@@ -1019,11 +1019,14 @@ class LazyDocument(DocumentBase):
             return self._table.content_bytes(content, 0, content.length).decode("utf-8", SURROGATE_ESCAPE)
 
     def splice_bytes(self, start_byte: int, end_byte: int, content: Content) -> EditResult:
-        """Replace the bytes `[start_byte, end_byte)` by `content` (undo and redo: the offsets are exact, the locations are derived from them).
+        """Replace the bytes `[start_byte, end_byte)` by `content` at any scan state (undo, redo and byte editing).
+
+        Offsets the row index cannot resolve yet, or a `content` that still holds unknown pieces, take the blind path: the bytes are exact,
+        `EditResult.end_location` is meaningless, the row count stays a lower bound and an attached syntax mirror is detached.
 
         Raises:
-            RowUnavailable: The document is closed or a position is not resolved yet.
-            ValueError: The offsets are not ordered or lie beyond the document.
+            RowUnavailable: The document is closed or edits are locked.
+            ValueError: The offsets are not ordered, lie beyond the document, or a boundary lies inside a line terminator of a resolved row.
         """
         if not 0 <= start_byte <= end_byte:
             msg = f"invalid byte range {start_byte}..{end_byte}"
@@ -1043,9 +1046,42 @@ class LazyDocument(DocumentBase):
                 tail = self._table.byte_content(end_byte)
                 content = Content.from_pieces([*content.pieces, *tail.pieces], 0)
                 end_byte += 1
-            first = self._locate_offset(start_byte)
-            last = first if end_byte == start_byte else self._locate_offset(end_byte)
+            blind = content.unknown > 0
+            if not blind:
+                try:
+                    first = self._locate_offset(start_byte)
+                    last = first if end_byte == start_byte else self._locate_offset(end_byte)
+                except RowUnavailable:
+                    blind = True
+            if blind:
+                result = self._splice_blind(start_byte, end_byte, content)
+        if blind:
+            self._notify_subscribers()
+            return result
         return self._splice_located(first, last, content)
+
+    def _splice_blind(self, begin: int, finish: int, content: Content) -> EditResult:
+        """Splice by byte offsets without row knowledge; the caller holds the lock."""
+        try:
+            removed = self._table.splice(begin, finish, content, None)
+        except RowNotIndexed as error:
+            msg = f"offset {finish} is not scanned yet"
+            raise RowUnavailable(msg) from error
+        self._edit_count += 1
+        if self._syntax is not None:
+            self._syntax = None  # a mirror cannot follow an edit whose rows are unknown
+            logging.getLogger(__name__).debug("byte edit at %d without resolved rows: syntax mirror detached", begin)
+        row = self._blind_row(begin)
+        self._after_edit(row, 1 << 62, 0, None, None)
+        replaced = ""
+        if removed.length <= REPLACED_TEXT_LIMIT:
+            replaced = self._table.content_bytes(removed, 0, removed.length).decode("utf-8", SURROGATE_ESCAPE)
+        return EditResult((row, 0), replaced, removed, begin, content)
+
+    def _blind_row(self, offset: int) -> int:
+        """The row that holds `offset`, or the open row when it is not resolved; the caller holds the lock."""
+        found = self._table.row_at_offset(offset)
+        return found[0] if found is not None else self._table.snapshot().count - 1
 
     def _splice_located(self, first: _Located, last: _Located, content: Content) -> EditResult:
         with self._lock:
@@ -1298,7 +1334,7 @@ class LazyDocument(DocumentBase):
     def attach_syntax(self, syntax: SyntaxAwareDocument | None) -> None:
         """Delegate `prepare_query` and `query_syntax_tree` to `syntax`, a parse of the whole text used for highlighting (`None` detaches it).
 
-        `replace_range` forwards every edit to it.
+        `replace_range` forwards every edit to it; a byte edit whose rows are not resolved yet detaches the mirror.
         """
         self._syntax = syntax
 
