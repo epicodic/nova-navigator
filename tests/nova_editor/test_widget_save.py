@@ -285,6 +285,38 @@ async def test_progress_messages_are_throttled_to_ten_per_second_by_the_clock(tm
 
 
 @pytest.mark.asyncio
+async def test_a_report_that_flips_started_bypasses_the_throttle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = _file(tmp_path)
+    area = NovaTextArea.open(path)
+    clock = FakeClock(0.0)  # no time passes between the two reports: the throttle would drop the second
+    emitted: list[NovaTextArea.SaveProgress] = []
+    host = SaveHost(area)
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(area, "save_clock", clock)
+        real_post = area.post_message
+
+        def recording(message: Message) -> bool:
+            if isinstance(message, NovaTextArea.SaveProgress):
+                emitted.append(message)
+            return real_post(message)
+
+        monkeypatch.setattr(area, "post_message", recording)
+        run = _SaveRun(path, [])
+        area._save_run = run
+        try:
+            run.progress = CoreSaveProgress("writing", 0, 400, False)
+            area._announce_save_progress(run)
+            run.progress = CoreSaveProgress("writing", 10, 400, False)
+            area._announce_save_progress(run)  # same flag inside the interval: dropped
+            run.progress = CoreSaveProgress("writing", 10, 400, True)
+            area._announce_save_progress(run)  # the flag flipped: announced although inside the interval
+        finally:
+            area._save_run = None
+        assert [(message.done, message.started) for message in emitted] == [(0, False), (10, True)]
+
+
+@pytest.mark.asyncio
 async def test_progress_of_a_real_save_never_decreases_and_ends_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(NovaTextArea, "save_settings", SaveSettings(chunk=64, fsync_every=64))
     path = tmp_path / "big.txt"

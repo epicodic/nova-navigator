@@ -344,6 +344,8 @@ class _SaveRun:
     progress: CoreSaveProgress | None = None
     progress_outstanding: bool = False
     last_message: float = 0.0
+    last_started: bool = False
+    """The `started` flag of the last announced report: a report that flips it is never throttled."""
     lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
     held: FileIdentity | None = None
     """The identity of the file the editor holds, for the in-place job."""
@@ -3680,9 +3682,12 @@ NovaTextArea {
             run.progress_outstanding = False
             report = run.progress
         now = self.save_clock()
-        if report is None or self._save_run is not run or now - run.last_message < _MESSAGE_INTERVAL:
+        if report is None or self._save_run is not run:
             return
+        if now - run.last_message < _MESSAGE_INTERVAL and report.started == run.last_started:
+            return  # the flip of `started` must reach the status line: the hint `Esc cancels` is wrong from then on
         run.last_message = now
+        run.last_started = report.started
         self.post_message(self.SaveProgress(report.phase, report.done, report.total, self, report.started).set_sender(self))
 
     # --- Search (ACT6 design 6, 7)

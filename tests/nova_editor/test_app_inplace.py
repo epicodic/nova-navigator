@@ -85,9 +85,8 @@ async def test_the_progress_note_drops_esc_cancels_after_the_first_write(tmp_pat
             await pilot.press(*OVERWRITES, "ctrl+s")
             await wait_until(pilot, gate.reached.is_set)  # the first range is written, the second waits
             status = status_of(app)
-            await wait_until(pilot, lambda: status.note is not None and status.note.startswith("Saving"))
+            await wait_until(pilot, lambda: status.note is not None and status.note.startswith("Saving") and "Esc cancels" not in status.note)
             assert status.note is not None
-            assert "Esc cancels" not in status.note
             assert status.note.startswith("Saving  ")
             gate.release()
             assert app.editor is not None
