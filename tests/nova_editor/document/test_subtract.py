@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import random
 import time
 from collections.abc import Sequence
 
@@ -29,40 +28,46 @@ def _old_subtract(ranges: Sequence[tuple[int, int]], cut: Sequence[tuple[int, in
     return out
 
 
-def _disjoint(rng: random.Random, limit: int, count: int) -> list[tuple[int, int]]:
-    """Ascending, disjoint, non-empty ranges (adjacent ones allowed) below `limit`."""
-    points = sorted(rng.sample(range(limit + 1), min(2 * count, limit + 1)))
-    pairs = list(zip(points[0::2], points[1::2], strict=False))
-    return [(a, b) for a, b in pairs if a < b]
+def _runs(mask: int, limit: int) -> list[tuple[int, int]]:
+    """The maximal runs of set bits of `mask` below `limit` as ascending, disjoint ranges."""
+    out: list[tuple[int, int]] = []
+    start: int | None = None
+    for bit in range(limit + 1):
+        if bit < limit and mask >> bit & 1:
+            start = bit if start is None else start
+        elif start is not None:
+            out.append((start, bit))
+            start = None
+    return out
 
 
 def _bytes(ranges: Sequence[tuple[int, int]]) -> set[int]:
     return {offset for a, b in ranges for offset in range(a, b)}
 
 
+LIMIT = 8
+"""Every pair of byte sets below `LIMIT` is tried: 65536 pairs."""
+
+
 def test_subtract_equals_the_per_byte_model_and_the_old_implementation() -> None:
-    rng = random.Random(7)
-    for _ in range(400):
-        limit = rng.randint(1, 60)
-        ranges = _disjoint(rng, limit, rng.randint(0, 8))
-        cut = _disjoint(rng, limit, rng.randint(0, 8))
-        result = _lazy_document._subtract(ranges, cut)
-        assert result == _old_subtract(ranges, cut), (ranges, cut)
-        assert _bytes(result) == _bytes(ranges) - _bytes(cut), (ranges, cut)
-        assert all(a < b for a, b in result)
+    for left in range(1 << LIMIT):
+        ranges = _runs(left, LIMIT)
+        for right in range(1 << LIMIT):
+            cut = _runs(right, LIMIT)
+            result = _lazy_document._subtract(ranges, cut)
+            assert result == _old_subtract(ranges, cut), (ranges, cut)
+            assert _bytes(result) == _bytes(ranges) - _bytes(cut), (ranges, cut)
 
 
-def test_subtract_each_gives_the_pieces_of_every_range_in_order() -> None:
-    rng = random.Random(11)
-    for _ in range(400):
-        limit = rng.randint(1, 60)
-        ranges = _disjoint(rng, limit, rng.randint(0, 8))
-        cut = _disjoint(rng, limit, rng.randint(0, 8))
-        rng.shuffle(ranges)  # copies need not be sorted
-        pieces = _lazy_document._subtract_each(ranges, cut)
-        assert len(pieces) == len(ranges)
-        for item, found in zip(ranges, pieces, strict=True):
-            assert found == _old_subtract([item], cut), (item, cut)
+def test_subtract_each_gives_the_pieces_of_every_range_in_any_order() -> None:
+    for left in range(1 << LIMIT):
+        ranges = _runs(left, LIMIT)[::-1]  # copies need not be sorted
+        for right in range(0, 1 << LIMIT, 3):
+            cut = _runs(right, LIMIT)
+            pieces = _lazy_document._subtract_each(ranges, cut)
+            assert len(pieces) == len(ranges)
+            for item, found in zip(ranges, pieces, strict=True):
+                assert found == _old_subtract([item], cut), (item, cut)
 
 
 def _interleaved() -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
