@@ -109,6 +109,8 @@ CALLS: dict[str, Call] = {
     "close": lambda d, _: d.close(),
     "column_at_display": lambda d, r: d.column_at_display(r, 5),
     "column_slice": lambda d, r: d.column_slice(r, 1, 6),
+    "content_between": lambda d, _: d.content_between(0, min(4, d.length)),
+    "content_of_bytes": lambda d, _: d.content_of_bytes(b"xy"),
     "content_text": lambda d, _: d.content_text(d.selection_content((0, 0), (0, 2))),
     "display_column": lambda d, r: d.display_column(r, 4),
     "end": lambda d, _: d.end,

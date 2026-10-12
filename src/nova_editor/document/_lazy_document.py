@@ -1218,6 +1218,43 @@ class LazyDocument(DocumentBase):
             last = self._locate(bottom)
             return self._table.content(first.offset, last.offset, _span_tail_chars(first, last))
 
+    def content_of_bytes(self, data: bytes) -> Content:
+        """Store `data` in the add store and return it as `Content` (one piece), ready for `splice_bytes`; empty data gives the empty content.
+
+        Raises:
+            RowUnavailable: The document is closed.
+        """
+        with self._lock:
+            self._require_open()
+            return self._table.add(data) if data else _EMPTY
+
+    def content_between(self, start_byte: int, end_byte: int) -> Content:
+        """The bytes `[start_byte, end_byte)` as piece references at any scan state (hex copy and cut); only the break-free tail is read.
+
+        A boundary inside a CR LF pair takes the other half along, as `splice_bytes` does, so the content can be spliced back byte for byte.
+
+        Raises:
+            RowUnavailable: The document is closed or a piece cannot be split within the read budget.
+            ValueError: The offsets are not ordered or lie outside the document.
+        """
+        if not 0 <= start_byte <= end_byte:
+            msg = f"invalid byte range {start_byte}..{end_byte}"
+            raise ValueError(msg)
+        with self._lock:
+            self._require_open()
+            if end_byte > self._table.length:
+                msg = f"byte {end_byte} is beyond the document"
+                raise ValueError(msg)
+            if start_byte > 0 and self._table.read(start_byte - 1, 2) == _CRLF:
+                start_byte -= 1
+            if end_byte > 0 and self._table.read(end_byte - 1, 2) == _CRLF:
+                end_byte += 1
+            try:
+                return self._table.content(start_byte, end_byte)
+            except RowNotIndexed as error:
+                msg = f"offset {end_byte} is not scanned yet"
+                raise RowUnavailable(msg) from error
+
     def content_text(self, content: Content) -> str:
         """The decoded text of `content` (invalid bytes as U+DC80 to U+DCFF); it reads every byte, so ask only for small contents."""
         with self._lock:
