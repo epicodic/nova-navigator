@@ -17,7 +17,7 @@ The lazy document layer (`LazyDocument`, `LazyWrappedDocument`) uses the core to
 Its capability methods never wait for a scan and return `None` or empty results beyond the scanned frontier.
 Every document uses this one path: `text=`, `load_text` and files of every size all become a `LazyDocument` (see "Converged Document Model").
 The widget is editable; undo, redo, cut, copy and paste work on piece references.
-Saving streams the document to a temporary file on a worker thread and replaces the target atomically (see "Streaming Save").
+Saving picks one of two strategies at save time: a plain Save of an unchanged file whose length is unchanged and whose original bytes all stay at their offsets patches only the changed ranges into the file in place; every other save streams the document to a temporary file on a worker thread and replaces the target atomically (see "In-Place Save" and "Streaming Save").
 After a save the document stands on the saved file, and undo still works (see "Rebase After a Save").
 A change of the file on disk is detected and never overwritten silently (see "External Changes").
 A literal search runs over the whole document on a worker thread (see "Search").
@@ -1148,8 +1148,62 @@ The document registers the save thread with its closer, so the source is closed 
 **Special targets:**
 - A symlink is followed: the target is replaced and the link stays; a dangling link creates the file it names.
 - A directory that is not writable fails at `prepare` with "cannot create a temporary file in <dir>; use Save As", and so does a read-only file system.
-  An in-place write is not offered, because pieces refer to the original bytes.
+  A plain Save that qualifies is done in place instead (see "In-Place Save"); this section describes every other save.
 - A new file is created with the mode `0o666 & ~umask`, and the document continues on it.
+
+---
+
+## In-Place Save
+
+A plain Save of an unchanged file can patch the changed bytes into the file itself instead of writing a new file.
+`NovaTextArea.save` starts the save on the `nova-save` thread as usual; the thread builds an `InPlaceJob` when the document has a plan, and a streaming job otherwise.
+
+**Decision rule:**
+A save is in place only when all of these hold:
+- It is a plain `save()` without a path and without `overwrite=True`, so a Save As and a save after an external-change confirmation stream.
+- The document is modified and the file still matches the identity the editor holds.
+- The original is a file read with `pread` or in-memory bytes, and the length of the document equals the length of the original.
+- Every run of the original sits at its own offset and outside the ranges that earlier in-place saves patched (`inplace_ranges` in `core/inplace_layout.py`).
+
+A moved original streams even when the length is restored, and so does any length change.
+
+**Steps of `InPlaceJob.run`:**
+1. The plan is taken (`plan_in_place`), the target is resolved with `os.path.realpath`, `refuse_unsuitable` checks that it is a regular file, and `check_path` must report no change.
+2. The file is opened with `O_WRONLY` and without truncation, and the identity of the descriptor is compared with the held one.
+3. `prepare_patch` copies the old bytes of each range that no earlier in-place save patched into the add store, in pieces of at most `SaveSettings.chunk` (1 MiB); a cancel is checked before each piece.
+4. `begin_patch` installs the read overlay and marks the ranges as patched; the last cancel check comes before it.
+5. The job `pwrite`s the ranges in ascending order, one chunk at a time, with the new bytes read from the document; short writes are looped.
+6. `fsync` follows, the size must still equal the held size, and `end_patch` adopts the identity of the file.
+
+No temp file is created, no `os.replace` happens and the target keeps its inode.
+
+**Read overlay:**
+Reads of the original keep returning the pre-patch bytes of the patched ranges, so the line index and the scan stay valid.
+The overlay lives until a streaming save, a reload or the close.
+While a patch runs, the change check of the source compares the size only, because the own `pwrite` changes the mtime; after `end_patch` the full check applies again.
+
+**Reference redirect:**
+The history and the clipboard record hold piece references to the original bytes, and an overwritten range would otherwise change under them.
+The save thread computes the translation that moves every reference inside a copied range onto the copy in the add store (`Redirect`, built by `redirect_for`).
+The UI thread applies it with one `map_references` call after the write, so the history changes all or nothing.
+If the redirect fails, nothing is rewritten and the failure is logged; the overlay still serves the old bytes, so the references stay readable.
+
+**After the save:**
+No rebase happens: the pieces, the line index and the caches stay, nothing is rescanned, and the saved state is marked in the history, so `modified` clears.
+Undo, redo and paste keep working, and no `save` change is announced to the change listeners.
+
+**Failure:**
+Before the first byte is written, a failure or a cancel changes nothing: the file, the document and the patched ranges stay as they were.
+After the first byte, a failure is partial: `SaveFailed` carries `partial`, the file may hold some of the new bytes, the overlay and the patched ranges stay, the edits and the history are kept, and the document stays modified.
+The identity of the file as the failed save left it is adopted, so the next save does not take its own write for a change from outside, and a second Save rewrites the whole write set.
+
+**Messages:**
+A partial failure shows `Save failed (<stage>): <reason>` followed by `<name> may now be partially patched. Your edits are kept; save again to finish.`
+After the first write the status line drops the hint `Esc cancels`, and a cancel (Esc or Ctrl+Q) is ignored; closing the widget then posts `SaveFailed` with `partial`.
+
+**Preserved:**
+The inode, the owner, the group, the mode, the hard links, the ACLs and the extended attributes of the target stay, because the file is written in place.
+No temp file and no free space for a copy of the file are needed; the copies of the old bytes stay in memory, in the add store.
 
 ---
 
@@ -1222,7 +1276,7 @@ Present parts never need a generation, so repeated saves with small deletions re
 
 **Reference API:**
 `EditHistory.references()` lists every `Content` the history holds, `rewrite_references(iterator)` writes them back in the same order, `map_references(fn)` replaces each by `fn(content)` (all or nothing), and `original_ranges()` yields the byte ranges of the original file that the history still references.
-The in-place save (ACT3) will redirect references with `map_references`, and must apply the same function to the clipboard record, which still lives in the widget.
+The in-place save redirects references with `map_references` (see "In-Place Save") and applies the same function to the clipboard record, which lives in the widget.
 
 ---
 
@@ -1585,6 +1639,7 @@ Cancelled long-row scans beyond the retired-list limit are joined on a daemon re
 
 **Save thread:**
 A save runs on one daemon thread, `nova-save` (see "Streaming Save").
+The `nova-save` thread also runs the in-place job; the redirect is computed there and applied on the UI thread (see "In-Place Save").
 It reads and writes outside every lock and takes the document lock only for the plan of each chunk.
 It posts its outcome with `post_message(events.Callback(...))`, like the scans, and the UI thread runs the terminal handler.
 `LazyDocument.close()` waits for the save thread through its closer before it closes the source.
@@ -1872,7 +1927,8 @@ The text itself is exact; only the cursor column after such an edit is affected.
 Bytes that were typed or pasted stay in the add store until the next save, even after undo or delete.
 The history and the internal clipboard may still reference them.
 A save rebases the add store: typed text that is in the file becomes part of the file, and only orphans are copied into the fresh store (see "Undo Across Saves").
-Between saves memory grows only with typed and pasted text.
+Between saves memory grows with typed and pasted text, and with the copies of overwritten original bytes that an in-place save keeps.
+Those copies stay in the add store and in the read overlay until a streaming save, a reload or the close.
 
 ### `text` Above 8 MiB
 
@@ -1883,9 +1939,10 @@ The streaming save does not use `text` and has no size limit.
 
 ### Hard Links, Owner, Group, ACLs and Xattrs
 
-A save creates a new inode and replaces the target, so a second hard link keeps the old content.
+A streaming save creates a new inode and replaces the target, so a second hard link keeps the old content.
 The owner, the group, ACLs and extended attributes of the target are not copied to the new file.
 Only the permission bits are restored, with `fchmod`.
+These statements hold for the streaming save; the in-place save writes into the same inode and keeps all of them.
 
 ### The Retained Generation Keeps Disk Space
 
@@ -1911,6 +1968,29 @@ A normal exit, a failure and a cancel remove the temp file.
 When the file was changed in place (`MODIFIED` or `TRUNCATED`) and the user confirms the overwrite, the unchanged parts of the document are read from the file as it is now.
 Bytes that were rewritten in place therefore appear in the saved file.
 A truncation that removed needed bytes fails the save.
+
+### The In-Place Save Is Not Atomic
+
+The in-place write is non-atomic: a crash, a power loss or a full disk during the write can leave the file partially patched.
+The editor reports that the file may now be partially patched, keeps the edits and stays modified.
+A save again rewrites the write set, and Save As writes a safe copy.
+
+### In-Place Save Cannot Open Busy Files
+
+A file that the kernel refuses to open for writing fails the in-place save at stage `prepare` with the errno text: `ETXTBSY` for a running executable, and `EACCES`, `EPERM` or `EROFS` (reported as "read-only file") for a file that refuses `O_WRONLY`.
+Save As works there.
+The streaming save replaces the file instead of opening it, so it would have worked for `ETXTBSY`; a file without write permission fails there too.
+
+### Repeat Saves Rewrite Earlier Patches
+
+A repeat save writes every dirty range again, including the ranges that an earlier in-place save patched, because the file holds other bytes there than the original did.
+The cost is proportional to the bytes edited or patched so far, never to the file size; a tracker of clean ranges is not built.
+
+### Closing in the Narrow Window Before the First Write
+
+An in-place save stops on a cancel or a close only before its first byte is written.
+Between the last cancel point and the first `pwrite` the window is short but real: a close there reports `SaveCancelled` although the patch may still complete.
+The streaming path has the same shape between its last cancel check and the replace.
 
 ### `stat` on a Hung Mount
 
@@ -1981,6 +2061,11 @@ Any other `fchmod` error fails the save at stage `flush`.
 Tests are located under `tests/nova_editor/` and `tests/tools/`.
 
 **Core layer:**
+- `core/test_inplace_layout.py`, `core/test_piece_table_layout_iter.py` — the layout rule of the in-place save against a per-byte model, and the run iterator of the piece table.
+- `core/test_source_overlay.py` — the read overlay of `PreadSource`, the size-only change check during a patch and the identity adopted at the end.
+- `core/test_redirect.py` — `Redirect` and `map_references`: bytes and break facts unchanged, references moved off the copied ranges.
+- `core/test_inplace_job.py` — `InPlaceJob` with failure injection through `SaveIo`: the order of the steps, cancel before and after the first write, partial failures, and `ETXTBSY`.
+- `core/test_inplace_sparse.py` — a patch of a sparse file; it skips when the file system has no sparse files.
 - `core/test_byte_source.py`, `core/test_line_index.py`, `core/test_line_index_budget.py`, `core/test_long_line_index.py` — sources and indexes, including property tests against reference implementations.
 - `core/test_foreground.py`, `core/test_row_at_offset.py`, `core/test_text_width.py` — the foreground gate, `row_at_offset` and the width helpers.
 - `core/test_piece_tree.py`, `core/test_add_store.py`, `core/test_piece_table.py`, `core/test_original_source.py`, `core/test_row_source.py`, `core/test_scan_now.py` — the piece table and its parts, fuzzed against plain `bytes` and a regular-expression split (`core/reference.py` holds the reference and the seeded `Rng`).
@@ -1995,6 +2080,7 @@ Tests are located under `tests/nova_editor/` and `tests/tools/`.
 - `core/search_reference.py`, `core/test_search_reference.py`, `core/fake_planner.py` — the brute-force reference model, its own tests, and the fake planner with a revision.
 
 **Document layer (`document/`):**
+- `document/test_plan_in_place.py`, `document/test_inplace_document.py` — `plan_in_place`, the patched ranges and the rollback of a patch on `LazyDocument`, and the redirected history surviving a job.
 - `test_lazy_document.py`, `test_lazy_wrapped_document.py`, `test_lazy_window.py` — lazy documents, wrapping and windows.
 - `test_lazy_edit.py`, `test_lazy_long_edit.py`, `test_lazy_bounded_edit.py`, `test_lazy_from_text.py` — document edits against a `str` reference (`reference_text.py`), long-row edits with lowered thresholds, and `text=` sources.
 - `test_edit_history.py`, `test_history_modified.py` — byte-based undo and redo records, typing coalescing, and the modified state.
@@ -2007,6 +2093,7 @@ Tests are located under `tests/nova_editor/` and `tests/tools/`.
 - `test_wrap_parity.py` — the drift test of the vendored wrap code (see "Vendoring Policy").
 
 **Widget:**
+- `test_widget_inplace.py` — the in-place save of `NovaTextArea`: the strategy choice, the edits refused while patching, undo and redo after a save, cancel and close before and after the first write, and the failures.
 - `test_widget.py`, `test_widget_capabilities.py` — widget behaviour on small documents, including `line_ending` and `indexing_progress`.
 - `test_stock_characterization.py`, `test_lazy_characterization.py` — golden traces (`golden/`) that the converged widget and the unedited lazy path must still match.
 - `test_convergence.py` — `text=`, `load_text` and small files on the lazy document, and the removal of the stock widget path.
@@ -2023,6 +2110,7 @@ Tests are located under `tests/nova_editor/` and `tests/tools/`.
   `tests/test_package_independence.py` guards that `nova_editor` and `nova_widgets` do not depend on `nova_navigator`, and that `nova_editor` does not use the VFS.
 
 **App:**
+- `test_app_inplace.py` — the in-place save in `nova_edit`: the saved note, the partial-failure text and the progress hint `Esc cancels` before and after the first write.
 - `test_app.py`, `test_app_lazy.py`, `test_app_save.py`, `test_bindings.py` — the app, opening files, the save status and key bindings (including key collisions).
 - `test_app_status.py` — the status line text, its fields, its states and its coalescing.
 - `test_line_numbers.py` — the gutter at the start, F11 and the View item, the check marks, the session only rule, no config file and the wrap indicator.
