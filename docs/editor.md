@@ -220,7 +220,7 @@ See "Cursor State Machine (Long Rows)" for the states and transitions.
 ### Widget Layer (`nova_editor/widget/`)
 
 Textual widget and lazy rendering support.
-The package exports `NovaTextArea`, `DEFAULT_HIGHLIGHT_LIMIT`, `ExternalCheck`, `TextAreaLanguage`, `ThemeDoesNotExist` and `LanguageDoesNotExist`.
+The package exports `NovaTextArea`, `HexView`, `DEFAULT_HIGHLIGHT_LIMIT`, `ExternalCheck`, `TextAreaLanguage`, `ThemeDoesNotExist` and `LanguageDoesNotExist`.
 
 **Core module:**
 - `NovaTextArea` — the main editor widget (vendored from Textual 8.2.8, renamed from `TextArea`).
@@ -233,6 +233,8 @@ The package exports `NovaTextArea`, `DEFAULT_HIGHLIGHT_LIMIT`, `ExternalCheck`, 
 - `_lazy_window.py` — windowed rendering for medium and long rows; decodes at most 8192 characters per window.
 - `_long_row_cursor.py` — cursor machine integration and provisional window layout for long rows.
 - `_search_run.py` — `SearchRun`, the state of one running search, and `run_search_thread`, the body of the `nova-search` thread.
+- `hex_view.py` — `HexView`, `HexCursor` and `ByteSelection`: the byte view shown instead of the text widget (see "Hex View").
+- `hex_layout.py` — `HexLayout`, `choose_layout`, `total_rows`, `format_row`: the pure layout of one hex row, without Textual.
 
 The widget's members and messages are listed in "Public API".
 
@@ -246,6 +248,7 @@ The widget's members and messages are listed in "Public API".
 `languages.py` holds `language_for_path`, which maps a file path to the highlight language.
 `timed_text_area.py` holds `TimedNovaTextArea`.
 All of them import the widget layer, `nova_widgets` and Textual, and nothing from `nova_navigator` or the VFS.
+`EditorScreen.action_hex_mode` (F4) switches between the text widget and the hex view through `DocumentView.show_hex`.
 The app is described in "nova_edit".
 
 ---
@@ -406,10 +409,10 @@ The environment variable `NOVA_EDIT_TIMING_FILE` makes `TimedNovaTextArea` write
 It can be used as a standalone app (`ned`) or embedded in other Textual applications.
 
 The screen holds:
-- **Per-screen action registry** (18 editor actions, built fresh per screen instance)
+- **Per-screen action registry** (19 editor actions, built fresh per screen instance)
 - **Per-screen MenuBar** (File, Edit, Search, View menus)
 - **Per-screen KeymapRegistry and HintBar** (for action key binding and hint display)
-- **DocumentView** (holds the NovaTextArea widget and file metadata)
+- **DocumentView** (holds the NovaTextArea widget, the HexView and file metadata)
 - **Popups** (the Go to and Find popups) and the modal dialogs of its flows (Open, Save As, the questions)
 - **StatusLine** (shows editor progress and file status)
 
@@ -454,7 +457,7 @@ EditorScreen(
 
 The screen builds these components on construction:
 
-1. **ACTIONS** — Fresh list of 18 `Action` objects (built by `build_editor_actions()`), plus Keyboard Shortcuts… when the screen has a key config.
+1. **ACTIONS** — Fresh list of 19 `Action` objects (built by `build_editor_actions()`), plus Keyboard Shortcuts… when the screen has a key config.
 2. **MenuBar** — Menu bar with File, Edit, Search, View menus (built by `build_menu_bar()`).
 3. **HintBar** — Key hint display (one per screen).
 4. **KeymapRegistry** — Manages keybindings and dispatches actions (one per screen).
@@ -463,7 +466,7 @@ The screen builds these components on construction:
 Each screen instance has its own action registry, menu bar, and keybinding registry.
 This allows multiple EditorScreen instances in different Textual screens to have independent key bindings and menu states.
 
-### The 18 Editor Actions (19 with a config)
+### The 19 Editor Actions (20 with a config)
 
 **File operations:**
 | Action | ID | Key | Description |
@@ -498,6 +501,7 @@ This allows multiple EditorScreen instances in different Textual screens to have
 |--------|-----|-----|---|
 | Line Numbers | `editor.line_numbers` | F11 | Show/hide line numbers (checkable) |
 | Wrap Mode | `editor.wrap_mode` | F10 | Toggle soft wrap (checkable) |
+| Hex Mode | `editor.hex_mode` | F4 | Show the document as bytes or as text (checkable) |
 
 The line number gutter is shown when the editor screen starts.
 `EditorScreen` passes `show_line_numbers=True` to `DocumentView.open()`; the reusable `NovaTextArea` still starts without a gutter.
@@ -540,7 +544,7 @@ Escape, Enter and Alt+C are not mapped to an action and reach the popup.
 ### Keyboard Shortcuts dialog
 
 The dialog is opened from View > "Keyboard Shortcuts…" (`editor.keyboard_shortcuts` id, no default key).
-It exists only when the screen has a `KeybindingsConfig` and `keyboard_shortcuts_item` is true, so the 18-action list, the default key table and a config-less host stay exactly as they are.
+It exists only when the screen has a `KeybindingsConfig` and `keyboard_shortcuts_item` is true, so the 19-action list, the default key table and a config-less host stay exactly as they are.
 The dialog lists the `editor.*` actions (all 19 including itself) and their effective bindings from the config.
 After the dialog is dismissed (OK or Cancel), the flow calls `reload_keymap()`, which re-reads the file, runs `_apply_keymap()` and re-measures the menus, applying at once any changes to the key, the menu label, the hint bar, the swallowing of old editing keys and unmap handling.
 The standalone host passes the nova-edit file.
@@ -574,9 +578,10 @@ The menu bar has four menus:
 **View Menu:**
 - Line Numbers (F11, checkable)
 - Wrap Mode (F10, checkable)
+- Hex Mode (F4, checkable)
 - Keyboard Shortcuts… (no default key; shown only when the screen has a key config)
 
-Checkable menu items start with the state of the widget, which is checked for Line Numbers and unchecked for Wrap Mode, and are kept in sync with the widget's reactive properties (`soft_wrap`, `show_line_numbers`).
+Checkable menu items start with the state of the widget, which is checked for Line Numbers and unchecked for Wrap Mode and Hex Mode, and are kept in sync with the widget's reactive properties (`soft_wrap`, `show_line_numbers`); Hex Mode is checked exactly while `DocumentView.hex_mode` is true.
 
 The path label on the right of the menu bar is sized to the room left after the menu entries (truncated keeping its end behind an ellipsis, or hidden), so menus stay clickable at 80 columns.
 Tests are in `tests/nova_editor/test_menu_path_label.py`.
@@ -674,7 +679,7 @@ A failed or conflicting final write-back is reported in a notice; the copy keeps
 A second F4 is ignored while a session opens, is open or ends.
 
 **Keys.**
-The navigator's keybindings dialog lists the 18 `editor.*` actions after its own, labelled `Editor: <text>`, and stores them in its own `keybindings.toml`.
+The navigator's keybindings dialog lists the 19 `editor.*` actions after its own, labelled `Editor: <text>`, and stores them in its own `keybindings.toml`.
 The `KeybindingsConfig` of the navigator is passed to every new `EditorScreen` with `keyboard_shortcuts_item=False`, so there is no second dialog that could overwrite the file.
 The overrides are applied when the editor is opened; the dialog is not reachable while an editor is open, so no live reload is needed.
 If `editor.quit` is moved or unmapped, Ctrl+Q still reaches the editor, because `NovaNavigator.action_quit` asks the screen instead of exiting.
@@ -691,7 +696,7 @@ The standalone editor does not close with Esc.
 
 ### Purpose
 
-`DocumentView` is a holder of per-document state: the `NovaTextArea` widget, the file path, and the load outcome.
+`DocumentView` is a holder of per-document state: the `NovaTextArea` widget, the `HexView` over the same document, the file path, and the load outcome.
 
 It is not part of `EditorScreen` directly; instead, `EditorScreen.document` holds a reference to one.
 
@@ -708,7 +713,19 @@ class DocumentView:
     deferred_change: ChangeKind | None = None  # A change seen while a save ran, announced after it
     polling: bool = False                 # Whether a check of the file on disk runs on a worker thread
     change_question: bool = False  # A question about a change of the file is open or queued
+
+    hex_view: HexView  # Not a field: created in __post_init__ over the document of `editor`, hidden at first
 ```
+
+Members beyond the fields:
+- `hex_view` — the `HexView` over `editor.document`; it follows a replaced document (reload) and never closes it.
+- `hex_mode` — `True` while the hex view is shown (`hex_view.display`).
+- `shown` — the widget the user sees (`hex_view` or `editor`); the target of the focus, the menu actions and the popup position.
+- `focus_shown()` — gives the focus to `shown`.
+- `show_hex(on)` — switches the view (see "Hex View").
+
+The screen mounts both widgets (`editor` and `hex_view`) and replaces both when Open loads another document.
+The mode belongs to the `DocumentView`: a document opened with Open starts in text mode, and the mode is not carried across Open.
 
 ### Construction
 
@@ -764,6 +781,100 @@ editor.search(needle="foo")
 ```
 
 The document reference is stable across the lifetime of the screen.
+The screen uses `self.document.shown` and `focus_shown()` wherever it means the widget the user sees, for example after a dialog or a popup closes and in `_carry_out`.
+Save, reload, search and the external-change check stay on `editor` in both modes.
+
+---
+
+## Hex View
+
+F4 (Hex Mode, `editor.hex_mode`) shows the document as bytes instead of text.
+`HexView` (`widget/hex_view.py`) is a `ScrollView` over the document of the text widget; the pure layout is in `widget/hex_layout.py`, which imports no Textual.
+
+### Layout
+
+A row is the offset, the hex pane and the character pane.
+
+```
+00000010  41 42 43 44 45 46 47 48  49 4A 4B 4C 4D 4E 4F 50  |ABCDEFGHIJKLMNOP|
+```
+
+- Hex digits are upper case, in groups of 8 bytes separated by one extra space.
+- The character pane sits between two `|`: printable ASCII (0x20 to 0x7E) as itself, every other byte as `.`.
+- Bytes per row is the largest power of two, at least 8, whose full row fits the width (80 columns give 16, 144 give 32).
+- The offset has at least 8 hex digits, and as many as the start of the last row needs (9 from a 4 GiB document).
+- The number of rows is `length // bytes_per_row + 1`.
+  When the length is a multiple of the row size (and for the empty document) the last row has no bytes: it is the end-of-document row, where the cursor can stand and where a byte can be appended.
+- Below 45 columns not even 8 bytes fit; the row is then cut at the right edge.
+
+### The Byte Window
+
+The view keeps one window of bytes: the rows from one screen above the first visible row up to two screens below its start.
+A miss refills the window with one `LazyDocument.read_bytes` call.
+The view never asks for rows, lines or the line index, so it works while the scan runs and on a document of billions of rows (the virtual height is the row count; Textual's scrollbar maths holds at 8 GiB, see `widget/test_hex_scroll_spike.py`).
+The window is dropped when the document is replaced, its revision changes or the row size changes.
+A failed read keeps the old window and draws blanks.
+A `SourceChanged` from a read is reported once, through `on_source_changed`, which `DocumentView` connects to `NovaTextArea.report_source_changed`: the text widget enters its failed state and posts `SourceChanged`, so the screen asks the usual question.
+
+### Cursor and Selection
+
+- `HexCursor(offset, nibble, pane)`: `offset` is in `[0, length]` (`length` is the end-of-document position), `nibble` is 0 or 1 (always 0 in the character pane and at the end), `pane` is `"hex"` or `"char"`.
+- `ByteSelection(start, end)`: whole bytes, half-open `[start, end)`, `start < end`.
+  There is no partial-byte selection.
+- Shift moves extend the selection by whole bytes in both panes; a plain move with a selection clears it and moves from the cursor.
+- The view posts `HexView.Moved(cursor, selection)` after every change; the screen refreshes the status line.
+- The view has no cursor blink.
+
+API: `set_cursor(offset, nibble=0, *, pane=None, select=False)`, `goto(offset, *, select=False)`, `select_all()`, `scroll_to_cursor(center=False)` and `follow_document()`.
+
+### Keys
+
+| Key | Action |
+|---|---|
+| Left, Right | One digit in the hex pane (high digit, low digit, next byte); one byte in the character pane |
+| Up, Down | One row |
+| Page Up, Page Down | One screen |
+| Home, End | Start and end of the row (End on the low digit of the last byte in the hex pane) |
+| Ctrl+Home, Ctrl+End | Start of the document, end of the document |
+| Tab, Shift+Tab | Switch between the panes at the same offset |
+| Ctrl+A | Select all (reads no bytes, however large the document) |
+| Shift with any move key | The same move, extending the selection |
+
+### Mouse
+
+A click puts the cursor on the digit or character under the pointer; Shift+click extends the selection from the cursor.
+A drag selects from the pressed byte to the byte under the pointer, both ends included, and stays in the pane where it started.
+The drag does not scroll on its own: it follows only the move events, and a pointer above or below the view reaches one row beyond it.
+A click outside both panes on a row does nothing.
+
+### Switching
+
+`DocumentView.show_hex(on)` switches the views (REQ-2).
+- It sets a history checkpoint first, so that an undo does not join edits across a switch.
+- To hex: it cancels a pending jump and a running search, hides the text widget, shows the hex view, and after the next refresh puts the hex cursor on `cursor_byte_offset` and centers it.
+- To text: it calls `refresh_if_changed()` on the text widget (the document may have changed in the hex view), swaps the displays, and after the next refresh puts the text cursor on the hex cursor's byte (`place_cursor_at_byte`).
+- The mapping is by byte offset.
+  The selection is not carried over.
+- The focus goes to the widget that becomes visible (`focus_shown()`).
+
+The hex view is read-only in this activity; edits made in text mode show in the hex view because both share the document.
+Save, Save As, in-place save, reload and the external-change flow work in both modes because they act on the text widget, which owns the document.
+A reload in hex mode repaints at once (`follow_document()`).
+The action is ignored while the document closes, and it is allowed while a save runs because it only swaps the displays.
+
+### Budget (REQ-21)
+
+`tests/nova_editor/widget/test_hex_view_budget.py` proves the view budget on a sparse 8 GiB file: the first page, each key and each mouse action read the window at most once, Page Down four times reads at most once per step, memory does not depend on the file size, a source change is reported once, and Select All reads nothing.
+`test_hex_sources_do_not_use_whole_row_apis` fails if the hex sources use row, line or line index APIs.
+
+### Interim Limits
+
+These stay until the later activities:
+- The status line still shows the state of the (hidden) text view (until ACT7).
+- View > Line Numbers and Wrap Mode act on the hidden text widget.
+- Find, Find Next, Find Previous and Go to show the note "Not available in the hex view yet" instead of acting (`EditorScreen._hex_guard`; ACT6 removes it).
+- The drag does not auto-scroll.
+- Rows are cut at widths below 45 columns.
 
 ---
 
@@ -1793,6 +1904,7 @@ See `src/tools/measure_view.py` for usage.
 | `stat` on a hung mount | `save` checks the path on the UI thread | Until the mount answers | Not applicable |
 | Search needle size | Pattern tier cost | 1 MiB plain, 4,096 characters for the pattern tier | Not applicable |
 | Search is literal | By design | No regular expressions, whole word or replace | Not applicable |
+| Hex view interim limits | The hex search, Go to and status line follow in later activities | Find and Go to show a note in hex mode, the status line shows the text view, View > Line Numbers and Wrap Mode act on the hidden text widget, a drag does not auto-scroll, rows are cut below 45 columns | Tests (`test_editor_screen_hex.py`) |
 | Unverified claims | The final benchmarks were skipped | Five items | Unmeasured on the final code |
 
 ### Unverified claims
@@ -2134,6 +2246,12 @@ It implements direction, origin, wrap and the owned-range rules by brute force.
 The properties compare the job with it over random piece layouts, random needles (also substrings of the document), both case modes, both directions, wrap on and off, and chunk sizes from 1 to 17 bytes and large.
 Further properties check that the tiers return the same result on ASCII data and that the reversed pattern agrees with the forward scan.
 
+**Hex view:**
+- `widget/test_hex_layout.py`, `widget/test_hex_scroll_spike.py` — the pure layout and the Textual spike for billions of virtual rows.
+- `widget/test_hex_view.py`, `widget/test_hex_view_budget.py` — rendering, cursor, selection, keys and mouse, and the view budget (REQ-21) on an 8 GiB sparse file; `widget/hex_helpers.py` holds the helpers.
+- `test_document_view_hex.py`, `test_editor_screen_hex.py` — `DocumentView.show_hex` and the F4 action, menu item, focus, save and reload in hex mode, and the interim guard.
+- `test_hex_mapping.py`, `test_text_area_view_switch.py` — the byte-offset mapping between the views and the three `NovaTextArea` methods of the switch.
+
 **Helpers and benchmarks:**
 - `helpers_view.py`, `test_helpers_view.py` — synthetic file builder and oracle.
 - `view_menu.py` — helper for opening and inspecting any menu in tests.
@@ -2165,6 +2283,8 @@ They are:
 - `document/_document.py`, `_document_navigator.py`, `_edit.py`, `_history.py`, `_syntax_aware_document.py` and `_wrapped_document.py`.
 - `document/_wrap.py` — `compute_wrap_offsets` from `textual/_wrap.py`, `cell_width_to_column_index` from `textual/_cells.py` and the `loop_last` helper from `textual/_loop.py`; `cell_len` comes from `rich.cells`.
 - ACT2 changed vendored code: `widget/_text_area.py` (history is a property of the document; undo/redo loops use `EditHistory.undo/redo`; `_Jump.allow_end`; change listener), `document/_edit.py` (`Edit(ByteEdit)`, `shape()`, unknown rule) and `document/_history.py` (`record` via `shape()`, origin rule, step API, reference API).
+
+- S0003 ACT4 added three additive methods to `widget/_text_area.py` for the view switch: `place_cursor_at_byte`, `refresh_if_changed` and `report_source_changed`.
 
 Everything else in the package is native to `nova_editor`.
 
