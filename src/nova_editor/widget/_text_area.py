@@ -5156,10 +5156,38 @@ NovaTextArea {
                 f"Selection of {content.length:,} bytes is too large for the system clipboard (limit {self.clipboard_cap:,}); it was not updated. Paste inside the editor still works.",
                 severity="warning",
             )
+        self._set_clipboard_record(content, system_text)
+
+    def _set_clipboard_record(self, content: PieceContent, system_text: str | None) -> None:
+        """Keep `content` as the internal clipboard record, or drop the record while a save runs."""
         if self._save_run is not None:
             self._clipboard_record = None  # the save rewrites the references of the record it collected; a new one would name the old file
             return
         self._clipboard_record = self._ClipboardRecord(content, content.length, system_text, self.app.clipboard)
+
+    def store_clipboard_bytes(self, content: PieceContent, system_text: str | None, size: int) -> None:
+        """Make `content` the internal clipboard and, when `size` fits `clipboard_cap`, `system_text` the system clipboard (the hex view copies through this).
+
+        The record is the one the text view uses, so the redirect of an in-place save and every place that drops it cover hex copies too.
+
+        Args:
+            content: The copied bytes as piece references; the internal paste keeps them exact.
+            system_text: The text for the system clipboard, or `None` when none was built (the copy is above the cap).
+            size: The length of the clipboard text in bytes, which `clipboard_cap` limits; above it a warning says that only the internal paste works.
+        """
+        if size <= self.clipboard_cap and system_text is not None:
+            self.app.copy_to_clipboard(system_text)
+        else:
+            system_text = None
+            self.notify(
+                f"Selection of {size:,} bytes of clipboard text is too large for the system clipboard (limit {self.clipboard_cap:,}); it was not updated. Paste inside the editor still works.",
+                severity="warning",
+            )
+        self._set_clipboard_record(content, system_text)
+
+    def internal_clipboard(self) -> PieceContent | None:
+        """The internal clipboard content when the application clipboard still holds what the last copy left there, else `None` (the hex view pastes with this)."""
+        return self._internal_clipboard()
 
     def _internal_clipboard(self) -> PieceContent | None:
         """The internal clipboard content when the application clipboard still holds what the last copy left there, else `None`."""

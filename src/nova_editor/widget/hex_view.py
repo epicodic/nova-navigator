@@ -21,9 +21,11 @@ from textual.scroll_view import ScrollView
 from textual.strip import Strip
 
 from nova_editor.core import Content, SourceChanged
+from nova_editor.core.text_width import SURROGATE_ESCAPE
 from nova_editor.document import HexEdit, LazyDocument, RowUnavailable
 from nova_editor.document._history import HistoryRolledBack
-from nova_editor.widget.hex_input import plan_digit
+from nova_editor.widget._text_area import NovaTextArea
+from nova_editor.widget.hex_input import HexTextError, char_text, format_hex_pairs, parse_hex_text, plan_digit
 from nova_editor.widget.hex_layout import HexLayout, Pane, choose_layout, format_row, total_rows
 
 _WINDOW_SCREENS_BEFORE = 1
@@ -157,10 +159,14 @@ HexView {
         Binding("backspace", "delete_backward", show=False),
         Binding("ctrl+z,super+z", "undo", show=False),
         Binding("ctrl+y,super+y", "redo", show=False),
+        Binding("ctrl+x,super+x", "cut", show=False),
+        Binding("ctrl+c,super+c", "copy", show=False),
+        Binding("ctrl+v", "paste", show=False),
     ]
-    """Navigation, Select All, Insert, Delete, Backspace, Undo and Redo; typed digits and characters are handled by `_on_key`.
+    """Navigation, Select All, Insert, Delete, Backspace, Undo, Redo, Cut, Copy and Paste; typed digits and characters are handled by `_on_key`."""
 
-    The clipboard is not bound here yet."""
+    _private_record: tuple[Content, str | None, str] | None = None
+    """`(content, system_text, app_clipboard)` of the last copy when there is no `clipboard_owner`, else `None`."""
 
     class Moved(Message):
         """The cursor or the selection changed."""
@@ -198,6 +204,8 @@ HexView {
         """Insert (True) or overwrite (False) for typing."""
         self.is_read_only: Callable[[], bool] = lambda: False
         """Whether the document is read-only; typing, Delete and Backspace do nothing then. Looked up at every key."""
+        self.clipboard_owner: Callable[[], NovaTextArea] | None = None
+        """Returns the text widget whose clipboard record the hex view shares (it is redirected by an in-place save); `None` keeps a private record."""
         self.on_source_changed: Callable[[SourceChanged], None] | None = None
         """Called once per document when a read reports that the file changed."""
         self._anchor: int | None = None
@@ -580,6 +588,128 @@ HexView {
         self._length = document.length
         self._drop_window()
         self._relayout(self.scrollable_content_region.width)
+
+    # -- clipboard ------------------------------------------------------------------------------------------------------
+
+    def _clipboard_text(self, data: bytes) -> str:
+        """The system clipboard text of `data`: hex pairs in the hex pane, the character rendering in the character pane."""
+        return format_hex_pairs(data) if self.cursor.pane == "hex" else char_text(data)
+
+    def _store_clipboard(self, content: Content, size: int, text: str | None) -> None:
+        """Keep `content` as the internal clipboard and `text` (built only when `size` fits the cap) as the system clipboard."""
+        owner = self.clipboard_owner
+        if owner is not None:
+            owner().store_clipboard_bytes(content, text, size)
+            return
+        cap = NovaTextArea.clipboard_cap
+        if size <= cap and text is not None:
+            self.app.copy_to_clipboard(text)
+        else:
+            text = None
+            self.notify(
+                f"Selection of {size:,} bytes of clipboard text is too large for the system clipboard (limit {cap:,}); it was not updated. Paste inside the editor still works.",
+                severity="warning",
+            )
+        self._private_record = (content, text, self.app.clipboard)
+
+    def _internal_clipboard(self) -> Content | None:
+        """The internal clipboard content while the application clipboard still holds what the last copy left there, else `None`."""
+        owner = self.clipboard_owner
+        if owner is not None:
+            return owner().internal_clipboard()
+        record = self._private_record
+        if record is None:
+            return None
+        content, text, app_clipboard = record
+        return content if self.app.clipboard == (text if text is not None else app_clipboard) else None
+
+    def _copy_selection(self) -> tuple[Content, int, str | None] | None:
+        """Read the selection as content, the size of the clipboard text and the text (`None` above the cap); `None` without a selection or on a refusal."""
+        selection = self.selection
+        if selection is None:
+            return None
+        document = self._document_provider()
+        count = selection.end - selection.start
+        size = 3 * count - 1 if self.cursor.pane == "hex" else count
+        try:
+            content = document.content_between(selection.start, selection.end)
+            text = self._clipboard_text(document.read_bytes(selection.start, count)) if size <= NovaTextArea.clipboard_cap else None
+        except SourceChanged as error:
+            self._source_changed(error)
+            return None
+        except (RowUnavailable, ValueError) as error:
+            self._refuse(str(error))
+            return None
+        return content, size, text
+
+    def action_copy(self) -> None:
+        """Copy the selected bytes (Ctrl+C): hex pairs or characters to the system clipboard, the exact bytes to the internal one."""
+        self._sync()
+        copied = self._copy_selection()
+        if copied is not None:
+            self._store_clipboard(*copied)
+
+    def action_cut(self) -> None:
+        """Remove the selected bytes and copy them (Ctrl+X); nothing without a selection. A refused removal copies nothing."""
+        self._sync()
+        if self.is_read_only():
+            return
+        selection = self.selection
+        copied = self._copy_selection()
+        if selection is None or copied is None:
+            return
+        if self._edit(selection.start, selection.end, b"", kind="delete", cursor=(selection.start, 0)):
+            self._store_clipboard(*copied)
+
+    def action_paste(self) -> None:
+        """Paste (Ctrl+V): the exact internal bytes, else the clipboard text as hex digits (hex pane) or UTF-8 (character pane)."""
+        self._sync()
+        if self.is_read_only():
+            return
+        data: bytes | Content | None = self._internal_clipboard()
+        if data is None:
+            try:
+                data = self._parse_clipboard(self.app.clipboard)
+            except HexTextError as error:
+                self._paste_error(str(error))
+                return
+        count = data.length if isinstance(data, Content) else len(data)
+        if count == 0:
+            return
+        selection = self.selection
+        if selection is not None:
+            start, end = selection.start, selection.end
+        else:
+            start = self.cursor.offset
+            end = start if self.insert_mode else min(start + count, self._length)
+        self._edit(start, end, data, kind="paste", cursor=(start + count, 0))
+
+    def _parse_clipboard(self, text: str) -> bytes:
+        """The bytes of clipboard `text` for the present pane.
+
+        Raises:
+            HexTextError: The text cannot be pasted; the message names the problem.
+        """
+        if self.cursor.pane == "hex":
+            return parse_hex_text(text)
+        if not text:
+            raise HexTextError("Nothing to paste: the clipboard is empty.")
+        try:
+            return text.encode("utf-8", SURROGATE_ESCAPE)
+        except UnicodeEncodeError as error:
+            raise HexTextError("Cannot paste into the character pane: the clipboard text cannot be encoded as UTF-8.") from error
+
+    def _paste_error(self, message: str) -> None:
+        """Ring the bell and warn that the clipboard text cannot be pasted; nothing was changed."""
+        self.app.bell()
+        self.notify(message, severity="warning")
+
+    def _source_changed(self, error: SourceChanged) -> None:
+        """Report a changed file once per document."""
+        if not self._reported:
+            self._reported = True
+            if self.on_source_changed is not None:
+                self.on_source_changed(error)
 
     def _refuse(self, reason: str) -> None:
         """Ring the bell and warn that an edit was refused (the edit lock, a closed document)."""
