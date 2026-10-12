@@ -566,3 +566,35 @@ def test_the_file_may_not_change_size_during_the_patch(tmp_path: Path) -> None:
         assert raised.value.stage == "flush"
     finally:
         doc.close()
+
+
+def test_partial_failure_carries_the_identity_of_the_file_after_the_partial_write(tmp_path: Path) -> None:
+    doc, path, _ = two_range_document(tmp_path)
+    try:
+        with pytest.raises(SaveFailed) as raised:
+            run_in_place(doc, path, io=failing_io("pwrite", 2, errno.EIO))
+        assert raised.value.partial is True
+        assert raised.value.identity == FileIdentity.from_stat(os.stat(path))  # the write changed the mtime: a retry must not look like an outside change
+    finally:
+        doc.close()
+
+
+def test_partial_flush_failure_carries_the_identity(tmp_path: Path) -> None:
+    doc, path, _ = two_range_document(tmp_path)
+    try:
+        with pytest.raises(SaveFailed) as raised:
+            run_in_place(doc, path, io=failing_io("fsync", 1, errno.EIO))
+        assert raised.value.identity == FileIdentity.from_stat(os.stat(path))
+    finally:
+        doc.close()
+
+
+def test_failure_before_the_first_write_carries_no_identity(tmp_path: Path) -> None:
+    doc, path, _ = two_range_document(tmp_path)
+    try:
+        with pytest.raises(SaveFailed) as raised:
+            run_in_place(doc, path, io=failing_io("pwrite", 1, errno.EIO))
+        assert raised.value.partial is False
+        assert raised.value.identity is None
+    finally:
+        doc.close()

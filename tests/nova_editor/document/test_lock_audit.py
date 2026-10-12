@@ -161,6 +161,7 @@ CALLS: dict[str, Call] = {
     "begin_patch": lambda d, _: d.begin_patch([], []),
     "end_patch": lambda d, _: d.end_patch(None),
     "abort_patch": lambda d, _: d.abort_patch(),
+    "redirect_for": lambda d, _: d.redirect_for([]),
     "plan": lambda d, r: (d.plan(0, d.length, unverified=False), d.plan(max(r, 0), 7, unverified=True)),
     "revision": lambda d, _: d.revision,
     "search_plan": lambda d, r: (d.search_plan(0, d.length), d.search_plan(max(r, 0), 7)),

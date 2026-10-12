@@ -139,9 +139,19 @@ class SaveFailed(OSError):
     `committed` is true when the replace already happened: the target holds the new bytes but the editor could not switch to the new file.
     `partial` is true when an in-place save failed after its first write: the file may hold some of the new bytes and the edits are kept.
     `change` is set when the failure is a change of the file on disk (the kind), so that the caller can start the external-change flow.
+    `identity` is set on a partial failure: the identity of the file as the failed save left it (our own writes changed its mtime), so that the caller does not take it for a change from outside.
     """
 
-    def __init__(self, stage: str, error: OSError | str, *, committed: bool = False, partial: bool = False, change: ChangeKind | None = None) -> None:
+    def __init__(
+        self,
+        stage: str,
+        error: OSError | str,
+        *,
+        committed: bool = False,
+        partial: bool = False,
+        change: ChangeKind | None = None,
+        identity: FileIdentity | None = None,
+    ) -> None:
         if isinstance(error, OSError):
             super().__init__(error.errno, error.strerror or str(error))
         else:
@@ -150,6 +160,7 @@ class SaveFailed(OSError):
         self.committed = committed
         self.partial = partial
         self.change = change
+        self.identity = identity
 
 
 class SaveCancelled(Exception):

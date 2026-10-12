@@ -108,6 +108,7 @@ class InPlaceJob:
         self._started = threading.Event()
         self._last_report: float | None = None
         self._copies: list[Copy] = []
+        self._window_identity: FileIdentity | None = None
 
     def cancel(self) -> None:
         """Ask the job to stop; it raises `SaveCancelled` at the next check unless the first byte was written already."""
@@ -122,12 +123,21 @@ class InPlaceJob:
         """Run the save on the calling thread."""
         try:
             return self._run()
-        except (SaveFailed, SaveCancelled):
+        except SaveCancelled:
+            raise
+        except SaveFailed as error:
+            self._attach_identity(error)
             raise
         except OSError as error:
-            raise SaveFailed("internal", error, partial=self.started) from error
+            raise self._attach_identity(SaveFailed("internal", error, partial=self.started)) from error
         except Exception as error:
-            raise SaveFailed("internal", f"{type(error).__name__}: {error}", partial=self.started) from error
+            raise self._attach_identity(SaveFailed("internal", f"{type(error).__name__}: {error}", partial=self.started)) from error
+
+    def _attach_identity(self, error: SaveFailed) -> SaveFailed:
+        """Set the identity the file had when the patch window closed on a partial failure; return `error`."""
+        if error.partial and error.identity is None:
+            error.identity = self._window_identity
+        return error
 
     def _run(self) -> InPlaceResult:
         plan = self._host.plan_in_place()
@@ -174,6 +184,7 @@ class InPlaceJob:
             if identity.size != held.size:
                 raise SaveFailed("flush", f"the file size changed while saving: {held.size} -> {identity.size}", partial=self.started)
             open_window = False
+            self._window_identity = identity
             try:
                 self._host.end_patch(identity)
             except SourceChanged as error:
@@ -194,6 +205,7 @@ class InPlaceJob:
                 current = FileIdentity.from_stat(self._io.fstat(fd))
             except OSError:
                 current = held
+            self._window_identity = current
             self._host.end_patch(current)
 
     def _write(self, fd: int, ranges: Sequence[tuple[int, int]], total: int) -> None:

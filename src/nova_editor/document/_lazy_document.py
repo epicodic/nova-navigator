@@ -38,6 +38,7 @@ from nova_editor.core import (
     PreadSource,
     RebasePlan,
     Rebaser,
+    Redirect,
     RowNotIndexed,
     RowRange,
     SourceChanged,
@@ -612,6 +613,20 @@ class LazyDocument(DocumentBase):
             self._patch_added = []
         if isinstance(source, PreadSource):
             source.abort_patch()
+
+    def redirect_for(self, copies: Sequence[Copy]) -> Redirect:
+        """Return the `Redirect` that moves references off the original ranges `copies` hold the old bytes of (what `InPlaceResult.copies` lists).
+
+        Pure and safe on the save thread: the lock is taken only to read which original, line index and add store are current.
+
+        Raises:
+            RowUnavailable: The document is closed.
+            ValueError: The copies overlap or are malformed.
+        """
+        with self._lock:
+            self._require_open()
+            source, line_index, store = self._source, self._line_index, self._add_store
+        return Redirect(copies, OriginalSource(line_index, source), store)
 
     @property
     def revision(self) -> int:

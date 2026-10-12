@@ -30,6 +30,7 @@ from textual.style import Style as ContentStyle
 
 from nova_editor.core import ByteSource, BytesSource, ChangeKind, FileIdentity, PreadSource
 from nova_editor.core import SourceChanged as CoreSourceChanged
+from nova_editor.core.inplace import InPlaceJob, InPlaceResult
 from nova_editor.core.pieces import Content as PieceContent
 from nova_editor.core.rebase import RebasePlan
 from nova_editor.core.save import PlanPart, SaveIo, SaveJob, SaveResult, SaveSettings, check_path
@@ -337,13 +338,28 @@ class _SaveRun:
 
     target: Path
     contents: list[PieceContent]
-    job: SaveJob | None = None
+    job: SaveJob | InPlaceJob | None = None
     abandoned: bool = False
     """True once the widget was closed: the thread then discards its outcome and the close already posted the terminal message."""
     progress: CoreSaveProgress | None = None
     progress_outstanding: bool = False
     last_message: float = 0.0
     lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
+    held: FileIdentity | None = None
+    """The identity of the file the editor holds, for the in-place job."""
+    cancel_requested: bool = False
+    """Set (under `lock`) by `cancel_save` and `_abandon_save`: a cancel that arrives before the save thread built its job is not lost."""
+    in_place: _InPlaceOutcome | None = None
+    """Written by the save thread before it posts: the successful in-place save, concluded on the UI thread."""
+
+
+@dataclass
+class _InPlaceOutcome:
+    """What the save thread hands to the UI thread after an in-place save: the result and the translation of the references (`None` when it failed)."""
+
+    result: InPlaceResult
+    translated: dict[int, PieceContent] | None
+    redirect: Callable[[PieceContent], PieceContent] | None
 
 
 class NovaTextArea(ScrollView):
@@ -995,6 +1011,8 @@ NovaTextArea {
         """Bytes to write."""
         text_area: NovaTextArea
         """The `text_area` that sent this message."""
+        started: bool = False
+        """True once an in-place save wrote its first byte: from then on a cancel has no effect."""
 
         @property
         def control(self) -> NovaTextArea:
@@ -1029,6 +1047,8 @@ NovaTextArea {
         """The `text_area` that sent this message."""
         committed: bool = False
         """True when the replace already happened: the file holds the new bytes, but the document stays on the old file (reload to see the new one)."""
+        partial: bool = False
+        """True when an in-place save failed after its first write: the file may hold some of the new bytes; the edits and the history are kept."""
 
         @property
         def control(self) -> NovaTextArea:
@@ -3394,7 +3414,8 @@ NovaTextArea {
         if kind is not ChangeKind.UNCHANGED and not overwrite:
             self.post_message(self.SaveNeedsConfirmation(kind, Path(target), self).set_sender(self))
             return False
-        self._start_save(Path(target), unverified=origin in {ChangeKind.MODIFIED, ChangeKind.TRUNCATED})
+        in_place = path is None and not overwrite and held is not None and self.file_path is not None and origin is ChangeKind.UNCHANGED
+        self._start_save(Path(target), unverified=origin in {ChangeKind.MODIFIED, ChangeKind.TRUNCATED}, in_place_candidate=in_place)
         return True
 
     def check_external_change(self) -> ChangeKind:
@@ -3518,8 +3539,13 @@ NovaTextArea {
     def cancel_save(self) -> None:
         """Ask a running save to stop; it ends with `SaveCancelled` unless the replace already happened. Does nothing when no save runs."""
         run = self._save_run
-        if run is not None and run.job is not None:
-            run.job.cancel()
+        if run is None:
+            return
+        with run.lock:
+            run.cancel_requested = True
+            job = run.job
+        if job is not None:
+            job.cancel()
 
     def _reachable_contents(self) -> list[PieceContent]:
         """Every `Content` that refers to pieces of the document and outlives a save: those of the history (see `Edit.contents`), then the clipboard record."""
@@ -3537,19 +3563,42 @@ NovaTextArea {
         if record is not None:
             record.content = next(translated)
 
-    def _start_save(self, target: Path, *, unverified: bool) -> None:
-        """UI thread: lock the document, collect what the history refers to and start the `nova-save` thread."""
+    def _start_save(self, target: Path, *, unverified: bool, in_place_candidate: bool = False) -> None:
+        """UI thread: lock the document, collect what the history refers to and start the `nova-save` thread.
+
+        For an `in_place_candidate` the thread builds the job (the document decides whether an in-place plan exists); every other save builds its streaming job here.
+        """
         document = self.document
         self._save_epoch += 1
         document.begin_save()
         document.lock_edits("saving")
         self.history.checkpoint()
-        run = _SaveRun(target, self._reachable_contents())
-        run.job = SaveJob(_DocumentPlanner(document), target, self.save_settings, functools.partial(self._on_save_report, run), None, unverified, self.save_io)
+        run = _SaveRun(target, self._reachable_contents(), held=self._held_identity)
+        if not in_place_candidate:
+            run.job = self._streaming_job(run, unverified)
         self._save_run = run
         thread = threading.Thread(target=self._save_thread, args=(run,), name="nova-save", daemon=True)
         thread.start()
         document.join_on_close(thread)
+
+    def _streaming_job(self, run: _SaveRun, unverified: bool) -> SaveJob:
+        """The temp-file-and-replace job of `run`."""
+        return SaveJob(_DocumentPlanner(self.document), run.target, self.save_settings, functools.partial(self._on_save_report, run), None, unverified, self.save_io)
+
+    def _save_job(self, run: _SaveRun) -> SaveJob | InPlaceJob:
+        """Save thread: the job of `run`; an in-place candidate gets the `InPlaceJob` when the document has a plan, else the streaming job. A cancel that came first is passed on."""
+        built: SaveJob | InPlaceJob | None = run.job
+        if built is None:
+            document = self.document
+            if document.plan_in_place() is not None:
+                built = InPlaceJob(document, run.target, run.held, self.save_settings, functools.partial(self._on_save_report, run), self.save_io)
+            else:
+                built = self._streaming_job(run, False)
+        with run.lock:
+            run.job = built
+            if run.cancel_requested:
+                built.cancel()
+        return built
 
     def _save_thread(self, run: _SaveRun) -> None:
         """The `nova-save` thread: write the file, translate the history, post the outcome. It never touches the widget state or unlocks the document.
@@ -3560,8 +3609,12 @@ NovaTextArea {
         plan: RebasePlan | None = None
         error: CoreSaveFailed | None = CoreSaveFailed("internal", "the save thread ended unexpectedly")
         try:
-            assert run.job is not None
-            result = run.job.run()
+            job = self._save_job(run)
+            if isinstance(job, InPlaceJob):
+                run.in_place = self._redirect_after_patch(run, job.run())
+                error = None
+                return
+            result = job.run()
             error = CoreSaveFailed("internal", "the save thread ended unexpectedly", committed=True)  # the replace happened
             self._on_save_report(run, CoreSaveProgress("history", result.length, result.length))
             plan = self.document.prepare_rebase(result, run.contents)
@@ -3574,6 +3627,21 @@ NovaTextArea {
             error = CoreSaveFailed("internal", f"{type(failure).__name__}: {failure}", committed=True)
         finally:
             self._post_save_outcome(run, result, plan, error)
+
+    def _redirect_after_patch(self, run: _SaveRun, result: InPlaceResult) -> _InPlaceOutcome:
+        """Save thread: translate the references the UI thread collected off the patched ranges; a failure is logged and leaves the references as they are.
+
+        Their reads stay correct through the read overlay of the source, so the save still counts as done.
+        """
+        if run.abandoned:  # the widget was closed: nobody applies the translation
+            return _InPlaceOutcome(result, None, None)
+        try:
+            redirect = self.document.redirect_for(result.copies)
+            translated = {id(content): redirect.apply(content) for content in run.contents}
+        except Exception:
+            logging.getLogger(__name__).exception("the references could not be redirected after the in-place save")
+            return _InPlaceOutcome(result, None, None)
+        return _InPlaceOutcome(result, translated, redirect.apply)
 
     def _post_save_outcome(self, run: _SaveRun, result: SaveResult | None, plan: RebasePlan | None, error: CoreSaveFailed | None) -> None:
         """Save thread: hand the outcome to the UI thread (exactly once); a saved file that nobody can take over is closed here."""
@@ -3613,7 +3681,7 @@ NovaTextArea {
         if report is None or self._save_run is not run or now - run.last_message < _MESSAGE_INTERVAL:
             return
         run.last_message = now
-        self.post_message(self.SaveProgress(report.phase, report.done, report.total, self).set_sender(self))
+        self.post_message(self.SaveProgress(report.phase, report.done, report.total, self, report.started).set_sender(self))
 
     # --- Search (ACT6 design 6, 7)
     @property
@@ -3827,12 +3895,15 @@ NovaTextArea {
 
     def _conclude_save(self, run: _SaveRun, result: SaveResult | None, plan: RebasePlan | None, error: CoreSaveFailed | None) -> Message:
         """UI thread: apply the outcome of the save thread and return its terminal message (the caller lifts the lock and posts it)."""
+        if run.in_place is not None:
+            return self._conclude_in_place(run, run.in_place)
         if result is None or plan is None:
             if result is not None:
                 result.source.close()
             if error is None:
                 return self.SaveCancelled(self)
-            return self.SaveFailed(error, error.stage, run.target, self, error.committed)
+            self._adopt_failed_patch(error)
+            return self.SaveFailed(error, error.stage, run.target, self, error.committed, error.partial)
         try:
             self.document.apply_rebase(plan)  # closes the file itself when it fails before the swap: the document is then still on the old table
         except BaseException:
@@ -3856,6 +3927,39 @@ NovaTextArea {
             self._clipboard_record = None
             raise
         return self.Saved(result.target, result.length, self)
+
+    def _adopt_failed_patch(self, error: CoreSaveFailed) -> None:
+        """UI thread: a failed in-place save left the file as it is: hold its identity (a retry must not take our own write for a change from outside), and follow a change seen on disk."""
+        if error.identity is not None:
+            self._held_identity = error.identity
+        if error.change is not None:
+            self._fail_source(f"the file changed on disk ({error.change.value})", error.change)
+
+    def _conclude_in_place(self, run: _SaveRun, outcome: _InPlaceOutcome) -> Message:
+        """UI thread: the file was patched. Redirect the references off the patched ranges, hold the new identity and mark the document saved; no rebase happens."""
+        translated, redirect = outcome.translated, outcome.redirect
+        if translated is not None and redirect is not None:
+
+            def redirected(content: PieceContent) -> PieceContent:
+                found = translated.get(id(content))
+                return found if found is not None else redirect(content)
+
+            try:
+                self._redirect_references(redirected)
+            except Exception:
+                logging.getLogger(__name__).exception("the references could not be redirected after the in-place save")
+        self._held_identity = outcome.result.identity
+        self.history.mark_saved()
+        self._lift_stale()
+        return self.Saved(run.target, outcome.result.length, self)
+
+    def _redirect_references(self, fn: Callable[[PieceContent], PieceContent]) -> None:
+        """UI thread: map the history and the clipboard record through `fn`, all or nothing."""
+        record = self._clipboard_record
+        content = fn(record.content) if record is not None else None
+        self.history.map_references(fn)
+        if record is not None and content is not None:
+            record.content = content
 
     def _adopt_after_failed_rebase(self, result: SaveResult) -> None:
         """UI thread: `apply_rebase` raised after it replaced the table. The widget follows the document: the new file, and no history that could undo into the old sources."""
@@ -3888,14 +3992,20 @@ NovaTextArea {
         if run is None:
             return
         run.abandoned = True
-        job = run.job
-        committed = job is not None and job.committed
+        with run.lock:
+            run.cancel_requested = True
+            job = run.job
         if job is not None:
             job.cancel()
+        patching = isinstance(job, InPlaceJob) and job.started
+        committed = isinstance(job, SaveJob) and job.committed
         self._end_save(run)
-        if committed:
+        if patching:
+            reason = CoreSaveFailed("internal", "the widget was closed while the file was being patched", partial=True)
+            message: Message = self.SaveFailed(reason, reason.stage, run.target, self, partial=True)
+        elif committed:
             reason = CoreSaveFailed("internal", "the file was written but the widget was closed before it switched to it", committed=True)
-            message: Message = self.SaveFailed(reason, reason.stage, run.target, self, committed=True)
+            message = self.SaveFailed(reason, reason.stage, run.target, self, committed=True)
         else:
             message = self.SaveCancelled(self)
         try:

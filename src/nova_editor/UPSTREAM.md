@@ -240,6 +240,17 @@ The private `_reachable_edits` was removed in S0003 ACT2; the history now owns t
 **Cancel hooks:** `_after_text_change` (every edit, undo, redo and roll back) cancels the search with the reason `text changed`; `_replace_document` cancels it with the reason `reloaded`; `close` calls `_abandon_search`.
 **Key binding:** `select_all` is bound to `ctrl+shift+a,f8` instead of upstream's `f7` only (`ctrl+shift+a` is a new key), so that F7 opens the search in `nova_edit`; the binding table in the docstring says the same.
 
+### `widget/_text_area.py` (S0003 ACT3, in-place save)
+
+Wiring only: the widget dispatches on what the document decides (`LazyDocument.plan_in_place`) and applies the outcome; it holds no layout or strategy logic.
+**New import:** `InPlaceJob` and `InPlaceResult` from `core/inplace`.
+**New private type:** the dataclass `_InPlaceOutcome` (the result of an in-place save with the translation of the references, built on the save thread).
+**`_SaveRun`:** new fields `held`, `cancel_requested` and `in_place`; `job` may also be an `InPlaceJob`.
+**Messages:** `SaveProgress.started` and `SaveFailed.partial` (both default to false).
+**New private members:** `_streaming_job` (the old job construction, moved out of `_start_save`), `_save_job` (the save thread builds the `InPlaceJob` when the document has a plan, else the streaming job, and passes on an early cancel), `_redirect_after_patch` (save thread), `_adopt_failed_patch`, `_conclude_in_place` and `_redirect_references` (UI thread).
+**Edited members:** `save` (an in-place candidate is a plain save of an unchanged file: no path, no `overwrite`, held identity known), `cancel_save` and `_abandon_save` (set `cancel_requested` under the run lock; a close after the first in-place write posts `SaveFailed(partial=True)`), `_start_save` (the `in_place_candidate` argument, the held identity), `_save_thread` (the in-place branch), `_announce_save_progress` (passes `started`) and `_conclude_save` (the in-place branch; a failure adopts `SaveFailed.identity` and follows `SaveFailed.change` through `_fail_source`).
+The streaming branches of these members are unchanged.
+
 ### `document/_edit.py` (ACT5)
 
 **New members:** `contents()` lists every `Content` the edit holds, and `rewrite(contents)` replaces them in the same order after a rebase.
