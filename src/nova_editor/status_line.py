@@ -66,8 +66,8 @@ def format_sizes(done: int, total: int) -> str:
     return f"{done / scale:.1f} / {total / scale:.1f} {_UNITS[unit]}"
 
 
-def save_progress_text(phase: str, done: int, total: int) -> str:
-    """The note of a running save: the bytes written, or the name of a later phase."""
+def save_progress_text(phase: str, done: int, total: int, *, started: bool = False) -> str:
+    """The note of a running save: the bytes written, or the name of a later phase; `started` (an in-place save wrote its first byte) drops the hint that Esc cancels."""
     if phase == "flushing":
         return "Flushing"
     if phase == "history":
@@ -75,7 +75,8 @@ def save_progress_text(phase: str, done: int, total: int) -> str:
     if phase == "finishing":
         return "Finishing"
     percent = 100 if total <= 0 else round(done * 100 / total)
-    return f"Saving  {format_sizes(done, total)}  {percent} %  Esc cancels"
+    hint = "" if started else "  Esc cancels"
+    return f"Saving  {format_sizes(done, total)}  {percent} %{hint}"
 
 
 def byte_percent(byte_offset: int | None, length: int) -> int | None:

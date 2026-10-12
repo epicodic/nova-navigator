@@ -736,7 +736,7 @@ class EditorScreen(Screen[None]):
 
     def on_nova_text_area_save_progress(self, message: NovaTextArea.SaveProgress) -> None:
         """Show the progress of the save in the status line."""
-        self._note(save_progress_text(message.phase, message.done, message.total))
+        self._note(save_progress_text(message.phase, message.done, message.total, started=message.started))
 
     def on_nova_text_area_saved(self, message: NovaTextArea.Saved) -> None:
         """Show the result and follow the file the document is bound to now."""
@@ -757,6 +757,8 @@ class EditorScreen(Screen[None]):
         self._note(None)
         reason = message.error.strerror or str(message.error)
         written = " The file was written. Reload to read it again." if message.committed else ""
+        if message.partial:
+            written = f" {message.path.name} may now be partially patched. Your edits are kept; save again to finish."
         text = f"Save failed ({message.stage}): {reason}{written}"
         self._start_flow(partial(self._failure_flow, self.document, "Save failed", text, committed=message.committed, recheck=True))
 
