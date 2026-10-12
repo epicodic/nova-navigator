@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from nova_editor.core.byte_source import ByteSource
 from nova_editor.core.line_index import LineIndex
-
-
-class RowNotIndexed(LookupError):
-    """The row oracle cannot answer: the scan has not reached the offset yet, or the read budget was exceeded."""
+from nova_editor.core.pieces import RowNotIndexed
 
 
 class OriginalSource:
