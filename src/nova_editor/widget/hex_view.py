@@ -14,6 +14,7 @@ from typing import ClassVar, Literal
 from rich.segment import Segment
 from rich.style import Style
 from textual import events
+from textual.binding import Binding, BindingType
 from textual.geometry import Size
 from textual.message import Message
 from textual.scroll_view import ScrollView
@@ -27,6 +28,9 @@ _WINDOW_SCREENS_BEFORE = 1
 """Screens of rows the window holds above the first visible row."""
 _WINDOW_SCREENS_AFTER = 2
 """Screens of rows the window holds from the first visible row on (the visible screen and the next)."""
+
+_GROUP_BYTES = 8
+"""Bytes per hex group; the space between two selected bytes is highlighted only inside a group."""
 
 _WindowKey = tuple[LazyDocument, int, int]
 """What a window is valid for: the document, its revision and the bytes per row."""
@@ -115,6 +119,32 @@ HexView {
         "hex-view--selection",
     }
 
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("left", "move('left')", show=False),
+        Binding("right", "move('right')", show=False),
+        Binding("up", "move('up')", show=False),
+        Binding("down", "move('down')", show=False),
+        Binding("pageup", "move('page_up')", show=False),
+        Binding("pagedown", "move('page_down')", show=False),
+        Binding("home", "move('home')", show=False),
+        Binding("end", "move('end')", show=False),
+        Binding("ctrl+home", "move('start')", show=False),
+        Binding("ctrl+end", "move('finish')", show=False),
+        Binding("shift+left", "move('left', True)", show=False),
+        Binding("shift+right", "move('right', True)", show=False),
+        Binding("shift+up", "move('up', True)", show=False),
+        Binding("shift+down", "move('down', True)", show=False),
+        Binding("shift+pageup", "move('page_up', True)", show=False),
+        Binding("shift+pagedown", "move('page_down', True)", show=False),
+        Binding("shift+home", "move('home', True)", show=False),
+        Binding("shift+end", "move('end', True)", show=False),
+        Binding("ctrl+shift+home", "move('start', True)", show=False),
+        Binding("ctrl+shift+end", "move('finish', True)", show=False),
+        Binding("tab,shift+tab", "switch_pane", show=False),
+        Binding("ctrl+a", "select_all", show=False),
+    ]
+    """Navigation keys only: typing, deleting, undo and the clipboard are not bound (ACT5)."""
+
     class Moved(Message):
         """The cursor or the selection changed."""
 
@@ -166,6 +196,12 @@ HexView {
         """The key a read failed for; no read is tried again until the key changes."""
         self._reported = False
         """Whether a source change of `_document` was reported."""
+        self._dragging = False
+        """Whether a mouse button pressed on the view is held."""
+        self._drag_origin: int | None = None
+        """The byte pressed at the start of a drag, or `None` for a Shift-press that extends the selection."""
+        self._drag_left = False
+        """Whether the pointer has left the pressed byte during the drag (a click alone selects nothing)."""
 
     # -- public state ---------------------------------------------------------------------------------------------------
 
@@ -187,6 +223,126 @@ HexView {
         """The row geometry for the present width and document length."""
         self._sync()
         return self._layout
+
+    def set_cursor(self, offset: int, nibble: Literal[0, 1] = 0, *, pane: Pane | None = None, select: bool = False) -> None:
+        """Move the cursor without scrolling; post `Moved` when the cursor or the selection changed.
+
+        Args:
+            offset: The target byte offset; clamped to `[0, length]`.
+            nibble: The digit in the hex pane; forced to 0 in the character pane and at the end of the document.
+            pane: The target pane; `None` keeps the present one.
+            select: Extend the selection from the present cursor (True) or clear it (False).
+        """
+        self._sync()
+        before = (self.cursor, self.selection)
+        target_pane = self.cursor.pane if pane is None else pane
+        offset = max(0, min(offset, self._length))
+        if offset == self._length or target_pane == "char":
+            nibble = 0
+        if select:
+            if self._anchor is None:
+                self._anchor = self.cursor.offset
+        else:
+            self._anchor = None
+        self.cursor = HexCursor(offset, nibble, target_pane)
+        self._changed(before)
+
+    def select_all(self) -> None:
+        """Select every byte: anchor 0, cursor at the end of the document; reads nothing and does not scroll."""
+        self._sync()
+        before = (self.cursor, self.selection)
+        self._anchor = 0
+        self.cursor = HexCursor(self._length, 0, self.cursor.pane)
+        self._changed(before)
+
+    def goto(self, offset: int, *, select: bool = False) -> None:
+        """Move the cursor to the high digit of `offset` and scroll it into view, centring a far target."""
+        self._move(offset, 0, None, select)
+
+    def scroll_to_cursor(self, center: bool = False) -> None:
+        """Scroll the cursor row into view: to the top when above, to the bottom when below, or centred."""
+        height = self.scrollable_content_region.height
+        if height <= 0:
+            return
+        row = self.cursor.offset // self._layout.bytes_per_row
+        top = self.scroll_offset.y
+        if center:
+            target = max(0, row - height // 2)
+        elif row < top:
+            target = row
+        elif row >= top + height:
+            target = row - height + 1
+        else:
+            return
+        if target != top:
+            self.scroll_to(y=target, animate=False, immediate=True)
+
+    def action_select_all(self) -> None:
+        """Select every byte (Ctrl+A, or the keymap's `select_all`)."""
+        self.select_all()
+
+    def action_move(self, move: str, select: bool = False) -> None:
+        """Move the cursor by a navigation key (REQ-8); with `select` extend the selection by whole bytes (REQ-14).
+
+        Args:
+            move: One of `left`, `right`, `up`, `down`, `page_up`, `page_down`, `home`, `end`, `start`, `finish`.
+            select: True for the Shift variant.
+        """
+        self._sync()
+        cursor = self.cursor
+        length = self._length
+        bytes_per_row = self._layout.bytes_per_row
+        row, column = divmod(cursor.offset, bytes_per_row)
+        nibble: Literal[0, 1] = 0 if select else cursor.nibble
+        if move in ("left", "right"):
+            step = -1 if move == "left" else 1
+            if cursor.pane == "hex" and not select:
+                position = max(0, min(cursor.offset * 2 + cursor.nibble + step, 2 * length))
+                self._move(position // 2, 1 if position % 2 else 0, None, select)
+            else:
+                self._move(cursor.offset + step, 0, None, select)
+        elif move in ("up", "down", "page_up", "page_down"):
+            height = max(1, self.scrollable_content_region.height)
+            distance = height if move.startswith("page") else 1
+            target_row = max(0, min(row + (distance if move.endswith("down") else -distance), length // bytes_per_row))
+            if target_row == row and self.selection is None:
+                return
+            if move.startswith("page"):
+                self.scroll_to(y=self.scroll_offset.y + target_row - row, animate=False, immediate=True)
+            self._move(target_row * bytes_per_row + column, nibble, None, select)
+        elif move == "home":
+            self._move(row * bytes_per_row, 0, None, select)
+        elif move == "end":
+            target = min(row * bytes_per_row + bytes_per_row - 1, length)
+            last_digit: Literal[0, 1] = 1 if cursor.pane == "hex" and not select and target < length else 0
+            self._move(target, last_digit, None, select)
+        elif move == "start":
+            self._move(0, 0, None, select)
+        elif move == "finish":
+            self._move(length, 0, None, select)
+
+    def action_switch_pane(self) -> None:
+        """Switch between the hex and the character pane at the same offset (Tab, Shift+Tab)."""
+        self._sync()
+        before = (self.cursor, self.selection)
+        pane: Pane = "char" if self.cursor.pane == "hex" else "hex"
+        self.cursor = HexCursor(self.cursor.offset, 0, pane)
+        self._changed(before)
+
+    def _changed(self, before: tuple[HexCursor, ByteSelection | None]) -> None:
+        """Repaint and post `Moved` when the cursor or the selection differ from `before`."""
+        after = (self.cursor, self.selection)
+        if after != before:
+            self.refresh()
+            self.post_message(self.Moved(*after))
+
+    def _move(self, offset: int, nibble: Literal[0, 1], pane: Pane | None, select: bool) -> None:
+        """Move the cursor and scroll it into view; a target more than one screen outside the view is centred."""
+        self.set_cursor(offset, nibble, pane=pane, select=select)
+        height = self.scrollable_content_region.height
+        row = self.cursor.offset // self._layout.bytes_per_row
+        top = self.scroll_offset.y
+        self.scroll_to_cursor(center=row < top - height or row >= top + 2 * height)
 
     def follow_document(self) -> None:
         """Pick up a replaced or changed document and repaint."""
@@ -308,7 +464,7 @@ HexView {
         return self._row_strip(layout, row * layout.bytes_per_row, data, base).adjust_cell_length(width, base)
 
     def _row_strip(self, layout: HexLayout, offset: int, data: bytes, base: Style) -> Strip:
-        """Build the strip of the row at `offset` holding `data` with the styles cursor > mark > base."""
+        """Build the strip of the row at `offset` holding `data` with the styles cursor > mark > selection > base."""
         text = format_row(layout, offset, data)
         styles = [base] * len(text)
         offset_style = self.get_component_rich_style("hex-view--offset")
@@ -318,6 +474,9 @@ HexView {
         if data:
             styles[layout.char_x - 1] = separator_style
             styles[layout.char_x + len(data)] = separator_style
+        selection = self.selection
+        if selection is not None and selection.start < offset + len(data) and offset < selection.end:
+            self._style_selection(layout, styles, max(selection.start, offset) - offset, min(selection.end, offset + len(data)) - offset)
         cursor = self.cursor
         if offset <= cursor.offset <= offset + len(data) and cursor.offset < offset + layout.bytes_per_row:
             self._style_cursor(layout, styles, cursor, cursor.offset - offset, at_end=cursor.offset >= self._length)
@@ -328,6 +487,16 @@ HexView {
                 segments.append(Segment(text[start:x], styles[start]))
                 start = x
         return Strip(segments, len(text))
+
+    def _style_selection(self, layout: HexLayout, styles: list[Style], first: int, end: int) -> None:
+        """Style the selected bytes `[first, end)` of the row in both panes, and the space between two of a group."""
+        selected = self.get_component_rich_style("hex-view--selection")
+        for index in range(first, end):
+            high = layout.digit_x(index, 0)
+            styles[high] = styles[high + 1] = selected
+            if index + 1 < end and (index + 1) % _GROUP_BYTES:
+                styles[high + 2] = selected
+            styles[layout.char_cell_x(index)] = selected
 
     def _style_cursor(self, layout: HexLayout, styles: list[Style], cursor: HexCursor, index: int, *, at_end: bool) -> None:
         """Style the cursor cell in the active pane and mark the same byte elsewhere (the cursor is a mark without focus)."""
@@ -351,6 +520,87 @@ HexView {
         if isinstance(event, events.Key | events.MouseEvent):
             self._document_provider().foreground.touch()
         await super().on_event(event)
+
+    def _hit(self, x: int, y: int) -> tuple[Pane, int, Literal[0, 1]] | None:
+        """Map a cell of the view to `(pane, offset, nibble)`; `None` for the offset column, the gaps and the `|` marks.
+
+        A row above or below the view is the row just outside it (a drag moves one row per event); a position right of
+        the last byte, or below the last row, is the end-of-document position.
+        """
+        layout = self._layout
+        height = self.scrollable_content_region.height
+        top = self.scroll_offset.y
+        row = top - 1 if y < 0 else top + height if y >= height else top + y
+        last_row = self._length // layout.bytes_per_row
+        located = layout.locate(x)
+        if located is None:
+            if row <= last_row:
+                return None
+            located = (self.cursor.pane, 0, 0)
+        pane, index, nibble = located
+        if row > last_row:
+            return pane, self._length, 0
+        offset = max(0, row) * layout.bytes_per_row + index
+        if offset >= self._length:
+            return pane, self._length, 0
+        return pane, offset, 1 if nibble else 0
+
+    async def _on_mouse_down(self, event: events.MouseDown) -> None:
+        """Place the cursor (Shift: extend the selection from it) and start a drag."""
+        self._sync()
+        hit = self._hit(event.x, event.y)
+        if hit is None:
+            return
+        pane, offset, nibble = hit
+        if event.shift:
+            self._move(offset, 0, pane, True)
+            self._drag_origin = None
+        else:
+            self._move(offset, nibble, pane, False)
+            self._drag_origin = offset
+        self._dragging = True
+        self._drag_left = False
+        self.capture_mouse()
+
+    async def _on_mouse_move(self, event: events.MouseMove) -> None:
+        """Extend the selection to the byte under the pointer while dragging (inclusive of both ends)."""
+        if not self._dragging:
+            return
+        hit = self._hit(event.x, event.y)
+        if hit is None:
+            return
+        _, offset, _ = hit
+        pane = self.cursor.pane  # a drag stays in the pane it started in
+        origin = self._drag_origin
+        if origin is None:  # Shift-press: the anchor stays, the cursor follows the pointer
+            self._move(offset, 0, pane, True)
+            return
+        if offset == origin and not self._drag_left:
+            return
+        self._drag_left = True
+        before = (self.cursor, self.selection)
+        if offset >= origin:
+            self._anchor = origin
+            target = min(offset + 1, self._length)
+        else:
+            self._anchor = min(origin + 1, self._length)
+            target = offset
+        self.cursor = HexCursor(target, 0, pane)
+        self._changed(before)
+        self.scroll_to_cursor()
+
+    async def _on_mouse_up(self, event: events.MouseUp) -> None:
+        """End a drag."""
+        self._end_drag()
+
+    def _on_hide(self, event: events.Hide) -> None:
+        """End a drag when the view is hidden."""
+        self._end_drag()
+
+    def _end_drag(self) -> None:
+        if self._dragging:
+            self._dragging = False
+            self.release_mouse()
 
     def on_resize(self) -> None:
         self._sync()

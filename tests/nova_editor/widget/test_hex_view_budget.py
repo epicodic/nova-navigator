@@ -20,6 +20,7 @@ from nova_editor.core import SourceChanged
 from nova_editor.core.byte_source import BLOCK_SIZE
 from nova_editor.document import LazyDocument
 from nova_editor.widget import HexView, hex_layout, hex_view
+from nova_editor.widget.hex_view import ByteSelection, HexCursor
 from tests.nova_editor.widget.hex_helpers import (
     MIB,
     SPARSE_SIZE,
@@ -288,3 +289,22 @@ async def test_the_foreground_is_touched_by_keys_and_mouse(tmp_path: Path) -> No
                 await pilot.click(view, offset=(20, 1))
                 await pilot.pause()
                 assert touch.called
+
+
+@pytest.mark.asyncio
+async def test_select_all_on_8_gib_reads_nothing(tmp_path: Path) -> None:
+    with budget_view(make_sparse(tmp_path)) as (_, source, log, view):
+        async with HexHost(view).run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            row_texts(view)
+            calls_before, reads_before = len(log.calls), len(source.reads)
+            await pilot.press("ctrl+a")
+            await pilot.pause()
+            texts = row_texts(view)
+            assert view.selection == ByteSelection(0, SPARSE_SIZE)
+            assert view.cursor == HexCursor(SPARSE_SIZE, 0, "hex")
+            assert texts[0].startswith("000000000  00 00")
+            assert len(log.calls) == calls_before
+            assert len(source.reads) == reads_before
+            selected = view.get_component_rich_style("hex-view--selection")
+            assert any(segment.style == selected for segment in view.render_line(0))
