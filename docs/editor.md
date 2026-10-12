@@ -834,7 +834,7 @@ API: `set_cursor(offset, nibble=0, *, pane=None, select=False)`, `goto(offset, *
 | Left, Right | One digit in the hex pane (high digit, low digit, next byte); one byte in the character pane |
 | Up, Down | One row |
 | Page Up, Page Down | One screen |
-| Home, End | Start and end of the row (End on the low digit of the last byte in the hex pane) |
+| Home, End | Start and end of the row (End on the low digit of the last byte in the hex pane; on a short last row, End goes to the end-of-document position instead) |
 | Ctrl+Home, Ctrl+End | Start of the document, end of the document |
 | Tab, Shift+Tab | Switch between the panes at the same offset |
 | Ctrl+A | Select all (reads no bytes, however large the document) |
