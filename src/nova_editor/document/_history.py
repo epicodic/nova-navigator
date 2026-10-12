@@ -233,7 +233,7 @@ class EditHistory:
         if redo_stack:
             batch = redo_stack.pop()
             self._redo_flag_before = self._force_end_batch
-            full = undo_stack.maxlen is not None and len(undo_stack) == undo_stack.maxlen
+            full = bool(undo_stack) and len(undo_stack) == undo_stack.maxlen
             self._redo_evicted = undo_stack[0] if full else None
             undo_stack.append(batch)
             self._revision = batch.revision_after
@@ -316,6 +316,8 @@ class EditHistory:
                 if failure is not None:
                     raise HistoryRolledBack(str(failure)) from error
                 raise
+        self._redo_evicted = None
+        self._redo_flag_before = False
         return self._step("redo", batch, applied, results)
 
     @staticmethod

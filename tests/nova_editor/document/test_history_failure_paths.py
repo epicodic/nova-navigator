@@ -93,3 +93,49 @@ def test_refused_redo_keeps_every_batch_of_a_full_undo_stack() -> None:
     assert snapshot(doc, history) == before
     assert history._force_end_batch is False
     doc.close()
+
+
+def test_redo_with_a_zero_checkpoint_limit_does_not_raise() -> None:
+    doc = make_doc()
+    history = new_history()
+    record(history, doc, 0, 0, b"x")
+    assert history.undo(doc) is not None
+    history.set_max_checkpoints(0)
+    assert history.redo(doc) is not None
+    assert history.undo_stack == []
+    assert history.redo_stack == []
+    assert history._redo_evicted is None
+    doc.close()
+
+
+def test_refused_redo_with_a_zero_checkpoint_limit_restores_everything() -> None:
+    doc = make_doc()
+    history = new_history()
+    record(history, doc, 0, 0, b"x")
+    assert history.undo(doc) is not None
+    history.set_max_checkpoints(0)
+    before = snapshot(doc, history)
+
+    def refuse(*_args: object) -> EditResult:
+        raise RowUnavailable("gone")
+
+    with pytest.raises(RowUnavailable):
+        history.redo(doc, refuse)
+    assert snapshot(doc, history) == before
+    assert len(history.redo_stack) == 1
+    doc.close()
+
+
+def test_successful_redo_clears_the_remembered_eviction() -> None:
+    doc = make_doc()
+    history = EditHistory(max_checkpoints=2, checkpoint_timer=1e9, checkpoint_max_characters=10_000)
+    for start, data in ((0, b"A"), (3, b"B"), (6, b"C")):
+        record(history, doc, start, start, data)
+        history.checkpoint()
+    assert history.undo(doc) is not None
+    history.set_max_checkpoints(1)
+    history._force_end_batch = True
+    assert history.redo(doc) is not None
+    assert history._redo_evicted is None
+    assert history._redo_flag_before is False
+    doc.close()
