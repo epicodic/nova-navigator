@@ -6,6 +6,7 @@ is reported as `None` (or an empty slice) and the caller asks again after a subs
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import functools
 import logging
@@ -118,22 +119,32 @@ def _union(left: Sequence[tuple[int, int]], right: Sequence[tuple[int, int]]) ->
     return _merged([*left, *right])
 
 
-def _subtract(ranges: Sequence[tuple[int, int]], cut: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
-    """Return the parts of the ascending, disjoint `ranges` that lie outside the ascending, disjoint `cut`."""
-    out: list[tuple[int, int]] = []
+def _subtract_each(ranges: Sequence[tuple[int, int]], cut: Sequence[tuple[int, int]]) -> list[list[tuple[int, int]]]:
+    """Return, for every range in `ranges` (any order), the parts that lie outside the ascending, disjoint `cut`.
+
+    Each range starts at the first cut that ends after it by bisection, so the work is proportional to the ranges plus the overlaps.
+    """
+    ends = [cut_end for _, cut_end in cut]
+    result: list[list[tuple[int, int]]] = []
     for start, end in ranges:
+        parts: list[tuple[int, int]] = []
         position = start
-        for cut_start, cut_end in cut:
-            if cut_end <= position:
-                continue
+        for index in range(bisect.bisect_right(ends, start), len(cut)):
+            cut_start, cut_end = cut[index]
             if cut_start >= end:
                 break
             if cut_start > position:
-                out.append((position, cut_start))
+                parts.append((position, cut_start))
             position = max(position, cut_end)
         if position < end:
-            out.append((position, end))
-    return out
+            parts.append((position, end))
+        result.append(parts)
+    return result
+
+
+def _subtract(ranges: Sequence[tuple[int, int]], cut: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Return the parts of the ascending, disjoint `ranges` that lie outside the ascending, disjoint `cut`."""
+    return [part for parts in _subtract_each(ranges, cut) for part in parts]
 
 
 def _copy_reader(store: AddStore, segment: int, shift: int) -> Callable[[int, int], bytes]:
@@ -578,7 +589,8 @@ class LazyDocument(DocumentBase):
             source, store = self._source, self._add_store
             added = _subtract(_merged(ranges), self._patched)
             if isinstance(source, PreadSource):
-                overlays = [OverlayRange(a, b, _copy_reader(store, copy.segment, copy.seg_a - copy.a)) for copy in copies for a, b in _subtract([(copy.a, copy.b)], self._overlaid)]
+                fresh = _subtract_each([(copy.a, copy.b) for copy in copies], self._overlaid)
+                overlays = [OverlayRange(a, b, _copy_reader(store, copy.segment, copy.seg_a - copy.a)) for copy, parts in zip(copies, fresh, strict=True) for a, b in parts]
                 source.begin_patch(overlays)
                 self._overlaid = _union(self._overlaid, [(item.a, item.b) for item in overlays])
             self._patch_added = added
