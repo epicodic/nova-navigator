@@ -2,6 +2,6 @@
 
 from nova_editor.document._byte_edit import ByteEdit
 from nova_editor.document._history import HistoryStep
-from nova_editor.document._lazy_document import DocumentChange, EditsLocked, LazyDocument, RowUnavailable
+from nova_editor.document._lazy_document import DocumentChange, EditsLocked, InPlacePlan, LazyDocument, RowUnavailable
 
-__all__ = ["ByteEdit", "DocumentChange", "EditsLocked", "HistoryStep", "LazyDocument", "RowUnavailable"]
+__all__ = ["ByteEdit", "DocumentChange", "EditsLocked", "HistoryStep", "InPlacePlan", "LazyDocument", "RowUnavailable"]

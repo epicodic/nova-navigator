@@ -40,6 +40,7 @@ from nova_editor.core import (
     SourceChanged,
 )
 from nova_editor.core.foreground import Foreground
+from nova_editor.core.inplace_layout import inplace_ranges
 from nova_editor.core.line_index import call_subscriber
 from nova_editor.core.long_line_index import SPLICE_SYNC_BYTES
 from nova_editor.core.long_line_index import Edit as LongEdit
@@ -207,6 +208,14 @@ class DocumentChange:
     """The document revision after the change."""
 
 
+@dataclass(frozen=True)
+class InPlacePlan:
+    """The outcome of `LazyDocument.plan_in_place`: the document length and the ascending, merged document ranges to write."""
+
+    length: int
+    ranges: tuple[tuple[int, int], ...]
+
+
 class LazyDocument(DocumentBase):
     """Read-only document backed by a `ByteSource`, a `LineIndex` and one `LongLineIndex` per displayed long row.
 
@@ -237,6 +246,8 @@ class LazyDocument(DocumentBase):
         self._rebase_problems: list[str] = []
         self._legacy_files: list[tuple[LineIndex, ByteSource]] = []
         """The line index and source behind each legacy generation of the table (generation `g` is element `g - 1`); closed with the document."""
+        self._patched: list[tuple[int, int]] = []
+        """The ascending, disjoint ranges of the original that in-place saves overwrote (empty until one has run)."""
         self._started = False
         self.foreground = Foreground()
         """Touched by the widget on key and mouse events; the scans of this document give way to the UI while it is."""
@@ -453,6 +464,25 @@ class LazyDocument(DocumentBase):
         with self._lock:
             self._require_open()
             return self._parts(offset, limit, unverified=unverified)
+
+    def plan_in_place(self) -> InPlacePlan | None:
+        """Return the ranges an in-place save would write, or `None` when the layout needs the streaming save.
+
+        The plan is `None` unless the original is a `PreadSource` or a `BytesSource`, the length equals the original's and every run of the
+        original sits at its own offset outside the ranges that earlier in-place saves patched (`inplace_ranges`).
+        The lock is held for this call only; nothing is read and the table is not changed, so unknown pieces stay unknown.
+
+        Raises:
+            RowUnavailable: The document is closed.
+        """
+        with self._lock:
+            self._require_open()
+            source = self._source
+            if not isinstance(source, PreadSource | BytesSource):
+                return None
+            length = self._table.length
+            ranges = inplace_ranges(self._table.layout_iter(0, length), length, source.length(), self._patched)
+            return None if ranges is None else InPlacePlan(length, tuple(ranges))
 
     @property
     def revision(self) -> int:

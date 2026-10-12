@@ -304,6 +304,17 @@ class PieceTable:
             return []
         return [(piece.src, piece.a + lo, piece.a + hi) for piece, lo, hi in self._tree.iter_range(start, end)]
 
+    def layout_iter(self, start: int, end: int) -> Iterator[tuple[int, int, int]]:
+        """Like `layout_range` but lazy; no `_refresh`, no reads, caller holds the document lock.
+
+        Raises:
+            ValueError: when the range is invalid (on the first step of the iteration).
+        """
+        if not 0 <= start <= end <= self.length:
+            raise ValueError(f"range [{start}, {end}) outside 0..{self.length}")
+        for piece, lo, hi in self._tree.iter_range(start, end):
+            yield piece.src, piece.a + lo, piece.a + hi
+
     def row_source(self, start: int, end: int) -> RowSource:
         """Return a snapshot `ByteSource` of the document bytes `[start, end)`, with offsets relative to `start`.
 

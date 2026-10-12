@@ -156,6 +156,7 @@ CALLS: dict[str, Call] = {
     "apply_rebase": lambda d, r: _save_and_rebase(d, r, apply=True),
     "wait_rebased": lambda d, _: d.wait_rebased(0.0),
     "join_on_close": lambda d, _: d.join_on_close(_finished_thread()),
+    "plan_in_place": lambda d, _: d.plan_in_place(),
     "plan": lambda d, r: (d.plan(0, d.length, unverified=False), d.plan(max(r, 0), 7, unverified=True)),
     "revision": lambda d, _: d.revision,
     "search_plan": lambda d, r: (d.search_plan(0, d.length), d.search_plan(max(r, 0), 7)),
