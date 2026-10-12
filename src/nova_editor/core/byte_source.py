@@ -132,6 +132,7 @@ class PreadSource:
         self._overlay: tuple[OverlayRange, ...] = ()  # replaced, never mutated; read under _lock
         self._overlay_starts: tuple[int, ...] = ()
         self._patching = False  # while set, the descriptor check compares the size only
+        self._patch_generation = 0  # counts the changes of `_patching` and of the held identity; a stat that spans one is repeated
         self._inflight = 0
         self._closing = False
         self._closed = False
@@ -164,6 +165,7 @@ class PreadSource:
             self._overlay = tuple(merged)
             self._overlay_starts = tuple(item.a for item in merged)
             self._patching = True
+            self._patch_generation += 1
 
     def end_patch(self, identity: FileIdentity) -> None:
         """Close the patch window and adopt `identity` (size and mtime) as the held identity; the overlay stays.
@@ -172,23 +174,30 @@ class PreadSource:
             SourceChanged: The size of `identity` or of the descriptor differs from the held size, or the inode changed.
                 The source is then failed for good and the window is closed.
         """
-        with self._lock:
-            self._patching = False
-        if identity.size != self._size or identity.dev != self._identity.dev or identity.ino != self._identity.ino:
-            kind = ChangeKind.TRUNCATED if identity.size < self._size else ChangeKind.MODIFIED
-            raise self._fail(SourceChanged(f"file changed during the patch: size {self._size} -> {identity.size}", kind))
-        info = os.fstat(self._fd)
-        if info.st_size != self._size:
-            kind = ChangeKind.TRUNCATED if info.st_size < self._size else ChangeKind.MODIFIED
-            raise self._fail(SourceChanged(f"file changed during the patch: size {self._size} -> {info.st_size}", kind))
-        with self._lock:
+        try:
+            if identity.size != self._size or identity.dev != self._identity.dev or identity.ino != self._identity.ino:
+                kind = ChangeKind.TRUNCATED if identity.size < self._size else ChangeKind.MODIFIED
+                raise SourceChanged(f"file changed during the patch: size {self._size} -> {identity.size}", kind)
+            info = os.fstat(self._fd)
+            if info.st_size != self._size:
+                kind = ChangeKind.TRUNCATED if info.st_size < self._size else ChangeKind.MODIFIED
+                raise SourceChanged(f"file changed during the patch: size {self._size} -> {info.st_size}", kind)
+        except SourceChanged as error:
+            with self._lock:
+                self._patching = False
+                self._patch_generation += 1
+            raise self._fail(error) from error
+        with self._lock:  # one critical section: no reader sees the window closed and the old identity together
             self._identity = identity
             self._mtime_ns = identity.mtime_ns
+            self._patching = False
+            self._patch_generation += 1
 
     def abort_patch(self) -> None:
         """Close the patch window without adopting a new identity (nothing was written); the overlay stays."""
         with self._lock:
             self._patching = False
+            self._patch_generation += 1
 
     def _mask(self, offset: int, data: bytes) -> bytes:
         """Return `data`, read at `offset`, with the bytes inside overlay ranges replaced by their pre-patch bytes."""
@@ -300,10 +309,14 @@ class PreadSource:
         self._check_stat()
 
     def _check_stat(self) -> None:
-        info = os.fstat(self._fd)
-        with self._lock:
-            patching = self._patching
-            held_mtime = self._mtime_ns
+        while True:
+            with self._lock:
+                generation, patching, held_mtime = self._patch_generation, self._patching, self._mtime_ns
+            info = os.fstat(self._fd)
+            with self._lock:
+                settled = generation == self._patch_generation
+            if settled:  # no patch window opened or closed while the descriptor was read: the snapshot above is the state `info` belongs to
+                break
         if info.st_size != self._size or (not patching and info.st_mtime_ns != held_mtime):
             kind = ChangeKind.TRUNCATED if info.st_size < self._size else ChangeKind.MODIFIED
             raise self._fail(SourceChanged(f"file changed: size {self._size} -> {info.st_size}, mtime_ns {held_mtime} -> {info.st_mtime_ns}", kind))
