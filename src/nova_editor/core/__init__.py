@@ -24,6 +24,7 @@ from nova_editor.core.pieces import (
     merge_pieces,
 )
 from nova_editor.core.rebase import RebasePlan, Rebaser
+from nova_editor.core.redirect import Copy, Redirect
 from nova_editor.core.row_scanner import RowScanner
 from nova_editor.core.row_source import RowSource
 from nova_editor.core.save import check_path
@@ -59,6 +60,7 @@ __all__ = [
     "BytesSource",
     "ChangeKind",
     "Content",
+    "Copy",
     "FileIdentity",
     "Frontier",
     "LineIndex",
@@ -75,6 +77,7 @@ __all__ = [
     "PreadSource",
     "RebasePlan",
     "Rebaser",
+    "Redirect",
     "RowNotIndexed",
     "RowRange",
     "RowScanner",
