@@ -26,10 +26,13 @@ from nova_editor.core import (
     BytesSource,
     ChangeKind,
     Content,
+    Copy,
+    FileIdentity,
     LineIndex,
     LineSnapshot,
     LongLineIndex,
     OriginalSource,
+    OverlayRange,
     PieceSource,
     PieceTable,
     PreadSource,
@@ -40,6 +43,7 @@ from nova_editor.core import (
     SourceChanged,
 )
 from nova_editor.core.foreground import Foreground
+from nova_editor.core.inplace import InPlacePlan
 from nova_editor.core.inplace_layout import inplace_ranges
 from nova_editor.core.line_index import call_subscriber
 from nova_editor.core.long_line_index import SPLICE_SYNC_BYTES
@@ -94,6 +98,50 @@ class _Swap(NamedTuple):
     retired: list[LongLineIndex]
     reapers: list[threading.Thread]
     release: list[tuple[LineIndex, ByteSource]]
+
+
+def _merged(ranges: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Return `ranges` sorted, without empty ranges, with overlapping and touching ranges joined."""
+    out: list[tuple[int, int]] = []
+    for start, end in sorted(ranges):
+        if end <= start:
+            continue
+        if out and out[-1][1] >= start:
+            out[-1] = (out[-1][0], max(out[-1][1], end))
+        else:
+            out.append((start, end))
+    return out
+
+
+def _union(left: Sequence[tuple[int, int]], right: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    return _merged([*left, *right])
+
+
+def _subtract(ranges: Sequence[tuple[int, int]], cut: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Return the parts of the ascending, disjoint `ranges` that lie outside the ascending, disjoint `cut`."""
+    out: list[tuple[int, int]] = []
+    for start, end in ranges:
+        position = start
+        for cut_start, cut_end in cut:
+            if cut_end <= position:
+                continue
+            if cut_start >= end:
+                break
+            if cut_start > position:
+                out.append((position, cut_start))
+            position = max(position, cut_end)
+        if position < end:
+            out.append((position, end))
+    return out
+
+
+def _copy_reader(store: AddStore, segment: int, shift: int) -> Callable[[int, int], bytes]:
+    """Return the reader of the old bytes `[x, y)` of an overlaid range: they sit at `x + shift` of the add segment."""
+
+    def read(x: int, y: int) -> bytes:
+        return store.read(segment, x + shift, y + shift)
+
+    return read
 
 
 def _release(files: list[tuple[LineIndex, ByteSource]]) -> None:
@@ -208,14 +256,6 @@ class DocumentChange:
     """The document revision after the change."""
 
 
-@dataclass(frozen=True)
-class InPlacePlan:
-    """The outcome of `LazyDocument.plan_in_place`: the document length and the ascending, merged document ranges to write."""
-
-    length: int
-    ranges: tuple[tuple[int, int], ...]
-
-
 class LazyDocument(DocumentBase):
     """Read-only document backed by a `ByteSource`, a `LineIndex` and one `LongLineIndex` per displayed long row.
 
@@ -247,7 +287,11 @@ class LazyDocument(DocumentBase):
         self._legacy_files: list[tuple[LineIndex, ByteSource]] = []
         """The line index and source behind each legacy generation of the table (generation `g` is element `g - 1`); closed with the document."""
         self._patched: list[tuple[int, int]] = []
-        """The ascending, disjoint ranges of the original that in-place saves overwrote (empty until one has run)."""
+        """The ascending, disjoint ranges of the original that in-place saves overwrote (empty until one has run); a streaming save clears it."""
+        self._overlaid: list[tuple[int, int]] = []
+        """The ascending, disjoint ranges the read overlay of the original serves; a superset of `_patched` (a patch that was rolled back leaves its overlay, which is invisible)."""
+        self._patch_added: list[tuple[int, int]] = []
+        """The ranges the running patch added to `_patched`; what `abort_patch` takes back."""
         self._started = False
         self.foreground = Foreground()
         """Touched by the widget on key and mouse events; the scans of this document give way to the UI while it is."""
@@ -484,6 +528,91 @@ class LazyDocument(DocumentBase):
             ranges = inplace_ranges(self._table.layout_iter(0, length), length, source.length(), self._patched)
             return None if ranges is None else InPlacePlan(length, tuple(ranges))
 
+    def prepare_patch(self, ranges: Sequence[tuple[int, int]], chunk: int, check: Callable[[], None]) -> list[Copy]:
+        """Copy the old bytes of `ranges` (document offsets, which are original offsets in an in-place layout) into the add store; return where they went.
+
+        Only the parts of a range that no earlier in-place save patched are copied: the others are protected by the copies of that save.
+        The original is read in pieces of at most `chunk` bytes with the verified read that does not fill the block cache.
+        `check` is called before each piece and may raise (a cancel).
+        The lock is held only to take the source, the add store and the patched ranges, never across I/O; the copies stay in the add store until
+        a streaming save, a reload or the close, whatever happens next.
+
+        Raises:
+            RowUnavailable: The document is closed.
+            SourceChanged: The original changed or could not be read.
+            ValueError: `chunk` is not positive.
+        """
+        if chunk <= 0:
+            raise ValueError("chunk must be positive")
+        with self._lock:
+            self._require_open()
+            source, store, patched = self._source, self._add_store, list(self._patched)
+        copies: list[Copy] = []
+        for start, end in _subtract(_merged(ranges), patched):
+            offset = start
+            while offset < end:
+                check()
+                data = source.read(offset, min(chunk, end - offset), cache=False)
+                if not data:
+                    raise SourceChanged(f"short read at {offset}", ChangeKind.TRUNCATED)
+                segment, first, _ = store.append(data)
+                copies.append(Copy(offset, offset + len(data), segment, first))
+                offset += len(data)
+        return copies
+
+    def begin_patch(self, copies: Sequence[Copy], ranges: Sequence[tuple[int, int]]) -> None:
+        """Protect the old bytes of `copies` and mark `ranges` as patched; call it before the first byte of the file is written.
+
+        A `PreadSource` original gets a read overlay serving the copies (the parts an earlier save overlaid already are not installed twice);
+        a `BytesSource` is immutable and needs none.
+        `end_patch` closes the window; `end_patch(None)` or `abort_patch` takes `ranges` back out of the patched set.
+        The call is atomic: when it raises nothing changed.
+
+        Raises:
+            RowUnavailable: The document is closed.
+            ValueError: A copy is empty or outside the original, or the source refused the overlay.
+        """
+        with self._lock:
+            self._require_open()
+            source, store = self._source, self._add_store
+            added = _subtract(_merged(ranges), self._patched)
+            if isinstance(source, PreadSource):
+                overlays = [OverlayRange(a, b, _copy_reader(store, copy.segment, copy.seg_a - copy.a)) for copy in copies for a, b in _subtract([(copy.a, copy.b)], self._overlaid)]
+                source.begin_patch(overlays)
+                self._overlaid = _union(self._overlaid, [(item.a, item.b) for item in overlays])
+            self._patch_added = added
+            self._patched = _union(self._patched, added)
+
+    def end_patch(self, identity: FileIdentity | None) -> None:
+        """Close the patch window.
+
+        With the identity of the file after the write the source adopts it (size and mtime) and the ranges stay patched.
+        With `None` nothing was written: the ranges this patch added leave the patched set (see `abort_patch`).
+
+        Raises:
+            SourceChanged: The size of the file differs from the held one; the source is then failed for good.
+        """
+        if identity is None:
+            self.abort_patch()
+            return
+        with self._lock:
+            source = self._source
+            self._patch_added = []
+        if isinstance(source, PreadSource):
+            source.end_patch(identity)
+
+    def abort_patch(self) -> None:
+        """Close the patch window of a patch that wrote nothing and remove the ranges it added from the patched set (those of earlier saves stay).
+
+        The overlay that `begin_patch` installed stays: it serves the old bytes, which are still the bytes of the file.
+        """
+        with self._lock:
+            source = self._source
+            self._patched = _subtract(self._patched, self._patch_added)
+            self._patch_added = []
+        if isinstance(source, PreadSource):
+            source.abort_patch()
+
     @property
     def revision(self) -> int:
         """Count of committed edits; a search plan of another revision is stale (the rebase after a save does not change it)."""
@@ -669,6 +798,7 @@ class LazyDocument(DocumentBase):
             old.cancel()
         self._legacy_files = kept
         self._source, self._line_index, self._add_store, self._table = source, line_index, plan.new_add_store, table
+        self._patched, self._overlaid, self._patch_added = [], [], []  # the new original is the file as written: nothing of it is patched or overlaid
         self._rebase_installed = True  # still under the lock: no gap between the swap and the flag
         self._ranges.clear()
         self._texts.clear()
