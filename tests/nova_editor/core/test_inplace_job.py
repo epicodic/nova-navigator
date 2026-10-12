@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from nova_editor.core import ChangeKind, Content, FileIdentity, InPlaceJob, InPlacePlan, PreadSource, Redirect
+from nova_editor.core import ChangeKind, Content, FileIdentity, InPlaceJob, InPlacePlan, PreadSource
 from nova_editor.core.redirect import Copy
 from nova_editor.core.save import PlanPart, SaveCancelled, SaveFailed, SaveIo, SaveProgress
 from nova_editor.document import LazyDocument
@@ -429,9 +429,7 @@ def test_second_save_after_undo_restores_original_bytes(tmp_path: Path) -> None:
         removed = overwrite(doc, 10, b"#")
         result = run_in_place(doc, path)
         assert path.read_bytes() == expected(DATA, (10, b"#"))
-        source = doc._source
-        assert isinstance(source, PreadSource)
-        redirected = Redirect(result.copies, source, doc._add_store).apply(removed)
+        redirected = doc.redirect_for(result.copies).apply(removed)
         assert [piece.src for piece in redirected.pieces] != [0]  # the undo record names the copy now
         doc.splice_bytes(10, 11, redirected)  # undo
         assert doc.read_bytes(0, doc.length) == DATA

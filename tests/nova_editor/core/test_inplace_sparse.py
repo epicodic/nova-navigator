@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-from nova_editor.core import PreadSource, Redirect
 from nova_editor.document import LazyDocument
 from tests.nova_editor.core.save_helpers import recording_io
 from tests.nova_editor.document.helpers_save import content_of, run_in_place
@@ -69,9 +68,7 @@ def test_save_undo_save_again(tmp_path: Path) -> None:
         removed = doc.splice_bytes(AT, AT + 1, content_of(doc, b"X")).removed
         assert removed is not None
         result = run_in_place(doc, path)
-        source = doc._source
-        assert isinstance(source, PreadSource)
-        redirected = Redirect(result.copies, source, doc._add_store).apply(removed)
+        redirected = doc.redirect_for(result.copies).apply(removed)
         doc.splice_bytes(AT, AT + 1, redirected)  # undo
         again = run_in_place(doc, path)
         assert again.written == 1

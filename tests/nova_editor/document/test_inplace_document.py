@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from nova_editor.core import Content, Redirect
+from nova_editor.core import Content
 from nova_editor.document import LazyDocument, _lazy_document
 from tests.nova_editor.document.helpers_save import JOIN_SECONDS, content_of, open_pread_document, run_in_place, run_save
 
@@ -145,8 +145,7 @@ def test_redirected_history_content_survives_a_job(tmp_path: Path) -> None:
     try:
         removed = _overwrite(doc, 45, b"ZZZ")
         result = run_in_place(doc, path)
-        source = doc._source
-        redirected = Redirect(result.copies, source, doc._add_store).apply(removed)
+        redirected = doc.redirect_for(result.copies).apply(removed)
         assert doc._table.content_bytes(redirected, 0, redirected.length) == DATA[45:48]
     finally:
         doc.close()
