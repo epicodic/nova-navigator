@@ -60,8 +60,10 @@ class DocumentView:
         """The hex view over the document of `editor` (it follows a replaced document); hidden in text mode. A plain attribute, not a field."""
         self.hex_view.display = False
         self.hex_view.on_source_changed = self.editor.report_source_changed
+        self._pending = False
+        """Whether a scheduled switch has not run its finish step yet; a switch before then carries `_transfer` on instead of reading the stale cursor of the widget it leaves."""
         self._transfer: int | None = None
-        """The byte offset that a scheduled switch puts the cursor on, until it runs; a switch before then carries it on instead of reading the stale cursor of the widget it leaves."""
+        """The byte offset that the pending switch puts the cursor on; `None` while it is unknown (the cursor of the target widget is kept). Meaningful only while `_pending`."""
         self._switches = 0
         """Count of the switches; a scheduled finish step that a later switch superseded does nothing."""
 
@@ -84,49 +86,47 @@ class DocumentView:
 
         Does nothing when the requested view is shown already. A history checkpoint is set first, so that an undo never joins edits across a switch.
         Leaving the text view cancels a pending jump and a running search, which would move the hidden cursor later.
+        When the text cursor has no known byte offset the hex cursor keeps its previous offset.
         The cursor is placed and the focus moved after the next refresh, once the widget that becomes visible has its size.
-        A switch before that refresh (two quick toggles) carries the offset of the scheduled one on, and only the last finish step runs.
+        A switch before that refresh (two quick toggles) carries the offset of the scheduled one on, also an unknown one (then the cursor of the
+        widget shown in the end is kept), and only the last finish step runs.
+        The pending state is changed only after every call that may raise, so a failed switch leaves no stale offset behind.
         """
         if on == self.hex_mode:
             return
         editor = self.editor
         hex_view = self.hex_view
         editor.document.history.checkpoint()
-        self._switches += 1
-        switch = self._switches
         if on:
             editor.cancel_pending()
             if editor.searching:
                 editor.cancel_search()
-            offset = editor.cursor_byte_offset if self._transfer is None else self._transfer
-            self._transfer = offset
-            editor.display = False
-            hex_view.display = True
+            offset = self._transfer if self._pending else editor.cursor_byte_offset
+        else:
+            offset = self._transfer if self._pending else hex_view.cursor.offset
+            editor.refresh_if_changed()
+        self._switches += 1
+        switch = self._switches
+        self._pending = True
+        self._transfer = offset
 
-            def finish_hex() -> None:
-                if switch != self._switches:
-                    return
-                self._transfer = None
-                hex_view.set_cursor(hex_view.cursor.offset if offset is None else offset)
-                hex_view.scroll_to_cursor(center=True)
-                hex_view.focus()
-
-            editor.call_after_refresh(finish_hex)
-            return
-        target = hex_view.cursor.offset if self._transfer is None else self._transfer
-        self._transfer = target
-        editor.refresh_if_changed()
-        hex_view.display = False
-        editor.display = True
-
-        def finish_text() -> None:
+        def finish() -> None:
             if switch != self._switches:
                 return
+            self._pending = False
             self._transfer = None
-            editor.place_cursor_at_byte(target)
+            if on:
+                hex_view.set_cursor(hex_view.cursor.offset if offset is None else offset)  # collapsed, nibble 0 (REQ-2)
+                hex_view.scroll_to_cursor(center=True)
+                hex_view.focus()
+                return
+            if offset is not None:
+                editor.place_cursor_at_byte(offset)
             editor.focus()
 
-        editor.call_after_refresh(finish_text)
+        editor.display = not on
+        hex_view.display = on
+        editor.call_after_refresh(finish)
 
     @classmethod
     def open(

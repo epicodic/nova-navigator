@@ -851,10 +851,12 @@ A click outside both panes on a row does nothing.
 
 `DocumentView.show_hex(on)` switches the views (REQ-2).
 - It sets a history checkpoint first, so that an undo does not join edits across a switch.
-- To hex: it cancels a pending jump and a running search, hides the text widget, shows the hex view, and after the next refresh puts the hex cursor on `cursor_byte_offset` and centers it.
+- To hex: it cancels a pending jump and a running search, hides the text widget, shows the hex view, and after the next refresh puts the hex cursor on `cursor_byte_offset` and centers it; when that offset is unknown (`None`) the hex cursor keeps its previous offset.
 - To text: it calls `refresh_if_changed()` on the text widget (the document may have changed in the hex view), swaps the displays, and after the next refresh puts the text cursor on the hex cursor's byte (`place_cursor_at_byte`).
   `place_cursor_at_byte` drops a text selection at once, also while the jump to an unscanned offset is pending.
-- A switch before that refresh (two quick F4 presses, key repeat) does not read the cursor of the widget it leaves, which is not placed yet: the view keeps the scheduled offset (`_transfer`) and carries it on, and only the finish step of the last switch runs.
+- A switch before that refresh (two quick F4 presses, key repeat) does not read the cursor of the widget it leaves, which is not placed yet: the view keeps the scheduled offset (`_transfer`, valid while `_pending`) and carries it on, and only the finish step of the last switch runs.
+  An unknown offset is carried on as unknown: the widget shown in the end keeps its cursor.
+  The pending state is set only after every call that may raise, so a failed switch leaves no stale offset.
 - The mapping is by byte offset.
   The selection is not carried over.
 - The focus goes to the widget that becomes visible (`focus_shown()`).
@@ -862,7 +864,7 @@ A click outside both panes on a row does nothing.
 The hex view is read-only in this activity; edits made in text mode show in the hex view because both share the document.
 Save, Save As, in-place save, reload and the external-change flow work in both modes because they act on the text widget, which owns the document.
 A reload in hex mode repaints at once (`follow_document()`).
-The action is ignored while the document closes, and it is allowed while a save runs because it only swaps the displays.
+The action is ignored while the document closes or is replaced (one of its two widgets is no longer attached), and it is allowed while a save runs because it only swaps the displays.
 
 ### Budget (REQ-21)
 

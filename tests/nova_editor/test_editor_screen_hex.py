@@ -524,3 +524,48 @@ async def test_two_hex_mode_actions_before_a_refresh_keep_the_hex_cursor(tmp_pat
         await toggle(pilot, screen)
         await wait_until(pilot, lambda: document.editor.pending_progress is None)
         assert document.editor.cursor_byte_offset == 1000
+
+
+@pytest.mark.asyncio
+async def test_two_hex_mode_actions_with_an_unknown_text_cursor_keep_the_text_cursor(tmp_path: Path) -> None:
+    """F4 twice in one batch while the text cursor has no known byte offset: the pending switch carries "unknown", not the stale hex cursor.
+
+    The hex view never showed a position, so the way back must not move the text cursor to the old hex offset.
+    """
+    app = NovaEditApp(file_path=make_file(tmp_path, "".join(f"row {n:04d}\n" for n in range(400))))
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        screen = screen_of(app)
+        document = screen.document
+        editor = document.editor
+        await toggle(pilot, screen)
+        document.hex_view.set_cursor(1000)
+        await toggle(pilot, screen)
+        await wait_until(pilot, lambda: editor.pending_progress is None)
+        editor.move_cursor((5, 2))
+        await pilot.pause()
+        with patch.object(NovaTextArea, "cursor_byte_offset", new=property(lambda _self: None)):
+            screen.action_hex_mode()
+            screen.action_hex_mode()
+            await wait_until(pilot, lambda: not document.hex_mode and screen.focused is editor)
+            await pilot.pause()
+        assert editor.cursor_location == (5, 2)
+        assert document.hex_view.cursor.offset == 1000
+        await toggle(pilot, screen)
+        assert document.hex_view.cursor.offset == 5 * 9 + 2  # the next switch reads the real cursor again
+
+
+@pytest.mark.asyncio
+async def test_the_hex_action_is_ignored_while_only_the_hex_view_is_removed(tmp_path: Path) -> None:
+    """`_swap_document` removes the hex view first: an F4 between the two removals must not show a detached hex view."""
+    host = EditorScreenHost(make_file(tmp_path), standalone=True)
+    async with host.run_test(size=WIDE) as pilot:
+        await pilot.pause()
+        screen = host.screen_instance
+        assert screen is not None
+        document = screen.document
+        await document.hex_view.remove()
+        screen.action_hex_mode()
+        await pilot.pause()
+        assert document.hex_mode is False
+        assert document.editor.display is True

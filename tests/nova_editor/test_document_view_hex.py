@@ -135,3 +135,23 @@ async def test_hex_view_reads_the_documents_current_document(tmp_path: Path) -> 
         view.hex_view.follow_document()
         await wait_until(pilot, lambda: view.hex_view.length == len("a longer document\n"))
         assert view.hex_view.render_line(0).text.startswith("00000000  61 20 6C 6F")
+
+
+@pytest.mark.asyncio
+async def test_a_switch_that_raises_leaves_no_pending_transfer(tmp_path: Path) -> None:
+    """A failing call inside `show_hex` must not leave the offset of the aborted switch for the next one."""
+    path = tmp_path / "f.bin"
+    path.write_bytes(bytes(4096))
+    view = _open(path)
+    async with ViewHost(view).run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        view.show_hex(True)
+        await pilot.pause()
+        view.hex_view.set_cursor(1000)
+        with patch.object(view.editor, "refresh_if_changed", side_effect=RuntimeError("boom")), pytest.raises(RuntimeError):
+            view.show_hex(False)
+        assert view.hex_mode is True
+        view.hex_view.set_cursor(2000)
+        view.show_hex(False)
+        await wait_until(pilot, lambda: pilot.app.focused is view.editor and view.editor.pending_progress is None)
+        assert view.editor.cursor_byte_offset == 2000

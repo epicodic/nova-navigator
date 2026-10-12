@@ -381,10 +381,10 @@ class EditorScreen(Screen[None]):
     def action_hex_mode(self) -> None:
         """Hex Mode: show the document as bytes or as text; the cursor follows by byte offset (REQ-1, REQ-2).
 
-        Ignored while the document closes (its text widget is no longer attached); allowed while a save runs, because it only swaps the displays.
+        Ignored while the document closes or is replaced (one of its two widgets is no longer attached); allowed while a save runs, because it only swaps the displays.
         """
         document = self.document
-        if not document.editor.is_attached:
+        if not (document.editor.is_attached and document.hex_view.is_attached):
             return
         self.goto_popup.hide()
         self.find_popup.hide()
