@@ -70,6 +70,9 @@ RELOCATE_LIMIT = 256 * 1024
 _MERGE_CONTEXT = 3
 _NEWLINE = re.compile(r"\r\n|\r|\n")
 _CRLF = b"\r\n"
+_BEYOND_LAST_ROW = 1 << 62
+"""A row or column bound larger than any real one: an edit that reaches past the rows it can name."""
+_LOGGER = logging.getLogger(__name__)
 
 RowClass = Literal["short", "medium", "long"]
 
@@ -118,7 +121,7 @@ class _SegmentBytes:
 
     def length(self) -> int:
         """Return an upper bound; the plan never reads beyond the pieces it names."""
-        return 1 << 62
+        return _BEYOND_LAST_ROW
 
     def read(self, offset: int, size: int, *, cache: bool = True) -> bytes:
         """Return the bytes `[offset, offset + size)` of the piece source; `cache` is accepted for the protocol."""
@@ -551,7 +554,7 @@ class LazyDocument(DocumentBase):
         try:
             step()
         except Exception as failure:
-            logging.getLogger(__name__).exception("rebase: %s failed", what)
+            _LOGGER.exception("rebase: %s failed", what)
             self._rebase_problems.append(f"{what}: {type(failure).__name__}: {failure}")
             return False
         return True
@@ -1070,9 +1073,9 @@ class LazyDocument(DocumentBase):
         self._edit_count += 1
         if self._syntax is not None:
             self._syntax = None  # a mirror cannot follow an edit whose rows are unknown
-            logging.getLogger(__name__).debug("byte edit at %d without resolved rows: syntax mirror detached", begin)
+            _LOGGER.debug("byte edit at %d without resolved rows: syntax mirror detached", begin)
         row = self._blind_row(begin)
-        self._after_edit(row, 1 << 62, 0, None, None)
+        self._after_edit(row, _BEYOND_LAST_ROW, 0, None, None)
         replaced = ""
         if removed.length <= REPLACED_TEXT_LIMIT:
             replaced = self._table.content_bytes(removed, 0, removed.length).decode("utf-8", SURROGATE_ESCAPE)
@@ -1081,7 +1084,12 @@ class LazyDocument(DocumentBase):
     def _blind_row(self, offset: int) -> int:
         """The row that holds `offset`, or the open row when it is not resolved; the caller holds the lock."""
         found = self._table.row_at_offset(offset)
-        return found[0] if found is not None else self._table.snapshot().count - 1
+        if found is not None:
+            return found[0]
+        snapshot = self._table.snapshot()
+        if offset >= snapshot.scanned_bytes:
+            return snapshot.count - 1
+        return 0  # unresolved below the frontier (a read-budget overflow): every row cache is evicted
 
     def _splice_located(self, first: _Located, last: _Located, content: Content) -> EditResult:
         with self._lock:
@@ -1138,7 +1146,7 @@ class LazyDocument(DocumentBase):
             if not self.snapshot().complete:
                 msg = f"row {row} is not resolved yet"
                 raise RowUnavailable(msg)
-            row, column = count - 1, 1 << 62
+            row, column = count - 1, _BEYOND_LAST_ROW
         found = self._range(row)
         if not self.is_long(row):
             text = self._text(row)

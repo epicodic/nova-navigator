@@ -132,3 +132,17 @@ def test_random_contents_over_an_unscanned_original_keep_their_bytes(seed: int, 
             for p in new.pieces
         )
         assert read == _truth(old, [data])
+
+
+def test_present_part_beyond_the_scan_of_the_new_original_becomes_an_unknown_piece() -> None:
+    layout = SaveLayout()
+    layout.add(0, 0, len(ORIGINAL), 0)
+    old = FakeSource(ORIGINAL)
+    piece = make_piece(old, 0, 2, 60)
+    new_original = Frontier(ORIGINAL)  # the saved file: its line scan has not reached the part
+    new_original.frontier = 5
+    plan = Rebaser(layout, [old], new_original, new_store(), limit=1 << 20, legacy=None).translate([Content.from_pieces([piece], 0)])
+    translated = plan.contents[0]
+    assert translated.length == 58
+    assert translated.unknown == 1
+    assert all(generation_of(p.src) == 0 for p in translated.pieces)

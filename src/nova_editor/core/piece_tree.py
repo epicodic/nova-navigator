@@ -437,6 +437,8 @@ class PieceTree:
                     break
                 index += child.count
                 start += child.agg.length
+            else:
+                raise AssertionError("aggregate does not match the children")
         for i in range(node.size()):
             piece = node.piece(i)
             if piece.unknown:

@@ -1694,7 +1694,7 @@ See `src/tools/measure_view.py` for usage.
 |---|---|---|---|
 | Text edits refused at unresolved rows | The text API needs a row and column; the scan has not reached the position | Until the scan covers it; byte edits (`LazyDocument.splice_bytes`, undo and redo) are accepted at any offset | Tests |
 | Rows after a blind byte edit | The first unknown piece limits the answerable rows | Row count is a lower bound and line numbers after the edit are unavailable until the scan fills the piece in | Tests (`test_lazy_byte_edit.py`) |
-| Syntax highlighting after a blind byte edit | The syntax mirror cannot follow an edit without rows | The mirror is dropped; only a document that has a mirror (at most `highlight_limit` bytes, default 1 MiB) is affected | Test `test_blind_edit_detaches_the_syntax_mirror` (R7) |
+| Syntax highlighting after a blind byte edit | The syntax mirror cannot follow an edit without rows | The mirror is dropped by every blind byte edit, so any attached mirror is lost (a document has a mirror only up to `highlight_limit` bytes, default 1 MiB) | Test `test_blind_edit_detaches_the_syntax_mirror` (R7) |
 | Unknown pieces of a replaced original are never filled | A save replaces the original; the old index is not continued | Rows through those pieces stay unavailable; bytes are exact | Test in `test_rebase_unknown.py` (R4) |
 | `EditResult.end_location` of a byte edit | A blind edit has no row | Meaningless for `splice_bytes` offsets the index cannot resolve; callers in byte mode ignore it (R6) | Not tested |
 | History batching treats unknown content as break-free | `Content.breaks` is a lower bound while `unknown > 0` | `_history.py:113` may merge such edits; ACT2 must test `unknown > 0` as "may contain breaks" (R5) | Not applicable |

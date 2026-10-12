@@ -182,7 +182,7 @@ class Rebaser:
                 continue
             for part in parts[piece]:
                 if part.present:
-                    built.append((make_piece(self._new_original, 0, part.out, part.out + part.b - part.a), True))
+                    built.append((self._saved(part), True))
                 elif (found := copied.get((piece.src, part.a, part.b))) is not None:
                     built.append((found, True))
                 else:
@@ -194,6 +194,14 @@ class Rebaser:
             else:
                 merged.append((piece, rewritten))
         return _with_pieces(content, [piece for piece, _ in merged])
+
+    def _saved(self, part: _Part) -> Piece:
+        """Return the present part as a piece of the new original; unknown when the new original has not scanned that far."""
+        a, b = part.out, part.out + part.b - part.a
+        try:
+            return make_piece(self._new_original, 0, a, b)
+        except RowNotIndexed:
+            return make_unknown_piece(self._new_original, 0, a, b)
 
     def _kept(self, piece: Piece, part: _Part) -> Piece:
         """Return the orphan part as a piece of the retained generation (the old range, a new `src`)."""

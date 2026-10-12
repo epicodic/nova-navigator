@@ -221,3 +221,20 @@ def test_blind_edit_detaches_the_syntax_mirror(stepped: type[Stepped]) -> None:
     assert case.doc.prepare_query("(identifier) @name") is None
     assert case.doc.query_syntax_tree(query) == {}
     assert case.content() == case.ref
+
+
+def test_unresolved_offset_below_the_frontier_evicts_every_row_cache(stepped: type[Stepped], monkeypatch: pytest.MonkeyPatch) -> None:
+    """`row_at_offset` is also `None` for a read-budget overflow in a resolved region: that is not the open row."""
+    case = stepped(DATA)
+    case.step(5)
+    frontier = case.doc.snapshot()
+    reference = case.rows()
+    for row in range(frontier.count - 1):
+        assert case.doc.get_line(row) == reference[row]
+    assert len(case.doc._texts) > 2
+    monkeypatch.setattr(case.doc._table, "row_at_offset", lambda _offset: None)
+    offset = 2
+    assert offset < frontier.scanned_bytes
+    case.insert(offset, b"Q")
+    assert not case.doc._texts
+    assert not case.doc._ranges
