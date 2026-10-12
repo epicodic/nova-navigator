@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from bisect import bisect_right
 
+from nova_editor.core.pieces import RowNotIndexed
+
 BREAK = re.compile(rb"\r\n|\n|\r")
 
 # Junction alphabet: terminators, multibyte characters and the pieces of a split UTF-8 sequence.
@@ -98,3 +100,25 @@ class Rng:
 
     def choice[T](self, items: list[T]) -> T:
         return items[self.next() % len(items)]
+
+
+class Frontier(FakeSource):
+    """The original as the row oracle sees it mid-scan: nothing at or beyond `frontier` can be asked."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.frontier = 0
+        self.row_calls = 0
+
+    def row_of(self, offset: int) -> int:
+        self.row_calls += 1
+        if offset >= self.frontier:
+            raise RowNotIndexed(offset)
+        return super().row_of(offset)
+
+    def row_start(self, row: int) -> int | None:
+        found = super().row_start(row)
+        return None if found is None or found > self.frontier else found
+
+    def breaks_between(self, a: int, b: int) -> int:
+        return self.row_of(b) - self.row_of(a)

@@ -9,29 +9,7 @@ import pytest
 from nova_editor.core.piece_tree import _UNKNOWN, PieceTree, _Leaf
 from nova_editor.core.pieces import Content, Piece, RowNotIndexed, make_piece, make_unknown_piece
 
-from .reference import ALPHABET, ORIGINALS, FakeSource, Rng, break_ends, inside_crlf
-
-
-class Frontier(FakeSource):
-    """The original as the row oracle sees it mid-scan: nothing at or beyond `frontier` can be asked."""
-
-    def __init__(self, data: bytes) -> None:
-        super().__init__(data)
-        self.frontier = 0
-        self.row_calls = 0
-
-    def row_of(self, offset: int) -> int:
-        self.row_calls += 1
-        if offset >= self.frontier:
-            raise RowNotIndexed(offset)
-        return super().row_of(offset)
-
-    def row_start(self, row: int) -> int | None:
-        found = super().row_start(row)
-        return None if found is None or found > self.frontier else found
-
-    def breaks_between(self, a: int, b: int) -> int:
-        return self.row_of(b) - self.row_of(a)
+from .reference import ALPHABET, ORIGINALS, FakeSource, Frontier, Rng, break_ends, inside_crlf
 
 
 class UnknownHarness:
