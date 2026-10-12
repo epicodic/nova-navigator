@@ -5,7 +5,7 @@ from collections import deque
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from itertools import islice
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from nova_editor.core.pieces import Content, generation_of, segment_of
 from nova_editor.document._byte_edit import ByteEdit, HistoryException
@@ -21,10 +21,12 @@ Mover = Callable[[ByteEdit, Literal["undo", "redo"]], EditResult]
 """Applies one entry in the given direction and returns the result; a view passes its own to keep cursors and selections in step."""
 
 
-class Batch(list[ByteEdit]):
+class Batch(list[Any]):
     """A batch of edits that are undone and redone together, with the revision states around it.
 
     A state is a `(revision, branch)` pair.
+    The elements are `ByteEdit` entries or view entries that extend them (the text view's `Edit`), so the element type is left open:
+    a view and its tests use the richer entry API without a cast.
     """
 
     def __init__(self, edits: list[ByteEdit], revision_before: int, branch_before: int, branch: int) -> None:

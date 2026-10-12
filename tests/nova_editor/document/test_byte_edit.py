@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from typing import cast
 
-from nova_editor.core.pieces import Content, make_unknown_piece
+from nova_editor.core.pieces import Content, PieceSource, make_unknown_piece
 from nova_editor.document._byte_edit import ByteEdit
 from nova_editor.document._document import Selection
 from nova_editor.document._edit import Edit
@@ -61,7 +62,7 @@ def test_byte_edit_shape() -> None:
 
 def test_unknown_content_may_contain_a_newline() -> None:
     doc = LazyDocument.from_bytes(b"abcdef", SMALL)
-    piece = make_unknown_piece(doc._table._source, 0, 0, 3)
+    piece = make_unknown_piece(cast("PieceSource", doc._table._source), 0, 0, 3)
     unknown = Content.from_pieces((piece,), 0)
     assert unknown.unknown > 0
     assert unknown.breaks == 0
@@ -73,10 +74,12 @@ def test_unknown_content_may_contain_a_newline() -> None:
 def test_history_ends_the_batch_after_an_unknown_edit() -> None:
     doc = LazyDocument.from_bytes(b"abcdef", SMALL)
     history = new_history()
-    piece = make_unknown_piece(doc._table._source, 0, 0, 3)
+    piece = make_unknown_piece(cast("PieceSource", doc._table._source), 0, 0, 3)
     unknown = Content.from_pieces((piece,), 0)
     history.record(ByteEdit(0, EMPTY, unknown, origin="hex"))
-    history.record(ByteEdit(3, EMPTY, hex_edit(doc, 0, 0, b"x").inserted, origin="hex"))
+    typed = hex_edit(doc, 0, 0, b"x")
+    assert typed.inserted is not None
+    history.record(ByteEdit(3, EMPTY, typed.inserted, origin="hex"))
     assert len(history.undo_stack) == 2  # never merged, and a checkpoint followed the unknown edit
     doc.close()
 
