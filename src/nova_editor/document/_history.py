@@ -4,23 +4,18 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
-from nova_editor.document._edit import Edit
+from nova_editor.document._byte_edit import ByteEdit, HistoryException
+
+__all__ = ["Batch", "EditHistory", "HistoryException"]
 
 
-class HistoryException(Exception):
-    """Indicates misuse of the EditHistory API.
-
-    For example, trying to undo() an Edit that has yet to be done.
-    """
-
-
-class Batch(list[Edit]):
+class Batch(list[ByteEdit]):
     """A batch of edits that are undone and redone together, with the revision states around it.
 
     A state is a `(revision, branch)` pair.
     """
 
-    def __init__(self, edits: list[Edit], revision_before: int, branch_before: int, branch: int) -> None:
+    def __init__(self, edits: list[ByteEdit], revision_before: int, branch_before: int, branch: int) -> None:
         super().__init__(edits)
         self.revision_before = revision_before
         """Revision of the document before the batch."""
@@ -70,7 +65,7 @@ class EditHistory:
         self._redo_stack: deque[Batch] = deque()
         """Stores batches that have been undone, allowing them to be redone."""
 
-    def record(self, edit: Edit) -> None:
+    def record(self, edit: ByteEdit) -> None:
         """Record an Edit so that it may be undone and redone.
 
         Determines whether to batch the Edit with previous Edits, or create a new batch/checkpoint.
@@ -100,22 +95,10 @@ class EditHistory:
         Args:
             edit: The edit to record.
         """
-        edit_result = edit._edit_result
-        if edit_result is None:
-            raise HistoryException("Cannot add an edit to history before it has been performed using `Edit.do`.")
-
-        removed = edit_result.removed
-        if removed is not None and edit.inserted is not None:
-            # Lazy documents: the removed text may be too large to be reported, so the lengths and breaks of the pieces decide.
-            if edit.inserted.length == 0 and removed.length == 0:
-                return
-            is_replacement = removed.length > 0
-            contains_newline = edit.inserted.breaks > 0 or removed.breaks > 0
-        else:
-            if edit.text == "" and edit_result.replaced_text == "":
-                return
-            is_replacement = bool(edit_result.replaced_text)
-            contains_newline = "\n" in edit.text or "\n" in edit_result.replaced_text
+        shape = edit.shape()
+        if shape is None:
+            return
+        is_replacement, contains_newline = shape
         undo_stack = self._undo_stack
         current_time = self._get_time()
         edit_characters = edit.characters
@@ -130,6 +113,7 @@ class EditHistory:
         if (
             not undo_stack
             or self._force_end_batch
+            or undo_stack[-1][-1].origin != edit.origin
             or edit_characters > 1
             or contains_newline
             or is_replacement != self._previously_replaced
