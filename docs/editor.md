@@ -1195,7 +1195,8 @@ Undo, redo and paste keep working, and no `save` change is announced to the chan
 
 **Failure:**
 Before the job is committed, a failure or a cancel changes nothing: the file, the document and the patched ranges stay as they were.
-After the commit, a failure is partial: `SaveFailed` carries `partial`, the file may hold some of the new bytes, the overlay and the patched ranges stay, the edits and the history are kept, and the document stays modified.
+A first write call that raises is a plain failure, not a partial one: `partial` is false, but the call may have written bytes, so the patched ranges stay and the identity of the file is adopted, and a retry rewrites them.
+After the first write call returned, a failure is partial: `SaveFailed` carries `partial`, the file may hold some of the new bytes, the overlay and the patched ranges stay, the edits and the history are kept, and the document stays modified.
 The identity of the file as the failed save left it is adopted, so the next save does not take its own write for a change from outside, and a second Save rewrites the whole write set.
 
 **Messages:**

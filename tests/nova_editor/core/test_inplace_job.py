@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import errno
 import os
+import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
 
-from nova_editor.core import ChangeKind, Content, FileIdentity, InPlaceJob, InPlacePlan, PreadSource
+from nova_editor.core import BytesSource, ChangeKind, Content, FileIdentity, InPlaceJob, InPlacePlan, PreadSource
+from nova_editor.core.inplace import _PartCursor
 from nova_editor.core.redirect import Copy
 from nova_editor.core.save import PlanPart, SaveCancelled, SaveFailed, SaveIo, SaveProgress
 from nova_editor.document import LazyDocument
@@ -594,5 +596,29 @@ def test_failure_before_the_first_write_carries_no_identity(tmp_path: Path) -> N
             run_in_place(doc, path, io=failing_io("open_write", 1, errno.EIO))  # a first pwrite that raises may have written: it carries the identity
         assert raised.value.partial is False
         assert raised.value.identity is None
+    finally:
+        doc.close()
+
+
+def test_reading_original_parts_is_not_quadratic_in_the_copies(tmp_path: Path) -> None:
+    doc, _ = open_pread_document(tmp_path, DATA)
+    try:
+        count = 10_000
+        job = in_place_job(doc, tmp_path / NAME)
+        job._copies = [Copy(10 * n, 10 * n + 5, 0, 5 * n) for n in range(count)]
+        source = BytesSource(b"x" * 10 * count)
+        # every original part lies between two copies, in a gap that an earlier save patched: it is read through the overlay
+        started = time.monotonic()
+        for n in range(count):
+            cursor = _PartCursor([PlanPart(0, source, 10 * n + 5, 10 * n + 10)])
+            assert job._read(cursor, 5) == b"x" * 5
+        elapsed = time.monotonic() - started
+        assert elapsed < 2.0, elapsed
+        with pytest.raises(SaveFailed) as raised:  # a part over a copy was never patched
+            job._read(_PartCursor([PlanPart(0, source, 3, 8)]), 5)
+        assert raised.value.stage == "internal"
+        with pytest.raises(SaveFailed):  # the copy at the very end
+            job._read(_PartCursor([PlanPart(0, source, 10 * (count - 1) + 4, 10 * (count - 1) + 9)]), 5)
+        job._read(_PartCursor([PlanPart(0, source, 5, 10)]), 5)  # touching the end of a copy is not an overlap
     finally:
         doc.close()

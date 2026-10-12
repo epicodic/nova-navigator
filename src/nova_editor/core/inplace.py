@@ -10,6 +10,7 @@ write phase no longer depends on the document being open, and a failure is repor
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import errno
 import os
@@ -114,6 +115,8 @@ class InPlaceJob:
         self._parts: list[list[PlanPart]] = []
         self._last_report: float | None = None
         self._copies: list[Copy] = []
+        self._copy_bounds: tuple[list[int], list[int]] | None = None
+        """The starts and ends of the copies, ascending (they are disjoint); built on the first read of a job."""
         self._window_identity: FileIdentity | None = None
 
     def cancel(self) -> None:
@@ -184,6 +187,7 @@ class InPlaceJob:
             return self._identity_of(fd)
         try:
             self._copies = self._host.prepare_patch(plan.ranges, self._settings.chunk, self._check_cancel)
+            self._copy_bounds = None
         except SourceChanged as error:
             raise SaveFailed("prepare", f"the file changed while saving: {error}", change=error.kind) from error
         except OSError as error:
@@ -253,12 +257,16 @@ class InPlaceJob:
 
     def _read(self, cursor: _PartCursor, size: int) -> bytes:
         """Return the next `size` document bytes of the range being written; an original part is legal only where an earlier save patched (design 3 step 7, DEC-17)."""
-        copied = [(copy.a, copy.b) for copy in self._copies]
+        if self._copy_bounds is None:
+            ordered = sorted((copy.a, copy.b) for copy in self._copies)
+            self._copy_bounds = ([a for a, _ in ordered], [b for _, b in ordered])
+        starts, ends = self._copy_bounds
         pieces: list[bytes] = []
         try:
             for part in cursor.take(size):
                 if part.src == 0:
-                    if any(part.a < b and a < part.b for a, b in copied):
+                    first = bisect.bisect_right(ends, part.a)  # the first copy that ends after the part starts
+                    if first < len(starts) and starts[first] < part.b:
                         raise SaveFailed("internal", f"an original part [{part.a}, {part.b}) lies in a range that was never patched", partial=self.started)
                     pieces.append(part.source.read(part.a, part.b - part.a, cache=False))
                 else:
