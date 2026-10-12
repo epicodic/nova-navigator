@@ -4,7 +4,7 @@ No module in this package may import Textual (REQ-17); a test enforces it.
 """
 
 from nova_editor.core.add_store import AddSegment, AddStore
-from nova_editor.core.byte_source import ByteSource, ChangeKind, FileIdentity, PreadSource, SourceChanged
+from nova_editor.core.byte_source import ByteSource, ChangeKind, FileIdentity, OverlayRange, PreadSource, SourceChanged
 from nova_editor.core.inplace_layout import inplace_ranges
 from nova_editor.core.line_index import LineIndex, LineSnapshot, RowRange
 from nova_editor.core.long_line_index import Frontier, LongLineIndex
@@ -67,6 +67,7 @@ __all__ = [
     "LongLineIndex",
     "Matcher",
     "OriginalSource",
+    "OverlayRange",
     "Piece",
     "PieceSource",
     "PieceTable",
