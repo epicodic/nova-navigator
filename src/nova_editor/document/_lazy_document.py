@@ -70,6 +70,9 @@ RELOCATE_LIMIT = 256 * 1024
 _MERGE_CONTEXT = 3
 _NEWLINE = re.compile(r"\r\n|\r|\n")
 _CRLF = b"\r\n"
+_BEYOND_LAST_ROW = 1 << 62
+"""A row or column bound larger than any real one: an edit that reaches past the rows it can name."""
+_LOGGER = logging.getLogger(__name__)
 
 RowClass = Literal["short", "medium", "long"]
 
@@ -118,7 +121,7 @@ class _SegmentBytes:
 
     def length(self) -> int:
         """Return an upper bound; the plan never reads beyond the pieces it names."""
-        return 1 << 62
+        return _BEYOND_LAST_ROW
 
     def read(self, offset: int, size: int, *, cache: bool = True) -> bytes:
         """Return the bytes `[offset, offset + size)` of the piece source; `cache` is accepted for the protocol."""
@@ -551,7 +554,7 @@ class LazyDocument(DocumentBase):
         try:
             step()
         except Exception as failure:
-            logging.getLogger(__name__).exception("rebase: %s failed", what)
+            _LOGGER.exception("rebase: %s failed", what)
             self._rebase_problems.append(f"{what}: {type(failure).__name__}: {failure}")
             return False
         return True
@@ -1019,11 +1022,14 @@ class LazyDocument(DocumentBase):
             return self._table.content_bytes(content, 0, content.length).decode("utf-8", SURROGATE_ESCAPE)
 
     def splice_bytes(self, start_byte: int, end_byte: int, content: Content) -> EditResult:
-        """Replace the bytes `[start_byte, end_byte)` by `content` (undo and redo: the offsets are exact, the locations are derived from them).
+        """Replace the bytes `[start_byte, end_byte)` by `content` at any scan state (undo, redo and byte editing).
+
+        Offsets the row index cannot resolve yet, or a `content` that still holds unknown pieces, take the blind path: the bytes are exact,
+        `EditResult.end_location` is meaningless, the row count stays a lower bound and an attached syntax mirror is detached.
 
         Raises:
-            RowUnavailable: The document is closed or a position is not resolved yet.
-            ValueError: The offsets are not ordered or lie beyond the document.
+            RowUnavailable: The document is closed or edits are locked.
+            ValueError: The offsets are not ordered, lie beyond the document, or a boundary lies inside a line terminator of a resolved row.
         """
         if not 0 <= start_byte <= end_byte:
             msg = f"invalid byte range {start_byte}..{end_byte}"
@@ -1043,9 +1049,47 @@ class LazyDocument(DocumentBase):
                 tail = self._table.byte_content(end_byte)
                 content = Content.from_pieces([*content.pieces, *tail.pieces], 0)
                 end_byte += 1
-            first = self._locate_offset(start_byte)
-            last = first if end_byte == start_byte else self._locate_offset(end_byte)
+            blind = content.unknown > 0
+            if not blind:
+                try:
+                    first = self._locate_offset(start_byte)
+                    last = first if end_byte == start_byte else self._locate_offset(end_byte)
+                except RowUnavailable:
+                    blind = True
+            if blind:
+                result = self._splice_blind(start_byte, end_byte, content)
+        if blind:
+            self._notify_subscribers()
+            return result
         return self._splice_located(first, last, content)
+
+    def _splice_blind(self, begin: int, finish: int, content: Content) -> EditResult:
+        """Splice by byte offsets without row knowledge; the caller holds the lock."""
+        try:
+            removed = self._table.splice(begin, finish, content, None)
+        except RowNotIndexed as error:
+            msg = f"offset {finish} is not scanned yet"
+            raise RowUnavailable(msg) from error
+        self._edit_count += 1
+        if self._syntax is not None:
+            self._syntax = None  # a mirror cannot follow an edit whose rows are unknown
+            _LOGGER.debug("byte edit at %d without resolved rows: syntax mirror detached", begin)
+        row = self._blind_row(begin)
+        self._after_edit(row, _BEYOND_LAST_ROW, 0, None, None)
+        replaced = ""
+        if removed.length <= REPLACED_TEXT_LIMIT:
+            replaced = self._table.content_bytes(removed, 0, removed.length).decode("utf-8", SURROGATE_ESCAPE)
+        return EditResult((row, 0), replaced, removed, begin, content)
+
+    def _blind_row(self, offset: int) -> int:
+        """The row that holds `offset`, or the open row when it is not resolved; the caller holds the lock."""
+        found = self._table.row_at_offset(offset)
+        if found is not None:
+            return found[0]
+        snapshot = self._table.snapshot()
+        if offset >= snapshot.scanned_bytes:
+            return snapshot.count - 1
+        return 0  # unresolved below the frontier (a read-budget overflow): every row cache is evicted
 
     def _splice_located(self, first: _Located, last: _Located, content: Content) -> EditResult:
         with self._lock:
@@ -1102,7 +1146,7 @@ class LazyDocument(DocumentBase):
             if not self.snapshot().complete:
                 msg = f"row {row} is not resolved yet"
                 raise RowUnavailable(msg)
-            row, column = count - 1, 1 << 62
+            row, column = count - 1, _BEYOND_LAST_ROW
         found = self._range(row)
         if not self.is_long(row):
             text = self._text(row)
@@ -1298,7 +1342,7 @@ class LazyDocument(DocumentBase):
     def attach_syntax(self, syntax: SyntaxAwareDocument | None) -> None:
         """Delegate `prepare_query` and `query_syntax_tree` to `syntax`, a parse of the whole text used for highlighting (`None` detaches it).
 
-        `replace_range` forwards every edit to it.
+        `replace_range` forwards every edit to it; a byte edit whose rows are not resolved yet detaches the mirror.
         """
         self._syntax = syntax
 

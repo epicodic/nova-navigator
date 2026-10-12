@@ -1,23 +1,26 @@
-"""The editable document as a piece table with row queries (ACT4 design 4.5 and 5).
+"""The editable document as a piece table with row queries (ACT4 design 4.5 and 5, ACT1 design 5 to 8).
 
-`PieceTable` holds the document as a `PieceTree` plus, while the scan of the original is incomplete, the *open tail*.
+`PieceTable` holds the document as a `PieceTree` only.
 Row numbers of the edited document come from per-piece break counts; the original file is never rescanned.
+An original piece beyond the line scan is *unknown*: its break count is not known yet, and `_fill` resolves it once the scan has passed it.
 
 Invariants:
-- The document is the bytes of the tree pieces followed by the bytes `[tail.a, L)` of the original (when there is a tail), `L` being the original length.
-- The tail exists only while the scan of the original is incomplete.
-  Its break count is not final, so the tree never contains it.
-  Row starts inside the tail come from the original `LineIndex` (`tail.row0` is the original row that contains `tail.a`).
-- A tail is cut off at `x` only when `x < scanned_bytes` of the original, i.e. when the original index can resolve the row of `x`.
-  Splices and `content` calls whose end lies in the tail at an unscanned position raise `RowNotIndexed` and change nothing.
-  Row queries never raise for unscanned rows; they return `None`.
-- The first call after the scan completed folds the tail into the tree with exact counts (no index lookup is needed).
-- Boundaries between a CR and an LF (also across the tree/tail junction) are rejected with `ValueError`.
-- Identity fast path: while the document is exactly the original file (one original piece, or only the open tail, or both empty),
+- I1. The document is the concatenation of the tree pieces; `length` and `read` never consult the scan.
+  Any offset in `[0, length]` is accepted by `splice` and `content`.
+- I2. Only original-source pieces can be unknown; `breaks` and `row0` of an unknown piece are never read.
+- I3. For every piece, known or not, `first_is_lf` and `last_is_cr` equal the bytes.
+- I4. A known piece `[a, b)` of the live original satisfies `b <= F` at the time of its fill (`F` is the frontier of the scan), so its counts are exact.
+- I5. After a public call that ran `_fill`, the first unknown piece in document order lies beyond the frontier (`a >= F`), is a legacy-generation piece,
+  or the table is the identity before the scan completed, or the batch of `FILL_BATCH` pieces was used up, or a row exceeded the read budget.
+- I6. The aggregate is the associative `combine` of the pieces; `lead_breaks <= breaks`, with equality when there is no unknown piece.
+- I7. Rows `r < lead_breaks` are exact and resolvable; row `lead_breaks` is the open row while a piece is unknown.
+  `snapshot().count` is `lead_breaks + 1` (a lower bound) while a piece is unknown, `complete` needs no unknown piece and a finished scan.
+- I8. Two pieces that are contiguous in one source and equally known are merged; a known and an unknown piece never are.
+- I9. A boundary between a CR and an LF is rejected with `ValueError`, also across pieces.
+- Identity fast path: while the document is exactly the original file (one original piece, known or unknown, or both empty),
   `snapshot`, `row_range`, `lines` and `row_at_offset` return the answers of the `LineIndex` unchanged.
   Splicing the original bytes back (undo) restores the single piece and with it the fast path.
-- Row counts are lower bounds while the scan is incomplete.
-  Row `r` is resolvable when `r < count - 1` (incomplete) or `r < count` (complete); a row of the original that exceeds the per-call read budget of the index gives `None`.
+- Row counts are lower bounds while a piece is unknown or the scan is incomplete; a row that exceeds the per-call read budget of the index gives `None`.
 - The table is meant for one thread (the UI thread).
   Its sources are thread-safe, so other threads may read through them.
 """
@@ -26,58 +29,49 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import NamedTuple
 
 from nova_editor.core.add_store import AddStore
 from nova_editor.core.byte_source import ByteSource
 from nova_editor.core.line_index import DEFAULT_MAX_LINES_PER_CALL, LineIndex, LineSnapshot, RowRange
-from nova_editor.core.original_source import OriginalSource, RowNotIndexed
+from nova_editor.core.original_source import OriginalSource
 from nova_editor.core.piece_tree import PieceTree
-from nova_editor.core.pieces import MAX_GENERATION, Content, Piece, PieceSource, generation_of, make_piece, segment_of
+from nova_editor.core.pieces import (
+    MAX_GENERATION,
+    Content,
+    Piece,
+    PieceSource,
+    RowNotIndexed,
+    generation_of,
+    make_piece,
+    make_unknown_piece,
+    merge_pieces,
+    segment_of,
+)
 from nova_editor.core.row_source import RowSource
 
 _CRLF = b"\r\n"
 
-
-class _Tail(NamedTuple):
-    """The open tail `[a, L)` of the original; `row0` is the original row that contains byte `a`."""
-
-    a: int
-    row0: int
-    first_is_lf: bool
+FILL_BATCH = 64
+"""Largest number of unknown pieces that one call resolves, so a scan jump over many earlier edits cannot stall the UI thread."""
 
 
 @dataclass(frozen=True, slots=True)
 class _State:
-    """Facts of one call: the tree aggregate, the tail, the junction flag and the known tail breaks."""
+    """Facts of one call: the scan snapshot and the tree aggregate."""
 
     snap: LineSnapshot
-    tail: _Tail | None
-    tree_length: int
-    tree_breaks: int
-    tree_last_is_cr: bool
-    tail_known: int  # breaks of the tail read on its own that are final (0 without a tail)
-
-    @property
-    def junction(self) -> bool:
-        """The tree ends in CR and the tail starts with LF: they are one CRLF."""
-        return self.tail is not None and self.tree_last_is_cr and self.tail.first_is_lf
-
-    @property
-    def breaks(self) -> int:
-        """Number of known breaks of the document."""
-        return self.tree_breaks + self.tail_known - self.junction
-
-    @property
-    def complete(self) -> bool:
-        return self.tail is None
+    length: int
+    breaks: int
+    lead_breaks: int
+    unknown: int
+    complete: bool  # no unknown piece and the scan finished (DEC-9 Q-B)
 
 
 class PieceTable:
     """Editable byte document over an immutable original, an append-only add store and a `PieceTree`."""
 
     def __init__(self, source: ByteSource, line_index: LineIndex, add_store: AddStore, fanout: int = 32) -> None:
-        """Create the table as one original piece (the open tail), so the identity fast path applies.
+        """Create the table as one unknown original piece, so the identity fast path applies.
 
         Args:
             source: the original bytes; `line_index` must index this source.
@@ -93,9 +87,13 @@ class PieceTable:
         self._legacy: list[tuple[OriginalSource, AddStore]] = []  # generation g is _legacy[g - 1]
         self._orig_length = source.length()
         self._tree = PieceTree(self._source_of, fanout)
-        first_is_lf = self._orig_length > 0 and source.read(0, 1) == b"\n"
-        self._last_is_cr = self._orig_length > 0 and source.read(self._orig_length - 1, 1) == b"\r"  # read now: the source may be closed at fold time
-        self._tail: _Tail | None = _Tail(0, 0, first_is_lf) if self._orig_length > 0 else None
+        self._fill_key: tuple[int, bool, int, int, int, int] | None = None
+        self._fill_frontier = 0
+        self._fill_pending = False  # the last fill stopped early (batch used up or a row over the read budget)
+        if self._orig_length > 0:
+            # Two byte reads for the flags, now: the source may be closed later.
+            first = make_unknown_piece(self._original, 0, 0, self._orig_length)
+            self._tree = PieceTree.from_pieces(self._source_of, [first], fanout)
 
     # ----- sources -------------------------------------------------------------------------------------------------------------------
 
@@ -138,47 +136,100 @@ class PieceTable:
 
     @property
     def tree(self) -> PieceTree:
-        """The tree of the pieces before the open tail (read access for tests and diagnostics)."""
+        """The tree of the pieces (read access for tests and diagnostics)."""
         return self._tree
 
     @property
+    def has_unknown(self) -> bool:
+        """Whether a piece still has an unknown break count (it lies beyond the line scan, or was not filled yet)."""
+        return self._tree.unknown > 0
+
+    @property
     def has_open_tail(self) -> bool:
-        """Whether the last original piece is still outside the tree (the scan was incomplete at the last call)."""
-        return self._tail is not None
+        """Deprecated alias of `has_unknown`."""
+        return self.has_unknown
 
     # ----- state ---------------------------------------------------------------------------------------------------------------------
 
     def _refresh(self) -> LineSnapshot:
-        """Take one snapshot of the original scan and fold the tail into the tree when the scan completed."""
+        """Take one snapshot of the original scan and resolve the unknown pieces the scan has passed."""
         snap = self._index.snapshot()
-        tail = self._tail
-        if tail is not None and snap.complete:
-            last = self._orig_length
-            piece = Piece(0, tail.a, last, snap.count - 1 - tail.row0, tail.row0, tail.first_is_lf, self._last_is_cr)
-            self._tree.splice(self._tree.length, self._tree.length, Content.from_pieces([piece], 0))
-            self._tail = None
+        self._fill(snap)
         return snap
 
-    def _state(self, snap: LineSnapshot) -> _State:
-        tail = self._tail
-        aggregate = self._tree.aggregate
-        known = 0 if tail is None else max(snap.count - 1 - tail.row0, 0)
-        return _State(snap, tail, aggregate.length, aggregate.breaks, aggregate.last_is_cr, known)
+    def _fill(self, snap: LineSnapshot) -> None:
+        """Turn the first unknown pieces of the original that lie below the scan frontier into known pieces (at most `FILL_BATCH`).
 
-    def _scanned(self, state: _State) -> int:
-        """Return `scanned_bytes` in document coordinates: the start of the open row, the first row that is not terminated yet."""
-        tail = state.tail
-        if tail is None:
-            return self.length
-        if state.tail_known > 0:
-            return state.tree_length + state.snap.scanned_bytes - tail.a  # the open row lies in the tail
-        found = self._start(state.breaks, state)  # the open row starts in the tree
-        return 0 if found is None else found
+        The first unknown piece in document order gates every row answer, so nothing is gained by filling later ones before it.
+        A piece that crosses the frontier is split there; the frontier is a row start, never between a CR and an LF.
+        A `RowNotIndexed` (a row over the read budget) leaves the piece unknown and the next call retries.
+        """
+        tree = self._tree
+        if tree.unknown == 0 or (self._is_identity() and not snap.complete):
+            return
+        key = (snap.scanned_bytes, snap.complete, tree.piece_count, tree.length, tree.unknown, tree.lead_breaks)
+        if key == self._fill_key:
+            return
+        frontier = self._orig_length if snap.complete else snap.scanned_bytes
+        self._fill_frontier = frontier
+        self._fill_pending = True
+        for _ in range(FILL_BATCH):
+            found = tree.first_unknown()
+            if found is None or found[1].src != 0 or found[1].a >= frontier:
+                self._fill_pending = False
+                break
+            index, piece, start = found
+            if piece.b > frontier:
+                tree.split_at(start + frontier - piece.a)
+                found = tree.first_unknown()
+                if found is None:
+                    raise AssertionError("the split lost the unknown piece")
+                index, piece, start = found
+            try:
+                known = self._known_piece(piece, snap, frontier)
+            except RowNotIndexed:
+                break
+            tree.replace_piece(index, known)
+            tree.merge_around(index)
+        if not self._fill_pending:
+            self._fill_key = (snap.scanned_bytes, snap.complete, tree.piece_count, tree.length, tree.unknown, tree.lead_breaks)
+
+    def _known_piece(self, piece: Piece, snap: LineSnapshot, frontier: int) -> Piece:
+        """Return `piece` with its break facts, from the snapshot (`piece.b <= frontier`).
+
+        The row of the frontier is `snap.count - 1` (the open row); the original index cannot answer it.
+
+        Raises:
+            RowNotIndexed: when the index cannot resolve a row.
+        """
+        a, x = piece.a, piece.b
+        row_a = 0 if a == 0 else self._original.row_of(a)
+        row_x = snap.count - 1 if x == frontier else self._original.row_of(x)
+        breaks = row_x - row_a
+        if piece.last_is_cr and x < self._orig_length and self._original.read(x, x + 1) == b"\n":
+            breaks += 1  # a CR that ends the piece counts on its own even when the original continues with an LF (see `make_piece`)
+        return Piece(piece.src, a, x, breaks, row_a, piece.first_is_lf, piece.last_is_cr)
+
+    def check_invariants(self) -> None:
+        """Check I5 and I8 (and the tree structure); raise `AssertionError` on a violation.
+
+        Call it right after a public method, while the scan does not move.
+        """
+        self._tree.check_invariants()
+        previous: Piece | None = None
+        for piece in self._tree.pieces():
+            if previous is not None and merge_pieces(previous, piece) is not None:
+                raise AssertionError(f"mergeable pieces: {previous} {piece}")
+            previous = piece
+        found = self._tree.first_unknown()
+        if found is not None and not self._fill_pending and found[1].src == 0 and found[1].a < self._fill_frontier:
+            raise AssertionError(f"unknown piece below the frontier {self._fill_frontier}: {found[1]}")
+
+    def _state(self, snap: LineSnapshot) -> _State:
+        aggregate = self._tree.aggregate
+        return _State(snap, aggregate.length, aggregate.breaks, aggregate.lead_breaks, aggregate.unknown, aggregate.unknown == 0 and snap.complete)
 
     def _is_identity(self) -> bool:
-        tail = self._tail
-        if tail is not None:
-            return tail.a == 0 and self._tree.length == 0
         if self._orig_length == 0:
             return self._tree.length == 0
         if self._tree.piece_count != 1:
@@ -195,19 +246,22 @@ class PieceTable:
     @property
     def length(self) -> int:
         """Number of bytes of the document."""
-        tail = self._tail
-        return self._tree.length + (0 if tail is None else self._orig_length - tail.a)
+        return self._tree.length
 
     def snapshot(self) -> LineSnapshot:
-        """Return the row count (a lower bound until the original scan completes), `complete`, the scan error and `scanned_bytes`.
+        """Return the row count, `complete`, the scan error and `scanned_bytes`.
 
-        `scanned_bytes` is in document coordinates; offsets below it can be edited and resolved.
+        While a piece is unknown, `count` is `lead_breaks + 1`, a lower bound: the rows before the first unknown piece plus the open row.
+        `complete` needs no unknown piece and a finished scan.
+        `scanned_bytes` is in document coordinates: the start of the open row, or the length when no piece is unknown; offsets below it can be resolved.
         """
         snap = self._refresh()
         if self._is_identity():
             return snap
         state = self._state(snap)
-        return LineSnapshot(state.breaks + 1, state.complete, snap.error, self.length if state.tail is None else self._scanned(state))
+        count = state.lead_breaks + 1 if state.unknown else state.breaks + 1
+        scanned = state.length if state.unknown == 0 else self._start(state.lead_breaks, state) or 0
+        return LineSnapshot(count, state.complete, snap.error, scanned)
 
     # ----- bytes ---------------------------------------------------------------------------------------------------------------------
 
@@ -223,52 +277,32 @@ class PieceTable:
 
     def _read(self, start: int, end: int) -> bytes:
         """Read `[start, end)`, which lies inside the document."""
-        tail = self._tail
-        tree_length = self._tree.length
-        parts: list[bytes] = []
-        if start < tree_length:
-            parts.append(self._tree.read(start, min(end, tree_length)))
-        if tail is not None and end > tree_length:
-            begin = tail.a + max(start - tree_length, 0)
-            parts.append(self._source.read(begin, tail.a + end - tree_length - begin))
-        return b"".join(parts)
+        return self._tree.read(start, end)
 
     def iter_range(self, start: int, end: int) -> Iterator[tuple[Piece, int, int]]:
         """Yield `(piece, lo, hi)` for the pieces that overlap `[start, end)`; `lo..hi` is the overlap relative to the piece start.
 
-        The open tail is yielded as an original piece whose `breaks` is only the final part; read bytes through the piece's source.
+        An unknown piece carries `breaks == 0`; read bytes through the piece's source.
         """
         self._refresh()
         if not 0 <= start <= end <= self.length:
             raise ValueError(f"range [{start}, {end}) outside 0..{self.length}")
-        tree_length = self._tree.length
-        if start < min(end, tree_length):
-            yield from self._tree.iter_range(start, min(end, tree_length))
-        tail = self._tail
-        if tail is not None and end > tree_length and end > start:
-            last_is_cr = self._source.read(self._orig_length - 1, 1) == b"\r"
-            piece = Piece(0, tail.a, self._orig_length, 0, tail.row0, tail.first_is_lf, last_is_cr)
-            yield piece, max(start - tree_length, 0), end - tree_length
+        if start < end:
+            yield from self._tree.iter_range(start, end)
 
     def layout_range(self, start: int, end: int) -> list[tuple[int, int, int]]:
         """Return the runs `(src, a, b)` that make up the document bytes `[start, end)`, in document order.
 
-        No source is read and `SourceChanged` is never raised; the open tail is its own run of the original.
+        No source is read and `SourceChanged` is never raised (the scan is not consulted, so unknown pieces stay as they are).
 
         Raises:
             ValueError: when the range is invalid.
         """
-        self._refresh()
         if not 0 <= start <= end <= self.length:
             raise ValueError(f"range [{start}, {end}) outside 0..{self.length}")
-        tree_length = self._tree.length
-        runs: list[tuple[int, int, int]] = []
-        if start < min(end, tree_length):
-            runs.extend((piece.src, piece.a + lo, piece.a + hi) for piece, lo, hi in self._tree.iter_range(start, min(end, tree_length)))
-        tail = self._tail
-        if tail is not None and end > tree_length and end > start:
-            runs.append((0, tail.a + max(start - tree_length, 0), tail.a + end - tree_length))
-        return runs
+        if start == end:
+            return []
+        return [(piece.src, piece.a + lo, piece.a + hi) for piece, lo, hi in self._tree.iter_range(start, end)]
 
     def row_source(self, start: int, end: int) -> RowSource:
         """Return a snapshot `ByteSource` of the document bytes `[start, end)`, with offsets relative to `start`.
@@ -309,26 +343,36 @@ class PieceTable:
     def byte_content(self, offset: int) -> Content:
         """Return the single byte at `offset` as `Content` (one piece, no data read); unlike `content` the byte may be half of a CRLF.
 
+        A byte the line scan has not reached is an unknown piece.
+
         Raises:
             ValueError: when `offset` is outside the document.
         """
         for piece, lo, _ in self.iter_range(offset, offset + 1):
-            sub = make_piece(self._source_of(piece.src), piece.src, piece.a + lo, piece.a + lo + 1)
+            source, a = self._source_of(piece.src), piece.a + lo
+            try:
+                sub = make_piece(source, piece.src, a, a + 1)
+            except RowNotIndexed:
+                sub = make_unknown_piece(source, piece.src, a, a + 1)
             return Content.from_pieces([sub], 0)
         raise ValueError(f"offset {offset} outside 0..{self.length}")
 
     def content(self, start: int, end: int, tail_chars: int | None = None) -> Content:
         """Return the bytes `[start, end)` as `Content` without reading any data (the pieces may be split at the two boundaries).
 
-        `tail_chars` is the number of characters after the last break of the range when the caller knows it (the data is read to count them otherwise).
+        `tail_chars` is the number of characters after the last break of the range when the caller knows it (the data is read to count them otherwise,
+        capped when a piece is unknown).
+        Any range inside the document is accepted, whether or not the scan has reached it.
 
         Raises:
             ValueError: when the range is invalid or a boundary is between a CR and an LF.
-            RowNotIndexed: when `end` lies in the open tail beyond the scanned part, or its row cannot be resolved within the budget.
+            RowNotIndexed: when a known piece must be split and its row cannot be resolved within the read budget.
         """
-        snap = self._refresh()
-        self._prepare(start, end, snap)
-        return self._tree.content(start, end, tail_chars)
+        self._refresh()
+        self._prepare(start, end)
+        result = self._tree.content(start, end, tail_chars)
+        self._after_change()
+        return result
 
     def splice(self, start: int, end: int, content: Content, removed_tail_chars: int | None = None) -> Content:
         """Replace the bytes `[start, end)` by `content` and return the removed bytes as `Content`.
@@ -336,52 +380,30 @@ class PieceTable:
         `removed_tail_chars` is the `tail_chars` of the removed bytes when the caller knows it (the data is read to count them otherwise).
 
         `content` holds pieces of the add store or pieces taken from earlier `content` or `splice` results.
-        Nothing changes (except an invisible move of tail bytes into the tree) when an error is raised.
+        Any range inside the document is accepted, whether or not the scan has reached it.
+        Nothing changes when an error is raised.
 
         Raises:
             ValueError: when the range is invalid or a boundary is between a CR and an LF.
-            RowNotIndexed: when `end` lies in the open tail beyond the scanned part, or its row cannot be resolved within the budget.
+            RowNotIndexed: when a known piece must be split and its row cannot be resolved within the read budget.
         """
-        snap = self._refresh()
-        self._prepare(start, end, snap)
-        return self._tree.splice(start, end, content, removed_tail_chars)
+        self._refresh()
+        self._prepare(start, end)
+        result = self._tree.splice(start, end, content, removed_tail_chars)
+        self._after_change()
+        return result
 
-    def _prepare(self, start: int, end: int, snap: LineSnapshot) -> None:
-        """Validate the range and move the tail bytes before `end` into the tree."""
+    def _prepare(self, start: int, end: int) -> None:
+        """Validate the range and both boundaries."""
         if not 0 <= start <= end <= self.length:
             raise ValueError(f"range [{start}, {end}) outside 0..{self.length}")
-        self._check_boundary(start)
-        self._check_boundary(end)
-        self._open(end, snap)
+        self._tree.check_boundary(start)
+        self._tree.check_boundary(end)
 
-    def _check_boundary(self, offset: int) -> None:
-        tail = self._tail
-        tree_length = self._tree.length
-        if tail is None or offset < tree_length:
-            self._tree.check_boundary(offset)
-            return
-        if offset == tree_length:
-            self._tree.check_boundary(offset)
-            inside = self._tree.aggregate.last_is_cr and tail.first_is_lf
-        else:
-            x = tail.a + offset - tree_length
-            inside = self._source.read(x - 1, 2) == _CRLF
-        if inside:
-            raise ValueError(f"offset {offset} is inside a CRLF")
-
-    def _open(self, end: int, snap: LineSnapshot) -> None:
-        """Make `end` a position inside the tree by cutting `[tail.a, x)` off the tail (exact counts from the original index)."""
-        tail = self._tail
-        tree_length = self._tree.length
-        if tail is None or end <= tree_length:
-            return
-        x = tail.a + end - tree_length
-        if x >= snap.scanned_bytes:
-            raise RowNotIndexed(f"offset {end} is not scanned yet")
-        row = self._original.row_of(x)
-        piece = Piece(0, tail.a, x, row - tail.row0, tail.row0, tail.first_is_lf, self._source.read(x - 1, 1) == b"\r")
-        self._tree.splice(tree_length, tree_length, Content.from_pieces([piece], 0))
-        self._tail = _Tail(x, row, self._source.read(x, 1) == b"\n")
+    def _after_change(self) -> None:
+        """Resolve unknown pieces that a splice brought in (stale contents of the scanned range)."""
+        self._fill_key = None
+        self._fill(self._index.snapshot())
 
     # ----- rows ----------------------------------------------------------------------------------------------------------------------
 
@@ -414,7 +436,7 @@ class PieceTable:
         for row in range(first, stop):
             if begin is None:
                 break
-            end = self._start(row + 1, state) if row < state.breaks else self.length
+            end = self._start(row + 1, state) if row < state.breaks else state.length
             if end is None:
                 break
             result.append(self._make_range(begin, end, is_last=row == state.breaks))
@@ -424,41 +446,36 @@ class PieceTable:
     def row_at_offset(self, offset: int) -> tuple[int, RowRange] | None:
         """Return `(row, range)` of the row containing byte `offset`; terminator bytes belong to their row.
 
-        `offset == length` maps to the last row once the scan is complete.
-        Returns `None` for a negative or too large offset, an offset that is not scanned yet, or a walk over the read budget.
+        `offset == length` maps to the last row once the document is complete.
+        Returns `None` for a negative or too large offset, an offset in or behind the first unknown piece or in the open row,
+        or a walk over the read budget.
         """
         snap = self._refresh()
         if self._is_identity():
             return self._index.row_at_offset(offset)
         state = self._state(snap)
-        length = self.length
-        if offset < 0 or offset > length:
+        if offset < 0 or offset > state.length:
             return None
-        try:
-            if offset == length:
-                if not state.complete:
-                    return None
-                row = state.breaks
-            elif state.tail is not None and offset >= state.tree_length:
-                x = state.tail.a + offset - state.tree_length
-                if offset >= self._scanned(state):
-                    return None
-                row = state.tree_breaks - state.junction + self._original.row_of(x) - state.tail.row0
-            else:
+        if offset == state.length:
+            if not state.complete:
+                return None
+            row = state.breaks
+        else:
+            try:
                 row = self._tree.row_of(offset)
-        except RowNotIndexed:
-            return None
+            except RowNotIndexed:
+                return None
         found = self._range(row, state)
         return None if found is None else (row, found)
 
     def _resolvable(self, state: _State) -> int:
-        return state.breaks + 1 if state.complete else state.breaks
+        return state.breaks + 1 if state.complete else state.lead_breaks
 
     def _range(self, row: int, state: _State) -> RowRange | None:
         if row >= self._resolvable(state):
             return None
         begin = self._start(row, state)
-        end = self._start(row + 1, state) if row < state.breaks else self.length
+        end = self._start(row + 1, state) if row < state.breaks else state.length
         if begin is None or end is None:
             return None
         return self._make_range(begin, end, is_last=row == state.breaks)
@@ -476,17 +493,6 @@ class PieceTable:
         """Return the start of `row` (the end of the `row`-th break), or `None` when it cannot be resolved."""
         if row == 0:
             return 0
-        tail = state.tail
-        if row <= state.tree_breaks:
-            found = self._tree.find_break(row)
-            if found is not None and found == state.tree_length and tail is not None and state.tree_last_is_cr and tail.first_is_lf:
-                found += 1  # the CR at the end of the tree and the LF at the start of the tail are one CRLF
-            return found
-        if tail is None:
-            return None
-        rank = row - state.tree_breaks + state.junction
-        if rank > state.tail_known:
-            return None
-        # The start of a row is the end of the previous row; the row that starts at the open row is not resolvable by the index.
-        previous = self._index.row_range(tail.row0 + rank - 1)
-        return None if previous is None else state.tree_length + previous.end - tail.a
+        if row <= state.lead_breaks:
+            return self._tree.find_break(row)
+        return None
