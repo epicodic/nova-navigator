@@ -697,3 +697,99 @@ async def test_cursor_outside_the_cut_area_is_still_tracked(tmp_path: Path) -> N
             assert await press_cursor(pilot, view, *["right"] * 20) == HexCursor(10, 0, "hex")
             assert await press_cursor(pilot, view, "tab", "end") == HexCursor(15, 0, "char")
             assert len(row_texts(view)[1]) == view.scrollable_content_region.width
+
+
+# -- review pins: remaining Shift variants, Shift+Tab, drags at the end of the document --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_shift_tab_switches_the_pane_both_ways(tmp_path: Path) -> None:
+    with opened(write_file(tmp_path, bytes(64))) as document:
+        view = HexView(lambda: document)
+        host = HexHost(view)
+        async with host.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            view.set_cursor(5, 1)
+            assert await press_cursor(pilot, view, "shift+tab") == HexCursor(5, 0, "char")
+            assert await press_cursor(pilot, view, "shift+tab") == HexCursor(5, 0, "hex")
+            assert host.focused is view
+
+
+@pytest.mark.asyncio
+async def test_ctrl_shift_home_selects_to_the_start(tmp_path: Path) -> None:
+    with opened(write_file(tmp_path, bytes(1600))) as document:
+        view = HexView(lambda: document)
+        async with HexHost(view).run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            view.goto(1000)
+            await pilot.pause()
+            assert await press_cursor(pilot, view, "ctrl+shift+home") == HexCursor(0, 0, "hex")
+            assert view.selection == ByteSelection(0, 1000)
+
+
+@pytest.mark.asyncio
+async def test_shift_pageup_selects_one_page_up(tmp_path: Path) -> None:
+    with opened(write_file(tmp_path, bytes(1600))) as document:
+        view = HexView(lambda: document)
+        async with HexHost(view).run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            height = view.scrollable_content_region.height
+            start = 16 * (height + 5) + 3
+            view.goto(start)
+            await pilot.pause()
+            assert await press_cursor(pilot, view, "shift+pageup") == HexCursor(start - 16 * height, 0, "hex")
+            assert view.selection == ByteSelection(start - 16 * height, start)
+
+
+@pytest.mark.asyncio
+async def test_shift_home_selects_to_the_row_start(tmp_path: Path) -> None:
+    with opened(write_file(tmp_path, bytes(64))) as document:
+        view = HexView(lambda: document)
+        async with HexHost(view).run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            view.set_cursor(20, 1)
+            assert await press_cursor(pilot, view, "shift+home") == HexCursor(16, 0, "hex")
+            assert view.selection == ByteSelection(16, 20)
+
+
+@pytest.mark.asyncio
+async def test_shift_left_from_the_low_digit_selects_the_byte_before(tmp_path: Path) -> None:
+    """I2: with Shift the move is one whole byte; from the low digit of byte o it selects byte o-1, not the cursor byte o."""
+    with opened(write_file(tmp_path, bytes(64))) as document:
+        view = HexView(lambda: document)
+        async with HexHost(view).run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            view.set_cursor(5, 1)
+            assert await press_cursor(pilot, view, "shift+left") == HexCursor(4, 0, "hex")
+            assert view.selection == ByteSelection(4, 5)
+
+
+@pytest.mark.asyncio
+async def test_a_drag_across_the_short_last_row_and_the_end_position_selects_whole_bytes(tmp_path: Path) -> None:
+    with opened(write_file(tmp_path, bytes(20))) as document:
+        view = HexView(lambda: document)
+        async with HexHost(view).run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            layout = view.hex_layout
+            await pilot.hover(view, offset=(layout.digit_x(1, 1), 1))
+            await pilot.mouse_down(view, offset=(layout.digit_x(1, 1), 1))  # low digit of byte 17
+            assert view.cursor == HexCursor(17, 1, "hex")
+            await pilot.hover(view, offset=(layout.digit_x(3, 1), 1))  # low digit of the last byte, 19
+            assert view.cursor == HexCursor(20, 0, "hex")
+            assert view.selection == ByteSelection(17, 20)
+            await pilot.hover(view, offset=(layout.digit_x(10, 1), 1))  # right of the last byte: the end position
+            assert view.cursor == HexCursor(20, 0, "hex")
+            assert view.selection == ByteSelection(17, 20)
+            await pilot.hover(view, offset=(layout.digit_x(0, 0), 5))  # below the last row: the end position
+            await pilot.mouse_up(view, offset=(layout.digit_x(0, 0), 5))
+            await pilot.pause()
+            assert view.cursor == HexCursor(20, 0, "hex")
+            assert view.selection == ByteSelection(17, 20)
+            # a drag that starts on the end position and goes back selects whole bytes up to the end
+            await pilot.hover(view, offset=(layout.digit_x(10, 1), 1))
+            await pilot.mouse_down(view, offset=(layout.digit_x(10, 1), 1))
+            await pilot.hover(view, offset=(layout.digit_x(2, 1), 1))  # low digit of byte 18
+            await pilot.mouse_up(view, offset=(layout.digit_x(2, 1), 1))
+            await pilot.pause()
+            assert view.cursor == HexCursor(18, 0, "hex")
+            assert view.selection == ByteSelection(18, 20)

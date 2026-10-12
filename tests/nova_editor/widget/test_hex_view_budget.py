@@ -308,3 +308,91 @@ async def test_select_all_on_8_gib_reads_nothing(tmp_path: Path) -> None:
             assert len(source.reads) == reads_before
             selected = view.get_component_rich_style("hex-view--selection")
             assert any(segment.style == selected for segment in view.render_line(0))
+
+
+# Key and goto paths (design 9): the same per-operation budget when the cursor drives the scroll.
+
+
+def cursor_visible(view: HexView) -> bool:
+    """Whether the cursor row is one of the visible rows."""
+    top = first_offset(view) // BPR
+    return top <= view.cursor.offset // BPR < top + visible_height(view)
+
+
+@pytest.mark.asyncio
+async def test_down_key_at_the_bottom_of_the_view_scrolls_one_row_within_budget(tmp_path: Path) -> None:
+    with budget_view(make_sparse(tmp_path)) as (_, source, log, view):
+        async with HexHost(view).run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            height = visible_height(view)
+            view.set_cursor((height - 1) * BPR)
+            await pilot.pause()
+            row_texts(view)
+            assert first_offset(view) == 0
+            calls_before, reads_before = len(log.calls), len(source.reads)
+            await pilot.press("down")
+            await pilot.pause()
+            assert view.cursor.offset == height * BPR
+            assert first_offset(view) == BPR
+            check_budget(view, source, log, calls_before, reads_before)
+
+
+@pytest.mark.asyncio
+async def test_page_down_key_four_times_reads_at_most_once_per_step(tmp_path: Path) -> None:
+    with budget_view(make_sparse(tmp_path)) as (_, source, log, view):
+        async with HexHost(view).run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            row_texts(view)
+            height = visible_height(view)
+            for step in range(1, 5):
+                calls_before, reads_before = len(log.calls), len(source.reads)
+                await pilot.press("pagedown")
+                await pilot.pause()
+                assert view.cursor.offset == step * height * BPR
+                assert first_offset(view) == step * height * BPR
+                check_budget(view, source, log, calls_before, reads_before)
+
+
+@pytest.mark.asyncio
+async def test_page_up_key_reads_at_most_once(tmp_path: Path) -> None:
+    with budget_view(make_sparse(tmp_path)) as (_, source, log, view):
+        async with HexHost(view).run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            height = visible_height(view)
+            view.goto(4 * height * BPR)  # far: the page above is outside the first window
+            await pilot.pause()
+            row_texts(view)
+            top = first_offset(view)
+            calls_before, reads_before = len(log.calls), len(source.reads)
+            await pilot.press("pageup")
+            await pilot.pause()
+            assert view.cursor.offset == 3 * height * BPR
+            assert first_offset(view) == top - height * BPR
+            check_budget(view, source, log, calls_before, reads_before)
+
+
+CURSOR_OPERATIONS: dict[str, tuple[str | None, int]] = {
+    "ctrl_end_key": ("ctrl+end", SPARSE_SIZE),
+    "goto_far": (None, 0x1_2345_6789),
+    "goto_end": (None, SPARSE_SIZE),
+}
+"""Operation name -> (key to press, or `None` for `goto`; the expected cursor offset afterwards)."""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", list(CURSOR_OPERATIONS))
+async def test_budget_per_cursor_operation(tmp_path: Path, name: str) -> None:
+    with budget_view(make_sparse(tmp_path)) as (_, source, log, view):
+        async with HexHost(view).run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            row_texts(view)
+            calls_before, reads_before = len(log.calls), len(source.reads)
+            key, expected = CURSOR_OPERATIONS[name]
+            if key is None:
+                view.goto(expected)
+            else:
+                await pilot.press(key)
+            await pilot.pause()
+            assert view.cursor == HexCursor(expected, 0, "hex")
+            assert cursor_visible(view)
+            check_budget(view, source, log, calls_before, reads_before)
