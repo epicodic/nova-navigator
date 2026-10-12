@@ -1171,9 +1171,10 @@ A moved original streams even when the length is restored, and so does any lengt
 1. The plan is taken (`plan_in_place`), the target is resolved with `os.path.realpath`, `refuse_unsuitable` checks that it is a regular file, and `check_path` must report no change.
 2. The file is opened with `O_WRONLY` and without truncation, and the identity of the descriptor is compared with the held one.
 3. `prepare_patch` copies the old bytes of each range that no earlier in-place save patched into the add store, in pieces of at most `SaveSettings.chunk` (1 MiB); a cancel is checked before each piece.
-4. `begin_patch` installs the read overlay and marks the ranges as patched; the last cancel check comes before it.
-5. The job `pwrite`s the ranges in ascending order, one chunk at a time, with the new bytes read from the document; short writes are looped.
-6. `fsync` follows, the size must still equal the held size, and `end_patch` adopts the identity of the file.
+4. The parts of every range to write are taken from the document, then `begin_patch` installs the read overlay and marks the ranges as patched.
+5. The descriptor is compared with the held identity once more, so that a same-size change since the open fails the save before the first byte; then the job is committed (the last cancel point).
+6. The job `pwrite`s the ranges in ascending order, one chunk at a time, with the new bytes read from the parts of step 4, so it does not need the document to stay open; short writes are looped.
+7. `fsync` follows, the size must still equal the held size, and `end_patch` adopts the identity of the file.
 
 No temp file is created, no `os.replace` happens and the target keeps its inode.
 
@@ -1193,13 +1194,13 @@ No rebase happens: the pieces, the line index and the caches stay, nothing is re
 Undo, redo and paste keep working, and no `save` change is announced to the change listeners.
 
 **Failure:**
-Before the first byte is written, a failure or a cancel changes nothing: the file, the document and the patched ranges stay as they were.
-After the first byte, a failure is partial: `SaveFailed` carries `partial`, the file may hold some of the new bytes, the overlay and the patched ranges stay, the edits and the history are kept, and the document stays modified.
+Before the job is committed, a failure or a cancel changes nothing: the file, the document and the patched ranges stay as they were.
+After the commit, a failure is partial: `SaveFailed` carries `partial`, the file may hold some of the new bytes, the overlay and the patched ranges stay, the edits and the history are kept, and the document stays modified.
 The identity of the file as the failed save left it is adopted, so the next save does not take its own write for a change from outside, and a second Save rewrites the whole write set.
 
 **Messages:**
 A partial failure shows `Save failed (<stage>): <reason>` followed by `<name> may now be partially patched. Your edits are kept; save again to finish.`
-After the first write the status line drops the hint `Esc cancels`, and a cancel (Esc or Ctrl+Q) is ignored; closing the widget then posts `SaveFailed` with `partial`.
+After the first write the status line drops the hint `Esc cancels`, and a cancel (Esc or Ctrl+Q) is ignored; closing the widget then posts `SaveFailed` with `partial`, and the writer still completes the patch.
 
 **Preserved:**
 The inode, the owner, the group, the mode, the hard links, the ACLs and the extended attributes of the target stay, because the file is written in place.
@@ -1986,11 +1987,12 @@ The streaming save replaces the file instead of opening it, so it would have wor
 A repeat save writes every dirty range again, including the ranges that an earlier in-place save patched, because the file holds other bytes there than the original did.
 The cost is proportional to the bytes edited or patched so far, never to the file size; a tracker of clean ranges is not built.
 
-### Closing in the Narrow Window Before the First Write
+### Closing During an In-Place Save
 
-An in-place save stops on a cancel or a close only before its first byte is written.
-Between the last cancel point and the first `pwrite` the window is short but real: a close there reports `SaveCancelled` although the patch may still complete.
-The streaming path has the same shape between its last cancel check and the replace.
+An in-place save is cancelled by a cancel or a close only up to its commit, which comes after the overlay is installed and the descriptor was checked, right before the first `pwrite`.
+After the commit a close posts `SaveFailed` with `partial` at once, and the writer completes the patch on its thread, because it holds the parts of its ranges; the source closes after it.
+A first `pwrite` that raises may have written bytes: its ranges stay patched, so that a retry or a save of restored text rewrites them.
+The streaming path has a short window between its last cancel check and the replace.
 
 ### `stat` on a Hung Mount
 

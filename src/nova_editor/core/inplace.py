@@ -2,8 +2,10 @@
 
 The job knows the document only through `InPlaceHost`.
 Order: plan, `refuse_unsuitable`, `check_path`, open `O_WRONLY` without truncation and re-verify the identity on the descriptor, copy the old
-bytes of the ranges to write, install the read overlay, `pwrite` the ranges, `fsync`, adopt the identity.
-Before the first byte is written a failure or a cancel changes nothing; after it a failure is reported as partial and the edits are kept.
+bytes of the ranges to write, take the parts of the ranges to write, install the read overlay, re-verify the descriptor, `pwrite` the ranges,
+`fsync`, adopt the identity.
+Before the job is committed (after the overlay and the last check, right before the first byte) a failure or a cancel changes nothing; after it the
+write phase no longer depends on the document being open, and a failure is reported as partial and the edits are kept.
 """
 
 from __future__ import annotations
@@ -106,13 +108,26 @@ class InPlaceJob:
         self._clock = clock
         self._cancelled = threading.Event()
         self._started = threading.Event()
+        self._commit_lock = threading.Lock()
+        self._committed = threading.Event()
+        self._maybe_written = False
+        self._parts: list[list[PlanPart]] = []
         self._last_report: float | None = None
         self._copies: list[Copy] = []
         self._window_identity: FileIdentity | None = None
 
     def cancel(self) -> None:
-        """Ask the job to stop; it raises `SaveCancelled` at the next check unless the first byte was written already."""
-        self._cancelled.set()
+        """Ask the job to stop; it raises `SaveCancelled` at the next check unless it is committed already.
+
+        After `cancel()` returned, `committed` tells which one won: when it is false the job ends with `SaveCancelled` (or a failure that changed nothing).
+        """
+        with self._commit_lock:
+            self._cancelled.set()
+
+    @property
+    def committed(self) -> bool:
+        """Whether the job is past its last cancel point (readable from any thread): the file may be written and the job runs to its end."""
+        return self._committed.is_set()
 
     @property
     def started(self) -> bool:
@@ -134,8 +149,8 @@ class InPlaceJob:
             raise self._attach_identity(SaveFailed("internal", f"{type(error).__name__}: {error}", partial=self.started)) from error
 
     def _attach_identity(self, error: SaveFailed) -> SaveFailed:
-        """Set the identity the file had when the patch window closed on a partial failure; return `error`."""
-        if error.partial and error.identity is None:
+        """Set the identity the file had when the patch window closed on a partial failure (or on a failed first write); return `error`."""
+        if (error.partial or self._maybe_written) and error.identity is None:
             error.identity = self._window_identity
         return error
 
@@ -173,10 +188,14 @@ class InPlaceJob:
             raise SaveFailed("prepare", f"the file changed while saving: {error}", change=error.kind) from error
         except OSError as error:
             raise SaveFailed("prepare", error) from error
-        self._check_cancel()  # the last cancel point: the next call protects the old bytes and the one after writes
+        self._check_cancel()
+        self._parts = [self._host.plan(start, end - start, False) for start, end in plan.ranges]  # the write phase needs the document no more
+        self._check_cancel()  # the next call protects the old bytes
         self._host.begin_patch(self._copies, plan.ranges)
         open_window = True
         try:
+            self._check_identity(FileIdentity.from_stat(self._io.fstat(fd)), held)  # a change of the same size since the open
+            self._commit()  # the last cancel point
             self._write(fd, plan.ranges, total)
             self._report("flushing", total, total)
             self._sync(fd)
@@ -194,9 +213,19 @@ class InPlaceJob:
             if open_window:
                 self._close_window(fd, held)
 
+    def _commit(self) -> None:
+        """Pass the last cancel point: a cancel that arrived raises `SaveCancelled`; from here on `cancel()` has no effect."""
+        with self._commit_lock:
+            if self._cancelled.is_set():
+                raise SaveCancelled
+            self._committed.set()
+
     def _close_window(self, fd: int, held: FileIdentity) -> None:
-        """Close the patch window after a failure: roll back when no byte was written, otherwise adopt what the file looks like now."""
-        if not self.started:
+        """Close the patch window after a failure: roll back when no byte was written, otherwise adopt what the file looks like now.
+
+        A first `pwrite` that raised may have written bytes: its ranges stay patched, so that a retry rewrites them.
+        """
+        if not self.started and not self._maybe_written:
             with contextlib.suppress(Exception):
                 self._host.end_patch(None)
             return
@@ -211,23 +240,23 @@ class InPlaceJob:
     def _write(self, fd: int, ranges: Sequence[tuple[int, int]], total: int) -> None:
         chunk = self._settings.chunk
         written = 0
-        for start, end in ranges:
+        for (start, end), parts in zip(ranges, self._parts, strict=True):
+            cursor = _PartCursor(parts)
             offset = start
             while offset < end:
                 size = min(chunk, end - offset)
-                data = self._read(offset, size)
+                data = self._read(cursor, size)
                 self._pwrite(fd, data, offset)
                 offset += size
                 written += size
                 self._report("writing", written, total)
 
-    def _read(self, offset: int, size: int) -> bytes:
-        """Return the document bytes `[offset, offset + size)`; an original part is legal only where an earlier save patched (design 3 step 7, DEC-17)."""
-        parts = self._host.plan(offset, size, False)
+    def _read(self, cursor: _PartCursor, size: int) -> bytes:
+        """Return the next `size` document bytes of the range being written; an original part is legal only where an earlier save patched (design 3 step 7, DEC-17)."""
         copied = [(copy.a, copy.b) for copy in self._copies]
         pieces: list[bytes] = []
         try:
-            for part in parts:
+            for part in cursor.take(size):
                 if part.src == 0:
                     if any(part.a < b and a < part.b for a, b in copied):
                         raise SaveFailed("internal", f"an original part [{part.a}, {part.b}) lies in a range that was never patched", partial=self.started)
@@ -247,6 +276,7 @@ class InPlaceJob:
             try:
                 count = self._io.pwrite(fd, view, offset)
             except OSError as error:
+                self._maybe_written = True  # the call may have transferred bytes before it failed
                 raise SaveFailed("write", error, partial=self.started) from error
             if count <= 0:
                 raise SaveFailed("write", "the file accepted no bytes", partial=self.started)
@@ -287,7 +317,7 @@ class InPlaceJob:
             raise SaveFailed("flush", error, partial=self.started) from error
 
     def _check_cancel(self) -> None:
-        if self._cancelled.is_set() and not self.started:
+        if self._cancelled.is_set() and not self._committed.is_set():
             raise SaveCancelled
 
     def _report(self, phase: str, done: int, total: int) -> None:
@@ -299,3 +329,27 @@ class InPlaceJob:
                 return
             self._last_report = now
         self._progress(SaveProgress(phase, done, total, self.started))
+
+
+class _PartCursor:
+    """Hands out the parts of one range in document order, `take(size)` bytes at a time (a part is cut at the boundary)."""
+
+    def __init__(self, parts: Sequence[PlanPart]) -> None:
+        self._parts = parts
+        self._index = 0
+        self._skip = 0
+
+    def take(self, size: int) -> list[PlanPart]:
+        """Return the parts covering the next `size` bytes; fewer when the range holds less."""
+        taken: list[PlanPart] = []
+        while size > 0 and self._index < len(self._parts):
+            part = self._parts[self._index]
+            start = part.a + self._skip
+            count = min(size, part.b - start)
+            taken.append(PlanPart(part.src, part.source, start, start + count))
+            size -= count
+            self._skip += count
+            if part.a + self._skip >= part.b:
+                self._index += 1
+                self._skip = 0
+        return taken

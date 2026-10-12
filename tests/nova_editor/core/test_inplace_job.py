@@ -260,7 +260,7 @@ def test_first_pwrite_error_is_plain(tmp_path: Path) -> None:
         assert raised.value.stage == "write"
         assert raised.value.errno == errno.EIO
         assert path.read_bytes() == DATA
-        assert doc._patched == []  # the rollback removed the ranges of this job
+        assert doc._patched == [(10, 11), (60, 61)]  # the failed call may have written: the ranges stay patched, so that a retry rewrites them
         assert doc.plan_in_place() == plan
         assert doc.read_bytes(0, doc.length) == final
         source = doc._source
@@ -591,7 +591,7 @@ def test_failure_before_the_first_write_carries_no_identity(tmp_path: Path) -> N
     doc, path, _ = two_range_document(tmp_path)
     try:
         with pytest.raises(SaveFailed) as raised:
-            run_in_place(doc, path, io=failing_io("pwrite", 1, errno.EIO))
+            run_in_place(doc, path, io=failing_io("open_write", 1, errno.EIO))  # a first pwrite that raises may have written: it carries the identity
         assert raised.value.partial is False
         assert raised.value.identity is None
     finally:

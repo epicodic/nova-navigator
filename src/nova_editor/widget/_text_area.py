@@ -3623,6 +3623,8 @@ NovaTextArea {
             error = None
         except CoreSaveFailed as failure:
             error = failure
+        except RowUnavailable as failure:  # the document was closed: before the replace nothing was written
+            error = CoreSaveFailed("internal", f"{type(failure).__name__}: {failure}", committed=result is not None)
         except (OSError, ValueError, CoreSourceChanged) as failure:  # the translation failed: the file is written but the document is not rebased
             error = CoreSaveFailed("internal", f"{type(failure).__name__}: {failure}", committed=True)
         finally:
@@ -3997,7 +3999,7 @@ NovaTextArea {
             job = run.job
         if job is not None:
             job.cancel()
-        patching = isinstance(job, InPlaceJob) and job.started
+        patching = isinstance(job, InPlaceJob) and job.committed  # past the last cancel point: the writer completes the patch, whatever the cancel above
         committed = isinstance(job, SaveJob) and job.committed
         self._end_save(run)
         if patching:
