@@ -171,14 +171,17 @@ class PreadSource:
         """Close the patch window and adopt `identity` (size and mtime) as the held identity; the overlay stays.
 
         Raises:
-            SourceChanged: The size of `identity` or of the descriptor differs from the held size, or the inode changed.
+            SourceChanged: The size of `identity` or of the descriptor differs from the held size, or the inode changed, or the descriptor cannot be read (`UNREADABLE`).
                 The source is then failed for good and the window is closed.
         """
         try:
             if identity.size != self._size or identity.dev != self._identity.dev or identity.ino != self._identity.ino:
                 kind = ChangeKind.TRUNCATED if identity.size < self._size else ChangeKind.MODIFIED
                 raise SourceChanged(f"file changed during the patch: size {self._size} -> {identity.size}", kind)
-            info = os.fstat(self._fd)
+            try:
+                info = os.fstat(self._fd)
+            except OSError as error:
+                raise SourceChanged(f"descriptor check failed at the end of the patch: {error}", ChangeKind.UNREADABLE) from error
             if info.st_size != self._size:
                 kind = ChangeKind.TRUNCATED if info.st_size < self._size else ChangeKind.MODIFIED
                 raise SourceChanged(f"file changed during the patch: size {self._size} -> {info.st_size}", kind)

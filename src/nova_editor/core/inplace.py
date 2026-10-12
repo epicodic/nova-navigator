@@ -17,7 +17,7 @@ import os
 import threading
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -237,7 +237,9 @@ class InPlaceJob:
             try:
                 current = FileIdentity.from_stat(self._io.fstat(fd))
             except OSError:
-                current = held
+                # The identity is unknown and `held` is stale: an identity of an impossible size makes the source close the window and fail for good.
+                self._host.end_patch(replace(held, size=-1))
+                return
             self._window_identity = current
             self._host.end_patch(current)
 
