@@ -675,14 +675,15 @@ async def test_the_cursor_scrolls_into_view_and_a_far_move_centres_the_row(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_insert_mode_is_false_and_other_keys_do_nothing(tmp_path: Path) -> None:
+async def test_insert_mode_starts_false_and_navigation_keys_still_work(tmp_path: Path) -> None:
     with opened(write_file(tmp_path, bytes(64))) as document:
         view = HexView(lambda: document)
         async with HexHost(view).run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             assert view.insert_mode is False
-            await press_cursor(pilot, view, "right")
-            assert await press_cursor(pilot, view, "a", "1", "delete", "backspace", "ctrl+z") == HexCursor(0, 1, "hex")
+            assert await press_cursor(pilot, view, "right") == HexCursor(0, 1, "hex")
+            assert await press_cursor(pilot, view, "right", "down") == HexCursor(17, 0, "hex")
+            assert await press_cursor(pilot, view, "left", "up", "home") == HexCursor(0, 0, "hex")
             assert document.length == 64
             assert row_texts(view)[0].startswith("00000000  00 00")
 

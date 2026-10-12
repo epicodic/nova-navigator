@@ -20,14 +20,23 @@ from textual.message import Message
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
 
-from nova_editor.core import SourceChanged
-from nova_editor.document import LazyDocument, RowUnavailable
+from nova_editor.core import Content, SourceChanged
+from nova_editor.document import HexEdit, LazyDocument, RowUnavailable
+from nova_editor.widget.hex_input import plan_digit
 from nova_editor.widget.hex_layout import HexLayout, Pane, choose_layout, format_row, total_rows
 
 _WINDOW_SCREENS_BEFORE = 1
 """Screens of rows the window holds above the first visible row."""
 _WINDOW_SCREENS_AFTER = 2
 """Screens of rows the window holds from the first visible row on (the visible screen and the next)."""
+
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+"""The characters typed as hex digits in the hex pane."""
+
+_FIRST_PRINTABLE = 0x20
+"""The first character typed in the character pane (space)."""
+_LAST_PRINTABLE = 0x7E
+"""The last character typed in the character pane (tilde)."""
 
 _GROUP_BYTES = 8
 """Bytes per hex group; the space between two selected bytes is highlighted only inside a group."""
@@ -142,8 +151,13 @@ HexView {
         Binding("ctrl+shift+end", "move('finish', True)", show=False),
         Binding("tab,shift+tab", "switch_pane", show=False),
         Binding("ctrl+a", "select_all", show=False),
+        Binding("insert", "toggle_insert", show=False),
+        Binding("delete", "delete_forward", show=False),
+        Binding("backspace", "delete_backward", show=False),
     ]
-    """Navigation keys only: typing, deleting, undo and the clipboard are not bound (ACT5)."""
+    """Navigation, Select All, Insert, Delete and Backspace; typed digits and characters are handled by `_on_key`.
+
+    Undo, redo and the clipboard are not bound here yet."""
 
     class Moved(Message):
         """The cursor or the selection changed."""
@@ -154,6 +168,17 @@ HexView {
             """The cursor after the change."""
             self.selection = selection
             """The selection after the change."""
+
+    class Edited(Message):
+        """The document was changed by an edit made in this view."""
+
+    class ModeChanged(Message):
+        """Insert was toggled."""
+
+        def __init__(self, insert: bool) -> None:
+            super().__init__()
+            self.insert = insert
+            """Whether the view is in insert mode now."""
 
     def __init__(self, document: Callable[[], LazyDocument], *, id: str | None = None) -> None:
         """Create the view.
@@ -167,7 +192,9 @@ HexView {
         self.cursor = HexCursor(0, 0, "hex")
         """The cursor."""
         self.insert_mode = False
-        """Insert (True) or overwrite (False) for typing; typing is ACT5."""
+        """Insert (True) or overwrite (False) for typing."""
+        self.is_read_only: Callable[[], bool] = lambda: False
+        """Whether the document is read-only; typing, Delete and Backspace do nothing then. Looked up at every key."""
         self.on_source_changed: Callable[[SourceChanged], None] | None = None
         """Called once per document when a read reports that the file changed."""
         self._anchor: int | None = None
@@ -202,6 +229,8 @@ HexView {
         """The byte pressed at the start of a drag, or `None` for a Shift-press that extends the selection."""
         self._drag_left = False
         """Whether the pointer has left the pressed byte during the drag (a click alone selects nothing)."""
+        self._half: tuple[int, int] | None = None
+        """`(offset, revision)` of a byte whose high digit was typed just now and still waits for its low digit, or `None`."""
 
     # -- public state ---------------------------------------------------------------------------------------------------
 
@@ -333,6 +362,8 @@ HexView {
         """Repaint and post `Moved` when the cursor or the selection differ from `before`."""
         after = (self.cursor, self.selection)
         if after != before:
+            self._half = None
+            self._document_provider().history.checkpoint()
             self.refresh()
             self.post_message(self.Moved(*after))
 
@@ -349,6 +380,162 @@ HexView {
         self._sync()
         self.refresh()
 
+    # -- editing --------------------------------------------------------------------------------------------------------
+
+    def action_toggle_insert(self) -> None:
+        """Switch between overwrite and insert mode (Insert); a run of typing never spans a mode change."""
+        self._document_provider().history.checkpoint()
+        self._half = None
+        self.insert_mode = not self.insert_mode
+        self.post_message(self.ModeChanged(self.insert_mode))
+
+    def action_delete_forward(self) -> None:
+        """Delete the selection, or the byte under the cursor (Delete); nothing at the end position."""
+        self._delete(backward=False)
+
+    def action_delete_backward(self) -> None:
+        """Delete the selection, or the byte before the cursor (Backspace); nothing at offset 0."""
+        self._delete(backward=True)
+
+    def _delete(self, *, backward: bool) -> None:
+        self._sync()
+        if self.is_read_only():
+            return
+        selection = self.selection
+        offset = self.cursor.offset
+        if selection is not None:
+            start, end = selection.start, selection.end
+        elif backward:
+            if offset == 0:
+                return
+            start, end = offset - 1, offset
+        else:
+            if offset >= self._length:
+                return
+            start, end = offset, offset + 1
+        self._edit(start, end, b"", kind="delete", cursor=(start, 0))
+
+    async def _on_key(self, event: events.Key) -> None:
+        """Type a hex digit (hex pane) or a printable ASCII character (character pane) at the cursor.
+
+        Keys with a binding, and keys without a character, are not typing. In the character pane any other character
+        (non-ASCII, Enter, an unbound control character) changes nothing and rings the bell; in the hex pane it is ignored.
+        """
+        character = event.character
+        if character is None or self.is_read_only():
+            return
+        if self.cursor.pane == "hex":
+            if len(character) == 1 and character in _HEX_DIGITS:
+                event.stop()
+                event.prevent_default()
+                self._type_digit(int(character, 16))
+            return
+        if event.is_printable and len(character) == 1 and _FIRST_PRINTABLE <= ord(character) <= _LAST_PRINTABLE:
+            event.stop()
+            event.prevent_default()
+            self._type_character(ord(character))
+        elif event.key != "escape" and event.key not in self.app.active_bindings:
+            event.stop()
+            event.prevent_default()
+            self.app.bell()
+
+    def _typing_position(self) -> int:
+        """The offset typing starts at: the start of the selection, which typing collapses (I6), else the cursor."""
+        selection = self.selection
+        return self.cursor.offset if selection is None else selection.start
+
+    def _type_digit(self, digit: int) -> None:
+        self._sync()
+        offset, nibble = self._typing_position(), self.cursor.nibble if self.selection is None else 0
+        current: int | None = None
+        if offset < self._length:
+            data = self._row_bytes(offset // self._layout.bytes_per_row)
+            if data is None:
+                return
+            current = data[offset % self._layout.bytes_per_row]
+        document = self._document_provider()
+        half = self._half == (offset, document.revision)
+        plan = plan_digit(digit, offset, nibble, self._length, self.insert_mode, current, half=half)
+        cursor = (plan.cursor_offset, 1 if plan.cursor_nibble else 0)
+        waits_for_low_digit = nibble == 0 and (self.insert_mode or offset >= self._length)
+        self._edit(plan.start, plan.end, plan.data, kind="type", completes=plan.completes, cursor=cursor, half=waits_for_low_digit)
+
+    def _type_character(self, value: int) -> None:
+        self._sync()
+        offset = self._typing_position()
+        end = offset + 1 if offset < self._length and not self.insert_mode else offset
+        self._edit(offset, end, bytes((value,)), kind="type", cursor=(offset + 1, 0))
+
+    def _edit(
+        self,
+        start: int,
+        end: int,
+        data: bytes | Content,
+        *,
+        kind: Literal["type", "delete", "paste"],
+        cursor: tuple[int, Literal[0, 1]],
+        completes: bool = False,
+        half: bool = False,
+    ) -> bool:
+        """Replace the bytes `[start, end)` by `data`, record the history entry and place the cursor.
+
+        Args:
+            start: First byte replaced.
+            end: End of the replaced range (exclusive).
+            data: The new bytes, or content that is already stored.
+            kind: What produced the edit (the history groups by it).
+            cursor: Where the cursor goes: the byte offset and the digit.
+            completes: Whether this is the low digit of a byte whose high digit was typed just before.
+            half: Whether the edit leaves a byte that waits for its low digit.
+
+        Returns:
+            True when the document was changed; False when the view is read-only, the edit was refused or nothing happened.
+        """
+        self._sync()
+        if self.is_read_only():
+            return False
+        document = self._document_provider()
+        try:
+            content = data if isinstance(data, Content) else document.content_of_bytes(data)
+            result = document.splice_bytes(start, end, content)
+        except SourceChanged as error:
+            if not self._reported:
+                self._reported = True
+                if self.on_source_changed is not None:
+                    self.on_source_changed(error)
+            return False
+        except (RowUnavailable, ValueError) as error:
+            self._refuse(str(error))
+            return False
+        if result.start_byte is None or result.removed is None or result.inserted is None:
+            raise RuntimeError("splice_bytes returned no byte facts")
+        document.history.record(HexEdit(result.start_byte, result.removed, result.inserted, kind=kind, completes=completes))
+        self._adopt_own_change()
+        offset, nibble = cursor
+        offset = max(0, min(offset, self._length))
+        if offset == self._length or self.cursor.pane == "char":
+            nibble = 0
+        self._anchor = None
+        self.cursor = HexCursor(offset, nibble, self.cursor.pane)
+        self._half = (offset, document.revision) if half else None
+        self.scroll_to_cursor()
+        self.refresh()
+        self.post_message(self.Edited())
+        return True
+
+    def _adopt_own_change(self) -> None:
+        """Take over the revision and length of an edit made here; the view keeps the byte offset at the top."""
+        document = self._document_provider()
+        self._revision = document.revision
+        self._length = document.length
+        self._drop_window()
+        self._relayout(self.scrollable_content_region.width)
+
+    def _refuse(self, reason: str) -> None:
+        """Ring the bell and warn that an edit was refused (the edit lock, a closed document)."""
+        self.app.bell()
+        self.notify(f"Edit refused: {reason}.", severity="warning")
+
     # -- synchronisation ------------------------------------------------------------------------------------------------
 
     def _sync(self) -> None:
@@ -359,6 +546,7 @@ HexView {
             self._document = document
             self._reported = False
             self._anchor = None
+            self._half = None
             self._revision = document.revision
             self._length = document.length
             self._drop_window()

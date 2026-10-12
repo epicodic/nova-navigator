@@ -155,3 +155,24 @@ async def test_a_switch_that_raises_leaves_no_pending_transfer(tmp_path: Path) -
         view.show_hex(False)
         await wait_until(pilot, lambda: pilot.app.focused is view.editor and view.editor.pending_progress is None)
         assert view.editor.cursor_byte_offset == 2000
+
+
+@pytest.mark.asyncio
+async def test_the_hex_view_follows_the_read_only_flag_of_the_text_widget(tmp_path: Path) -> None:
+    path = tmp_path / "f.bin"
+    path.write_bytes(b"abcd")
+    view = _open(path)
+    async with ViewHost(view).run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        assert view.hex_view.is_read_only() is False
+        view.editor.read_only = True
+        assert view.hex_view.is_read_only() is True
+        view.show_hex(True)
+        await pilot.pause()
+        await pilot.press("1", "delete")
+        await pilot.pause()
+        assert view.editor.document.read_bytes(0, 4) == b"abcd"
+        view.editor.read_only = False
+        await pilot.press("1")
+        await pilot.pause()
+        assert view.editor.document.read_bytes(0, 4) == b"\x11bcd"

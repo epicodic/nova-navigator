@@ -569,3 +569,22 @@ async def test_the_hex_action_is_ignored_while_only_the_hex_view_is_removed(tmp_
         await pilot.pause()
         assert document.hex_mode is False
         assert document.editor.display is True
+
+
+@pytest.mark.asyncio
+async def test_a_hex_edit_and_the_insert_key_refresh_the_status_line(tmp_path: Path) -> None:
+    app = app_for(tmp_path, make_file(tmp_path))
+    async with app.run_test(size=WIDE) as pilot:
+        screen = screen_of(app)
+        await wait_until(pilot, lambda: screen.focused is screen.document.shown)
+        await toggle(pilot, screen)
+        with patch.object(StatusLine, "request") as request:
+            await pilot.press("1")
+            await pilot.pause()
+            assert request.call_count >= 1
+            request.reset_mock()
+            await pilot.press("insert")
+            await pilot.pause()
+            assert request.call_count >= 1
+        assert screen.document.hex_view.insert_mode is True
+        assert screen.document.editor.document.read_bytes(0, 3) == bytes([0x1F, 0x6E, 0x65])

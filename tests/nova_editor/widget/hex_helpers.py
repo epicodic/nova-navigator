@@ -30,12 +30,22 @@ class HexHost(App[None]):
         """The hosted view."""
         self.moved: list[HexView.Moved] = []
         """The `Moved` messages of the view, in arrival order."""
+        self.edited = 0
+        """Count of the `Edited` messages of the view."""
+        self.modes: list[bool] = []
+        """The `insert` flag of every `ModeChanged` message of the view, in arrival order."""
 
     def compose(self) -> ComposeResult:
         yield self.view
 
     def on_hex_view_moved(self, message: HexView.Moved) -> None:
         self.moved.append(message)
+
+    def on_hex_view_edited(self, message: HexView.Edited) -> None:
+        self.edited += 1
+
+    def on_hex_view_mode_changed(self, message: HexView.ModeChanged) -> None:
+        self.modes.append(message.insert)
 
 
 @contextmanager
