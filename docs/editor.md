@@ -184,6 +184,10 @@ The package exports `EditsLocked`, `LazyDocument` and `RowUnavailable`.
 **Edit classes (vendored, changed):**
 - `Edit` — one edit; after `do` it holds `start_byte`, `removed` and `inserted` (piece references) and `end_location`.
 - `EditHistory` — undo and redo stacks of batches of edits (see "Undo and Redo").
+- `LazyDocument.history` is the one `EditHistory` of the document; every view records into and undoes through it.
+- `ByteEdit` (`document/_byte_edit.py`, native; the module itself imports no Textual) is the view-neutral entry; the vendored `Edit` subclasses it and adds locations and selections.
+- `LazyDocument.add_change_listener(callback)` announces every committed splice as a `DocumentChange(kind, start_byte, removed_length, inserted_length, revision)` on the committing thread, after the lock is released; `kind` is `edit`, `undo`, `redo` (set by `EditHistory.undo/redo` through `LazyDocument.change_kind`) or `save` (after `apply_rebase`).
+- The text view's change listener ignores `save` and only sets its `_stale` flag; no code reads that flag yet (ACT4 adds the consumer).
 
 **Wrap helpers (vendored):**
 `document/_wrap.py` holds `compute_wrap_offsets` and `cell_width_to_column_index`, copied from Textual (see "Vendoring Policy").
@@ -1048,6 +1052,16 @@ The stock batching rules stay: a timer (2 s), a character limit (100), a newline
 `EditHistory.max_checkpoints` defaults to `None`, which keeps every batch; the stock default of 50 is gone.
 An undo or redo that needs an unresolved position is refused as a whole, and an applied part is rolled back so that the document is unchanged.
 
+**Shared history:**
+Byte entries (`ByteEdit`) are shared by both views, because the history belongs to the document.
+`EditHistory.undo(document, mover)` and `redo` return a `HistoryStep` (`byte`, `low`, `high_old`, `high_new`), or `None` when there is nothing to move.
+A refused entry (`RowUnavailable`) reverses the entries applied so far and leaves the history unchanged; an undo or redo whose reversal is refused too raises `HistoryRolledBack`.
+Entries of different origins (`text`, `hex`) never share a batch.
+An entry whose removed or inserted content holds unknown pieces may contain a break, so it ends its batch and is never coalesced.
+Closed in S0003 ACT2 (R5): unknown content counts as possibly containing a break; tests `test_byte_edit.py`.
+The text view places the cursor of a hex-origin entry with the byte jump (`_place_cursor_at_byte`): an offset equal to the length is accepted, and an offset the scan has not reached waits.
+The text view passes a mover to `undo` and `redo`, so `Edit.do` and `Edit.undo` keep the selection logic.
+
 ---
 
 ## Clipboard
@@ -1206,6 +1220,10 @@ Pieces of legacy generations stay as they are.
 Redo records are translated the same way, so undo, save and redo works.
 Present parts never need a generation, so repeated saves with small deletions retain nothing.
 
+**Reference API:**
+`EditHistory.references()` lists every `Content` the history holds, `rewrite_references(iterator)` writes them back in the same order, `map_references(fn)` replaces each by `fn(content)` (all or nothing), and `original_ranges()` yields the byte ranges of the original file that the history still references.
+The in-place save (ACT3) will redirect references with `map_references`, and must apply the same function to the clipboard record, which still lives in the widget.
+
 ---
 
 ## Modified State
@@ -1216,6 +1234,7 @@ A record after an undo opens a new branch, so the revision counter alone cannot 
 `modified` is `(revision, branch) != saved`, so undo back to the saved state reads unmodified, and so does the undo of typing after a save.
 A save forces a new batch (`checkpoint()` at its start and in `mark_saved()`), so coalesced typing never spans a save.
 `EditHistory.clear` resets the saved state to the current one, so `modified` is false afterwards.
+The saved state lives in the shared history, so `NovaTextArea.modified` and every other view of the document read the same value; undo back to the saved state reads unmodified in either view.
 
 ---
 
@@ -1697,7 +1716,6 @@ See `src/tools/measure_view.py` for usage.
 | Syntax highlighting after a blind byte edit | The syntax mirror cannot follow an edit without rows | The mirror is dropped by every blind byte edit, so any attached mirror is lost (a document has a mirror only up to `highlight_limit` bytes, default 1 MiB) | Test `test_blind_edit_detaches_the_syntax_mirror` (R7) |
 | Unknown pieces of a replaced original are never filled | A save replaces the original; the old index is not continued | Rows through those pieces stay unavailable; bytes are exact | Test in `test_rebase_unknown.py` (R4) |
 | `EditResult.end_location` of a byte edit | A blind edit has no row | Meaningless for `splice_bytes` offsets the index cannot resolve; callers in byte mode ignore it (R6) | Not tested |
-| History batching treats unknown content as break-free | `Content.breaks` is a lower bound while `unknown > 0` | `_history.py:113` may merge such edits; ACT2 must test `unknown > 0` as "may contain breaks" (R5) | Not applicable |
 | `complete` lags after the scan ends | The fill handles 64 pieces per call | `complete` stays false for a few calls until the fill finishes | Test `test_fill_is_batched` |
 | Tab stops in edited rows over 1 MiB | Splice shifts checkpoints by the width delta only | `abs(stale - exact) < tab width` | Test `test_tab_alignment_behind_an_edit_is_kept_from_before_the_edit` |
 | Mixed line endings show the first style | No per-row counting in the scan | Display only; bytes are never changed | Unmeasured by design |
@@ -1980,6 +1998,7 @@ Tests are located under `tests/nova_editor/` and `tests/tools/`.
 - `test_lazy_document.py`, `test_lazy_wrapped_document.py`, `test_lazy_window.py` — lazy documents, wrapping and windows.
 - `test_lazy_edit.py`, `test_lazy_long_edit.py`, `test_lazy_bounded_edit.py`, `test_lazy_from_text.py` — document edits against a `str` reference (`reference_text.py`), long-row edits with lowered thresholds, and `text=` sources.
 - `test_edit_history.py`, `test_history_modified.py` — byte-based undo and redo records, typing coalescing, and the modified state.
+- `test_byte_edit.py`, `test_shared_history.py`, `test_document_changes.py` — the view-neutral `ByteEdit` and the unknown-piece rule, the shared undo and redo loop with its reference API, and `LazyDocument.history` with the change listeners.
 - `test_edit_lock.py`, `test_lock_audit.py`, `test_lazy_document_locking.py` — the edit lock and the table accesses under the document lock.
 - `test_search_plan.py`, `test_search_document_properties.py` — `search_plan`, `revision` and search properties over the real document.
 - `test_save_rebase.py`, `test_save_rebase_fuzz.py`, `test_rebase_holders.py` — the rebase and its seeded fuzz, and the holders that are re-pointed at the swap.
@@ -1997,6 +2016,7 @@ Tests are located under `tests/nova_editor/` and `tests/tools/`.
 - `test_keyboard_selection.py` — Shift+PageUp, Shift+PageDown, Shift+Ctrl+Home and Shift+Ctrl+End, including the pending case.
 - `test_wrapped_cursor_end.py` — the stale-height refresh in `scroll_cursor_visible`.
 - `test_lazy_edit_widget.py`, `test_lazy_clipboard.py`, `test_lazy_edit_long_row_memory.py` — editing, refusal, undo, redo, clipboard and memory on long rows through the widget.
+- `test_shared_history_widget.py` — the text view working through the history that belongs to the document.
 - `test_widget_save.py`, `test_widget_save_rebase.py`, `test_widget_save_efbig.py`, `test_widget_external_change.py`, `test_save_long_row_cursor.py` — the widget API of saving, the rebase of the widget, a real write error, external changes and the cursor on a long row across a save.
 - `test_widget_search.py`, `test_widget_search_events.py`, `test_widget_search_long_row.py` — the widget search: selection, wrap, repeat, cancel, edits, reload, save, truncation, close, and long rows with lowered thresholds.
 - `test_lazy_exports.py` — the lazy exports.
@@ -2053,6 +2073,7 @@ They are:
 - `widget/_tree_sitter.py` — the optional tree-sitter loader, from `textual/_tree_sitter.py`.
 - `document/_document.py`, `_document_navigator.py`, `_edit.py`, `_history.py`, `_syntax_aware_document.py` and `_wrapped_document.py`.
 - `document/_wrap.py` — `compute_wrap_offsets` from `textual/_wrap.py`, `cell_width_to_column_index` from `textual/_cells.py` and the `loop_last` helper from `textual/_loop.py`; `cell_len` comes from `rich.cells`.
+- ACT2 changed vendored code: `widget/_text_area.py` (history is a property of the document; undo/redo loops use `EditHistory.undo/redo`; `_Jump.allow_end`; change listener), `document/_edit.py` (`Edit(ByteEdit)`, `shape()`, unknown rule) and `document/_history.py` (`record` via `shape()`, origin rule, step API, reference API).
 
 Everything else in the package is native to `nova_editor`.
 
