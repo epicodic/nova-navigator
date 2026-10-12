@@ -1268,7 +1268,7 @@ NovaTextArea {
         """True while the widget itself changes the document (an edit, undo or redo), so the change listener ignores the announcement."""
 
         self._stale = False
-        """True once another view changed the document behind the widget's back; cleared only when the document is replaced (nothing reads it until ACT4)."""
+        """True once another view changed the document behind the widget's back; cleared when the document is replaced, and read (and cleared) by `refresh_if_changed`."""
 
         self._selecting = False
         """True if we're currently selecting text using the mouse, otherwise False."""
@@ -4101,6 +4101,44 @@ NovaTextArea {
     def _place_cursor_at_byte(self, offset: int) -> None:
         """Put the cursor on byte `offset`; the end of the document counts, and an offset the scan has not reached waits (a pending jump)."""
         self._start_jump(_Jump(byte=offset, allow_end=True), "")
+
+    def place_cursor_at_byte(self, offset: int) -> None:
+        """Put the cursor on byte `offset`, the route of the switch from the hex view (REQ-2).
+
+        An offset inside a multi-byte character lands on that character, the end of the document is accepted, and an offset the line scan
+        has not reached stays a pending jump (`pending_progress`) that completes when the scan arrives.
+
+        Args:
+            offset: byte offset from the start of the document, at most its length.
+        """
+        self._place_cursor_at_byte(offset)
+
+    def refresh_if_changed(self) -> bool:
+        """Bring the view up to date if another view changed the document while this one was hidden, and clear the stale flag.
+
+        Returns:
+            True if the view was stale and has been refreshed (one `Changed` is posted), False if nothing had changed.
+        """
+        if not self._stale:
+            return False
+        self._stale = False
+        self._after_text_change()
+        self.wrapped_document.wrap(self.wrap_width, self.indent_width)
+        self._line_cache.clear()
+        self._refresh_size()
+        self._build_highlight_map()
+        self.post_message(self.Changed(self))
+        self.update_suggestion()
+        self.refresh()
+        return True
+
+    def report_source_changed(self, error: CoreSourceChanged) -> None:
+        """Enter the failed state for a source change another view found (a read of the hex view): edits lock and `SourceChanged` is posted once.
+
+        Args:
+            error: the change the read reported; its message is the reason and its `kind` the kind of the change.
+        """
+        self._fail_source(str(error), error.kind)
 
     def _move_entry(self, entry: ByteEdit, direction: Literal["undo", "redo"]) -> EditResult:
         """Move one history entry the way the text view does (the selection follows) and note where a refused step has to wrap again."""
