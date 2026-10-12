@@ -111,6 +111,9 @@ def small_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
 async def _opened(pilot: Pilot[None], area: NovaTextArea) -> None:
     await await_first_layout(pilot, area)
     assert area.document.wait_indexed(30.0)
+    # The provisional height estimate settles on the estimate timer; scrolling to a far row before that
+    # clamps to the estimate.
+    await wait_until(pilot, lambda: area.virtual_size.height == ROWS + 1)
     await pilot.pause(0.05)
 
 
