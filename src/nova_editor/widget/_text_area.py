@@ -51,7 +51,7 @@ from nova_editor.document._document_navigator import DocumentNavigator
 from nova_editor.document._edit import Edit
 from nova_editor.document._history import EditHistory, HistoryRolledBack, HistoryStep
 from nova_editor.document._lazy_config import LazyConfig
-from nova_editor.document._lazy_document import LazyDocument, RowUnavailable, WholeLineAccess
+from nova_editor.document._lazy_document import DocumentChange, LazyDocument, RowUnavailable, WholeLineAccess
 from nova_editor.document._lazy_wrapped_document import LazyWrappedDocument
 from nova_editor.document._syntax_aware_document import (
     SyntaxAwareDocument,
@@ -131,6 +131,8 @@ class _Jump:
     """A search placement of a match that was found after wrapping around; `SearchFound` carries it."""
     to_end: bool = False
     """A goto of the end of the document: `byte` is not used, the target is the length."""
+    allow_end: bool = False
+    """A goto of the offset equal to the length is accepted: the end of the document, exact at once."""
     anchor: Location | None = None
     """A goto that selects (Shift+Ctrl+Home and Shift+Ctrl+End): the fixed end of the selection, taken when the key was pressed."""
 
@@ -1240,6 +1242,12 @@ NovaTextArea {
         self._step_top: Location = (0, 0)
         """The smallest top location of the entries the running step moved."""
 
+        self._own_change = False
+        """True while the widget itself changes the document (an edit, undo or redo), so the change listener ignores the announcement."""
+
+        self._stale = False
+        """True once another view changed the document behind the widget's back; cleared when the document is replaced (the hex view reads it)."""
+
         self._selecting = False
         """True if we're currently selecting text using the mouse, otherwise False."""
 
@@ -1310,6 +1318,9 @@ NovaTextArea {
 
         if max_checkpoints is not None:
             self.document.history.set_max_checkpoints(max_checkpoints)
+
+        self._remove_listener: Callable[[], None] = self.document.add_change_listener(self._on_document_change)
+        """Removes the change listener from the current document."""
 
         self.wrapped_document: LazyWrappedDocument = LazyWrappedDocument(self.document, tab_width=_DEFAULT_INDENT_WIDTH)
         """The wrapped view of the document."""
@@ -1431,6 +1442,7 @@ NovaTextArea {
         if timer is not None:
             timer.stop()
         self._line_cache.clear()
+        self._remove_listener()
         lazy.close()
 
     def _on_unmount(self) -> None:
@@ -1763,7 +1775,7 @@ NovaTextArea {
             return self._drive_line(jump, jump.row, snap.count, complete=snap.complete)
         if jump.to_end:
             return self._drive_byte(jump, lazy, lazy.length, snap.scanned_bytes, complete=snap.complete, allow_end=True)
-        return self._drive_byte(jump, lazy, jump.byte or 0, snap.scanned_bytes, complete=snap.complete)
+        return self._drive_byte(jump, lazy, jump.byte or 0, snap.scanned_bytes, complete=snap.complete, allow_end=jump.allow_end)
 
     def _drive_line(self, jump: _Jump, row: int, count: int, *, complete: bool) -> float | None:
         if row < count - 1 or complete:
@@ -2671,7 +2683,10 @@ NovaTextArea {
         self._lazy_closed = False
         self._indexing_announced = False
         self._line_cache.clear()
+        self._remove_listener()
         self.document = document
+        self._remove_listener = document.add_change_listener(self._on_document_change)
+        self._stale = False
         if self._max_checkpoints is not None:
             document.history.set_max_checkpoints(self._max_checkpoints)
         self.wrapped_document = wrapped
@@ -2680,6 +2695,12 @@ NovaTextArea {
         old.close()
         if self._mounted_scan:
             self._wire_scan()
+
+    def _on_document_change(self, change: DocumentChange) -> None:
+        """Note that another view changed the document (runs on the committing thread, so it only sets a flag)."""
+        if self._own_change or change.kind == "save":
+            return
+        self._stale = True
 
     def _wire_scan(self) -> None:
         """Start observing the scan of the current document: the estimate timer state and the progress subscription."""
@@ -3271,6 +3292,7 @@ NovaTextArea {
         result = EditResult(edit.top, "")
         if reason is None:
             try:
+                self._own_change = True
                 result = edit.do(self)
             except RowUnavailable as error:
                 reason = str(error)
@@ -3278,6 +3300,8 @@ NovaTextArea {
                 self._fail_source(str(error), error.kind)
                 self._edit_refused = True
                 return result
+            finally:
+                self._own_change = False
         if reason is not None:
             self._refuse_edit(reason)
             return result
@@ -3934,9 +3958,11 @@ NovaTextArea {
         if not batch:
             return
         self._step_direction = direction
-        self._step_top = batch[-1].top if direction == "undo" else batch[0].top
+        first = batch[-1] if direction == "undo" else batch[0]
+        self._step_top = first.top if isinstance(first, Edit) else self._start_location(first)
         old_gutter_width = self.gutter_width
         try:
+            self._own_change = True
             step = history.undo(self.document, self._move_entry) if direction == "undo" else history.redo(self.document, self._move_entry)
         except RowUnavailable as error:
             self._after_refused_step(self._step_top, str(error))
@@ -3945,8 +3971,19 @@ NovaTextArea {
             self._fail_source(f"an undo or redo could not be rolled back: {error}")
             self._after_refused_step(self._step_top, str(error))
             return
+        finally:
+            self._own_change = False
         if step is not None:
             self._after_step(step, old_gutter_width)
+
+    def _start_location(self, entry: ByteEdit) -> Location:
+        """The location of the start of a byte entry: its row when the row is known, else the start of the document."""
+        found = self.document.row_at_offset(entry.start_byte or 0)
+        return (found[0], 0) if found is not None else (0, 0)
+
+    def _place_cursor_at_byte(self, offset: int) -> None:
+        """Put the cursor on byte `offset`; the end of the document counts, and an offset the scan has not reached waits (a pending jump)."""
+        self._start_jump(_Jump(byte=offset, allow_end=True), "")
 
     def _move_entry(self, entry: ByteEdit, direction: Literal["undo", "redo"]) -> EditResult:
         """Move one history entry the way the text view does (the selection follows) and note where a refused step has to wrap again."""
@@ -3959,6 +3996,9 @@ NovaTextArea {
 
     def _after_step(self, step: HistoryStep, old_gutter_width: int) -> None:
         """Refresh the view after an undo or redo of a whole batch."""
+        if any(not isinstance(entry, Edit) for entry in step.batch):
+            self._after_foreign_step(step, old_gutter_width)
+            return
         edits = [entry for entry in step.batch if isinstance(entry, Edit)]
         minimum_top = step.batch[-1].top if step.direction == "undo" else step.batch[0].top
         maximum_old_bottom = (0, 0)
@@ -3988,6 +4028,21 @@ NovaTextArea {
         self._build_highlight_map()
         self.post_message(self.Changed(self))
         self.update_suggestion()
+
+    def _after_foreign_step(self, step: HistoryStep, old_gutter_width: int) -> None:
+        """Refresh the view after a batch of entries made by another view (a batch never mixes origins): wrap from the start row, then place the cursor."""
+        found = self.document.row_at_offset(step.low)
+        row = found[0] if found is not None else 0
+        self._after_text_change()
+        if old_gutter_width != self.gutter_width:
+            self.wrapped_document.wrap(self.wrap_width, self.indent_width)
+        else:
+            self.wrapped_document.wrap_range((row, 0), (row, 0), (row, 0))
+        self._refresh_size()
+        self._build_highlight_map()
+        self.post_message(self.Changed(self))
+        self.update_suggestion()
+        self._place_cursor_at_byte(step.byte)
 
     def _after_refused_step(self, top: Location, reason: str) -> None:
         """The history reversed what a refused undo or redo had applied: wrap the touched rows again and report the refusal."""

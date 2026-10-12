@@ -7,7 +7,11 @@ from unittest.mock import patch
 
 import pytest
 
+from nova_editor.core import Content
+from nova_editor.document._byte_edit import ByteEdit
+from nova_editor.document._lazy_document import LazyDocument
 from nova_editor.widget import NovaTextArea
+from tests.nova_editor.document.test_lazy_byte_edit import DATA, Stepped
 from tests.nova_editor.helpers_view import HostApp
 from tests.nova_editor.save_widget_helpers import SaveHost, wait_saved
 
@@ -89,3 +93,145 @@ async def test_references_roundtrip_through_the_history_api() -> None:
         assert reachable == [*area.history.references(), record.content]
         area._apply_translated(list(reachable))
         assert area._reachable_contents() == reachable
+
+
+EMPTY = Content.from_pieces((), 0)
+
+
+def hex_edit(document: LazyDocument, start: int, end: int, data: bytes) -> ByteEdit:
+    """Splice `document` and record the splice in its history as the hex view will (S0003 ACT2 task 5)."""
+    content = document._table.add(data) if data else EMPTY
+    result = document.splice_bytes(start, end, content)
+    assert result.removed is not None
+    assert result.inserted is not None
+    entry = ByteEdit(start, result.removed, result.inserted, origin="hex")
+    document.history.record(entry)
+    return entry
+
+
+def all_bytes(document: LazyDocument) -> bytes:
+    return document.read_bytes(0, document.length)
+
+
+@pytest.mark.asyncio
+async def test_foreign_entry_undo_restores_bytes_and_places_the_cursor() -> None:
+    area = NovaTextArea("hello\nworld\n")
+    host = HostApp(area)
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        document = area.document
+        hex_edit(document, 6, 6, b"XY")
+        assert all_bytes(document) == b"hello\nXYworld\n"
+        area.undo()
+        await pilot.pause()
+        assert all_bytes(document) == b"hello\nworld\n"
+        assert area.cursor_byte_offset == 6
+        assert area.modified is False
+        area.redo()
+        await pilot.pause()
+        assert all_bytes(document) == b"hello\nXYworld\n"
+        assert area.cursor_byte_offset == 8
+        assert area.modified is True
+
+
+@pytest.mark.asyncio
+async def test_undo_of_an_append_at_the_end_lands_on_the_end_at_once() -> None:
+    area = NovaTextArea("abc\ndef\n")
+    host = HostApp(area)
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        document = area.document
+        end = document.length
+        hex_edit(document, end, end, b"tail")
+        area.undo()
+        assert area.pending_progress is None
+        assert area.cursor_byte_offset == end == document.length
+        area.redo()
+        assert area.pending_progress is None
+        assert area.cursor_byte_offset == document.length
+
+
+@pytest.mark.asyncio
+async def test_foreign_entry_beyond_the_scan_frontier_waits() -> None:
+    case = Stepped(DATA)
+    area = NovaTextArea(_prebuilt_document=case.doc)
+    host = HostApp(area)
+    try:
+        async with host.run_test() as pilot:
+            await pilot.pause()
+            start = len(DATA) - 2
+            assert case.doc.snapshot().scanned_bytes < start
+            hex_edit(case.doc, start, start, b"ZZ")
+            area.undo()
+            assert all_bytes(case.doc) == DATA
+            assert area.pending_progress is not None
+            case.finish()
+            await pilot.pause(delay=0.2)
+            assert area.pending_progress is None
+    finally:
+        case.source.stop()
+
+
+@pytest.mark.asyncio
+async def test_wrap_update_for_foreign_entries_uses_the_start_row() -> None:
+    area = NovaTextArea("aa\nbb\ncc\n")
+    host = HostApp(area)
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        document = area.document
+        hex_edit(document, 3, 3, b"X")
+        with patch.object(area.wrapped_document, "wrap_range", wraps=area.wrapped_document.wrap_range) as spy:
+            area.undo()
+        found = document.row_at_offset(3)
+        row = found[0] if found is not None else 0
+        spy.assert_called_once_with((row, 0), (row, 0), (row, 0))
+
+
+@pytest.mark.asyncio
+async def test_hidden_widget_marks_itself_stale_on_foreign_edits() -> None:
+    area = NovaTextArea("abc\n")
+    host = HostApp(area)
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        assert area._stale is False
+        area.document.splice_bytes(0, 0, area.document._table.add(b"Q"))
+        assert area._stale is True
+        area._stale = False
+        area.insert("x", (0, 0))
+        assert area._stale is False
+        area.undo()
+        area.redo()
+        assert area._stale is False
+
+
+@pytest.mark.asyncio
+async def test_listener_removed_on_replace_and_close() -> None:
+    area = NovaTextArea("one")
+    host = HostApp(area)
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        old = area.document
+        assert len(old._change_listeners) == 1
+        area.load_text("two")
+        assert old._change_listeners == []
+        assert len(area.document._change_listeners) == 1
+        current = area.document
+        area.close()
+        assert current._change_listeners == []
+
+
+@pytest.mark.asyncio
+async def test_mixed_batch_treated_by_origin() -> None:
+    area = NovaTextArea("abc\n")
+    host = HostApp(area)
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        document = area.document
+        area.insert("T", (0, 0))
+        hex_edit(document, document.length, document.length, b"H")
+        assert all_bytes(document) == b"Tabc\nH"
+        assert len(document.history.undo_stack) == 2
+        area.undo()
+        assert all_bytes(document) == b"Tabc\n"
+        area.undo()
+        assert all_bytes(document) == b"abc\n"
