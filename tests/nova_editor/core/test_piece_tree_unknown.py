@@ -9,16 +9,7 @@ import pytest
 from nova_editor.core.piece_tree import _UNKNOWN, PieceTree, _Leaf
 from nova_editor.core.pieces import Content, Piece, RowNotIndexed, make_piece, make_unknown_piece
 
-from .reference import ALPHABET, FakeSource, Rng, break_ends, inside_crlf
-
-ORIGINALS: dict[str, bytes] = {
-    "lf": b"alpha\nbeta\n\ngamma\ndelta\nepsilon\nzeta\n",
-    "crlf": b"alpha\r\nbeta\r\n\r\ngamma\r\ndelta\r\nepsilon\r\n",
-    "cr": b"alpha\rbeta\r\rgamma\rdelta\repsilon\r",
-    "mixed": b"a\r\nb\nc\rd\r\r\n\n\re\xff\xe2\x82\xac\r\nf\t\n",
-    "no-trailing": b"alpha\nbeta\r\ngamma\rlast row without newline",
-    "empty": b"",
-}
+from .reference import ALPHABET, ORIGINALS, FakeSource, Rng, break_ends, inside_crlf
 
 
 class Frontier(FakeSource):

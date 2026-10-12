@@ -1,4 +1,4 @@
-"""`PieceTable` rows, open tail and identity fast path against a plain-bytes reference (ACT4 design 4.5 and 5)."""
+"""`PieceTable` rows, unknown pieces and identity fast path against a plain-bytes reference (ACT4 design 4.5 and 5)."""
 
 from __future__ import annotations
 
@@ -6,22 +6,13 @@ import threading
 
 import pytest
 
-from nova_editor.core import AddStore, BytesSource, Content, LineIndex, PieceTable, RowNotIndexed, RowRange, make_piece
+from nova_editor.core import AddStore, BytesSource, Content, LineIndex, PieceTable, RowRange, make_piece, make_unknown_piece
 from nova_editor.core.byte_source import ByteSource
 from nova_editor.core.line_index import LineSnapshot
 from nova_editor.core.pieces import SEGMENT_MASK, make_src
 
 from .helpers import CountingSource, reference_row_at_offset, reference_rows
-from .reference import ALPHABET, FakeSource, Rng, inside_crlf
-
-ORIGINALS: dict[str, bytes] = {
-    "lf": b"alpha\nbeta\n\ngamma\ndelta\nepsilon\nzeta\n",
-    "crlf": b"alpha\r\nbeta\r\n\r\ngamma\r\ndelta\r\nepsilon\r\n",
-    "cr": b"alpha\rbeta\r\rgamma\rdelta\repsilon\r",
-    "mixed": b"a\r\nb\nc\rd\r\r\n\n\re\xff\xe2\x82\xac\r\nf\t\n",
-    "no-trailing": b"alpha\nbeta\r\ngamma\rlast row without newline",
-    "empty": b"",
-}
+from .reference import ALPHABET, ORIGINALS, FakeSource, Rng, inside_crlf
 
 
 class StepSource:
@@ -113,26 +104,22 @@ class Harness:
         return Content.of([make_piece(self.store.segment(segment), segment, a, b)], self.store.segment)
 
     def from_original(self, a: int, b: int) -> tuple[Content, bytes]:
-        """Content of the original `[a, b)`; like a copy made from the document, it lies in the scanned part."""
-        scanned = self.index.snapshot()
-        if (not scanned.complete and b >= scanned.scanned_bytes) or a == b or inside_crlf(self.original, a) or inside_crlf(self.original, b):
+        """Content of the original `[a, b)`; beyond the scan frontier it is an unknown piece, like a copy made from a document that was edited blind."""
+        if a == b or inside_crlf(self.original, a) or inside_crlf(self.original, b):
             return Content.from_pieces((), 0), b""
-        piece = make_piece(self.fake, 0, a, b)
+        scanned = self.index.snapshot()
+        if not scanned.complete and b > scanned.scanned_bytes:
+            piece = make_unknown_piece(self.table.source_of(0), 0, a, b)
+        else:
+            piece = make_piece(self.fake, 0, a, b)
         return Content.from_pieces([piece], 0), self.original[a:b]
 
     # ----- operations ----------------------------------------------------------------------------------------------------------------
-
-    def accepted(self, end: int) -> bool:
-        snap = self.table.snapshot()
-        return snap.complete or end < snap.scanned_bytes or end <= self.table.tree.length
 
     def splice(self, start: int, end: int, content: Content, data: bytes) -> None:
         before = self.ref
         if inside_crlf(before, start) or inside_crlf(before, end):
             with pytest.raises(ValueError, match="CRLF"):
-                self.table.splice(start, end, content)
-        elif not self.accepted(end):
-            with pytest.raises(RowNotIndexed):
                 self.table.splice(start, end, content)
         else:
             removed = self.table.splice(start, end, content)
@@ -145,9 +132,6 @@ class Harness:
         if inside_crlf(self.ref, start) or inside_crlf(self.ref, end):
             with pytest.raises(ValueError, match="CRLF"):
                 self.table.content(start, end)
-        elif not self.accepted(end):
-            with pytest.raises(RowNotIndexed):
-                self.table.content(start, end)
         else:
             content = self.table.content(start, end)
             assert content.length == end - start
@@ -159,7 +143,7 @@ class Harness:
         n = len(self.ref)
         a = rng.randint(0, n)
         b = rng.randint(a, min(n, a + rng.choice([1, 3, 10, 40])))
-        op = rng.choice(["insert", "delete", "replace", "original", "saved", "extract", "step", "step"])
+        op = rng.choice(["insert", "delete", "replace", "original", "saved", "extract", "far", "step", "step"])
         if op == "insert":
             data = self.random_bytes(6)
             self.splice(a, a, self.from_store(data), data)
@@ -178,6 +162,11 @@ class Harness:
             self.splice(a, b, content, data)
         elif op == "extract":
             self.extract(a, b)
+        elif op == "far":
+            a = max(n - rng.randint(0, 3), 0)
+            b = rng.randint(a, n)
+            data = self.random_bytes(4)
+            self.splice(a, b, self.from_store(data), data)
         elif self.stepper is not None:
             self.stepper.step()
             self.check()
@@ -196,6 +185,11 @@ class Harness:
     def check(self) -> None:
         table, ref = self.table, self.ref
         snap = table.snapshot()
+        for _ in range(10):
+            # Once the scan finished, the fill resolves up to FILL_BATCH unknown pieces per call.
+            if not (self.index.snapshot().complete and table.tree.unknown):
+                break
+            snap = table.snapshot()
         expected = reference_rows(ref)
         assert table.length == len(ref)
         assert table.read(0, len(ref) + 5) == ref
@@ -208,6 +202,9 @@ class Harness:
         assert b"".join(chunks) == ref
         assert snap.error is None
         assert snap.scanned_bytes <= len(ref)
+        if self.index.snapshot().complete:
+            assert table.tree.unknown == 0
+            assert snap.complete
         if snap.complete:
             assert snap.count == len(expected)
             assert snap.scanned_bytes == len(ref)
@@ -216,7 +213,8 @@ class Harness:
         self.check_rows(snap, expected)
         self.check_offsets(snap, ref)
         if not table.is_identity:
-            table.tree.check_invariants()
+            table.tree.check_invariants(deep=True)
+            table.check_invariants()
 
     def check_rows(self, snap: LineSnapshot, expected: list[tuple[int, int, int]]) -> None:
         table = self.table
@@ -235,10 +233,21 @@ class Harness:
             table.row_range(-1)
 
     def check_offsets(self, snap: LineSnapshot, ref: bytes) -> None:
+        """Offsets before the first unknown piece and before the open row resolve; the others do not (design 9)."""
         table = self.table
+        expected = reference_rows(ref)
+        limit = len(ref) + 1
+        if not snap.complete and table.is_identity:
+            limit = snap.scanned_bytes
+        elif not snap.complete:
+            limit = expected[snap.count - 1][0]
+            found_unknown = table.tree.first_unknown()
+            if found_unknown is not None:
+                limit = min(limit, found_unknown[2])
+                assert snap.scanned_bytes == expected[snap.count - 1][0]
         for offset in range(len(ref) + 1):
             found = table.row_at_offset(offset)
-            if offset < snap.scanned_bytes or snap.complete:
+            if offset < limit:
                 row, (start, content_end, end) = reference_row_at_offset(ref, offset)
                 assert found is not None, offset
                 assert found == (row, RowRange(start, content_end, end)), offset
@@ -248,7 +257,7 @@ class Harness:
         assert table.row_at_offset(len(ref) + 1) is None
 
 
-def _run(name: str, *, scan_block: int | None, seed: int, steps: int = 120) -> None:
+def _run(name: str, *, scan_block: int | None, seed: int, steps: int = 160) -> None:
     harness = Harness(ORIGINALS[name], scan_block=scan_block, seed=seed)
     try:
         for _ in range(steps):
@@ -272,7 +281,7 @@ def test_fuzz_with_a_stepped_scan(name: str, seed: int, scan_block: int) -> None
 
 
 @pytest.mark.parametrize("name", ["lf", "crlf", "mixed", "no-trailing"])
-def test_edits_behind_the_frontier_open_the_tail_piece_by_piece(name: str) -> None:
+def test_edits_behind_the_frontier_fill_the_pieces_one_by_one(name: str) -> None:
     harness = Harness(ORIGINALS[name], scan_block=5, seed=9)
     stepper = harness.stepper
     assert stepper is not None
@@ -284,32 +293,22 @@ def test_edits_behind_the_frontier_open_the_tail_piece_by_piece(name: str) -> No
             if not inside_crlf(harness.ref, at):
                 data = b"X\n"
                 harness.splice(at, at, harness.from_store(data), data)
-    assert not harness.table.has_open_tail
+    harness.finish_scan()
     harness.check()
+    assert not harness.table.has_unknown
 
 
-def test_tail_folds_on_the_first_call_after_completion() -> None:
+def test_all_pieces_are_known_after_completion() -> None:
     harness = Harness(ORIGINALS["lf"], scan_block=6, seed=1)
     harness.splice(0, 0, harness.from_store(b"Z"), b"Z")
-    assert harness.table.has_open_tail
+    assert harness.table.has_unknown
     assert harness.stepper is not None
     while not harness.stepper.finished:
         harness.stepper.step()
-    assert harness.table.has_open_tail  # nothing called the table yet
+    assert harness.table.has_unknown  # nothing called the table yet
     assert harness.table.snapshot().complete
-    assert not harness.table.has_open_tail
+    assert not harness.table.has_unknown
     harness.check()
-
-
-def test_junction_of_cr_in_the_tree_and_lf_in_the_tail() -> None:
-    harness = Harness(b"\nab\r\ncd\r\nef\r\n", scan_block=3, seed=2)
-    assert harness.stepper is not None
-    harness.stepper.step()
-    harness.stepper.step()
-    harness.splice(0, 0, harness.from_store(b"\r"), b"\r")
-    with pytest.raises(ValueError, match="CRLF"):
-        harness.table.splice(1, 1, harness.from_store(b"x"))
-    harness.finish_scan()
 
 
 # ----- identity fast path ------------------------------------------------------------------------------------------------------------
@@ -404,20 +403,21 @@ def test_row_queries_stay_within_the_per_call_budget_after_edits() -> None:
     assert table.row_at_offset(100) is None  # the walk over the unrecorded long row would exceed the budget
 
 
-def test_edit_beyond_the_scanned_part_is_rejected_and_changes_nothing() -> None:
+def test_edit_beyond_the_scanned_part_is_accepted_and_equals_the_reference() -> None:
     harness = Harness(ORIGINALS["lf"], scan_block=6, seed=4)
     try:
         assert harness.stepper is not None
         harness.stepper.step()
         scanned = harness.table.snapshot().scanned_bytes
         assert 0 < scanned < len(harness.ref)
-        with pytest.raises(RowNotIndexed):
-            harness.table.splice(scanned, scanned, harness.from_store(b"x"))
-        with pytest.raises(RowNotIndexed):
-            harness.table.content(0, len(harness.ref))
+        harness.splice(scanned, scanned, harness.from_store(b"x"), b"x")
+        end = len(harness.ref)
+        content = harness.table.content(0, end)
+        assert content.length == end
+        harness.splice(end - 3, end, Content.from_pieces((), 0), b"")
+        assert harness.table.has_unknown
         harness.check()
         harness.splice(scanned - 1, scanned - 1, harness.from_store(b"x"), b"x")
-        assert harness.table.has_open_tail
     finally:
         harness.stop()
 

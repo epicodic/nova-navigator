@@ -11,6 +11,16 @@ BREAK = re.compile(rb"\r\n|\n|\r")
 ALPHABET: list[bytes] = [b"a", b"\r", b"\n", "é".encode(), b"\xff", b"\xe2", b"\x82", b"\xac", b"\t", "漢".encode(), b"\xef\xbb\xbf"]
 
 
+ORIGINALS: dict[str, bytes] = {
+    "lf": b"alpha\nbeta\n\ngamma\ndelta\nepsilon\nzeta\n",
+    "crlf": b"alpha\r\nbeta\r\n\r\ngamma\r\ndelta\r\nepsilon\r\n",
+    "cr": b"alpha\rbeta\r\rgamma\rdelta\repsilon\r",
+    "mixed": b"a\r\nb\nc\rd\r\r\n\n\re\xff\xe2\x82\xac\r\nf\t\n",
+    "no-trailing": b"alpha\nbeta\r\ngamma\rlast row without newline",
+    "empty": b"",
+}
+
+
 def break_ends(data: bytes) -> list[int]:
     """Offsets just after every terminator (CRLF, LF, lone CR)."""
     return [m.end() for m in BREAK.finditer(data)]

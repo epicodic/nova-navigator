@@ -8,8 +8,8 @@ from nova_editor.core import AddStore, BytesSource, Content, LineIndex, Original
 from nova_editor.core.pieces import MAX_GENERATION, SEGMENT_MASK, generation_of, make_src, segment_of
 
 from .helpers import CountingSource, reference_rows
-from .reference import inside_crlf
-from .test_piece_table import ORIGINALS, Harness, StepSource
+from .reference import ORIGINALS, inside_crlf
+from .test_piece_table import Harness, StepSource
 
 SEEDS = range(6)
 STEPS = 80
@@ -87,7 +87,7 @@ def test_layout_range_empty_and_invalid() -> None:
         harness.table.layout_range(0, harness.table.length + 1)
 
 
-def test_layout_range_never_reads_and_shows_open_tail() -> None:
+def test_layout_range_never_reads_and_shows_the_unknown_piece() -> None:
     source = LoggingStep(LINES, 8)
     index = LineIndex(source, stride=2, scan_block=8)
     source.attach(index)
@@ -98,13 +98,13 @@ def test_layout_range_never_reads_and_shows_open_tail() -> None:
         segment, a, b = store.append(b"NEW")
         piece = make_piece(store.segment(segment), segment, a, b)
         table.splice(0, 5, Content.from_pieces([piece], 3))
-        assert table.has_open_tail
+        assert table.has_unknown
         source.calls = 0
         store.calls = 0
         runs = table.layout_range(0, table.length)
         assert (source.calls, store.calls) == (0, 0)
         assert runs[0] == (segment, a, b)
-        assert runs[-1] == (0, 5, len(LINES))
+        assert runs[1:] == [(0, 5, 6), (0, 6, len(LINES))]  # the scanned first row is known, the rest is one unknown piece
         assert sum(y - x for _, x, y in runs) == table.length
         assert table.layout_range(2, 4) == [(segment, a + 2, a + 3), (0, 5, 6)]
         assert table.layout_range(table.length, table.length) == []

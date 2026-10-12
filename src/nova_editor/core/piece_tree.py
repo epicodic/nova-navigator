@@ -455,6 +455,11 @@ class PieceTree:
             raise ValueError("replacement must have the same length")
         self._replace_at(self._root, index, _to_row(piece))
 
+    def merge_around(self, index: int) -> None:
+        """Merge the piece `index` with its neighbours when they are contiguous in one source and equally known (see `merge_pieces`)."""
+        self._try_merge(index + 1)
+        self._try_merge(index)
+
     # ----- boundaries ----------------------------------------------------------------------------------------------------------------
 
     def check_boundary(self, offset: int) -> None:

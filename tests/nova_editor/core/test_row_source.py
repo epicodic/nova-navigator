@@ -65,11 +65,11 @@ def test_row_source_is_a_snapshot() -> None:
     assert rows.read(0, len(before)) == before
 
 
-def test_row_source_covers_the_open_tail() -> None:
+def test_row_source_covers_the_unknown_piece() -> None:
     source = BytesSource(ORIGINAL)
     index = LineIndex(source, scan_block=4)
     table = PieceTable(source, index, AddStore())
-    assert table.has_open_tail
+    assert table.has_unknown
     rows = table.row_source(2, 14)
     assert rows.read(0, 100) == ORIGINAL[2:14]
 
