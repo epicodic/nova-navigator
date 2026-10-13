@@ -39,7 +39,7 @@ from .editor_actions import build_editor_actions, build_keyboard_shortcuts_actio
 from .editor_menus import build_menu_bar
 from .find_popup import FindPopup
 from .goto_popup import GotoPopup, GotoTarget, hex_goto
-from .status_line import StatusLine, StatusState, byte_percent, format_sizes, row_is_known, save_progress_text
+from .status_line import HexStatusState, StatusLine, StatusState, byte_percent, format_sizes, row_is_known, save_progress_text
 from .timed_text_area import TimedNovaTextArea
 from .widget import ExternalCheck, HexView, NovaTextArea
 
@@ -123,6 +123,7 @@ class EditorScreen(Screen[None]):
         standalone: bool = False,
         poll_seconds: float = 2.0,
         quit_wait_seconds: float = 2.0,
+        start_hex: bool = False,
     ) -> None:
         """Create the editor screen.
 
@@ -137,6 +138,7 @@ class EditorScreen(Screen[None]):
             standalone: `True` for standalone app (Quit in the File menu), `False` for embedded (Close).
             poll_seconds: Interval of the check for a change of the file on disk.
             quit_wait_seconds: Longest wait for a cancelled save before the quit question.
+            start_hex: Show the first document in the hex view whatever its content; later documents (Open) use the binary detection.
         """
         super().__init__()
         self._keybindings = keybindings
@@ -168,7 +170,7 @@ class EditorScreen(Screen[None]):
 
         self._editor_class = editor_class
         self._config = config
-        self.document, self._load_error = self._open_view(path, soft_wrap=soft_wrap, show_line_numbers=True)
+        self.document, self._load_error = self._open_view(path, soft_wrap=soft_wrap, show_line_numbers=True, force_hex=start_hex)
 
     # Keymap
 
@@ -267,6 +269,8 @@ class EditorScreen(Screen[None]):
         self.set_interval(self._poll_seconds, self.poll)
         self._sync_view_actions()
         self._watch_editor()
+        if self.document.hex_mode:
+            self.document.focus_shown()
 
     def on_resize(self, event: events.Resize) -> None:
         """Adjust the path label when the terminal is resized."""
@@ -315,8 +319,19 @@ class EditorScreen(Screen[None]):
         for status in self.query(StatusLine):
             status.set_note(text, timed=timed)
 
-    def _status_state(self) -> StatusState | None:
+    def _status_state(self) -> StatusState | HexStatusState | None:
         editor = self.document.editor
+        if self.document.hex_mode:
+            hex_view = self.document.hex_view
+            file_path = self.document.file_path
+            return HexStatusState(
+                file_name=None if file_path is None else file_path.name,
+                offset=hex_view.cursor.offset,
+                length=editor.document.length,
+                byte=hex_view.byte_at_cursor(),
+                insert=hex_view.insert_mode,
+                modified=editor.modified,
+            )
         row, column = editor.cursor_location
         cursor_state, _ = editor.peek_cursor_state()
         snapshot = editor.document.snapshot()
@@ -342,7 +357,7 @@ class EditorScreen(Screen[None]):
 
     # Document management
 
-    def _open_view(self, path: Path | None, *, soft_wrap: bool, show_line_numbers: bool) -> tuple[DocumentView, str | None]:
+    def _open_view(self, path: Path | None, *, soft_wrap: bool, show_line_numbers: bool, force_hex: bool = False) -> tuple[DocumentView, str | None]:
         """Open `path` as a document: the one call of `DocumentView.open`, so that `NOVA_EDIT_TIMING_FILE` reaches every widget the screen builds."""
         return DocumentView.open(
             path,
@@ -351,6 +366,7 @@ class EditorScreen(Screen[None]):
             show_line_numbers=show_line_numbers,
             config=self._config,
             timing_file=os.environ.get("NOVA_EDIT_TIMING_FILE"),
+            force_hex=force_hex,
         )
 
     def _watch_editor(self) -> None:
@@ -363,18 +379,28 @@ class EditorScreen(Screen[None]):
     # View actions: the widget owns the state, the checked items mirror it
 
     def _sync_view_actions(self) -> None:
+        """Mirror the widget in the View items: Line Numbers and Wrap Mode are disabled while the hex view is shown (REQ-20)."""
         editor = self.document.editor
+        enabled = not self.document.hex_mode
+        self._by_id["editor.wrap_mode"].set_enabled(enabled)
+        self._by_id["editor.line_numbers"].set_enabled(enabled)
+        for menu in self.query(Menu):
+            menu.refresh()
         self._by_id["editor.wrap_mode"].set_checked(editor.soft_wrap)
         self._by_id["editor.line_numbers"].set_checked(editor.show_line_numbers)
         self._by_id["editor.hex_mode"].set_checked(self.document.hex_mode)
 
     def action_toggle_wrap(self) -> None:
-        """Wrap Mode: flip `soft_wrap` of the widget."""
+        """Wrap Mode: flip `soft_wrap` of the widget; nothing happens in the hex view."""
+        if self.document.hex_mode:
+            return
         self.document.editor.toggle_wrap()
         self._sync_view_actions()
 
     def action_toggle_line_numbers(self) -> None:
-        """Line Numbers: flip `show_line_numbers` of the widget."""
+        """Line Numbers: flip `show_line_numbers` of the widget; nothing happens in the hex view."""
+        if self.document.hex_mode:
+            return
         editor = self.document.editor
         editor.show_line_numbers = not editor.show_line_numbers
         self._sync_view_actions()
@@ -536,7 +562,7 @@ class EditorScreen(Screen[None]):
     async def _swap_document(self, view: DocumentView) -> None:
         """Replace the document by `view`: remove the old widgets, mount the new ones and re-establish everything the screen derived from the old one.
 
-        The hex view is removed first: the text widget closes the document when it is removed. The new document starts in text mode.
+        The hex view is removed first: the text widget closes the document when it is removed. A binary file opened this way starts in the hex view through detection, any other file in the text view.
         """
         editor = self.document.editor
         hex_view = self.document.hex_view

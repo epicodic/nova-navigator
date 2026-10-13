@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from nova_editor.core.binary_detect import head_is_binary
 from nova_editor.core.byte_source import ChangeKind
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.languages import language_for_path
@@ -87,6 +88,11 @@ class DocumentView:
         """Give the focus to the widget the user sees."""
         self.shown.focus()
 
+    def start_in_hex(self) -> None:
+        """Make the hex view the shown widget of a document that is not mounted yet (both cursors are at 0, so no cursor transfer or checkpoint is needed)."""
+        self.editor.display = False
+        self.hex_view.display = True
+
     def show_hex(self, on: bool) -> None:
         """Show the hex view (`on`) or the text widget; the cursor follows by byte offset and the selection is not carried (REQ-2).
 
@@ -146,8 +152,11 @@ class DocumentView:
         show_line_numbers: bool,
         config: LazyConfig | None,
         timing_file: str | None,
+        force_hex: bool = False,
     ) -> tuple[DocumentView, str | None]:
         """Open `path`, or an empty document for `None`.
+
+        The hex view is shown first when `force_hex` is set (no head is read then) or when the first 64 KiB of the file contain a NUL byte (REQ-3).
 
         Returns:
             The view and an error text for the user (`None` when the load worked). When the file cannot be opened the view holds an empty editor and the matching load state.
@@ -156,14 +165,22 @@ class DocumentView:
         def empty() -> TimedNovaTextArea:
             return editor_class(id="editor", text="", soft_wrap=soft_wrap, show_line_numbers=show_line_numbers, timing_file=timing_file)
 
+        def finish(view: DocumentView, error: str | None = None) -> tuple[DocumentView, str | None]:
+            if force_hex:
+                view.start_in_hex()
+            return view, error
+
         if path is None:
-            return cls(empty()), None
+            return finish(cls(empty()))
         reason = not_regular_reason(path)  # opening a FIFO would block
         if reason is not None:
-            return cls(empty(), path, "failed"), f"Error loading file: {reason}"
+            return finish(cls(empty(), path, "failed"), f"Error loading file: {reason}")
         try:
             editor = editor_class.open(path, language=language_for_path(path), id="editor", soft_wrap=soft_wrap, show_line_numbers=show_line_numbers, config=config, timing_file=timing_file)
         except OSError as error:
             state: LoadState = "new" if isinstance(error, FileNotFoundError) else "failed"
-            return cls(empty(), path, state), f"Error loading file: {error}"
-        return cls(editor, path), None
+            return finish(cls(empty(), path, state), f"Error loading file: {error}")
+        view = cls(editor, path)
+        if force_hex or head_is_binary(editor.document.read_bytes):
+            view.start_in_hex()
+        return view, None

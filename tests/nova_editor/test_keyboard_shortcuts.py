@@ -125,3 +125,14 @@ async def test_a_config_without_the_item_applies_overrides_and_offers_no_dialog(
         screen.action_keyboard_shortcuts()
         await pilot.pause(delay=0.3)
         assert host.screen is screen
+
+
+@pytest.mark.asyncio
+async def test_the_nova_edit_dialog_lists_hex_mode_with_f4(tmp_path: Path) -> None:
+    app = build_app(["--config-dir", str(tmp_path)])
+    async with app.run_test(size=WIDE) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, EditorScreen)
+        dialog = await open_dialog(pilot, app, screen)
+        assert rows(dialog)["Hex Mode"] == "F4"

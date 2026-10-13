@@ -40,7 +40,7 @@ The following modules are native to `nova_editor` and are not copies of upstream
 | `core/foreground.py` | `Foreground` gate that lets the background scans give way to the UI thread (ACT3). |
 | `core/pieces.py` | `Piece`, `Aggregate`, `Content`, `RowNotIndexed`, the `PieceSource` protocol and the junction rules (ACT4). |
 | `core/piece_tree.py` | `PieceTree`, the counted B+ tree of pieces (ACT4); a replace deletes its piece range in one pass through `_delete_pieces`, `_delete_range` and `_repair_children` (ACT7). |
-| `status_line.py` | `StatusState`, `format_status` and `StatusLine`, the one-row status line of `nova_edit` (ACT7). |
+| `status_line.py` | `StatusState`, `format_status` and `StatusLine`, the one-row status line of `nova_edit`; `HexStatusState` and `format_hex_status` for the hex view. |
 | `goto_popup.py` | `GotoPopup`, the inline popup of the `nova_edit` goto (ACT6). |
 | `find_popup.py` | `FindPopup`, the inline popup of the `nova_edit` search (ACT6). |
 | `decisions.py` | `MessageBox` helpers for the `nova_edit` flows (ACT6). |
@@ -50,6 +50,7 @@ The following modules are native to `nova_editor` and are not copies of upstream
 | `core/row_source.py` | `RowSource`, a `ByteSource` over the pieces of one row (ACT4). |
 | `core/memory_source.py` | `BytesSource`, a `ByteSource` over bytes in memory (ACT4). |
 | `core/row_scanner.py` | `RowScanner`, the row-boundary scan moved out of `LineIndex` (ACT5). |
+| `core/binary_detect.py` | `head_is_binary`, the NUL-byte check of the first 64 KiB that decides the hex view at open. |
 | `core/save.py` | `FileIdentity` and `ChangeKind` re-exports, `check_path`, `SaveSettings`, `SaveIo`, `SaveJob`, `SaveFailed`, `SaveCancelled`, `SaveResult` (ACT5). |
 | `core/save_layout.py` | `SaveLayout`, the runs a save wrote, by source (ACT5). |
 | `core/rebase.py` | `Rebaser`, `RebasePlan` and `UNDO_COPY_LIMIT` (ACT5). |

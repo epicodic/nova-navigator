@@ -460,7 +460,7 @@ async def test_find_and_goto_still_open_their_popups_in_text_mode(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_line_numbers_and_wrap_still_toggle_the_hidden_text_widget(tmp_path: Path) -> None:
+async def test_line_numbers_and_wrap_do_nothing_in_hex_mode(tmp_path: Path) -> None:
     app = NovaEditApp(file_path=make_file(tmp_path))
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
@@ -470,8 +470,8 @@ async def test_line_numbers_and_wrap_still_toggle_the_hidden_text_widget(tmp_pat
         wrap, numbers = editor.soft_wrap, editor.show_line_numbers
         await pilot.press("f10", "f11")
         await pilot.pause()
-        assert editor.soft_wrap is not wrap
-        assert editor.show_line_numbers is not numbers
+        assert editor.soft_wrap is wrap
+        assert editor.show_line_numbers is numbers
         assert screen.document.hex_mode is True
         assert screen.focused is screen.document.hex_view
 

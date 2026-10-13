@@ -26,7 +26,7 @@ def beyond(value: int, length: int) -> str:
 
 def make_file(tmp_path: Path, size: int = SIZE, name: str = "f.bin") -> Path:
     path = tmp_path / name
-    path.write_bytes(bytes(range(256)) * (size // 256) + bytes(range(size % 256)))
+    path.write_bytes(bytes(index % 255 + 1 for index in range(size)))  # no NUL byte: the file is not detected as binary and starts in text
     return path
 
 
