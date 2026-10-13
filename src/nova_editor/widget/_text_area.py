@@ -4629,7 +4629,7 @@ NovaTextArea {
     @_guard_source(None)
     def select_all(self) -> None:
         """Select all of the text in the `NovaTextArea`."""
-        last_line = self.document.line_count - 1
+        last_line = self.navigator.last_row()
         length_of_last_line = self.document.line_length(last_line)
         if length_of_last_line is None:
             # Unknown length (lazy documents only): leave the selection unchanged.
