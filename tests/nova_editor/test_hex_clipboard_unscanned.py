@@ -8,6 +8,7 @@ import pytest
 from textual.app import ComposeResult
 from textual.pilot import Pilot
 
+from nova_editor.document import RowUnavailable
 from nova_editor.document._document import Selection
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.document._lazy_document import LazyDocument
@@ -26,12 +27,16 @@ class BothHost(HostApp):
 
     def __init__(self, area: NovaTextArea) -> None:
         super().__init__(area)
+        self.refused: list[NovaTextArea.EditRefused] = []
         self.view = HexView(lambda: area.document)
         self.view.clipboard_owner = lambda: area
 
     def compose(self) -> ComposeResult:
         yield from super().compose()
         yield self.view
+
+    def on_nova_text_area_edit_refused(self, message: NovaTextArea.EditRefused) -> None:
+        self.refused.append(message)
 
 
 @pytest.fixture
@@ -128,6 +133,9 @@ async def test_paste_while_the_cursor_waits_for_the_scan(stepped: tuple[StepSour
         after = _data(doc)
         assert len(after) == len(DATA) + len(copied)
         assert after.replace(copied, b"", 1) == DATA
+        assert after[:7] == DATA[:7]  # the paste went to the cursor that is still shown (row 1, column 0), not to the pending jump
+        assert after[7 : 7 + len(copied)] == copied
+        assert after[7 + len(copied) :] == DATA[7:]
         await pilot.press("ctrl+z")
         assert _data(doc) == DATA
 
@@ -144,3 +152,95 @@ async def test_paste_in_the_first_row_is_refused_and_changes_nothing(stepped: tu
         await pilot.press("ctrl+v")
         assert _data(doc) == DATA
         assert not area.modified
+        await pilot.pause()
+        assert len(host.refused) == 1
+        assert "first row" in host.refused[0].reason
+
+
+def _byte_of(doc: LazyDocument, location: tuple[int, int]) -> int:
+    """The byte offset of a resolved `location` of the text view."""
+    offset = doc.byte_offset(*location)
+    assert offset is not None
+    return offset
+
+
+def _on_resolved_row(doc: LazyDocument, area: NovaTextArea) -> bool:
+    """Whether the cursor and the selection ends sit on rows that resolve."""
+    for row, _column in (area.selection.start, area.selection.end):
+        try:
+            doc.row_byte_length(row)
+        except (RowUnavailable, IndexError):
+            return False
+    return True
+
+
+MID_ROW_SELECTIONS = [
+    pytest.param(((2, 3), (2, 3)), id="mid-row-2"),
+    pytest.param(((2, 3), (3, 2)), id="across-rows"),
+    pytest.param(((5, 6), (5, 6)), id="mid-row-5"),
+    pytest.param(((1, 0), (1, 0)), id="row-start"),
+    pytest.param(((3, 4), (1, 2)), id="backwards"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selection", MID_ROW_SELECTIONS)
+async def test_mid_row_paste_undo_redo_keeps_the_cursor_on_a_resolved_row(stepped: tuple[StepSource, LazyDocument], selection: tuple[tuple[int, int], tuple[int, int]]) -> None:
+    source, doc = stepped
+    area = NovaTextArea(text="")
+    host = BothHost(area)
+    async with host.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        copied = await _copy_unscanned(host, area, doc, pilot)
+        area.selection = Selection(*selection)
+        low = min(selection)
+        high = max(selection)
+        begin = _byte_of(doc, low)
+        finish = _byte_of(doc, high)
+        expected = DATA[:begin] + copied + DATA[finish:]
+        assert not area.modified
+        await pilot.press("ctrl+v")
+        for _ in range(2):  # paste, undo, redo, undo
+            assert _data(doc) == expected
+            assert area.modified
+            assert _on_resolved_row(doc, area)
+            await pilot.press("ctrl+z")
+            assert _data(doc) == DATA
+            assert not area.modified
+            assert _on_resolved_row(doc, area)
+            await pilot.press("ctrl+y")
+        await pilot.press("ctrl+y")
+        assert _data(doc) == expected
+        assert area.modified
+        assert _on_resolved_row(doc, area)
+        assert not host.source_changed
+        while not source.finished:  # the scan reaches the edit: the pending jump completes behind the insertion
+            source.step()
+        assert doc.wait_indexed(10.0)
+        await pilot.pause(0.2)
+        assert area.pending_progress is None
+        assert _byte_of(doc, area.selection.end) == begin + len(copied)
+        assert area.selection.is_empty
+
+
+@pytest.mark.asyncio
+async def test_resolved_paste_places_the_cursor_behind_the_insertion(stepped: tuple[StepSource, LazyDocument]) -> None:
+    source, doc = stepped
+    area = NovaTextArea(text="")
+    host = BothHost(area)
+    async with host.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        copied = await _copy_unscanned(host, area, doc, pilot)
+        area.selection = Selection((2, 0), (2, 0))
+        await pilot.press("ctrl+v")
+        assert area.modified
+        while not source.finished:
+            source.step()
+        assert doc.wait_indexed(10.0)
+        await pilot.pause(0.2)
+        assert _byte_of(doc, area.selection.end) == 14 + len(copied)
+        await pilot.press("ctrl+z")
+        assert not area.modified
+        await pilot.press("ctrl+y")
+        assert area.modified
+        assert _data(doc) == DATA[:14] + copied + DATA[14:]

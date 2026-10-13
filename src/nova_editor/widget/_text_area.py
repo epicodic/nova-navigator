@@ -3372,13 +3372,34 @@ NovaTextArea {
         self._place_cursor_at_byte(end)
 
     def _park_cursor(self, start: int) -> tuple[int, RowRange] | None:
-        """After a change at byte `start`, move a cursor that now sits on an unresolved row to the last resolved row before it; return the row of `start` (`None` when unresolved)."""
+        """After a change at byte `start`, move a cursor or selection end that sits on an unresolved row to the last resolved row; return the row of `start` (`None` when unresolved)."""
         found = self.document.row_at_offset(start)
-        if found is None and start > 0:
-            before = self.document.row_at_offset(start - 1)
-            if before is not None:
-                self.selection = Selection.cursor((before[0], 0))
+        if not all(self._row_resolved(row) for row, _column in (self.selection.start, self.selection.end)):
+            last = self._last_resolved_row()
+            if last is not None:
+                self.selection = Selection.cursor((last, 0))
         return found
+
+    def _row_resolved(self, row: int) -> bool:
+        """Whether `row` exists and its byte range is known."""
+        try:
+            self.document.row_byte_length(row)
+        except (RowUnavailable, IndexError):
+            return False
+        return True
+
+    def _last_resolved_row(self) -> int | None:
+        """The last row whose byte range is known (resolved rows form a prefix of the document); `None` when not even the first one is."""
+        low, high = 0, max(self.document.snapshot().count - 1, 0)
+        if not self._row_resolved(low):
+            return None
+        while low < high:
+            middle = (low + high + 1) // 2
+            if self._row_resolved(middle):
+                low = middle
+            else:
+                high = middle - 1
+        return low
 
     def _unresolved_reason(self) -> str | None:
         """Why no edit can be applied now (the cursor of a long row is provisional or pending), or `None` when positions are exact."""
@@ -3387,11 +3408,11 @@ NovaTextArea {
             return "the cursor position in this long line is not indexed yet"
         return None
 
-    def _refuse_edit(self, reason: str) -> None:
-        """Tell the user that an edit was refused (bell, warning, `EditRefused`); nothing was changed."""
+    def _refuse_edit(self, reason: str, hint: str = "It works once indexing reaches the position.") -> None:
+        """Tell the user that an edit was refused (bell, warning, `EditRefused`); nothing was changed. `hint` says what makes it work."""
         self._edit_refused = True
         self.app.bell()
-        self.notify(f"Edit refused: {reason}. It works once indexing reaches the position.", severity="warning")
+        self.notify(f"Edit refused: {reason}. {hint}", severity="warning")
         self.post_message(self.EditRefused(reason, self))
 
     @property
@@ -5236,7 +5257,10 @@ NovaTextArea {
         if content is not None:
             if content.unknown > 0 and self.selection.start[0] == 0:
                 # A blind splice leaves no resolved row to keep the cursor on, and row 0 is the first one.
-                self._refuse_edit("the pasted bytes were copied from a range the scan has not reached, and the first row is not safe to edit with them yet")
+                self._refuse_edit(
+                    "the pasted bytes were copied from a range the scan has not reached, and the first row is not safe to edit with them",
+                    "Paste below the first row, or copy the range again once indexing has reached it.",
+                )
                 return
             self._restart_blink()
             result = self.edit(Edit("", *self.selection, maintain_selection_offset=False, insert_content=content))
