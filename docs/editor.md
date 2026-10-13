@@ -21,6 +21,7 @@ Saving picks one of two strategies at save time: a plain Save of an unchanged fi
 After a save the document stands on the saved file, and undo still works (see "Rebase After a Save").
 A change of the file on disk is detected and never overwritten silently (see "External Changes").
 A literal search runs over the whole document on a worker thread (see "Search").
+The document can also be shown as bytes in the hex view (F4), and a binary file opens in it (see "Hex View").
 The standalone app `nova_edit` wraps the widget with a menu bar, a status line, a HintBar, popups, dialogs and a quit confirmation (see "nova_edit").
 
 **Where to look:**
@@ -30,6 +31,7 @@ The standalone app `nova_edit` wraps the widget with a menu bar, a status line, 
 | Structure and imports | "Layering" |
 | Classes, properties, messages | "Public API" |
 | The standalone app | "nova_edit" |
+| The hex view (bytes, editing, budget) | "Hex View" |
 | Numbers | "Performance (measured)" |
 | What does not work, and what was not measured | "Known Limits" |
 | Vendored code | "Vendoring Policy" and "Updating from Upstream" |
@@ -556,7 +558,7 @@ Escape, Enter and Alt+C are not mapped to an action and reach the popup.
 
 The dialog is opened from View > "Keyboard Shortcuts…" (`editor.keyboard_shortcuts` id, no default key).
 It exists only when the screen has a `KeybindingsConfig` and `keyboard_shortcuts_item` is true, so the 19-action list, the default key table and a config-less host stay exactly as they are.
-The dialog lists the `editor.*` actions (all 19 including itself) and their effective bindings from the config.
+The dialog lists all 20 `editor.*` actions (the 19 editor actions and itself) and their effective bindings from the config.
 After the dialog is dismissed (OK or Cancel), the flow calls `reload_keymap()`, which re-reads the file, runs `_apply_keymap()` and re-measures the menus, applying at once any changes to the key, the menu label, the hint bar, the swallowing of old editing keys and unmap handling.
 The standalone host passes the nova-edit file.
 The navigator passes its own file with `keyboard_shortcuts_item=False`; see "Embedding in the navigator".
@@ -594,6 +596,7 @@ The menu bar has four menus:
 
 Checkable menu items start with the state of the widget, which is checked for Line Numbers and unchecked for Wrap Mode and Hex Mode, and are kept in sync with the widget's reactive properties (`soft_wrap`, `show_line_numbers`); Hex Mode is checked exactly while `DocumentView.hex_mode` is true.
 While the hex view is shown, Line Numbers and Wrap Mode are disabled and F10 and F11 do nothing; they show and keep the state they had.
+Back in the text view the items and F10 and F11 work again.
 
 The path label on the right of the menu bar is sized to the room left after the menu entries (truncated keeping its end behind an ellipsis, or hidden), so menus stay clickable at 80 columns.
 Tests are in `tests/nova_editor/test_menu_path_label.py`.
@@ -601,9 +604,10 @@ Tests are in `tests/nova_editor/test_menu_path_label.py`.
 ### Popups and dialogs
 
 **Go to popup** (`GotoPopup`, Ctrl+G) — Go to a line or a byte offset.
-- Input: `N` for a line, `@N` for a byte offset.
+- Input: `N` for a line, `@N` for a decimal byte offset, `0xHEX` or `HEXh` for a hex byte offset (hex digits in either case).
+- The text view takes the hex forms like `@N`.
 - Enter jumps and closes the popup; Escape closes it and gives the focus back to the editor.
-- Text that is no target shows `Not a line number or @byte offset (for example 120 or @4096)` in the popup.
+- Text that is no target shows `Not a line number or byte offset (for example 120, @4096, 0x1F00 or 1F00h)` in the popup.
 - A target that the widget rejects (`line N is beyond the last line (COUNT)` and the other texts of "Goto messages") keeps the popup open with that reason and the input selected.
 - A target beyond the scanned part closes the popup; the status line shows `Goto P%  Esc cancels`.
 - In the hex view the popup takes a byte offset only (`0x1F00`, `1F00h` or `@7936`), and its message row shows `Byte offset: 0x1F00, 1F00h or @7936` while nothing is wrong.
@@ -876,6 +880,7 @@ The active pane shows the cursor; the other pane marks the same byte.
 - `ByteSelection(start, end)`: whole bytes, half-open `[start, end)`, `start < end`.
   There is no partial-byte selection.
 - Shift moves extend the selection by whole bytes in both panes; a plain move with a selection clears it and moves from the cursor.
+- The selection is highlighted in both panes.
 - The view posts `HexView.Moved(cursor, selection)` after every change; the screen refreshes the status line.
 - The view has no cursor blink.
 
@@ -910,6 +915,8 @@ A click puts the cursor on the digit or character under the pointer; Shift+click
 A drag selects from the pressed byte to the byte under the pointer, both ends included, and stays in the pane where it started.
 The drag does not scroll on its own: it follows only the move events, and a pointer above or below the view reaches one row beyond it.
 A click outside both panes on a row does nothing.
+The mouse wheel scrolls the view.
+A click or drag above the first row stays on the first row, and one below the last row goes to the end-of-document position.
 
 ### Editing
 
@@ -1039,6 +1046,7 @@ The rows from the edit row on cannot be resolved until the scan fills the pieces
 Down, page down, shift and word moves stop on the last resolved row (down goes to the end of that row, as on the last row of a document), and a click below it lands on it.
 The same holds at the scan frontier of an unedited document, whose open row cannot be resolved either.
 A hex paste or edit at offset 0 can leave no resolved row at all; undo and redo in the text view then park the cursor at (0, 0), keys and clicks are ignored (no edit, no movement) and nothing raises until the scan arrives.
+No message is shown and no bell rings there: movement keys and clicks change nothing, and the cursor just stops.
 Internal content with unknown pieces takes the blind path and works at any offset.
 
 ### Undo and Redo in Hex
@@ -1087,6 +1095,7 @@ The requirements are silent or ambiguous on these points; the design settled the
 - A switch before that refresh (two quick F4 presses, key repeat) does not read the cursor of the widget it leaves, which is not placed yet: the view keeps the scheduled offset (`_transfer`, valid while `_pending`) and carries it on, and only the finish step of the last switch runs.
   An unknown offset is carried on as unknown: the widget shown in the end keeps its cursor.
   The pending state is set only after every call that may raise, so a failed switch leaves no stale offset.
+- A switch changes no edit, no modified flag and no undo or redo entry.
 - The mapping is by byte offset.
   The selection is not carried over.
 - Text to hex puts the hex cursor on the first byte of the character under the text cursor.
@@ -1095,6 +1104,7 @@ The requirements are silent or ambiguous on these points; the design settled the
 - The focus goes to the widget that becomes visible (`focus_shown()`).
 
 Edits made in either view show in the other, because both share the document and its history.
+After an edit in the hex view the text view keeps working, and the line number and the line count that it cannot know show as unknown (`Ln ?`, `>= N lines`; see the table of "StatusLine").
 Save, Save As, in-place save, reload and the external-change flow work in both modes because they act on the text widget, which owns the document.
 A reload in hex mode repaints at once (`follow_document()`).
 The action is ignored while the document closes or is replaced (one of its two widgets is no longer attached), and it is allowed while a save runs because it only swaps the displays.
@@ -1123,6 +1133,7 @@ A headless Textual Pilot drives the hex view in a fresh child process for every 
 Three rounds alternate between a 1 GiB file and a 50 GiB file (53,687,091,200 bytes); both are real, non-sparse files on ext4 over LVM and LUKS on NVMe.
 The warm cache comes from a primer pass; the cold open drops the file from the page cache with `fadvise`.
 Seven operations are timed: row scroll down and up, Page Down and Page Up, goto, Ctrl+End and a one-byte edit.
+The time of the first page includes the binary detection.
 
 The rule was fixed before the first measurement:
 - Per operation, `|median(50 GiB) - median(1 GiB)| <= max(3 ms, IQR of the 1 GiB samples)`, and both medians stay below 100 ms.
@@ -1591,10 +1602,15 @@ A save is in place only when all of these hold:
 - The original is a file read with `pread` or in-memory bytes, and the length of the document equals the length of the original.
 - Every run of the original sits at its own offset and outside the ranges that earlier in-place saves patched (`inplace_ranges` in `core/inplace_layout.py`).
 
+A range whose bytes were overwritten and then undone to the original bytes is not written.
+The rules are the same whether the save is started from the hex view or the text view.
+
 A moved original streams even when the length is restored, and so does any length change.
 
 **Steps of `InPlaceJob.run`:**
 1. The plan is taken (`plan_in_place`), the target is resolved with `os.path.realpath`, `refuse_unsuitable` checks that it is a regular file, and `check_path` must report no change.
+   A file that changed on disk since the open or the last save is seen before the job starts: nothing is written and the existing change question (`SaveNeedsConfirmation`) is asked.
+   A file that cannot be opened for writing fails at stage `prepare` with the message `read-only file` before any byte is written.
 2. The file is opened with `O_WRONLY` and without truncation, and the identity of the descriptor is compared with the held one.
 3. `prepare_patch` copies the old bytes of each range that no earlier in-place save patched into the add store, in pieces of at most `SaveSettings.chunk` (1 MiB); a cancel is checked before each piece.
 4. The parts of every range to write are taken from the document, then `begin_patch` installs the read overlay and marks the ranges as patched.
@@ -2229,19 +2245,19 @@ See `src/tools/measure_view.py` for usage.
 | `stat` on a hung mount | `save` checks the path on the UI thread | Until the mount answers | Not applicable |
 | Search needle size | Pattern tier cost | 1 MiB plain, 4,096 characters for the pattern tier | Not applicable |
 | Search is literal | By design | No regular expressions, whole word or replace | Not applicable |
-| Hex view drag and narrow layout | The drag has no auto-scroll and the row layout needs 45 columns | A drag does not auto-scroll, rows are cut below 45 columns | Tests (`test_editor_screen_hex.py`) |
-| Hex typing beyond the scanned part | An edit whose removed or inserted content holds unknown pieces may contain a break, so it always ends its batch | One undo step per digit there; bytes are exact | Tests (`test_hex_history.py`) |
+| Hex view drag and narrow layout | The drag has no auto-scroll and the row layout needs 45 columns | A drag does not auto-scroll, rows are cut below 45 columns | Tests `widget/test_hex_view.py::test_wider_and_narrower_terminals_change_the_byte_count` and `test_drag_forward_and_backward_selects_the_inclusive_range`; the missing auto-scroll and the 45-column cut are not tested explicitly |
+| Hex typing beyond the scanned part | An edit whose removed or inserted content holds unknown pieces may contain a break, so it always ends its batch | One undo step per digit there; bytes are exact | Tests `document/test_hex_edit.py::test_unknown_content_blocks_merging` and `widget/test_hex_edit.py::test_typing_works_before_the_scan_has_reached_the_position` |
 | Huge selection copy, cut and delete in hex | `content_between` and the edit read the break-free tail of the range (`tail_chars_of`) on the UI thread | Unbounded for a huge selection without line breaks; Select All alone reads nothing | Not measured |
-| Hex copy during a save | A copy during a save keeps no internal record (as in the text view) | A later paste parses the system text | Tests (`test_hex_clipboard_inplace.py`) |
-| Text view gives no sign of a stranded cursor | A hex edit or paste at offset 0 leaves no resolved row in the text view | Keys and clicks in the text view change nothing until the line scan reaches the first rows; the bytes are exact | Test `test_keys_and_clicks_with_no_resolved_row_change_nothing_and_do_not_raise` |
+| Hex copy during a save | A copy during a save keeps no internal record (as in the text view) | A later paste parses the system text | Test `test_a_copy_made_during_an_in_place_save_is_not_recorded` (`test_hex_clipboard_inplace.py`) |
+| Text view gives no sign of a stranded cursor (no message is shown) | A hex edit or paste at offset 0 leaves no resolved row in the text view | No message is shown and no bell rings; movement keys and clicks in the text view change nothing until the line scan reaches the first rows; the bytes are exact | Test `test_keys_and_clicks_with_no_resolved_row_change_nothing_and_do_not_raise` |
 | The open row cannot be reached in the text view | The row at the end of the scanned part cannot be read | The text cursor stays on the row before it until the scan passes it | Tests `test_open_row_is_unavailable_but_earlier_rows_resolve` and `test_navigation_at_the_scan_frontier_of_an_unedited_document_stays_on_resolved_rows` |
-| A hex needle can cut a character or a CR LF pair | A hex needle matches bytes | By design; the hex view selects the bytes exactly, the text view maps each end to a character | Not tested for the text view |
+| A hex needle can cut a character or a CR LF pair | A hex needle matches bytes | By design; the hex view selects the bytes exactly, the text view maps each end to a character | Matcher level: `test_a_needle_that_splits_a_utf8_character_or_crlf_matches` (`tests/nova_editor/core/test_search_bytes.py`); the text-view mapping of the ends is not tested |
 | A plain number is rejected in the hex Go to | A plain number is a line number and the hex view has no lines | By design; `@N` takes a decimal offset | Test `test_a_plain_number_in_the_hex_view_is_rejected_with_the_line_message` |
 | The hint bar lists Wrap Mode in the hex view | `HintBar` does not follow `Action.enabled` | Cosmetic; `F10 Wrap Mode` stays in the bar and does nothing | The menu state only (`test_the_two_items_are_disabled_in_hex_and_enabled_in_text`) |
 | The line scan runs under the hex view | A huge binary file starts its scan at open, because the text view may be opened later | The index grows with the number of rows found; the hex view never waits for it | Measured on 2026-10-13: with the scan on, a redraw on 50 GiB stays under 30 ms; see "Budget (REQ-21)" |
 | The in-place save is not atomic | The write patches the file in place | A crash, a power loss or a full disk can leave the file partially patched; save again or use Save As | Tests `test_write_error_after_first_range_is_partial` and `test_save_after_partial_failure_succeeds_and_file_equals_document` |
-| The in-place save cannot open busy files | The kernel refuses to open the file for writing | `ETXTBSY`, `EACCES`, `EPERM` and `EROFS` fail at stage `prepare`; Save As works | Test `test_etxtbsy_is_plain_failure_with_errno_text` |
-| Repeat saves rewrite earlier patches | No tracker of clean ranges | Proportional to the bytes edited or patched so far, never to the file size | Test `test_second_save_after_undo_restores_original_bytes` |
+| The in-place save cannot open busy files | The kernel refuses to open the file for writing | `ETXTBSY`, `EACCES`, `EPERM` and `EROFS` fail at stage `prepare`; Save As works | Tests `test_etxtbsy_is_plain_failure_with_errno_text` and `test_unwritable_file_fails_before_any_write_with_read_only_message` (both `core/test_inplace_job.py`); `EPERM` and `EROFS` are not tested separately |
+| Repeat saves rewrite earlier patches | No tracker of clean ranges | Proportional to the bytes edited or patched so far, never to the file size | The rewrite of a patched range is tested by `test_second_save_after_undo_restores_original_bytes`; the cost bound (proportional to the bytes edited) is not tested |
 | Unverified claims | The final benchmarks were skipped | Five items | Unmeasured on the final code |
 
 ### Hex Editing
@@ -2256,11 +2272,13 @@ See `src/tools/measure_view.py` for usage.
 - **Copy during a save.**
   The record is dropped while a save runs, as in the text view; the internal copy is lost and a paste parses the system text.
 - **Stranded text view.**
-  When a hex edit or paste at offset 0 leaves no resolved row in the text view, keys and clicks in the text view change nothing until the line scan reaches the first rows.
+  When a hex edit or paste at offset 0 leaves no resolved row in the text view, movement keys and clicks in the text view change nothing until the line scan reaches the first rows.
+  No message or bell is shown; the cursor just stops.
   The bytes are exact.
 - **The open row.**
   In a partially scanned document the last scanned row is the open row.
   The text cursor cannot be moved onto it and stays on the row before it until the scan passes it.
+  No message or bell is shown; the keys and clicks change nothing and the cursor just stops.
 - **A hex needle can cut a character or a CR LF pair.**
   A hex search needle matches bytes, so a match may start or end inside a multi-byte character or between CR and LF.
   The hex view selects the bytes exactly.
@@ -2283,6 +2301,7 @@ See `src/tools/measure_view.py` for usage.
 
 The final performance benchmarks were skipped by owner decision.
 No measurement exists for the final code of the app.
+The hex view is the exception: it is measured on the final code, see "Budget (REQ-21)".
 The following five items are UNMEASURED on the final code and must not be read as met:
 
 1. **The wrap-on first `ctrl+end` fix.**
