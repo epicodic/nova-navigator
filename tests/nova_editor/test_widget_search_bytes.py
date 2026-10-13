@@ -5,8 +5,8 @@ from __future__ import annotations
 import threading
 
 import pytest
-from textual.widgets.text_area import Selection
 
+from nova_editor.document._document import Selection
 from nova_editor.widget import NovaTextArea
 from nova_editor.widget._search_run import SearchOutcome
 from tests.nova_editor.helpers_view import wait_until

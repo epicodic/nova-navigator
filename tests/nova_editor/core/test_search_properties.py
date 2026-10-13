@@ -173,6 +173,7 @@ def layout_planner(data: bytes, draw: st.DataObject) -> FakePlanner:
 
 
 def _expected(data: bytes, spec: SearchSpec, origin: int) -> SearchResult | None:
+    assert isinstance(spec.needle, str), "the reference oracle covers text needles only"
     found = reference_search(data, spec.needle, case_sensitive=spec.case_sensitive, backward=spec.backward, wrap=spec.wrap, origin=origin)
     return None if found is None else SearchResult(*found)
 
