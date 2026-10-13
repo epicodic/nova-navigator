@@ -666,12 +666,12 @@ In the hex view the status line shows the parts of this table; the narrow rule i
 | # | Text | Rule |
 |---|---|---|
 | 0 | name | `_fit_name(file_name or "(unsaved)", width)`, always kept |
-| 0 | note | as in `format_status` (`status_line.py:101-104`) |
-| 1 | `Off 0x{offset:0{n}X} ({offset}) {P}%` | `n = max(8, len(f"{length:X}"))` (the width of the offset column, REQ-5); decimal without thousands separators (as the example); `P = byte_percent(offset, length)` (`status_line.py:82-86`); the ` P%` is left out when the document is empty |
-| 2 | `0x41 65 'A'` | `0x{b:02X} {b} '{CHAR_TABLE[b]}'` (REQ-6 character: printable ASCII else `.`); `EOF` when `offset == length`; `?` when `byte is None` below the end |
+| 0 | note | as in `format_status` |
+| 1 | `Off 0x{offset:0{n}X} ({offset}) {P}%` | `n = max(8, len(f"{length:X}"))` (the width of the offset column); decimal without thousands separators (as the example); `P = byte_percent(offset, length)`; the ` P%` is left out when the document is empty |
+| 2 | `0x41 65 'A'` | `0x{b:02X} {b} '{CHAR_TABLE[b]}'` (printable ASCII character, else `.`); `EOF` when `offset == length`; `?` when `byte is None` below the end |
 | 3 | `OVR` or `INS` | `insert` |
 | 4 | `Modified` | only when modified |
-| 5 | `64.0 GiB` | `format_size(length)`: `N B` below 1 KiB, else one decimal and the unit (`KiB`..`TiB`), the same unit rule as `format_sizes` (`status_line.py:54-66`) |
+| 5 | `64.0 GiB` | `format_size(length)`: `N B` below 1 KiB, else one decimal and the unit (`KiB`..`TiB`), the same unit rule as `format_sizes` |
 | 6 | `Hex` | always |
 The status line reads from the editor on its own timer (0.05 s) to keep updates off the critical path.
 
