@@ -118,11 +118,16 @@ class FindPopup(PopupWidget, can_focus=True):
         )
         yield self._status
 
-    def open(self, offset: tuple[int, int], needle: str | None) -> None:
-        """Show the popup at `offset` with an empty status row; a `needle` pre-fills the input. The input is focused with its text selected."""
+    def open(self, offset: tuple[int, int], needle: str | None, hex: bool | None = None) -> None:
+        """Show the popup at `offset` with an empty status row; a `needle` pre-fills the input and `hex` (when given with it) sets the Hex box to match.
+
+        The input is focused with its text selected.
+        """
         self.offset = offset
         if needle is not None:
             self.input.value = needle
+            if hex is not None:
+                self._hex.value = hex
         self.set_status("")
         self.show()
         self.input.focus()

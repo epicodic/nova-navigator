@@ -143,7 +143,7 @@ async def test_document_view_show_hex_false_cancels_a_running_search(tmp_path: P
         await pilot.pause()
         view.show_hex(True)
         await pilot.pause()
-        monkeypatch.setattr(view.editor, "cancel_search", lambda: cancelled.append(1))
+        monkeypatch.setattr(view.editor, "cancel_search_now", lambda: cancelled.append(1))
         monkeypatch.setattr(type(view.editor), "searching", property(lambda _self: True))
         view.show_hex(False)
         await pilot.pause()

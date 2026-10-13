@@ -106,12 +106,12 @@ class DocumentView:
         if on:
             editor.cancel_pending()
             if editor.searching:
-                editor.cancel_search()
+                editor.cancel_search_now()  # authoritative: a finished search whose completion is queued must not place its match on the hidden view
             offset = self._transfer if self._pending else editor.cursor_byte_offset
         else:
             offset = self._transfer if self._pending else hex_view.cursor.offset
             if editor.searching:
-                editor.cancel_search()
+                editor.cancel_search_now()  # authoritative: a finished search whose completion is queued must not place its match on the hidden view
             editor.refresh_if_changed()
         self._switches += 1
         switch = self._switches

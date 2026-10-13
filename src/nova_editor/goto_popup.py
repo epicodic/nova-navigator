@@ -25,6 +25,11 @@ HEX_INVALID = "Not a byte offset (for example 0x1F00, 1F00h or @7936)"
 HEX_LINE_MESSAGE = "Line numbers are not available in the hex view; use 0x…, …h or @offset"
 """The reason for a line number in the hex view, which has no lines."""
 
+MAX_OFFSET_BITS = 64
+"""Offsets of more bits are shown in hex: `str` of a huge int raises."""
+MAX_HEX_DIGITS = 16
+"""The most hex digits (after leading zeros) of a byte offset: values from 2**64 on are refused."""
+
 _HEX_PREFIXED = re.compile(r"0[xX]([0-9a-fA-F]+)")
 _HEX_SUFFIXED = re.compile(r"([0-9a-fA-F]+)[hH]")
 
@@ -62,7 +67,10 @@ def parse_goto(text: str) -> GotoTarget | None:
     for form in (_HEX_PREFIXED, _HEX_SUFFIXED):
         found = form.fullmatch(text)
         if found is not None:
-            return GotoTarget("byte", int(found.group(1), 16))
+            digits = found.group(1).lstrip("0")
+            if len(digits) > MAX_HEX_DIGITS:  # no file is that long, and a huge int cannot be shown as a decimal
+                return None
+            return GotoTarget("byte", int(digits or "0", 16))
 
     try:
         line_num = int(text)
@@ -87,7 +95,8 @@ def hex_goto(target: GotoTarget, length: int) -> int | str:
     if target.kind == "line":
         return HEX_LINE_MESSAGE
     if target.value > length:
-        return f"byte offset {target.value} is beyond the end of the file ({length} bytes)"
+        shown = str(target.value) if target.value.bit_length() <= MAX_OFFSET_BITS else f"0x{target.value:X}"  # `str` of a huge int raises
+        return f"byte offset {shown} is beyond the end of the file ({length} bytes)"
     return target.value
 
 

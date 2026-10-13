@@ -14,6 +14,7 @@ from nova_editor.core.search import SearchPlan
 from nova_editor.document import LazyDocument
 from nova_editor.screen import EditorScreen
 from nova_editor.widget import NovaTextArea
+from nova_editor.widget._search_run import SearchOutcome, SearchRun
 from nova_editor.widget.hex_view import ByteSelection
 from nova_widgets.flat_widgets import Checkbox
 from tests.nova_editor.helpers_view import wait_until
@@ -412,3 +413,59 @@ async def test_find_and_f3_no_longer_show_the_interim_note(tmp_path: Path) -> No
             await pilot.pause(0.1)
             assert note_of(app) != NOTE
         assert screen.find_popup.display
+
+
+@pytest.mark.asyncio
+async def test_reopening_after_a_hex_search_turns_the_hex_box_on_again(tmp_path: Path) -> None:
+    app = app_for(tmp_path, make_file(tmp_path))
+    async with app.run_test(size=WIDE) as pilot:
+        screen = await hex_screen(pilot, app)
+        popup = screen.find_popup
+        await find(pilot, screen, "DE AD BE EF", hex_on=True)
+        await done(pilot, screen.document.editor)
+        await pilot.press("alt+h")
+        assert not popup.hex
+        await pilot.press("escape")
+        await wait_until(pilot, lambda: not popup.display)
+        await pilot.press("ctrl+f")
+        await wait_until(pilot, lambda: popup.display)
+        assert popup.hex
+        assert popup.input.value == "DE AD BE EF"
+
+
+@pytest.mark.asyncio
+async def test_reopening_after_a_text_search_turns_the_hex_box_off_again(tmp_path: Path) -> None:
+    app = app_for(tmp_path, make_file(tmp_path, b"hello world " * 100))
+    async with app.run_test(size=WIDE) as pilot:
+        screen = await hex_screen(pilot, app)
+        popup = screen.find_popup
+        await find(pilot, screen, "world", hex_on=False)
+        await done(pilot, screen.document.editor)
+        await pilot.press("alt+h")
+        assert popup.hex
+        await pilot.press("escape")
+        await wait_until(pilot, lambda: not popup.display)
+        await pilot.press("ctrl+f")
+        await wait_until(pilot, lambda: popup.display)
+        assert not popup.hex
+        assert popup.input.value == "world"
+
+
+@pytest.mark.asyncio
+async def test_a_finished_search_whose_completion_is_queued_is_dropped_by_the_view_switch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    app = app_for(tmp_path, make_file(tmp_path))
+    async with app.run_test(size=WIDE) as pilot:
+        screen = await hex_screen(pilot, app)
+        editor = screen.document.editor
+        held: list[tuple[SearchRun, SearchOutcome]] = []
+        original = editor._finish_search
+        monkeypatch.setattr(editor, "_finish_search", lambda run, outcome: held.append((run, outcome)))
+        await find(pilot, screen, "DE AD BE EF", hex_on=True)
+        await wait_until(pilot, lambda: bool(held))  # the job is finished, its completion has not been concluded
+        screen.find_popup.hide()
+        await toggle(pilot, screen)
+        for run, outcome in held:
+            original(run, outcome)
+        await pilot.pause()
+        assert selection_of(screen) is None
+        assert not editor.searching

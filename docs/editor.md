@@ -613,6 +613,9 @@ Tests are in `tests/nova_editor/test_menu_path_label.py`.
 - A hex needle is checked in the popup first: an odd number of digits (`Odd number of hex digits (3)`) or a character that is no hex digit (`Not a hex digit: 'x'`, which includes a `0x` prefix) shows in the status row, and no search starts.
 - `Match case` has no effect with `Hex` on, because a hex needle matches exact bytes.
 - A hex needle works in both views: from the hex view it selects the bytes there, and from the text view it selects them in the text view.
+- A hex needle searched in the text view selects the whole character or line break a matching byte lies in.
+- A match that does not start on a character boundary collapses to a cursor in the text view.
+- Reopening the popup prefills the last needle and sets the `Hex` box to the mode of that search, so the text and the box agree; without a last needle the box keeps its state.
 - With `Hex` off, a search from the hex view runs the text search and selects the bytes of the match there.
 - Enter and `Next` search forward and the popup stays open, so Enter repeats; `Previous` searches backward; F3 and Shift+F3 work with the popup open or closed.
 - Escape cancels a running search first, then closes the popup and gives the focus back to the editor.

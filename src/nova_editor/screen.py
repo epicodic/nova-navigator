@@ -898,7 +898,7 @@ class EditorScreen(Screen[None]):
     def action_find(self) -> None:
         """Open the Find popup with the last needle selected."""
         self.goto_popup.hide()
-        self.find_popup.open(self._popup_offset(FindPopup.WIDTH), self.document.needle)
+        self.find_popup.open(self._popup_offset(FindPopup.WIDTH), self.document.needle, self.document.needle_hex)
 
     def action_find_next(self) -> None:
         """Repeat the last search forward."""

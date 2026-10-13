@@ -40,6 +40,51 @@ def test_parse_goto_refuses(text: str) -> None:
     assert parse_goto(text) is None
 
 
+HUGE_HEX = "f" * 5000
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param(f"0x{HUGE_HEX}", id="0x-5000-f"),
+        pytest.param(f"{HUGE_HEX}h", id="5000-f-h"),
+        pytest.param("0x1" + "0" * 16, id="0x-2**64"),
+        pytest.param("1" + "0" * 16 + "h", id="h-2**64"),
+        pytest.param("@" + "1" * 5000, id="at-5000-digits"),
+    ],
+)
+def test_parse_goto_refuses_values_beyond_64_bits(text: str) -> None:
+    assert parse_goto(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("0x" + "f" * 16, id="0x-16-f"),
+        pytest.param("f" * 16 + "h", id="16-f-h"),
+        pytest.param("0x" + "0" * 4000 + "1F00", id="0x-leading-zeros"),
+        pytest.param("0" * 4000 + "1F00h", id="h-leading-zeros"),
+    ],
+)
+def test_parse_goto_accepts_64_bit_values_and_leading_zeros(text: str) -> None:
+    target = parse_goto(text)
+    assert target is not None
+    assert target.value < 2**64
+
+
+def test_parse_goto_at_digit_limit_stays_none_or_safe() -> None:
+    assert parse_goto("@" + "9" * 4301) is None
+    target = parse_goto("@" + "9" * 4300)
+    if target is not None:
+        assert isinstance(hex_goto(target, 10), str)
+
+
+def test_hex_goto_message_survives_any_int() -> None:
+    message = hex_goto(GotoTarget("byte", 10**5000), 10)
+    assert isinstance(message, str)
+    assert message.startswith("byte offset ")
+
+
 def test_parse_goto_plain_digits_stay_a_line_number() -> None:
     assert parse_goto("120") == GotoTarget("line", 120)
     assert parse_goto("100") == GotoTarget("line", 100)
@@ -288,3 +333,37 @@ async def test_escape_closes_the_goto_popup_in_hex_mode(tmp_path: Path) -> None:
         await pilot.press("escape")
         await wait_until(pilot, lambda: not screen.goto_popup.display)
         assert screen.focused is screen.document.hex_view
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hex_view", [True, False])
+@pytest.mark.parametrize("text", [pytest.param(f"0x{HUGE_HEX}", id="0x-5000-f"), pytest.param(f"{HUGE_HEX}h", id="5000-f-h")])
+async def test_a_huge_hex_offset_shows_the_invalid_message_and_the_app_survives(tmp_path: Path, hex_view: bool, text: str) -> None:
+    app = app_for(tmp_path, make_file(tmp_path))
+    async with app.run_test(size=WIDE) as pilot:
+        await pilot.pause()
+        screen = screen_of(app)
+        if hex_view:
+            await toggle(pilot, screen)
+        popup = screen.goto_popup
+        await goto(pilot, screen, text)
+        await wait_until(pilot, lambda: popup.shown == (HEX_INVALID if hex_view else INVALID))
+        assert popup.display
+        assert app.is_running
+        await pilot.press("escape")
+        await wait_until(pilot, lambda: not popup.display)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hex_view", [True, False])
+async def test_a_huge_decimal_offset_stays_invalid_and_the_app_survives(tmp_path: Path, hex_view: bool) -> None:
+    app = app_for(tmp_path, make_file(tmp_path))
+    async with app.run_test(size=WIDE) as pilot:
+        await pilot.pause()
+        screen = screen_of(app)
+        if hex_view:
+            await toggle(pilot, screen)
+        popup = screen.goto_popup
+        await goto(pilot, screen, "@" + "9" * 4301)
+        await wait_until(pilot, lambda: popup.shown == (HEX_INVALID if hex_view else INVALID))
+        assert app.is_running

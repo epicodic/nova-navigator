@@ -3819,6 +3819,10 @@ NovaTextArea {
         if run is not None:
             run.job.cancel()
 
+    def cancel_search_now(self) -> None:
+        """UI thread: drop the running search at once, also one that has finished and whose outcome is still queued; it ends with `SearchCancelled` (reason `cancelled`)."""
+        self._cancel_search_for("cancelled")
+
     def _replace_search(self) -> None:
         """UI thread: drop the running search for a new one and post its `SearchCancelled` (reason `replaced`)."""
         self._cancel_search_for("replaced")
