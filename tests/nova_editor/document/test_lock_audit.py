@@ -121,6 +121,7 @@ CALLS: dict[str, Call] = {
     "has_syntax": lambda d, _: d.has_syntax,
     "is_growing": lambda d, _: d.is_growing(),
     "is_long": lambda d, r: d.is_long(r),
+    "last_reachable_row": lambda d, _: d.last_reachable_row,
     "length": lambda d, _: d.length,
     "line_count": lambda d, _: d.line_count,
     "line_length": lambda d, r: d.line_length(r),

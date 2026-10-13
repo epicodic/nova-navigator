@@ -1066,6 +1066,21 @@ class LazyDocument(DocumentBase):
         """A lower bound while the scan runs (`snapshot().count`)."""
         return self.snapshot().count
 
+    @property
+    def last_reachable_row(self) -> int:
+        """The last row a cursor can stand on: `line_count - 1`, or the row before it while that open row cannot be resolved yet.
+
+        The count includes the open row at the end of the scanned part (the row the scan has not terminated, or the first unknown piece of an edit),
+        and its text cannot be read, so cursor movement stops on the row before it.
+        """
+        last = max(self.line_count - 1, 0)
+        if last > 0 and not self.snapshot().complete:
+            try:
+                self.row_byte_length(last)
+            except (RowUnavailable, IndexError):
+                return last - 1
+        return last
+
     def get_line(self, index: int) -> str:
         text = self._text(index)
         self.call_log.record("get_line", index, len(text))

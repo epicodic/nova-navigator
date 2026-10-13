@@ -182,7 +182,7 @@ _GuardedMethod = TypeVar("_GuardedMethod", bound=Callable[..., Any])
 def _guard_source(default: object) -> Callable[[_GuardedMethod], _GuardedMethod]:
     """Make a cursor entry point survive `SourceChanged` of a lazy document: the widget fails (see `_fail_source`) and `default` is returned.
 
-    A `RowUnavailable` after `close()` (the document is closed) is a no-op that returns `default`; with an open document it still propagates.
+    A `RowUnavailable` after `close()` (the document is closed), or while the cursor stands on an unresolved row, is a no-op that returns `default`; otherwise it propagates.
     """
 
     def decorate(method: _GuardedMethod) -> _GuardedMethod:
@@ -194,8 +194,8 @@ def _guard_source(default: object) -> Callable[[_GuardedMethod], _GuardedMethod]
                 self._fail_source(str(error), error.kind)
                 return default
             except RowUnavailable:
-                if self._lazy_closed:
-                    return default
+                if self._lazy_closed or not self._row_resolved(self.selection.end[0]):
+                    return default  # closed, or the cursor is stranded on an unresolved row (a blind edit in the first row): there is nowhere to move
                 raise
 
         return cast("_GuardedMethod", wrapper)
@@ -2340,6 +2340,13 @@ NovaTextArea {
 
         cursor_location = selection.end
 
+        if not self._row_resolved(cursor_location[0]):
+            # A blind edit in the first row left no resolved row to park the cursor on: there is nothing to scroll to or to match until the scan arrives.
+            self._matching_bracket_location = None
+            if previous_selection != selection:
+                self.post_message(self.SelectionChanged(selection, self))
+            return
+
         self._track_cursor()
         if self._suppress_scroll:
             self._recompute_cursor_offset()
@@ -2380,7 +2387,11 @@ NovaTextArea {
 
     def _recompute_cursor_offset(self) -> None:
         """Recompute the (x, y) coordinate of the cursor in the wrapped document (a provisional cursor row: from its window layout)."""
-        self._cursor_offset = self.wrapped_document.location_to_offset(self.cursor_location)
+        try:
+            self._cursor_offset = self.wrapped_document.location_to_offset(self.cursor_location)
+        except RowUnavailable:
+            self._cursor_offset = Offset(0, 0)  # no resolved row to stand on (a blind edit in the first row): the top left until the scan arrives
+            return
         cursor = self._long_cursor
         layout = None if self.soft_wrap else cursor.provisional_layout(self.cursor_location[0])
         if layout is not None:
@@ -3376,8 +3387,7 @@ NovaTextArea {
         found = self.document.row_at_offset(start)
         if not all(self._row_resolved(row) for row, _column in (self.selection.start, self.selection.end)):
             last = self._last_resolved_row()
-            if last is not None:
-                self.selection = Selection.cursor((last, 0))
+            self.selection = Selection.cursor((last if last is not None else 0, 0))  # no resolved row at all: the start of the document is the one safe place
         return found
 
     def _row_resolved(self, row: int) -> bool:
@@ -4466,7 +4476,7 @@ NovaTextArea {
             fits = False
             length = 0
 
-        row = clamp(row, 0, document.line_count - 1)
+        row = clamp(row, 0, self.navigator.last_row())
         if fits or length is None:
             # An unknown length (lazy documents only) keeps the column instead of guessing a clamp.
             column = max(column, 0)
@@ -4641,7 +4651,7 @@ NovaTextArea {
     @property
     def cursor_at_last_line(self) -> bool:
         """True if and only if the cursor is on the last line."""
-        return self.selection.end[0] == self.document.line_count - 1
+        return self.selection.end[0] == self.navigator.last_row()
 
     @property
     def cursor_at_start_of_line(self) -> bool:
@@ -4899,7 +4909,7 @@ NovaTextArea {
             The location the cursor will jump on "jump word right".
         """
         cursor_row, cursor_column = self.selection.end
-        if cursor_row < self.document.line_count - 1 and not self.document.has_char_at(cursor_row, cursor_column):
+        if cursor_row < self.navigator.last_row() and not self.document.has_char_at(cursor_row, cursor_column):
             # Moving to the line below
             return cursor_row + 1, 0
 
@@ -5106,6 +5116,7 @@ NovaTextArea {
         result = self.replace(insert, start, end, maintain_selection_offset=False)
         return None if self._edit_refused else result
 
+    @_guard_source(None)
     def action_delete_left(self) -> None:
         """Deletes the character to the left of the cursor and updates the cursor location.
 
@@ -5122,6 +5133,7 @@ NovaTextArea {
 
         self._delete_via_keyboard(start, end)
 
+    @_guard_source(None)
     def action_delete_right(self) -> None:
         """Deletes the character to the right of the cursor and keeps the cursor at the same location.
 
@@ -5138,6 +5150,7 @@ NovaTextArea {
 
         self._delete_via_keyboard(start, end)
 
+    @_guard_source(None)
     def action_delete_line(self) -> None:
         """Deletes the lines which intersect with the selection."""
         if self.read_only:
@@ -5255,8 +5268,8 @@ NovaTextArea {
             return
         content = self._internal_clipboard()
         if content is not None:
-            if content.unknown > 0 and self.selection.start[0] == 0:
-                # A blind splice leaves no resolved row to keep the cursor on, and row 0 is the first one.
+            if content.unknown > 0 and min(self.selection.start, self.selection.end)[0] == 0:
+                # A blind splice leaves no resolved row to keep the cursor on when it starts in row 0 (the lower end of the selection, whichever way it was made).
                 self._refuse_edit(
                     "the pasted bytes were copied from a range the scan has not reached, and the first row is not safe to edit with them",
                     "Paste below the first row, or copy the range again once indexing has reached it.",
@@ -5272,6 +5285,7 @@ NovaTextArea {
         if result := self._replace_via_keyboard(clipboard, *self.selection):
             self.move_cursor(result.end_location)
 
+    @_guard_source(None)
     def action_delete_to_start_of_line(self) -> None:
         """Deletes from the cursor location to the start of the line."""
         if self.read_only:
@@ -5288,6 +5302,7 @@ NovaTextArea {
             to_location = self.get_cursor_line_start_location()
             self._delete_via_keyboard(from_location, to_location)
 
+    @_guard_source(None)
     def action_delete_to_end_of_line(self) -> None:
         """Deletes from the cursor location to the end of the line."""
         from_location = self.selection.end
@@ -5299,6 +5314,8 @@ NovaTextArea {
 
         The line will be deleted if the line is empty.
         """
+        if not self._row_resolved(self.selection.end[0]):
+            return  # the cursor is stranded on an unresolved row (a blind edit in the first row): there is no line to delete
         # Assume we're just going to delete to the end of the line.
         action = "delete_to_end_of_line"
         if self.get_cursor_line_start_location() == self.get_cursor_line_end_location():
@@ -5310,6 +5327,7 @@ NovaTextArea {
             action = "delete_right"
         await self.run_action(action)
 
+    @_guard_source(None)
     def action_delete_word_left(self) -> None:
         """Deletes the word to the left of the cursor and updates the cursor location."""
         if self.cursor_at_start_of_text:
@@ -5325,6 +5343,7 @@ NovaTextArea {
         to_location = self.get_cursor_word_left_location()
         self._delete_via_keyboard(self.selection.end, to_location)
 
+    @_guard_source(None)
     def action_delete_word_right(self) -> None:
         """Deletes the word to the right of the cursor and keeps the cursor at the same location.
 
@@ -5349,7 +5368,7 @@ NovaTextArea {
         at_end = not self.document.has_char_at(cursor_row, cursor_column)
         if matches:
             to_location = (cursor_row, cursor_column + matches[0].end())
-        elif cursor_row < self.document.line_count - 1 and at_end:
+        elif cursor_row < self.navigator.last_row() and at_end:
             to_location = (cursor_row + 1, 0)
         else:
             to_location = (cursor_row, cursor_column + len(line))
