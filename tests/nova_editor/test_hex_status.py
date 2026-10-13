@@ -58,16 +58,40 @@ def test_percent_is_100_at_the_end() -> None:
 @pytest.mark.parametrize(
     ("byte", "shown"),
     [
-        (0x00, "0x00 0 '.'"),
+        (0x00, "0x00 0 <NUL>"),
+        (0x07, "0x07 7 <BEL>"),
+        (0x0A, "0x0A 10 <LF>"),
+        (0x0D, "0x0D 13 <CR>"),
+        (0x1B, "0x1B 27 <ESC>"),
+        (0x1F, "0x1F 31 <US>"),
         (0x20, "0x20 32 ' '"),
         (0x41, "0x41 65 'A'"),
         (0x7E, "0x7E 126 '~'"),
-        (0x7F, "0x7F 127 '.'"),
+        (0x7F, "0x7F 127 <DEL>"),
+        (0x80, "0x80 128 '.'"),
+        (0x9B, "0x9B 155 '.'"),
         (0xFF, "0xFF 255 '.'"),
     ],
 )
 def test_byte_value_parts(byte: int, shown: str) -> None:
     assert f"12%  {shown}  OVR" in format_hex_status(hex_state(byte=byte), 200)
+
+
+def test_a_control_byte_drops_whole_two_columns_later() -> None:
+    full = "data.bin  Off 0x00001F00 (7936) 12%  0x1B 27 <ESC>  OVR  Modified  64.5 KiB  Hex"
+    without_byte = "data.bin  Off 0x00001F00 (7936) 12%  OVR  Modified  64.5 KiB  Hex"
+    assert len(full) == 80
+    assert len(without_byte) == 65
+    state = hex_state(byte=0x1B)
+    assert format_hex_status(state, 80) == full
+    assert format_hex_status(state, 79) == without_byte
+    assert format_hex_status(state, 65) == without_byte
+    assert format_hex_status(state, 64) == "data.bin  OVR  Modified  64.5 KiB  Hex"
+
+
+def test_eof_and_unreadable_byte_are_not_named() -> None:
+    assert "EOF" in format_hex_status(hex_state(offset=LENGTH, byte=None), 200)
+    assert "12%  ?  OVR" in format_hex_status(hex_state(byte=None), 200)
 
 
 def test_eof_at_the_end_of_the_document() -> None:
@@ -225,9 +249,22 @@ async def test_the_status_line_shows_the_hex_parts(tmp_path: Path) -> None:
     async with app.run_test(size=SIZE) as pilot:
         await pilot.pause()
         screen = screen_of(app)
-        await wait_until(pilot, lambda: status_text(app) == "data.bin  Off 0x00000000 (0) 0%  0x00 0 '.'  OVR  64.5 KiB  Hex")
+        await wait_until(pilot, lambda: status_text(app) == "data.bin  Off 0x00000000 (0) 0%  0x00 0 <NUL>  OVR  64.5 KiB  Hex")
         screen.document.hex_view.set_cursor(7936)
         await wait_until(pilot, lambda: status_text(app) == "data.bin  Off 0x00001F00 (7936) 12%  0x41 65 'A'  OVR  64.5 KiB  Hex")
+
+
+@pytest.mark.asyncio
+async def test_the_live_status_line_names_a_bel_byte(tmp_path: Path) -> None:
+    path = make_binary(tmp_path)
+    data = bytearray(path.read_bytes())
+    data[7936] = 0x07
+    path.write_bytes(bytes(data))
+    app = NovaEditApp(file_path=path)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        screen_of(app).document.hex_view.set_cursor(7936)
+        await wait_until(pilot, lambda: status_text(app) == "data.bin  Off 0x00001F00 (7936) 12%  0x07 7 <BEL>  OVR  64.5 KiB  Hex")
 
 
 @pytest.mark.asyncio
@@ -239,7 +276,7 @@ async def test_status_follows_cursor_moves_and_the_end_position(tmp_path: Path) 
         view.set_cursor(7937)
         await wait_until(pilot, lambda: status_text(app) == "data.bin  Off 0x00001F01 (7937) 12%  0x42 66 'B'  OVR  64.5 KiB  Hex")
         await pilot.press("right", "right")  # a nibble each: the high digit, then the next byte
-        await wait_until(pilot, lambda: "Off 0x00001F02 (7938) 12%  0x00 0 '.'" in status_text(app))
+        await wait_until(pilot, lambda: "Off 0x00001F02 (7938) 12%  0x00 0 <NUL>" in status_text(app))
         view.set_cursor(LENGTH)
         await wait_until(pilot, lambda: status_text(app) == "data.bin  Off 0x000101D0 (66000) 100%  EOF  OVR  64.5 KiB  Hex")
 
@@ -365,4 +402,4 @@ async def test_a_hex_status_refresh_reads_at_most_one_window_on_a_sparse_8_gib_f
             await wait_until(pilot, lambda: status.flushes > flushes and "Off 0x123456789 (4886718345)" in status.text)
             await pilot.pause(0.2)
         assert len(log.calls) <= 1, log.calls
-        assert status.text.startswith("sparse.bin  Off 0x123456789 (4886718345) 56%  0x00 0 '.'  OVR  8.0 GiB  Hex")
+        assert status.text.startswith("sparse.bin  Off 0x123456789 (4886718345) 56%  0x00 0 <NUL>  OVR  8.0 GiB  Hex")
