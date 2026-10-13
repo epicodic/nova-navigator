@@ -1101,7 +1101,10 @@ NovaTextArea {
 
     @dataclass
     class SearchFound(Message):
-        """Posted once when a search found a match and the selection covers it; `row` and `column` are the cursor location (the end that holds the cursor)."""
+        """Posted once when a search found a match and the selection covers it; `row` and `column` are the cursor location (the end that holds the cursor).
+
+        `row` and `column` are 0 when a `place` callback applied the match.
+        """
 
         start: int
         """Byte offset of the start of the match."""
@@ -3756,12 +3759,30 @@ NovaTextArea {
         """True from the start of a search until its terminal message is posted."""
         return self._search_run is not None
 
-    def search(self, needle: str, *, backward: bool = False, case_sensitive: bool = True, wrap: bool = True) -> bool:
+    def search(
+        self,
+        needle: str | bytes,
+        *,
+        backward: bool = False,
+        case_sensitive: bool = True,
+        wrap: bool = True,
+        origin: int | None = None,
+        place: Callable[[int, int, bool], None] | None = None,
+    ) -> bool:
         """Search for `needle` off the UI thread and select the match.
 
         A forward search starts at the end of the selection (the cursor when empty), a backward one at its start; a match is selected with the
         cursor at its end (forward) or its start (backward), so a repeat continues from it. A running search is cancelled (`SearchCancelled`
         with reason `replaced`). Exactly one of `SearchFound`, `SearchNotFound`, `SearchCancelled` and `SearchFailed` is posted per search.
+        A `bytes` needle is matched as exact bytes; `SearchNotFound` then shows it as spaced upper-case hex.
+
+        Args:
+            needle: The text or the bytes to search for.
+            backward: Search towards the start of the document.
+            case_sensitive: Match case (ignored for a byte needle).
+            wrap: Continue at the other end of the document.
+            origin: The byte offset to start from; `None` starts at the selection.
+            place: Called on the UI thread with `(start, end, backward)` instead of selecting the match in this widget (the hex view applies the match itself).
 
         Returns:
             True when a search started; False for a closed widget, or for a needle that cannot be searched (`SearchFailed` is posted).
@@ -3775,12 +3796,12 @@ NovaTextArea {
 
         try:
             spec = SearchSpec(needle, case_sensitive, backward, wrap)
-            job = SearchJob(_DocumentSearchPlanner(document), spec, self._search_origin(backward), self.search_settings, report, document.foreground)
+            job = SearchJob(_DocumentSearchPlanner(document), spec, self._search_origin(backward) if origin is None else origin, self.search_settings, report, document.foreground)
         except SearchError as error:
             self.post_message(self.SearchFailed(error, self).set_sender(self))
             return False
         self._replace_search()
-        run = SearchRun(job, needle, backward)
+        run = SearchRun(job, needle if isinstance(needle, str) else needle.hex(" ").upper(), backward, place)
         self._search_run = run
         thread = threading.Thread(target=run_search_thread, args=(run, functools.partial(self._post_search_outcome, run)), name="nova-search", daemon=True)
         try:
@@ -3797,6 +3818,10 @@ NovaTextArea {
         run = self._search_run
         if run is not None:
             run.job.cancel()
+
+    def cancel_search_now(self) -> None:
+        """UI thread: drop the running search at once, also one that has finished and whose outcome is still queued; it ends with `SearchCancelled` (reason `cancelled`)."""
+        self._cancel_search_for("cancelled")
 
     def _replace_search(self) -> None:
         """UI thread: drop the running search for a new one and post its `SearchCancelled` (reason `replaced`)."""
@@ -3920,6 +3945,9 @@ NovaTextArea {
             return self.SearchCancelled("text changed", self)
         if self._source_failed:
             return self.SearchFailed(CoreSourceChanged(STALE_REASON, self._stale_kind or ChangeKind.MODIFIED), self)
+        if run.place is not None:
+            run.place(result.start, result.end, run.backward)
+            return self.SearchFound(result.start, result.end, 0, 0, result.wrapped, self)
         self._select_match(result.start, result.end, run.backward, wrapped=result.wrapped)
         return None
 

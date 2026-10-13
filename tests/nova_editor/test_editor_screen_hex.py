@@ -446,26 +446,6 @@ async def test_toggle_while_a_save_runs_only_swaps_displays(tmp_path: Path, monk
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("key", ["ctrl+f", "f3", "shift+f3", "ctrl+g"])
-async def test_interim_guard_in_hex_mode(tmp_path: Path, key: str) -> None:
-    app = NovaEditApp(file_path=make_file(tmp_path))
-    async with app.run_test(size=WIDE) as pilot:
-        await pilot.pause()
-        screen = screen_of(app)
-        editor = screen.document.editor
-        screen.document.needle = "three"
-        await toggle(pilot, screen)
-        await pilot.press(key)
-        await wait_until(pilot, lambda: note_of(app) == NOTE)
-        await pilot.pause(0.1)
-        assert not screen.find_popup.display
-        assert not screen.goto_popup.display
-        assert not editor.searching
-        assert editor.cursor_location == (0, 0)
-        assert screen.focused is screen.document.hex_view
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(("key", "popup"), [("ctrl+f", "find_popup"), ("ctrl+g", "goto_popup")])
 async def test_find_and_goto_still_open_their_popups_in_text_mode(tmp_path: Path, key: str, popup: str) -> None:
     app = NovaEditApp(file_path=make_file(tmp_path))

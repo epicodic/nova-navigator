@@ -340,7 +340,9 @@ class MyEditorApp(App):
 
 ### Search
 
-- `search(needle, *, backward=False, case_sensitive=True, wrap=True) -> bool` — start a literal search (see "Search").
+- `search(needle, *, backward=False, case_sensitive=True, wrap=True, origin=None, place=None) -> bool` — start a literal search, or an exact byte search when `needle` is `bytes` (see "Search").
+- `origin` is the byte offset the search starts from; `None` starts at the selection.
+- `place(start, end, backward)` applies a match on the UI thread instead of selecting it in the widget, which the hex view uses.
 - `cancel_search()` — ask a running search to stop; nothing happens when none runs.
 - `searching` (read-only) — whether a search runs.
 - `search_settings` (class attribute) — `SearchSettings` (chunk, progress interval, tier switch); tests lower it.
@@ -361,6 +363,7 @@ class MyEditorApp(App):
 - `Reloaded` and `ReloadFailed(error, path)` — the outcome of `reload`.
 - `SearchProgress(done, total, phase)` — posted at most 10 times per second while a search runs.
 - `SearchFound(start, end, row, column, wrapped)`, `SearchNotFound(needle)`, `SearchCancelled(reason)` and `SearchFailed(error)` — the terminal messages of a search; exactly one is posted per search.
+- `row` and `column` of `SearchFound` are 0 when a `place` callback applied the match.
 
 ### Thresholds (defaults, tunable via `LazyConfig`)
 
@@ -597,10 +600,23 @@ Tests are in `tests/nova_editor/test_menu_path_label.py`.
 - Text that is no target shows `Not a line number or @byte offset (for example 120 or @4096)` in the popup.
 - A target that the widget rejects (`line N is beyond the last line (COUNT)` and the other texts of "Goto messages") keeps the popup open with that reason and the input selected.
 - A target beyond the scanned part closes the popup; the status line shows `Goto P%  Esc cancels`.
+- In the hex view the popup takes a byte offset only (`0x1F00`, `1F00h` or `@7936`), and its message row shows `Byte offset: 0x1F00, 1F00h or @7936` while nothing is wrong.
+- A plain number in the hex view is rejected with `Line numbers are not available in the hex view; use 0x…, …h or @offset` and the popup stays open, because the hex view has no lines.
+- In the hex view an offset equal to the length is accepted and puts the cursor at the end-of-document position.
+- In the hex view an offset beyond the length is rejected with `byte offset N is beyond the end of the file (L bytes)` and the popup stays open.
+- The text view keeps `@N` as it was, so an offset equal to the length is rejected there.
 
 **Find popup** (`FindPopup`, Ctrl+F) — a literal search.
-- Controls: the needle, `Match case` (on by default, Alt+C), `Previous` and `Next`, and a status row.
+- Controls: the needle, `Match case` (on by default, Alt+C), `Hex` (off by default, Alt+H), `Previous` and `Next`, and a status row.
 - There is no replace, no regular expression and no whole word.
+- With `Hex` on, the needle is hex byte pairs such as `DE AD BE EF`, and spaces are ignored, so `DEAD` is the same needle.
+- A hex needle is checked in the popup first: an odd number of digits (`Odd number of hex digits (3)`) or a character that is no hex digit (`Not a hex digit: 'x'`, which includes a `0x` prefix) shows in the status row, and no search starts.
+- `Match case` has no effect with `Hex` on, because a hex needle matches exact bytes.
+- A hex needle works in both views: from the hex view it selects the bytes there, and from the text view it selects them in the text view.
+- A hex needle searched in the text view selects the whole character or line break a matching byte lies in.
+- A match that does not start on a character boundary collapses to a cursor in the text view.
+- Reopening the popup prefills the last needle and sets the `Hex` box to the mode of that search, so the text and the box agree; without a last needle the box keeps its state.
+- With `Hex` off, a search from the hex view runs the text search and selects the bytes of the match there.
 - Enter and `Next` search forward and the popup stays open, so Enter repeats; `Previous` searches backward; F3 and Shift+F3 work with the popup open or closed.
 - Escape cancels a running search first, then closes the popup and gives the focus back to the editor.
 - The progress and the result of the search (`Searching 42% (2.1 of 5.0 GiB), Esc cancels`, `Found`, `Wrapped to the top`, `Not found: <needle>`, ...) appear in the status row while the popup is open, and as a note of the status line while it is closed.
@@ -726,6 +742,7 @@ Members beyond the fields:
 - `shown` — the widget the user sees (`hex_view` or `editor`); the target of the focus, the menu actions and the popup position.
 - `focus_shown()` — gives the focus to `shown`.
 - `show_hex(on)` — switches the view (see "Hex View").
+- `needle_hex` — whether `needle` was searched as hex bytes; a plain attribute, not a field, so Find Next and Find Previous repeat it with the same Hex option.
 
 The screen mounts both widgets (`editor` and `hex_view`) and replaces both when Open loads another document.
 The mode belongs to the `DocumentView`: a document opened with Open starts in text mode, and the mode is not carried across Open.
@@ -848,6 +865,7 @@ API: `set_cursor(offset, nibble=0, *, pane=None, select=False)`, `goto(offset, *
 | Delete, Backspace | Delete the selection, or the byte under or before the cursor |
 | Ctrl+Z, Ctrl+Y | Undo, redo (also `super+z` and `super+y`) |
 | Ctrl+X, Ctrl+C, Ctrl+V | Cut, copy, paste (also `super+x` and `super+c`) |
+| Escape | Cancel a running search (the key is active only while one runs) |
 
 Ctrl+A, Ctrl+Z, Ctrl+Y, Ctrl+X, Ctrl+C and Ctrl+V are the keys of the editor actions; the widget declares them as bindings of its own, and a key that the user rebinds reaches the same action methods through the keymap (see `docs/keymap.md`, "Editing Actions and the Hex View").
 Insert, Delete and Backspace are bindings of the widget; they are not editor actions and cannot be rebound.
@@ -1031,6 +1049,7 @@ The requirements are silent or ambiguous on these points; the design settled the
 - To hex: it cancels a pending jump and a running search, hides the text widget, shows the hex view, and after the next refresh puts the hex cursor on `cursor_byte_offset` and centers it; when that offset is unknown (`None`) the hex cursor keeps its previous offset.
 - To text: it calls `refresh_if_changed()` on the text widget (the document may have changed in the hex view), swaps the displays, and after the next refresh puts the text cursor on the hex cursor's byte (`place_cursor_at_byte`).
   `place_cursor_at_byte` drops a text selection at once, also while the jump to an unscanned offset is pending.
+- Either switch cancels a running search, because it would act on the hidden view; the switch to the hex view also cancels a pending jump.
 - A switch before that refresh (two quick F4 presses, key repeat) does not read the cursor of the widget it leaves, which is not placed yet: the view keeps the scheduled offset (`_transfer`, valid while `_pending`) and carries it on, and only the finish step of the last switch runs.
   An unknown offset is carried on as unknown: the widget shown in the end keeps its cursor.
   The pending state is set only after every call that may raise, so a failed switch leaves no stale offset.
@@ -1043,18 +1062,28 @@ Save, Save As, in-place save, reload and the external-change flow work in both m
 A reload in hex mode repaints at once (`follow_document()`).
 The action is ignored while the document closes or is replaced (one of its two widgets is no longer attached), and it is allowed while a save runs because it only swaps the displays.
 
+### Search and Goto
+
+The hex view has no lines, so its goto takes a byte offset only (see "Popups and dialogs").
+`select_range(start, end, *, cursor_at_start=False)` selects the bytes `[start, end)`, puts the cursor on one end and scrolls it into view, centring a far target.
+`search_origin(backward)` is the end of the selection for a forward search, its start for a backward one, and the cursor when nothing is selected.
+`place_match(start, end, backward)` is the `place` callback of the search; it selects the match with `select_range`.
+Escape calls `cancel_search`; the binding is active only while a search runs, so it never shadows another use of the key.
+`DocumentView` points the view's `searching` and `cancel_search` hooks at the text widget's search.
+
 ### Budget (REQ-21)
 
 `tests/nova_editor/widget/test_hex_view_budget.py` proves the view budget on a sparse 8 GiB file: the first page, each key and each mouse action read the window at most once, Page Down four times reads at most once per step, memory does not depend on the file size, a source change is reported once, and Select All reads nothing.
 `test_hex_sources_do_not_use_whole_row_apis` fails if the hex sources use row, line or line index APIs.
 `tests/nova_editor/widget/test_hex_edit_budget.py` proves the same for edits on the sparse 8 GiB file with the scan not started: appending at Ctrl+End, overwriting the last byte, inserting and deleting near the end each succeed without `EditsLocked`, read the window at most once per operation and use none of the row APIs.
 
+`tests/nova_editor/widget/test_hex_search_budget.py` proves the same for goto and byte search on the sparse 8 GiB file: a goto to any offset, the length included, reads the window once at most; a goto beyond the length reads nothing; a forward search near the end reads at most two windows of chunks; a backward search from the end reads one unit; a cancel stops a running search after a bounded number of reads; and the hex search and goto sources use no row APIs.
+
 ### Interim Limits
 
 These stay until the later activities:
 - The status line still shows the state of the (hidden) text view (until ACT7).
 - View > Line Numbers and Wrap Mode act on the hidden text widget.
-- Find, Find Next, Find Previous and Go to show the note "Not available in the hex view yet" instead of acting (`EditorScreen._hex_guard`; ACT6 removes it).
 - The drag does not auto-scroll.
 - Rows are cut at widths below 45 columns.
 
@@ -1134,11 +1163,12 @@ When an editing action (Undo, Redo, Cut, Copy, Paste, Select All) is moved or un
 | `Ctrl+F` | Find popup; Enter and Next search forward, Previous backward, Escape closes it |
 | `F3` | Repeat the search forward, with the popup open or closed; without a needle it opens the popup |
 | `Shift+F3` | Repeat the search backward, with the popup open or closed |
-| `Ctrl+G` | Go to popup: `N` for a line, `@N` for a byte offset; Enter jumps and closes, Escape closes |
+| `Ctrl+G` | Go to popup: `N` for a line, `@N` for a byte offset; in the hex view a byte offset only (`0x1F00`, `1F00h` or `@N`); Enter jumps and closes, Escape closes |
 | `F11` | Show or hide the line numbers (checkable) |
 | `F10` | Toggle soft wrap |
 | `Alt+C` | In the Find popup: toggle between match case and ignore case |
-| `Escape` | Close the popup that has the focus; cancel a running search first, then a running save and a pending jump |
+| `Alt+H` | In the Find popup: toggle the `Hex` option, which reads the needle as hex byte pairs |
+| `Escape` | Close the popup that has the focus; cancel a running search first, then a running save and a pending jump; in the hex view Escape also cancels a running search |
 
 ### Quit flow
 
@@ -1175,11 +1205,15 @@ The widget posts `JumpRejected`; the popup shows its reason (a toast when the po
 
 A target beyond the scanned part stays pending: the status line shows `Goto P%  Esc cancels`, and Escape cancels it.
 
+The hex view has its own messages, which the popup shows in the same way: `Line numbers are not available in the hex view; use 0x…, …h or @offset` for a line number, and `byte offset N is beyond the end of the file (L bytes)` for an offset greater than the length.
+An offset equal to the length is accepted there, because it is the end-of-document position; the text view still rejects `@N` with N equal to the length.
+
 ### Search in nova_edit
 
 `Ctrl+F` opens the Find popup, Enter and `Next` search forward, `Previous` searches backward, and Escape closes it (a running search is cancelled first).
 `F3` and `Shift+F3` repeat the last needle forward and backward, with the popup open or closed.
 `Alt+C` flips `Match case`, which is on by default.
+`Alt+H` turns on the `Hex` option, which reads the needle as hex byte pairs; a hex search works in both views.
 While the popup is open the texts appear in its status row, and while it is closed as a note of the status line.
 The texts are `Searching 42% (2.1 of 5.0 GiB), Esc cancels` while it runs, then `Found`, `Wrapped to the top`, `Wrapped to the bottom`, `Not found: <needle>`, `Search cancelled` (with `: <reason>` unless the user cancelled) or `Search failed: <error>`.
 A needle is shown at most 40 characters in `Not found`.
@@ -1703,6 +1737,9 @@ A match is a byte range `[start, end)` that starts and ends on a character bound
 A raw byte such as 0xA9 therefore does not match inside a valid `é`.
 A line break in the needle (`\n`, `\r\n` or `\r`) counts as one character and matches exactly one document terminator.
 `compile_matcher` raises `SearchError` for an empty needle, a lone surrogate outside U+DC80 to U+DCFF, and a needle over the limits (see "Known Limits").
+A byte needle (`bytes`) is matched as exact bytes: it has no character boundary, line break or case rule, and `SearchNotFound` shows it as spaced upper-case hex.
+Only the empty and the over-long checks apply to it, and `ByteMatcher` serves it behind the `NeedleMatcher` protocol.
+`parse_hex_needle` turns the hex text of the Find popup into those bytes; whitespace anywhere is ignored, and a fault raises `HexNeedleError` with the message the popup shows.
 
 ### Case Folding
 
@@ -1774,15 +1811,19 @@ A repeat therefore continues from the match and never overlaps it in the search 
 A needle `aa` finds `aaaa` twice, not three times.
 When the only match is the current selection, the search finds it again after wrapping.
 The default is case-sensitive, which is the fast path.
+The same rule holds for a byte needle.
+A repeat uses the Hex option of the search it repeats (`DocumentView.needle_hex`).
 
 ### Placing the Match
 
-The match is placed through the jump machinery (`_Jump` with `select_to`), so the selection is always exact.
+In the text view the match is placed through the jump machinery (`_Jump` with `select_to`), so the selection is always exact.
 When both ends are below the frontier of the line index and in rows that are not long, the selection is set at once and the view scrolls to it.
 An end beyond the frontier keeps the jump pending, with `JumpProgress`, until the scan reaches it.
 A match in a long row waits until the long index has resolved both ends, then selects.
 Until then the cursor does not move, and Escape cancels.
 `SearchFound` is posted when the selection is set.
+In the hex view the search passes a `place` callback, which `NovaTextArea` calls on the UI thread with the match.
+`HexView.place_match` then selects the bytes and scrolls them into view, so a match in an unscanned file is selected without waiting for the line scan.
 
 ### Progress and Cancel
 
@@ -1797,6 +1838,7 @@ The `Foreground` gate of the document is asked before every unit, and the job sl
 Exactly one terminal message is posted per search, by the handler on the UI thread: `SearchFound`, `SearchNotFound`, `SearchCancelled` or `SearchFailed`.
 The thread posts its outcome from a `finally`, so no defect leaves the widget in the searching state.
 `SearchCancelled.reason` is `cancelled`, `replaced`, `text changed` or `reloaded`.
+A hex-view edit does not go through the text widget, so the running job sees a changed document as `SearchStale`, and the screen shows `Search cancelled: text changed` rather than `Search failed`.
 A second `search` replaces the running one and posts `SearchCancelled` with the reason `replaced` for it.
 A needle that cannot be searched posts `SearchFailed`, and `search` returns False.
 A change of the source during a read ends the search with `SearchFailed` and the stale view policy (see "External Changes").
@@ -2341,6 +2383,7 @@ Any other `fchmod` error fails the save at stage `flush`.
   A save does not cancel a search, because the bytes and their offsets stay the same.
   `reload` and `load_text` cancel it with the reason `reloaded`, and `close` cancels it without a message.
   A result that arrives after an edit is dropped and never moves the cursor.
+  An edit in the hex view cancels a running search too, and the message is `Search cancelled: text changed`.
 - **The search is literal.**
   The needle is literal text.
   The byte pattern that the pattern tier compiles is an implementation detail built from escaped bytes.
@@ -2398,6 +2441,7 @@ Tests are located under `tests/nova_editor/` and `tests/tools/`.
 - `core/test_casefold.py` — the fold, the variant classes and the static ASCII table against the full scan.
 - `core/test_search_matcher.py`, `core/test_search_job.py`, `core/test_search_properties.py`, `core/test_search_context.py` — the matcher, the job (cancel, gate, stale, retry, progress), hypothesis properties and the context bytes.
 - `core/search_reference.py`, `core/test_search_reference.py`, `core/fake_planner.py` — the brute-force reference model, its own tests, and the fake planner with a revision.
+- `core/test_search_bytes.py`, `core/test_hex_needle.py` — the byte needle in the matcher and the job, and `parse_hex_needle`.
 
 **Document layer (`document/`):**
 - `document/test_plan_in_place.py`, `document/test_inplace_document.py` — `plan_in_place`, the patched ranges and the rollback of a patch on `LazyDocument`, and the redirected history surviving a job.
@@ -2426,6 +2470,9 @@ Tests are located under `tests/nova_editor/` and `tests/tools/`.
 - `test_shared_history_widget.py` — the text view working through the history that belongs to the document.
 - `test_widget_save.py`, `test_widget_save_rebase.py`, `test_widget_save_efbig.py`, `test_widget_external_change.py`, `test_save_long_row_cursor.py` — the widget API of saving, the rebase of the widget, a real write error, external changes and the cursor on a long row across a save.
 - `test_widget_search.py`, `test_widget_search_events.py`, `test_widget_search_long_row.py` — the widget search: selection, wrap, repeat, cancel, edits, reload, save, truncation, close, and long rows with lowered thresholds.
+- `test_widget_search_bytes.py`, `widget/test_hex_search_glue.py` — the byte needle through the widget, and the hex view glue (`select_range`, `place_match`, the search origin).
+- `test_hex_find.py`, `test_hex_goto.py` — the Hex option of the Find popup and the byte goto through the screen, in both views.
+- `widget/test_hex_search_budget.py` — the REQ-21 budget of hex goto and byte search on the sparse file.
 - `test_lazy_exports.py` — the lazy exports.
   `tests/test_package_independence.py` guards that `nova_editor` and `nova_widgets` do not depend on `nova_navigator`, and that `nova_editor` does not use the VFS.
 

@@ -30,6 +30,7 @@ from nova_widgets.response import Response
 
 from .core.byte_source import ChangeKind
 from .core.save import check_path
+from .core.search import HexNeedleError, SearchStale, parse_hex_needle
 from .decisions import failure_box, file_question, open_question, quit_question, reload_question
 from .document._cursor_anchor import CursorState
 from .document._lazy_config import LazyConfig
@@ -37,7 +38,7 @@ from .document_view import DocumentView
 from .editor_actions import build_editor_actions, build_keyboard_shortcuts_action
 from .editor_menus import build_menu_bar
 from .find_popup import FindPopup
-from .goto_popup import GotoPopup
+from .goto_popup import GotoPopup, GotoTarget, hex_goto
 from .status_line import StatusLine, StatusState, byte_percent, format_sizes, row_is_known, save_progress_text
 from .timed_text_area import TimedNovaTextArea
 from .widget import ExternalCheck, HexView, NovaTextArea
@@ -849,69 +850,75 @@ class EditorScreen(Screen[None]):
 
     # Search and Go to
 
-    def search(self, needle: str, *, backward: bool = False, case_sensitive: bool | None = None) -> None:
+    def search(self, needle: str, *, backward: bool = False, case_sensitive: bool | None = None, hex: bool = False) -> None:
         """Search the editor for `needle` and remember it for Find Next and Find Previous.
 
+        In the hex view the match is placed by the hex view (the bytes are selected and scrolled into view), for a text needle as well.
+
         Args:
-            needle: The text to find (it may hold line breaks, which the popup cannot take).
+            needle: The text to find (it may hold line breaks, which the popup cannot take), or hex byte pairs with `hex`.
             backward: Search towards the start of the document.
-            case_sensitive: Distinguish case; the case option of the Find popup when `None`.
+            case_sensitive: Distinguish case; the case option of the Find popup when `None`. No effect on a hex needle.
+            hex: Read `needle` as hex byte pairs; a fault is shown as a search text and no search starts.
         """
         if not needle:
             return
         if case_sensitive is None:
             case_sensitive = self.find_popup.case_sensitive
         document = self.document
+        target: str | bytes = needle
+        if hex:
+            try:
+                target = parse_hex_needle(needle)
+            except HexNeedleError as error:
+                self._show_search_text(str(error), final=True)
+                return
         document.needle = needle
+        document.needle_hex = hex
         document.last_backward = backward
-        document.editor.search(needle, backward=backward, case_sensitive=case_sensitive)
+        if document.hex_mode:
+            view = document.hex_view
+            document.editor.search(
+                target,
+                backward=backward,
+                case_sensitive=case_sensitive,
+                origin=view.search_origin(backward),
+                place=view.place_match,
+            )
+        else:
+            document.editor.search(target, backward=backward, case_sensitive=case_sensitive)
 
     def _repeat_search(self, *, backward: bool) -> None:
         needle = self.document.needle
         if needle is None:
             self.action_find()
             return
-        self.search(needle, backward=backward)
-
-    def _hex_guard(self) -> bool:
-        """Whether the hex view is shown: Find, Find Next, Find Previous and Go to are not available there yet and show a note instead.
-
-        The popups would act on the hidden text widget (ACT6 adds the hex search and goto and removes this guard).
-        """
-        if not self.document.hex_mode:
-            return False
-        self._note("Not available in the hex view yet", timed=True)
-        return True
+        self.search(needle, backward=backward, hex=self.document.needle_hex)
 
     def action_find(self) -> None:
-        """Open the Find popup with the last needle selected (not in the hex view yet)."""
-        if self._hex_guard():
-            return
+        """Open the Find popup with the last needle selected."""
         self.goto_popup.hide()
-        self.find_popup.open(self._popup_offset(FindPopup.WIDTH), self.document.needle)
+        self.find_popup.open(self._popup_offset(FindPopup.WIDTH), self.document.needle, self.document.needle_hex)
 
     def action_find_next(self) -> None:
-        """Repeat the last search forward (not in the hex view yet)."""
-        if self._hex_guard():
-            return
+        """Repeat the last search forward."""
         self._repeat_search(backward=False)
 
     def action_find_previous(self) -> None:
-        """Repeat the last search backward (not in the hex view yet)."""
-        if self._hex_guard():
-            return
+        """Repeat the last search backward."""
         self._repeat_search(backward=True)
 
     def action_goto(self) -> None:
-        """Open the Go to popup; with the popup already open it stays open (not in the hex view yet)."""
-        if self._hex_guard():
-            return
-        self.goto_popup.open(self._popup_offset(GotoPopup.WIDTH))
+        """Open the Go to popup (for byte offsets in the hex view); with the popup already open it stays open."""
+        self.goto_popup.open(self._popup_offset(GotoPopup.WIDTH), hex=self.document.hex_mode)
 
     def on_goto_popup_requested(self, message: GotoPopup.Requested) -> None:
         """Run the jump; the widget answers with `JumpCompleted` or `JumpRejected`, or keeps the target pending (S0001 REQ-6)."""
-        editor = self.document.editor
         target = message.target
+        if self.document.hex_mode:
+            self._goto_in_hex_view(target)
+            return
+        editor = self.document.editor
         if target.kind == "line":
             editor.goto_line(target.value)
         else:  # byte
@@ -919,13 +926,25 @@ class EditorScreen(Screen[None]):
         if editor.pending_progress is not None:  # the target lies beyond the scan: the status line shows the progress, Escape cancels it
             self._close_popup(self.goto_popup)
 
+    def _goto_in_hex_view(self, target: GotoTarget) -> None:
+        """Move the hex cursor to a byte offset (the length is the end position); a refused target stays in the popup as a message."""
+        popup = self.goto_popup
+        view = self.document.hex_view
+        placed = hex_goto(target, view.length)
+        if isinstance(placed, str):
+            popup.reject(placed)
+            return
+        view.goto(placed)
+        popup.awaiting = False
+        self._close_popup(popup)
+
     def on_goto_popup_dismissed(self, message: GotoPopup.Dismissed) -> None:
         """Escape: close the popup and focus the editor."""
         self._close_popup(self.goto_popup)
 
     def on_find_popup_requested(self, message: FindPopup.Requested) -> None:
         """Enter, Next or Previous in the popup: search; the popup stays open."""
-        self.search(message.needle, backward=message.backward, case_sensitive=message.case_sensitive)
+        self.search(message.needle, backward=message.backward, case_sensitive=message.case_sensitive, hex=message.hex)
 
     def on_find_popup_dismissed(self, message: FindPopup.Dismissed) -> None:
         """Escape: cancel a running search first, else close the popup and focus the editor."""
@@ -991,7 +1010,10 @@ class EditorScreen(Screen[None]):
         self._show_search_text(f"Search cancelled{suffix}", final=True)
 
     def on_nova_text_area_search_failed(self, message: NovaTextArea.SearchFailed) -> None:
-        """Show why a search failed."""
+        """Show why a search failed; a document that changed under the running job (a hex edit does not go through the text widget) reads as a cancel."""
+        if isinstance(message.error, SearchStale):
+            self._show_search_text("Search cancelled: text changed", final=True)
+            return
         self._show_search_text(f"Search failed: {message.error}", final=True)
 
 

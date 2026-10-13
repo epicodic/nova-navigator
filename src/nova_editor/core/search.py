@@ -4,6 +4,9 @@ The needle is a `str`, encoded as UTF-8 with `surrogateescape`; a match is a byt
 character boundary of the document and treats a line break of the needle as exactly one document terminator.
 The matcher works on one contiguous window of bytes; `SearchJob` cuts the document into windows, owns regions and wrap.
 
+A byte needle (`bytes`, the hex search of the hex view) is matched as exact bytes: no character boundaries, no line break
+rule and no case folding; `ByteMatcher` serves it behind the same `NeedleMatcher` protocol.
+
 The compiled byte pattern of the pattern tier is an implementation device built from escaped bytes only: no user text
 is ever interpreted as pattern syntax (DEC-29 note 1), and no pattern feature is exposed.
 """
@@ -16,7 +19,7 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from itertools import pairwise
-from typing import Literal, Protocol
+from typing import Literal, Protocol, overload
 
 from nova_editor.core.byte_source import ChangeKind, SourceChanged
 from nova_editor.core.casefold import fold1, variants
@@ -39,6 +42,7 @@ PATTERN_WORK_BUDGET = 4_000_000
 MIN_PATTERN_SPAN = 256
 """Fewest bytes a unit owns when the pattern tier may run, however long the needle is."""
 
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 _ESCAPED = range(0xDC80, 0xDD00)
 _BREAK_FORWARD = rb"(?:\r\n|(?<!\r)\n|\r(?!\n))"
 _BREAK_REVERSED = rb"(?:\n\r|\n(?!\r)|(?<!\n)\r)"
@@ -58,6 +62,10 @@ class SearchError(ValueError):
     """The needle cannot be searched (empty, not encodable, or too long)."""
 
 
+class HexNeedleError(ValueError):
+    """The text is not a hex byte needle; the message is meant for the user."""
+
+
 class SearchCancelled(Exception):
     """The search was cancelled."""
 
@@ -70,7 +78,8 @@ class SearchStale(Exception):
 class SearchSpec:
     """What to search for: the needle and the direction, case and wrap options."""
 
-    needle: str
+    needle: str | bytes
+    """Text to find, or exact bytes (`case_sensitive` has no effect on bytes)."""
     case_sensitive: bool = True
     backward: bool = False
     wrap: bool = True
@@ -123,6 +132,26 @@ class SearchProgress:
     done: int
     total: int
     phase: str
+
+
+def parse_hex_needle(text: str) -> bytes:
+    """Return the bytes of the hex digits in `text`; whitespace anywhere is ignored.
+
+    Only the total number of digits matters, so `DE AD`, `DEAD` and `D E A D` are the same needle.
+
+    Raises:
+        HexNeedleError: `text` has no digit, a character that is no hex digit (a `0x` prefix or a comma too), or an odd
+            number of digits.
+    """
+    digits = "".join(text.split())
+    if not digits:
+        raise HexNeedleError("Enter hex bytes, for example DE AD BE EF")
+    for char in digits:
+        if char not in _HEX_DIGITS:
+            raise HexNeedleError(f"Not a hex digit: {char!r}")
+    if len(digits) % 2:
+        raise HexNeedleError(f"Odd number of hex digits ({len(digits)})")
+    return bytes.fromhex(digits)
 
 
 def _inside_character(window: bytes, index: int) -> bool:
@@ -324,6 +353,69 @@ class Matcher:
         return True
 
 
+class NeedleMatcher(Protocol):
+    """What `SearchJob` needs from a matcher: `Matcher` for text and `ByteMatcher` for bytes."""
+
+    @property
+    def max_length(self) -> int:
+        """Bytes of the longest possible match."""
+        ...
+
+    @property
+    def token_count(self) -> int:
+        """Number of tokens of the needle."""
+        ...
+
+    @property
+    def may_use_pattern(self) -> bool:
+        """False when every window is served by a plain search (so a unit may own a whole chunk)."""
+        ...
+
+    def find(self, window: bytes, lo: int, hi: int) -> tuple[int, int] | None:
+        """Return the leftmost match whose start lies in `[lo, hi)`."""
+        ...
+
+    def rfind(self, window: bytes, lo: int, hi: int) -> tuple[int, int] | None:
+        """Return the match with the greatest end among those whose end lies in `(lo, hi]`."""
+        ...
+
+
+class ByteMatcher:
+    """Find exact bytes in a window: every hit is a match, whatever characters or line breaks it cuts."""
+
+    def __init__(self, needle: bytes) -> None:
+        self._needle = needle
+
+    @property
+    def max_length(self) -> int:
+        """Length of the needle."""
+        return len(self._needle)
+
+    @property
+    def token_count(self) -> int:
+        """Length of the needle (every byte is a token)."""
+        return len(self._needle)
+
+    @property
+    def may_use_pattern(self) -> bool:
+        """Always False: a byte needle never needs a pattern."""
+        return False
+
+    def find(self, window: bytes, lo: int, hi: int) -> tuple[int, int] | None:
+        """Return the leftmost match `(start, end)` whose start lies in `[lo, hi)`; the match may extend past `hi`."""
+        if lo >= hi:
+            return None
+        start = window.find(self._needle, lo, hi + len(self._needle) - 1)
+        return None if start < 0 else (start, start + len(self._needle))
+
+    def rfind(self, window: bytes, lo: int, hi: int) -> tuple[int, int] | None:
+        """Return the match with the greatest end among those whose end lies in `(lo, hi]`; it may start before `lo`."""
+        if lo >= hi:
+            return None
+        start = window.rfind(self._needle, max(0, lo - len(self._needle) + 1), hi)
+        return None if start < 0 else (start, start + len(self._needle))
+
+
 def _tokenize(needle: str, *, case_sensitive: bool) -> list[tuple[bytes, ...]]:
     tokens: list[tuple[bytes, ...]] = []
     index = 0
@@ -350,17 +442,24 @@ def _folds_to_ascii(needle: str) -> bool:
     return all(fold1(match.group()).isascii() for match in _NON_ASCII.finditer(needle))
 
 
-def validate_needle(needle: str, *, tier: Tier = "auto", case_sensitive: bool = True) -> None:
+def validate_needle(needle: str | bytes, *, tier: Tier = "auto", case_sensitive: bool = True) -> None:
     """Check `needle` and `tier` without building any table or pattern (cheap, safe on the UI thread).
 
     Raises:
         SearchError: the needle is empty, has a lone surrogate outside U+DC80 to U+DCFF, is too long, or `tier` is
             unknown or cannot apply.
+
+    A byte needle is only checked for being empty or longer than `MAX_NEEDLE_BYTES`; `tier` and `case_sensitive` do
+    not apply to it.
     """
     if tier not in _TIERS:
         raise SearchError(f"unknown tier {tier!r}")
     if not needle:
         raise SearchError("empty needle")
+    if isinstance(needle, bytes):
+        if len(needle) > MAX_NEEDLE_BYTES:
+            raise SearchError("the needle is too long")
+        return
     try:
         encoded = needle.encode("utf-8", "surrogateescape")
     except UnicodeEncodeError as error:
@@ -377,8 +476,16 @@ def validate_needle(needle: str, *, tier: Tier = "auto", case_sensitive: bool = 
         raise SearchError("the ascii tier needs a case-insensitive needle whose folded form is ASCII")
 
 
-def compile_matcher(needle: str, *, case_sensitive: bool, tier: Tier = "auto") -> Matcher:
-    """Compile `needle` into a `Matcher`.
+@overload
+def compile_matcher(needle: str, *, case_sensitive: bool, tier: Tier = "auto") -> Matcher: ...
+
+
+@overload
+def compile_matcher(needle: bytes, *, case_sensitive: bool, tier: Tier = "auto") -> ByteMatcher: ...
+
+
+def compile_matcher(needle: str | bytes, *, case_sensitive: bool, tier: Tier = "auto") -> Matcher | ByteMatcher:
+    """Compile `needle` into a `Matcher` (text) or a `ByteMatcher` (bytes, which ignore `case_sensitive` and `tier`).
 
     `tier` is a test switch: `"auto"` picks per window, `"find"`, `"ascii"` and `"pattern"` force a tier; a forced tier
     that cannot apply to the needle raises `SearchError`.
@@ -387,6 +494,8 @@ def compile_matcher(needle: str, *, case_sensitive: bool, tier: Tier = "auto") -
         SearchError: see `validate_needle`.
     """
     validate_needle(needle, tier=tier, case_sensitive=case_sensitive)
+    if isinstance(needle, bytes):
+        return ByteMatcher(needle)
     encoded = needle.encode("utf-8", "surrogateescape")
     tokens = _tokenize(needle, case_sensitive=case_sensitive)
     has_break = any(not token for token in tokens)
@@ -490,7 +599,7 @@ class SearchJob:
                     return SearchResult(hit[0], hit[1], phase == "wrapped")
         return None
 
-    def _windows(self, matcher: Matcher, lo: int, hi: int, *, backward: bool) -> Iterator[tuple[int, int]]:
+    def _windows(self, matcher: NeedleMatcher, lo: int, hi: int, *, backward: bool) -> Iterator[tuple[int, int]]:
         chunk = self._span(matcher)
         if not backward:
             for a in range(lo, hi, chunk):
@@ -499,7 +608,7 @@ class SearchJob:
             for b in range(hi, lo, -chunk):
                 yield max(lo, b - chunk), b
 
-    def _span(self, matcher: Matcher) -> int:
+    def _span(self, matcher: NeedleMatcher) -> int:
         """Bytes one unit owns: the chunk, cut down for long needles that may use the pattern tier."""
         chunk = max(1, self._settings.chunk)
         if not matcher.may_use_pattern:
@@ -508,7 +617,7 @@ class SearchJob:
         span = max(1, settings.min_pattern_span, settings.pattern_work_budget // matcher.token_count)
         return min(chunk, span)
 
-    def _unit(self, matcher: Matcher, a: int, b: int, length: int) -> tuple[int, int] | None:
+    def _unit(self, matcher: NeedleMatcher, a: int, b: int, length: int) -> tuple[int, int] | None:
         """Search the window owning `[a, b)`; return the match in document offsets."""
         lmax = matcher.max_length
         if not self._spec.backward:

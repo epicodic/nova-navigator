@@ -17,7 +17,7 @@ from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.view_menu import NARROW, SEARCH_MENU_INDEX, choose_item
 
 THREE = "x ab\nab\nab y\n"
-ALLOWED_IDS = {"find_label", "find_case", "find_previous", "find_next", "find_status"}
+ALLOWED_IDS = {"find_label", "find_case", "find_hex", "find_previous", "find_next", "find_status"}
 
 
 def make_file(tmp_path: Path, text: str = THREE) -> Path:
@@ -41,7 +41,7 @@ async def test_the_popup_offers_find_options_only(tmp_path: Path) -> None:
         await pilot.press("ctrl+f")
         await wait_until(pilot, lambda: popup.display)
         assert len(popup.query(Input)) == 1  # the needle: no replacement field
-        assert [str(box.label) for box in popup.query(Checkbox)] == ["Match case"]  # no regular expression, no whole word
+        assert [str(box.label) for box in popup.query(Checkbox)] == ["Match case", "Hex"]  # no regular expression, no whole word
         assert [str(button.label) for button in popup.query(Button)] == ["Previous", "Next"]
         assert {widget.id for widget in popup.query("*") if widget.id} <= ALLOWED_IDS
         assert popup.case_sensitive  # S0001 REQ-8: case-sensitive by default

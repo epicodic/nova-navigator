@@ -231,6 +231,9 @@ The private `_reachable_edits` was removed in S0003 ACT2; the history now owns t
 
 **New imports:** `SearchError`, `SearchJob`, `SearchPlan`, `SearchSettings` and `SearchSpec` from `core/search`, the core `SearchProgress` (aliased `CoreSearchProgress`), and `SearchOutcome`, `SearchRun` and `run_search_thread` from `widget/_search_run.py`.
 **Glue:** the `# --- Search` block holds `search`, `cancel_search`, `searching`, the origin and outcome helpers, and the `nova-search` thread start (registered with `join_on_close`).
+**Search placement:** `search` gained `origin` and `place` for the hex view, and takes `bytes` as well as `str`.
+`SearchFound` has row and column 0 when `place` applied the match.
+A text search without `place` selects the match as before, so the text behaviour is identical.
 `_DocumentSearchPlanner` adapts the document to the `SearchPlanner` protocol.
 **New messages:** `SearchProgress`, `SearchFound`, `SearchNotFound`, `SearchCancelled` and `SearchFailed`.
 **New class attributes:** `search_settings` and `search_clock`; new attribute `_search_run`.

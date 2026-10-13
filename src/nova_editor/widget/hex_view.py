@@ -162,8 +162,9 @@ HexView {
         Binding("ctrl+x,super+x", "cut", show=False),
         Binding("ctrl+c,super+c", "copy", show=False),
         Binding("ctrl+v", "paste", show=False),
+        Binding("escape", "cancel_search", show=False),
     ]
-    """Navigation, Select All, Insert, Delete, Backspace, Undo, Redo, Cut, Copy and Paste; typed digits and characters are handled by `_on_key`."""
+    """Navigation, Select All, Insert, Delete, Backspace, Undo, Redo, Cut, Copy, Paste and Escape (active only while a search runs); typed digits and characters are handled by `_on_key`."""
 
     _private_record: tuple[Content, str | None, str] | None = None
     """`(content, system_text, app_clipboard)` of the last copy when there is no `clipboard_owner`, else `None`."""
@@ -202,12 +203,7 @@ HexView {
         """The cursor."""
         self.insert_mode = False
         """Insert (True) or overwrite (False) for typing."""
-        self.is_read_only: Callable[[], bool] = lambda: False
-        """Whether the document is read-only; typing, Delete and Backspace do nothing then. Looked up at every key."""
-        self.clipboard_owner: Callable[[], NovaTextArea] | None = None
-        """Returns the text widget whose clipboard record the hex view shares (it is redirected by an in-place save); `None` keeps a private record."""
-        self.on_source_changed: Callable[[SourceChanged], None] | None = None
-        """Called once per document when a read reports that the file changed."""
+        self._init_hooks()
         self._anchor: int | None = None
         """The fixed end of the selection, or `None`."""
         self._document: LazyDocument | None = None
@@ -244,6 +240,19 @@ HexView {
         """Whether `_sync` moved the cursor and a scroll to it is scheduled."""
         self._half: tuple[int, int] | None = None
         """`(offset, revision)` of a byte whose high digit was typed just now and still waits for its low digit, or `None`."""
+
+    def _init_hooks(self) -> None:
+        """Set the callables the owner of the view replaces."""
+        self.is_read_only: Callable[[], bool] = lambda: False
+        """Whether the document is read-only; typing, Delete and Backspace do nothing then. Looked up at every key."""
+        self.clipboard_owner: Callable[[], NovaTextArea] | None = None
+        """Returns the text widget whose clipboard record the hex view shares (it is redirected by an in-place save); `None` keeps a private record."""
+        self.on_source_changed: Callable[[SourceChanged], None] | None = None
+        """Called once per document when a read reports that the file changed."""
+        self.searching: Callable[[], bool] = lambda: False
+        """Whether a search of the document is running; Escape is active only then."""
+        self.cancel_search: Callable[[], None] = lambda: None
+        """Cancels the running search."""
 
     # -- public state ---------------------------------------------------------------------------------------------------
 
@@ -288,6 +297,46 @@ HexView {
             self._anchor = None
         self.cursor = HexCursor(offset, nibble, target_pane)
         self._changed(before)
+
+    def select_range(self, start: int, end: int, *, cursor_at_start: bool = False) -> None:
+        """Select the bytes `[start, end)`, put the cursor on one end and scroll it into view (a far target is centred).
+
+        Args:
+            start: The first byte; clamped to `[0, length]`.
+            end: One past the last byte; clamped to `[start, length]`. `start == end` places a collapsed cursor.
+            cursor_at_start: Put the cursor at `start` (and the anchor at `end`) instead of the other way round.
+        """
+        self._sync()
+        before = (self.cursor, self.selection)
+        start = max(0, min(start, self._length))
+        end = max(start, min(end, self._length))
+        near, far = (start, end) if cursor_at_start else (end, start)
+        self._anchor = far
+        self.cursor = HexCursor(near, 0, self.cursor.pane)
+        self._changed(before)
+        self._reveal_cursor()
+
+    def search_origin(self, backward: bool) -> int:
+        """The byte offset a search starts from: the end of the selection (forward) or its start (backward); the cursor when nothing is selected."""
+        self._sync()
+        selection = self.selection
+        if selection is None:
+            return self.cursor.offset
+        return selection.start if backward else selection.end
+
+    def place_match(self, start: int, end: int, backward: bool) -> None:
+        """Select a search match (the `place` callback of `NovaTextArea.search`): the cursor at its end, or at its start when `backward`."""
+        self.select_range(start, end, cursor_at_start=backward)
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Make `escape` (`cancel_search`) active only while a search runs, so it never shadows another use of the key."""
+        if action == "cancel_search":
+            return self.searching()
+        return super().check_action(action, parameters)
+
+    def action_cancel_search(self) -> None:
+        """Cancel the running search (Escape)."""
+        self.cancel_search()
 
     def select_all(self) -> None:
         """Select every byte: anchor 0, cursor at the end of the document; reads nothing and does not scroll."""

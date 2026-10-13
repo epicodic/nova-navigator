@@ -62,6 +62,10 @@ class DocumentView:
         self.hex_view.is_read_only = lambda: self.editor.read_only
         self.hex_view.clipboard_owner = lambda: self.editor
         self.hex_view.on_source_changed = self.editor.report_source_changed
+        self.hex_view.searching = lambda: self.editor.searching
+        self.hex_view.cancel_search = self.editor.cancel_search
+        self.needle_hex = False
+        """Whether `needle` was typed as hex bytes. A plain attribute, not a field."""
         self._pending = False
         """Whether a scheduled switch has not run its finish step yet; a switch before then carries `_transfer` on instead of reading the stale cursor of the widget it leaves."""
         self._transfer: int | None = None
@@ -87,7 +91,7 @@ class DocumentView:
         """Show the hex view (`on`) or the text widget; the cursor follows by byte offset and the selection is not carried (REQ-2).
 
         Does nothing when the requested view is shown already. A history checkpoint is set first, so that an undo never joins edits across a switch.
-        Leaving the text view cancels a pending jump and a running search, which would move the hidden cursor later.
+        Leaving either view cancels a running search, which would act on a hidden view; leaving the text view also cancels a pending jump.
         When the text cursor has no known byte offset the hex cursor keeps its previous offset.
         The cursor is placed and the focus moved after the next refresh, once the widget that becomes visible has its size.
         A switch before that refresh (two quick toggles) carries the offset of the scheduled one on, also an unknown one (then the cursor of the
@@ -102,10 +106,12 @@ class DocumentView:
         if on:
             editor.cancel_pending()
             if editor.searching:
-                editor.cancel_search()
+                editor.cancel_search_now()  # authoritative: a finished search whose completion is queued must not place its match on the hidden view
             offset = self._transfer if self._pending else editor.cursor_byte_offset
         else:
             offset = self._transfer if self._pending else hex_view.cursor.offset
+            if editor.searching:
+                editor.cancel_search_now()  # authoritative: a finished search whose completion is queued must not place its match on the hidden view
             editor.refresh_if_changed()
         self._switches += 1
         switch = self._switches
