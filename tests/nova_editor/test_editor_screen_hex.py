@@ -1,4 +1,4 @@
-"""The hex mode of the editor screen: the action `editor.hex_mode` (F4), View > Hex Mode, focus, flows and the interim guard (S0003 ACT4 task 5, design 7)."""
+"""The hex mode of the editor screen: the action `editor.hex_mode` (F4), View > Hex Mode, focus and flows (S0003 ACT4 task 5, design 7)."""
 
 from __future__ import annotations
 
@@ -442,7 +442,7 @@ async def test_toggle_while_a_save_runs_only_swaps_displays(tmp_path: Path, monk
         gate.release()
 
 
-# Interim behaviour while hex is shown
+# Popups in the text mode
 
 
 @pytest.mark.asyncio
