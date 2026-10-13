@@ -9,6 +9,7 @@ from typing import ClassVar, Literal
 from textual.timer import Timer
 from textual.widgets import Static
 
+from .core.control_names import bracketed_control_name
 from .widget.hex_layout import CHAR_TABLE
 
 SEPARATOR = "  "
@@ -175,7 +176,11 @@ def _hex_byte_text(state: HexStatusState) -> str:
         return "EOF"
     if state.byte is None:
         return "?"
-    return f"0x{state.byte:02X} {state.byte} '{CHAR_TABLE[state.byte]}'"
+    byte = state.byte
+    label = bracketed_control_name(byte)
+    if label is None:
+        label = f"'{CHAR_TABLE[byte]}'"
+    return f"0x{byte:02X} {byte} {label}"
 
 
 def format_hex_status(state: HexStatusState, width: int) -> str:

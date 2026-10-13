@@ -71,6 +71,10 @@ Cell widths come from `rich.cells`; the module does not import Textual.
 Functions `advance_disp`, `locate_cover`, `safe_cut`, `resync`, `utf8_len` support the long-line index.
 A long text with some non-ASCII characters is split into ASCII and non-ASCII runs, so the per-character width lookup runs only over the non-ASCII part.
 
+`control_names` — The table of the ASCII control character names (`CONTROL_NAMES`) with `control_name` and `bracketed_control_name`.
+The table is read-only and has 33 entries: the standard abbreviations of 0x00-0x1F (`NUL` to `US`) and of 0x7F (`DEL`).
+The module does not import Textual, so other packages can reuse it.
+
 `line_index` — Sparse background line index over the file.
 `LineIndex` scans rows in a daemon thread, appending stride entries (every 64th row by default).
 `RowRange` describes a row as a byte range: `(start, content_end, end)` where the terminator is bytes from `content_end` to `end`.
@@ -674,11 +678,16 @@ In the hex view the status line shows the parts of this table; the narrow rule d
 | 0 | name | `_fit_name(file_name or "(unsaved)", width)`, always kept |
 | 0 | note | as in `format_status` |
 | 1 | `Off 0x{offset:0{n}X} ({offset}) {P}%` | `n = max(8, len(f"{length:X}"))` (the width of the offset column); decimal without thousands separators (as the example); `P = byte_percent(offset, length)`; the ` P%` is left out when the document is empty |
-| 2 | `0x41 65 'A'` | `0x{b:02X} {b} '{CHAR_TABLE[b]}'` (printable ASCII character, else `.`); `EOF` when `offset == length`; `?` when `byte is None` below the end |
+| 2 | `0x41 65 'A'` | `0x{b:02X} {b}` followed by `bracketed_control_name(b)` (`<BEL>`) for 0x00-0x1F and 0x7F, else `'{CHAR_TABLE[b]}'` (printable ASCII character in quotes, `'.'` for 0x80-0xFF); `EOF` when `offset == length`; `?` when `byte is None` below the end |
 | 3 | `OVR` or `INS` | `insert` |
 | 4 | `Modified` | only when modified |
 | 5 | `64.0 GiB` | `format_size(length)`: `N B` below 1 KiB, else one decimal and the unit (`KiB`..`TiB`), the same unit rule as `format_sizes` |
 | 6 | `Hex` | unless the width forces it out |
+
+The byte part is up to two characters longer for a control character (`<ESC>`), and it drops whole under `HEX_DROP_ORDER` like any other part.
+The name table names the 33 ASCII control characters only, and it has no names for C1 or Latin-1 bytes.
+It is reusable through `from nova_editor.core.control_names import control_name`.
+The character column of the hex rows (REQ-6) and the clipboard text are unchanged and still use `.`.
 
 The status line reads from the editor on its own timer (0.05 s) to keep updates off the critical path.
 
@@ -2683,6 +2692,7 @@ Further properties check that the tiers return the same result on ASCII data and
 - `widget/test_hex_clipboard.py`, `test_hex_clipboard_inplace.py` — copy, cut and paste forms and errors, and the shared record across an in-place save (the paste yields the original bytes) and across a copy during a save.
 - `test_editor_screen_hex_edit.py` — the six editing actions through menu and key (also a rebound key) on the hex view.
 - `core/test_binary_detect.py` — the NUL-byte check of the first 64 KiB.
+- `core/test_control_names.py` — all 33 entries, the bracketed form and the immutability of the table.
 - `test_app_hex_flag.py` — the `--hex` flag of `ned`.
 - `test_open_binary.py` — binary detection at open in `DocumentView.open`, the screen start and the Open flow.
 - `test_hex_status.py`, `widget/test_hex_cursor_byte.py` — the hex status line and `HexView.byte_at_cursor`.
