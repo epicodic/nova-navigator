@@ -272,7 +272,7 @@ A `Content` with unknown pieces (a hex copy of a range the line scan has not rea
 **New private methods:** `_after_blind_edit(edit, result)`, `_park_cursor(start)`, `_row_resolved(row)` and `_last_resolved_row()`.
 `_after_blind_edit` refreshes the view like the tail of `edit` and ends with `_place_cursor_at_byte` (a pending jump while the scan has not arrived).
 `_park_cursor` moves a cursor or selection end that sits on an unresolved row to the last resolved row, found by binary search because resolved rows form a prefix.
-**Modified members:** `edit` (after `history.record`, an edit with `is_blind()` takes `_after_blind_edit` and returns), `_after_step` (a batch with a blind edit takes the foreign route), `_after_foreign_step` (`_park_cursor` before placing the cursor), `action_paste` (a blind paste does not move the cursor again; one in row 0 is refused because no resolved row can hold the cursor) and `_refuse_edit` (new optional `hint` argument; the default text is unchanged).
+**Modified members:** `edit` (after `history.record`, an edit with `is_blind()` takes `_after_blind_edit` and returns), `_after_step` (a batch with a blind edit takes the foreign route), `_after_foreign_step` (`_park_cursor` before placing the cursor), `action_paste` (a blind paste does not move the cursor again; one whose selection reaches the first row at its lower end is refused because no resolved row can hold the cursor) and `_refuse_edit` (new optional `hint` argument; the default text is unchanged).
 Text-view behaviour for scanned content is identical.
 
 ### `widget/_text_area.py` and `document/_document_navigator.py` (S0003 ACT5, the open row and a cursor without a resolved row)
