@@ -141,7 +141,7 @@ async def test_hex_view_reads_the_documents_current_document(tmp_path: Path) -> 
 async def test_a_switch_that_raises_leaves_no_pending_transfer(tmp_path: Path) -> None:
     """A failing call inside `show_hex` must not leave the offset of the aborted switch for the next one."""
     path = tmp_path / "f.bin"
-    path.write_bytes(bytes(4096))
+    path.write_bytes(b"a" * 4096)
     view = _open(path)
     async with ViewHost(view).run_test(size=(80, 24)) as pilot:
         await pilot.pause()

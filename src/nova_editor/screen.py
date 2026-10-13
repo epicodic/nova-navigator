@@ -123,6 +123,7 @@ class EditorScreen(Screen[None]):
         standalone: bool = False,
         poll_seconds: float = 2.0,
         quit_wait_seconds: float = 2.0,
+        start_hex: bool = False,
     ) -> None:
         """Create the editor screen.
 
@@ -137,6 +138,7 @@ class EditorScreen(Screen[None]):
             standalone: `True` for standalone app (Quit in the File menu), `False` for embedded (Close).
             poll_seconds: Interval of the check for a change of the file on disk.
             quit_wait_seconds: Longest wait for a cancelled save before the quit question.
+            start_hex: Show the first document in the hex view whatever its content; later documents (Open) use the binary detection.
         """
         super().__init__()
         self._keybindings = keybindings
@@ -168,7 +170,7 @@ class EditorScreen(Screen[None]):
 
         self._editor_class = editor_class
         self._config = config
-        self.document, self._load_error = self._open_view(path, soft_wrap=soft_wrap, show_line_numbers=True)
+        self.document, self._load_error = self._open_view(path, soft_wrap=soft_wrap, show_line_numbers=True, force_hex=start_hex)
 
     # Keymap
 
@@ -267,6 +269,8 @@ class EditorScreen(Screen[None]):
         self.set_interval(self._poll_seconds, self.poll)
         self._sync_view_actions()
         self._watch_editor()
+        if self.document.hex_mode:
+            self.document.focus_shown()
 
     def on_resize(self, event: events.Resize) -> None:
         """Adjust the path label when the terminal is resized."""
@@ -342,7 +346,7 @@ class EditorScreen(Screen[None]):
 
     # Document management
 
-    def _open_view(self, path: Path | None, *, soft_wrap: bool, show_line_numbers: bool) -> tuple[DocumentView, str | None]:
+    def _open_view(self, path: Path | None, *, soft_wrap: bool, show_line_numbers: bool, force_hex: bool = False) -> tuple[DocumentView, str | None]:
         """Open `path` as a document: the one call of `DocumentView.open`, so that `NOVA_EDIT_TIMING_FILE` reaches every widget the screen builds."""
         return DocumentView.open(
             path,
@@ -351,6 +355,7 @@ class EditorScreen(Screen[None]):
             show_line_numbers=show_line_numbers,
             config=self._config,
             timing_file=os.environ.get("NOVA_EDIT_TIMING_FILE"),
+            force_hex=force_hex,
         )
 
     def _watch_editor(self) -> None:
