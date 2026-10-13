@@ -48,11 +48,17 @@ CONTROL_NAMES: Mapping[int, str] = MappingProxyType({**dict(enumerate(_C0_NAMES)
 
 
 def control_name(byte: int) -> str | None:
-    """Return the abbreviation of the control character ``byte`` (``"BEL"`` for 7), or None when it has no name."""
+    """Return the abbreviation of the control character ``byte`` (``"BEL"`` for 7), or None when it has no name.
+
+    ``byte`` must be an int (a byte value).
+    """
     return CONTROL_NAMES.get(byte)
 
 
 def bracketed_control_name(byte: int) -> str | None:
-    """Return the abbreviation in angle brackets (``"<BEL>"`` for 7), or None when ``byte`` has no name."""
+    """Return the abbreviation in angle brackets (``"<BEL>"`` for 7), or None when ``byte`` has no name.
+
+    ``byte`` must be an int (a byte value).
+    """
     name = CONTROL_NAMES.get(byte)
     return None if name is None else f"<{name}>"

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from nova_editor.core.control_names import CONTROL_NAMES, bracketed_control_name, control_name
@@ -42,10 +44,6 @@ NAMES = [
 ]
 
 
-def test_the_names_list_has_32_c0_entries() -> None:
-    assert len(NAMES) == 32
-
-
 @pytest.mark.parametrize("byte", range(32))
 def test_every_c0_control_character_has_its_name(byte: int) -> None:
     assert control_name(byte) == NAMES[byte]
@@ -74,4 +72,12 @@ def test_the_owner_examples(byte: int, text: str) -> None:
 
 
 def test_the_table_is_read_only() -> None:
-    assert not hasattr(CONTROL_NAMES, "__setitem__")
+    table = cast("dict[int, str]", CONTROL_NAMES)
+    with pytest.raises(TypeError):
+        table[0] = "X"
+    with pytest.raises(TypeError):
+        del table[0]
+    for method in ("pop", "popitem", "update", "clear", "setdefault"):
+        assert getattr(table, method, None) is None
+    assert control_name(0) == "NUL"
+    assert len(CONTROL_NAMES) == 33
