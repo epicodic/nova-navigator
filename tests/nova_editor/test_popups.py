@@ -166,8 +166,9 @@ async def test_the_find_popup_has_only_the_find_controls_and_fits_its_box() -> N
         await pilot.pause()
         assert len(app.find.query(Input)) == 1
         checkboxes = list(app.find.query(Checkbox))
-        assert [str(box.label) for box in checkboxes] == ["Match case"]
+        assert [str(box.label) for box in checkboxes] == ["Match case", "Hex"]
         assert checkboxes[0].value is True
+        assert checkboxes[1].value is False
         assert [(button.id, str(button.label)) for button in app.find.query(Button)] == [("find_previous", "Previous"), ("find_next", "Next")]
         for control in app.find.query("Input, Checkbox, Button"):
             assert app.find.region.contains_region(control.region)

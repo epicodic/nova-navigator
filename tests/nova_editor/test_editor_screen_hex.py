@@ -446,7 +446,7 @@ async def test_toggle_while_a_save_runs_only_swaps_displays(tmp_path: Path, monk
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("key", ["ctrl+f", "f3", "shift+f3", "ctrl+g"])
+@pytest.mark.parametrize("key", ["ctrl+g"])
 async def test_interim_guard_in_hex_mode(tmp_path: Path, key: str) -> None:
     app = NovaEditApp(file_path=make_file(tmp_path))
     async with app.run_test(size=WIDE) as pilot:
