@@ -396,6 +396,14 @@ class EditorScreen(Screen[None]):
         """Refresh the status line."""
         self._request_status()
 
+    def on_hex_view_edited(self, message: HexView.Edited) -> None:
+        """Refresh the status line (the length and the modified mark changed)."""
+        self._request_status()
+
+    def on_hex_view_mode_changed(self, message: HexView.ModeChanged) -> None:
+        """Refresh the status line (the insert mode changed)."""
+        self._request_status()
+
     def action_open_file(self) -> None:
         """Open: pick a file in the file dialog; the document is replaced after the unsaved-changes question."""
         self._start_flow(self._open_flow)

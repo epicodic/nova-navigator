@@ -59,6 +59,8 @@ class DocumentView:
         self.hex_view: HexView = HexView(lambda: self.editor.document, id="hex_view")
         """The hex view over the document of `editor` (it follows a replaced document); hidden in text mode. A plain attribute, not a field."""
         self.hex_view.display = False
+        self.hex_view.is_read_only = lambda: self.editor.read_only
+        self.hex_view.clipboard_owner = lambda: self.editor
         self.hex_view.on_source_changed = self.editor.report_source_changed
         self._pending = False
         """Whether a scheduled switch has not run its finish step yet; a switch before then carries `_transfer` on instead of reading the stale cursor of the widget it leaves."""

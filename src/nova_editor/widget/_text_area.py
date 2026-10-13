@@ -28,7 +28,7 @@ from textual.expand_tabs import expand_text_tabs_from_widths
 from textual.screen import Screen
 from textual.style import Style as ContentStyle
 
-from nova_editor.core import ByteSource, BytesSource, ChangeKind, FileIdentity, PreadSource
+from nova_editor.core import ByteSource, BytesSource, ChangeKind, FileIdentity, PreadSource, RowRange
 from nova_editor.core import SourceChanged as CoreSourceChanged
 from nova_editor.core.inplace import InPlaceJob, InPlaceResult
 from nova_editor.core.pieces import Content as PieceContent
@@ -182,7 +182,7 @@ _GuardedMethod = TypeVar("_GuardedMethod", bound=Callable[..., Any])
 def _guard_source(default: object) -> Callable[[_GuardedMethod], _GuardedMethod]:
     """Make a cursor entry point survive `SourceChanged` of a lazy document: the widget fails (see `_fail_source`) and `default` is returned.
 
-    A `RowUnavailable` after `close()` (the document is closed) is a no-op that returns `default`; with an open document it still propagates.
+    A `RowUnavailable` after `close()` (the document is closed), or while the cursor stands on an unresolved row, is a no-op that returns `default`; otherwise it propagates.
     """
 
     def decorate(method: _GuardedMethod) -> _GuardedMethod:
@@ -194,8 +194,8 @@ def _guard_source(default: object) -> Callable[[_GuardedMethod], _GuardedMethod]
                 self._fail_source(str(error), error.kind)
                 return default
             except RowUnavailable:
-                if self._lazy_closed:
-                    return default
+                if self._lazy_closed or not self._row_resolved(self.selection.end[0]):
+                    return default  # closed, or the cursor is stranded on an unresolved row (a blind edit in the first row): there is nowhere to move
                 raise
 
         return cast("_GuardedMethod", wrapper)
@@ -2340,6 +2340,13 @@ NovaTextArea {
 
         cursor_location = selection.end
 
+        if not self._row_resolved(cursor_location[0]):
+            # A blind edit in the first row left no resolved row to park the cursor on: there is nothing to scroll to or to match until the scan arrives.
+            self._matching_bracket_location = None
+            if previous_selection != selection:
+                self.post_message(self.SelectionChanged(selection, self))
+            return
+
         self._track_cursor()
         if self._suppress_scroll:
             self._recompute_cursor_offset()
@@ -2380,7 +2387,11 @@ NovaTextArea {
 
     def _recompute_cursor_offset(self) -> None:
         """Recompute the (x, y) coordinate of the cursor in the wrapped document (a provisional cursor row: from its window layout)."""
-        self._cursor_offset = self.wrapped_document.location_to_offset(self.cursor_location)
+        try:
+            self._cursor_offset = self.wrapped_document.location_to_offset(self.cursor_location)
+        except RowUnavailable:
+            self._cursor_offset = Offset(0, 0)  # no resolved row to stand on (a blind edit in the first row): the top left until the scan arrives
+            return
         cursor = self._long_cursor
         layout = None if self.soft_wrap else cursor.provisional_layout(self.cursor_location[0])
         if layout is not None:
@@ -3333,6 +3344,9 @@ NovaTextArea {
             self.suggestion = ""
         self._after_text_change()
         self.history.record(edit)
+        if edit.is_blind():
+            self._after_blind_edit(edit, result)
+            return result
         new_gutter_width = self.gutter_width
 
         if old_gutter_width != new_gutter_width:
@@ -3351,6 +3365,52 @@ NovaTextArea {
         self._refresh_size()
         return result
 
+    def _after_blind_edit(self, edit: Edit, result: EditResult) -> None:
+        """Refresh the view after an edit whose end location is meaningless (it pasted a hex copy of an unscanned range) and put the cursor behind the insertion by byte offset."""
+        start = result.start_byte or 0
+        found = self._park_cursor(start)
+        row = found[0] if found is not None else 0
+        self.suggestion = ""
+        if edit.inserted is not None:
+            end = start + edit.inserted.length
+        else:
+            end = start
+        self.wrapped_document.wrap_range((row, 0), (row, 0), (row, 0))
+        self._refresh_size()
+        self._build_highlight_map()
+        self.post_message(self.Changed(self))
+        self.update_suggestion()
+        self._place_cursor_at_byte(end)
+
+    def _park_cursor(self, start: int) -> tuple[int, RowRange] | None:
+        """After a change at byte `start`, move a cursor or selection end that sits on an unresolved row to the last resolved row; return the row of `start` (`None` when unresolved)."""
+        found = self.document.row_at_offset(start)
+        if not all(self._row_resolved(row) for row, _column in (self.selection.start, self.selection.end)):
+            last = self._last_resolved_row()
+            self.selection = Selection.cursor((last if last is not None else 0, 0))  # no resolved row at all: the start of the document is the one safe place
+        return found
+
+    def _row_resolved(self, row: int) -> bool:
+        """Whether `row` exists and its byte range is known."""
+        try:
+            self.document.row_byte_length(row)
+        except (RowUnavailable, IndexError):
+            return False
+        return True
+
+    def _last_resolved_row(self) -> int | None:
+        """The last row whose byte range is known (resolved rows form a prefix of the document); `None` when not even the first one is."""
+        low, high = 0, max(self.document.snapshot().count - 1, 0)
+        if not self._row_resolved(low):
+            return None
+        while low < high:
+            middle = (low + high + 1) // 2
+            if self._row_resolved(middle):
+                low = middle
+            else:
+                high = middle - 1
+        return low
+
     def _unresolved_reason(self) -> str | None:
         """Why no edit can be applied now (the cursor of a long row is provisional or pending), or `None` when positions are exact."""
         self._track_cursor()
@@ -3358,11 +3418,11 @@ NovaTextArea {
             return "the cursor position in this long line is not indexed yet"
         return None
 
-    def _refuse_edit(self, reason: str) -> None:
-        """Tell the user that an edit was refused (bell, warning, `EditRefused`); nothing was changed."""
+    def _refuse_edit(self, reason: str, hint: str = "It works once indexing reaches the position.") -> None:
+        """Tell the user that an edit was refused (bell, warning, `EditRefused`); nothing was changed. `hint` says what makes it work."""
         self._edit_refused = True
         self.app.bell()
-        self.notify(f"Edit refused: {reason}. It works once indexing reaches the position.", severity="warning")
+        self.notify(f"Edit refused: {reason}. {hint}", severity="warning")
         self.post_message(self.EditRefused(reason, self))
 
     @property
@@ -4154,7 +4214,7 @@ NovaTextArea {
 
     def _after_step(self, step: HistoryStep, old_gutter_width: int) -> None:
         """Refresh the view after an undo or redo of a whole batch."""
-        if any(not isinstance(entry, Edit) for entry in step.batch):
+        if any(not isinstance(entry, Edit) or entry.is_blind() for entry in step.batch):
             self._after_foreign_step(step, old_gutter_width)
             return
         edits = [entry for entry in step.batch if isinstance(entry, Edit)]
@@ -4189,7 +4249,7 @@ NovaTextArea {
 
     def _after_foreign_step(self, step: HistoryStep, old_gutter_width: int) -> None:
         """Refresh the view after a batch of entries made by another view (a batch never mixes origins): wrap from the start row, then place the cursor."""
-        found = self.document.row_at_offset(step.low)
+        found = self._park_cursor(step.low)
         row = found[0] if found is not None else 0
         self._after_text_change()
         if old_gutter_width != self.gutter_width:
@@ -4416,7 +4476,7 @@ NovaTextArea {
             fits = False
             length = 0
 
-        row = clamp(row, 0, document.line_count - 1)
+        row = clamp(row, 0, self.navigator.last_row())
         if fits or length is None:
             # An unknown length (lazy documents only) keeps the column instead of guessing a clamp.
             column = max(column, 0)
@@ -4591,7 +4651,7 @@ NovaTextArea {
     @property
     def cursor_at_last_line(self) -> bool:
         """True if and only if the cursor is on the last line."""
-        return self.selection.end[0] == self.document.line_count - 1
+        return self.selection.end[0] == self.navigator.last_row()
 
     @property
     def cursor_at_start_of_line(self) -> bool:
@@ -4849,7 +4909,7 @@ NovaTextArea {
             The location the cursor will jump on "jump word right".
         """
         cursor_row, cursor_column = self.selection.end
-        if cursor_row < self.document.line_count - 1 and not self.document.has_char_at(cursor_row, cursor_column):
+        if cursor_row < self.navigator.last_row() and not self.document.has_char_at(cursor_row, cursor_column):
             # Moving to the line below
             return cursor_row + 1, 0
 
@@ -5056,6 +5116,7 @@ NovaTextArea {
         result = self.replace(insert, start, end, maintain_selection_offset=False)
         return None if self._edit_refused else result
 
+    @_guard_source(None)
     def action_delete_left(self) -> None:
         """Deletes the character to the left of the cursor and updates the cursor location.
 
@@ -5072,6 +5133,7 @@ NovaTextArea {
 
         self._delete_via_keyboard(start, end)
 
+    @_guard_source(None)
     def action_delete_right(self) -> None:
         """Deletes the character to the right of the cursor and keeps the cursor at the same location.
 
@@ -5088,6 +5150,7 @@ NovaTextArea {
 
         self._delete_via_keyboard(start, end)
 
+    @_guard_source(None)
     def action_delete_line(self) -> None:
         """Deletes the lines which intersect with the selection."""
         if self.read_only:
@@ -5156,10 +5219,38 @@ NovaTextArea {
                 f"Selection of {content.length:,} bytes is too large for the system clipboard (limit {self.clipboard_cap:,}); it was not updated. Paste inside the editor still works.",
                 severity="warning",
             )
+        self._set_clipboard_record(content, system_text)
+
+    def _set_clipboard_record(self, content: PieceContent, system_text: str | None) -> None:
+        """Keep `content` as the internal clipboard record, or drop the record while a save runs."""
         if self._save_run is not None:
             self._clipboard_record = None  # the save rewrites the references of the record it collected; a new one would name the old file
             return
         self._clipboard_record = self._ClipboardRecord(content, content.length, system_text, self.app.clipboard)
+
+    def store_clipboard_bytes(self, content: PieceContent, system_text: str | None, size: int) -> None:
+        """Make `content` the internal clipboard and, when `size` fits `clipboard_cap`, `system_text` the system clipboard (the hex view copies through this).
+
+        The record is the one the text view uses, so the redirect of an in-place save and every place that drops it cover hex copies too.
+
+        Args:
+            content: The copied bytes as piece references; the internal paste keeps them exact.
+            system_text: The text for the system clipboard, or `None` when none was built (the copy is above the cap).
+            size: The length of the clipboard text in bytes, which `clipboard_cap` limits; above it a warning says that only the internal paste works.
+        """
+        if size <= self.clipboard_cap and system_text is not None:
+            self.app.copy_to_clipboard(system_text)
+        else:
+            system_text = None
+            self.notify(
+                f"Selection of {size:,} bytes of clipboard text is too large for the system clipboard (limit {self.clipboard_cap:,}); it was not updated. Paste inside the editor still works.",
+                severity="warning",
+            )
+        self._set_clipboard_record(content, system_text)
+
+    def internal_clipboard(self) -> PieceContent | None:
+        """The internal clipboard content when the application clipboard still holds what the last copy left there, else `None` (the hex view pastes with this)."""
+        return self._internal_clipboard()
 
     def _internal_clipboard(self) -> PieceContent | None:
         """The internal clipboard content when the application clipboard still holds what the last copy left there, else `None`."""
@@ -5177,16 +5268,24 @@ NovaTextArea {
             return
         content = self._internal_clipboard()
         if content is not None:
+            if content.unknown > 0 and min(self.selection.start, self.selection.end)[0] == 0:
+                # A blind splice leaves no resolved row to keep the cursor on when it starts in row 0 (the lower end of the selection, whichever way it was made).
+                self._refuse_edit(
+                    "the pasted bytes were copied from a range the scan has not reached, and the first row is not safe to edit with them",
+                    "Paste below the first row, or copy the range again once indexing has reached it.",
+                )
+                return
             self._restart_blink()
             result = self.edit(Edit("", *self.selection, maintain_selection_offset=False, insert_content=content))
-            if self._edit_refused:
-                return
+            if self._edit_refused or (result.inserted is not None and result.inserted.unknown > 0):
+                return  # a blind edit has placed the cursor by byte offset already
             self.move_cursor(result.end_location)
             return
         clipboard = self.app.clipboard
         if result := self._replace_via_keyboard(clipboard, *self.selection):
             self.move_cursor(result.end_location)
 
+    @_guard_source(None)
     def action_delete_to_start_of_line(self) -> None:
         """Deletes from the cursor location to the start of the line."""
         if self.read_only:
@@ -5203,6 +5302,7 @@ NovaTextArea {
             to_location = self.get_cursor_line_start_location()
             self._delete_via_keyboard(from_location, to_location)
 
+    @_guard_source(None)
     def action_delete_to_end_of_line(self) -> None:
         """Deletes from the cursor location to the end of the line."""
         from_location = self.selection.end
@@ -5214,6 +5314,8 @@ NovaTextArea {
 
         The line will be deleted if the line is empty.
         """
+        if not self._row_resolved(self.selection.end[0]):
+            return  # the cursor is stranded on an unresolved row (a blind edit in the first row): there is no line to delete
         # Assume we're just going to delete to the end of the line.
         action = "delete_to_end_of_line"
         if self.get_cursor_line_start_location() == self.get_cursor_line_end_location():
@@ -5225,6 +5327,7 @@ NovaTextArea {
             action = "delete_right"
         await self.run_action(action)
 
+    @_guard_source(None)
     def action_delete_word_left(self) -> None:
         """Deletes the word to the left of the cursor and updates the cursor location."""
         if self.cursor_at_start_of_text:
@@ -5240,6 +5343,7 @@ NovaTextArea {
         to_location = self.get_cursor_word_left_location()
         self._delete_via_keyboard(self.selection.end, to_location)
 
+    @_guard_source(None)
     def action_delete_word_right(self) -> None:
         """Deletes the word to the right of the cursor and keeps the cursor at the same location.
 
@@ -5264,7 +5368,7 @@ NovaTextArea {
         at_end = not self.document.has_char_at(cursor_row, cursor_column)
         if matches:
             to_location = (cursor_row, cursor_column + matches[0].end())
-        elif cursor_row < self.document.line_count - 1 and at_end:
+        elif cursor_row < self.navigator.last_row() and at_end:
             to_location = (cursor_row + 1, 0)
         else:
             to_location = (cursor_row, cursor_column + len(line))

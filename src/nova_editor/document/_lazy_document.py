@@ -50,7 +50,7 @@ from nova_editor.core.inplace_layout import inplace_ranges
 from nova_editor.core.line_index import call_subscriber
 from nova_editor.core.long_line_index import SPLICE_SYNC_BYTES
 from nova_editor.core.long_line_index import Edit as LongEdit
-from nova_editor.core.pieces import MAX_GENERATION
+from nova_editor.core.pieces import MAX_GENERATION, Piece
 from nova_editor.core.rebase import UNDO_COPY_LIMIT
 from nova_editor.core.save import PlanPart, SaveResult
 from nova_editor.core.search import SearchPlan
@@ -1066,6 +1066,21 @@ class LazyDocument(DocumentBase):
         """A lower bound while the scan runs (`snapshot().count`)."""
         return self.snapshot().count
 
+    @property
+    def last_reachable_row(self) -> int:
+        """The last row a cursor can stand on: `line_count - 1`, or the row before it while that open row cannot be resolved yet.
+
+        The count includes the open row at the end of the scanned part (the row the scan has not terminated, or the first unknown piece of an edit),
+        and its text cannot be read, so cursor movement stops on the row before it.
+        """
+        last = max(self.line_count - 1, 0)
+        if last > 0 and not self.snapshot().complete:
+            try:
+                self.row_byte_length(last)
+            except (RowUnavailable, IndexError):
+                return last - 1
+        return last
+
     def get_line(self, index: int) -> str:
         text = self._text(index)
         self.call_log.record("get_line", index, len(text))
@@ -1191,6 +1206,7 @@ class LazyDocument(DocumentBase):
 
         Nothing is normalised.
         The end location comes from `Content.breaks` and `Content.tail_chars`, or from a re-decode of the end row when characters merge.
+        A `content` that still holds unknown pieces (a hex copy of an unscanned range) takes the blind path of `splice_bytes`: its `end_location` is meaningless.
 
         Raises:
             RowUnavailable: As for `replace_range`.
@@ -1202,6 +1218,8 @@ class LazyDocument(DocumentBase):
             self._require_editable()
             first = self._locate(top)
             last = self._locate(bottom)
+        if content.unknown > 0:
+            return self.splice_bytes(first.offset, last.offset, content)  # its breaks are unknown: only the blind path keeps the rows right
         return self._splice_located(first, last, content)
 
     def selection_content(self, start: Location, end: Location) -> Content:
@@ -1217,6 +1235,54 @@ class LazyDocument(DocumentBase):
             first = self._locate(top)
             last = self._locate(bottom)
             return self._table.content(first.offset, last.offset, _span_tail_chars(first, last))
+
+    def content_of_bytes(self, data: bytes) -> Content:
+        """Store `data` in the add store and return it as `Content` (one piece), ready for `splice_bytes`; empty data gives the empty content.
+
+        Raises:
+            RowUnavailable: The document is closed.
+        """
+        with self._lock:
+            self._require_open()
+            return self._table.add(data) if data else _EMPTY
+
+    def content_between(self, start_byte: int, end_byte: int) -> Content:
+        """The bytes `[start_byte, end_byte)` as piece references at any scan state (hex copy and cut); only the break-free tail is read.
+
+        The content is exactly `[start_byte, end_byte)`: a boundary inside a CR LF pair keeps only the half in the range (the lone CR or LF is one piece),
+        so copying and cutting half a pair stores that one byte; `splice_bytes` takes the other half along by itself when the content is spliced.
+
+        Raises:
+            RowUnavailable: The document is closed or a piece cannot be split within the read budget.
+            ValueError: The offsets are not ordered or lie outside the document.
+        """
+        if not 0 <= start_byte <= end_byte:
+            msg = f"invalid byte range {start_byte}..{end_byte}"
+            raise ValueError(msg)
+        with self._lock:
+            self._require_open()
+            if end_byte > self._table.length:
+                msg = f"byte {end_byte} is beyond the document"
+                raise ValueError(msg)
+            if start_byte == end_byte:
+                return _EMPTY
+            head: tuple[Piece, ...] = ()
+            tail: tuple[Piece, ...] = ()
+            try:
+                # A half pair cannot be a boundary of `table.content`: take its byte as a piece of its own.
+                if start_byte > 0 and self._table.read(start_byte - 1, 2) == _CRLF:
+                    head = self._table.byte_content(start_byte).pieces
+                    start_byte += 1
+                if self._table.read(end_byte - 1, 2) == _CRLF:
+                    tail = self._table.byte_content(end_byte - 1).pieces
+                    end_byte -= 1
+                middle = self._table.content(start_byte, end_byte) if start_byte < end_byte else _EMPTY
+            except RowNotIndexed as error:
+                msg = f"offset {end_byte} is not scanned yet"
+                raise RowUnavailable(msg) from error
+            if not head and not tail:
+                return middle
+            return Content.from_pieces([*head, *middle.pieces, *tail], 0 if tail else middle.tail_chars)
 
     def content_text(self, content: Content) -> str:
         """The decoded text of `content` (invalid bytes as U+DC80 to U+DCFF); it reads every byte, so ask only for small contents."""

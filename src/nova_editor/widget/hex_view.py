@@ -20,14 +20,26 @@ from textual.message import Message
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
 
-from nova_editor.core import SourceChanged
-from nova_editor.document import LazyDocument, RowUnavailable
+from nova_editor.core import Content, SourceChanged
+from nova_editor.core.text_width import SURROGATE_ESCAPE
+from nova_editor.document import HexEdit, LazyDocument, RowUnavailable
+from nova_editor.document._history import HistoryRolledBack
+from nova_editor.widget._text_area import NovaTextArea
+from nova_editor.widget.hex_input import HexTextError, char_text, format_hex_pairs, parse_hex_text, plan_digit
 from nova_editor.widget.hex_layout import HexLayout, Pane, choose_layout, format_row, total_rows
 
 _WINDOW_SCREENS_BEFORE = 1
 """Screens of rows the window holds above the first visible row."""
 _WINDOW_SCREENS_AFTER = 2
 """Screens of rows the window holds from the first visible row on (the visible screen and the next)."""
+
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+"""The characters typed as hex digits in the hex pane."""
+
+_FIRST_PRINTABLE = 0x20
+"""The first character typed in the character pane (space)."""
+_LAST_PRINTABLE = 0x7E
+"""The last character typed in the character pane (tilde)."""
 
 _GROUP_BYTES = 8
 """Bytes per hex group; the space between two selected bytes is highlighted only inside a group."""
@@ -142,8 +154,19 @@ HexView {
         Binding("ctrl+shift+end", "move('finish', True)", show=False),
         Binding("tab,shift+tab", "switch_pane", show=False),
         Binding("ctrl+a", "select_all", show=False),
+        Binding("insert", "toggle_insert", show=False),
+        Binding("delete", "delete_forward", show=False),
+        Binding("backspace", "delete_backward", show=False),
+        Binding("ctrl+z,super+z", "undo", show=False),
+        Binding("ctrl+y,super+y", "redo", show=False),
+        Binding("ctrl+x,super+x", "cut", show=False),
+        Binding("ctrl+c,super+c", "copy", show=False),
+        Binding("ctrl+v", "paste", show=False),
     ]
-    """Navigation keys only: typing, deleting, undo and the clipboard are not bound (ACT5)."""
+    """Navigation, Select All, Insert, Delete, Backspace, Undo, Redo, Cut, Copy and Paste; typed digits and characters are handled by `_on_key`."""
+
+    _private_record: tuple[Content, str | None, str] | None = None
+    """`(content, system_text, app_clipboard)` of the last copy when there is no `clipboard_owner`, else `None`."""
 
     class Moved(Message):
         """The cursor or the selection changed."""
@@ -154,6 +177,17 @@ HexView {
             """The cursor after the change."""
             self.selection = selection
             """The selection after the change."""
+
+    class Edited(Message):
+        """The document was changed by an edit made in this view."""
+
+    class ModeChanged(Message):
+        """Insert was toggled."""
+
+        def __init__(self, insert: bool) -> None:
+            super().__init__()
+            self.insert = insert
+            """Whether the view is in insert mode now."""
 
     def __init__(self, document: Callable[[], LazyDocument], *, id: str | None = None) -> None:
         """Create the view.
@@ -167,7 +201,11 @@ HexView {
         self.cursor = HexCursor(0, 0, "hex")
         """The cursor."""
         self.insert_mode = False
-        """Insert (True) or overwrite (False) for typing; typing is ACT5."""
+        """Insert (True) or overwrite (False) for typing."""
+        self.is_read_only: Callable[[], bool] = lambda: False
+        """Whether the document is read-only; typing, Delete and Backspace do nothing then. Looked up at every key."""
+        self.clipboard_owner: Callable[[], NovaTextArea] | None = None
+        """Returns the text widget whose clipboard record the hex view shares (it is redirected by an in-place save); `None` keeps a private record."""
         self.on_source_changed: Callable[[SourceChanged], None] | None = None
         """Called once per document when a read reports that the file changed."""
         self._anchor: int | None = None
@@ -202,6 +240,10 @@ HexView {
         """The byte pressed at the start of a drag, or `None` for a Shift-press that extends the selection."""
         self._drag_left = False
         """Whether the pointer has left the pressed byte during the drag (a click alone selects nothing)."""
+        self._reveal = False
+        """Whether `_sync` moved the cursor and a scroll to it is scheduled."""
+        self._half: tuple[int, int] | None = None
+        """`(offset, revision)` of a byte whose high digit was typed just now and still waits for its low digit, or `None`."""
 
     # -- public state ---------------------------------------------------------------------------------------------------
 
@@ -333,12 +375,18 @@ HexView {
         """Repaint and post `Moved` when the cursor or the selection differ from `before`."""
         after = (self.cursor, self.selection)
         if after != before:
+            self._half = None
+            self._document_provider().history.checkpoint()
             self.refresh()
             self.post_message(self.Moved(*after))
 
     def _move(self, offset: int, nibble: Literal[0, 1], pane: Pane | None, select: bool) -> None:
         """Move the cursor and scroll it into view; a target more than one screen outside the view is centred."""
         self.set_cursor(offset, nibble, pane=pane, select=select)
+        self._reveal_cursor()
+
+    def _reveal_cursor(self) -> None:
+        """Scroll the cursor into view; a cursor more than one screen outside the view is centred."""
         height = self.scrollable_content_region.height
         row = self.cursor.offset // self._layout.bytes_per_row
         top = self.scroll_offset.y
@@ -348,6 +396,324 @@ HexView {
         """Pick up a replaced or changed document and repaint."""
         self._sync()
         self.refresh()
+
+    # -- editing --------------------------------------------------------------------------------------------------------
+
+    def action_toggle_insert(self) -> None:
+        """Switch between overwrite and insert mode (Insert); a run of typing never spans a mode change."""
+        self._document_provider().history.checkpoint()
+        self._half = None
+        self.insert_mode = not self.insert_mode
+        self.post_message(self.ModeChanged(self.insert_mode))
+
+    def action_delete_forward(self) -> None:
+        """Delete the selection, or the byte under the cursor (Delete); nothing at the end position."""
+        self._delete(backward=False)
+
+    def action_delete_backward(self) -> None:
+        """Delete the selection, or the byte before the cursor (Backspace); nothing at offset 0."""
+        self._delete(backward=True)
+
+    def _delete(self, *, backward: bool) -> None:
+        self._sync()
+        if self.is_read_only():
+            return
+        selection = self.selection
+        offset = self.cursor.offset
+        if selection is not None:
+            start, end = selection.start, selection.end
+        elif backward:
+            if offset == 0:
+                return
+            start, end = offset - 1, offset
+        else:
+            if offset >= self._length:
+                return
+            start, end = offset, offset + 1
+        self._edit(start, end, b"", kind="delete", cursor=(start, 0))
+
+    async def _on_key(self, event: events.Key) -> None:
+        """Type a hex digit (hex pane) or a printable ASCII character (character pane) at the cursor.
+
+        Keys with a binding, and keys without a character, are not typing. In the character pane any other character
+        (non-ASCII, Enter, an unbound control character) changes nothing and rings the bell; in the hex pane it is ignored.
+        """
+        character = event.character
+        if character is None or self.is_read_only():
+            return
+        if self.cursor.pane == "hex":
+            if len(character) == 1 and character in _HEX_DIGITS:
+                event.stop()
+                event.prevent_default()
+                self._type_digit(int(character, 16))
+            return
+        if event.is_printable and len(character) == 1 and _FIRST_PRINTABLE <= ord(character) <= _LAST_PRINTABLE:
+            event.stop()
+            event.prevent_default()
+            self._type_character(ord(character))
+        elif event.key != "escape" and event.key not in self.app.active_bindings:
+            event.stop()
+            event.prevent_default()
+            self.app.bell()
+
+    def _typing_position(self) -> int:
+        """The offset typing starts at: the start of the selection, which typing collapses (I6), else the cursor."""
+        selection = self.selection
+        return self.cursor.offset if selection is None else selection.start
+
+    def _type_digit(self, digit: int) -> None:
+        self._sync()
+        offset, nibble = self._typing_position(), self.cursor.nibble if self.selection is None else 0
+        current: int | None = None
+        if offset < self._length:
+            data = self._row_bytes(offset // self._layout.bytes_per_row)
+            if data is None:
+                return
+            current = data[offset % self._layout.bytes_per_row]
+        document = self._document_provider()
+        half = self._half == (offset, document.revision)
+        plan = plan_digit(digit, offset, nibble, self._length, self.insert_mode, current, half=half)
+        cursor = (plan.cursor_offset, 1 if plan.cursor_nibble else 0)
+        waits_for_low_digit = nibble == 0 and (self.insert_mode or offset >= self._length)
+        self._edit(plan.start, plan.end, plan.data, kind="type", completes=plan.completes, cursor=cursor, half=waits_for_low_digit)
+
+    def _type_character(self, value: int) -> None:
+        self._sync()
+        offset = self._typing_position()
+        end = offset + 1 if offset < self._length and not self.insert_mode else offset
+        self._edit(offset, end, bytes((value,)), kind="type", cursor=(offset + 1, 0))
+
+    def _edit(
+        self,
+        start: int,
+        end: int,
+        data: bytes | Content,
+        *,
+        kind: Literal["type", "delete", "paste"],
+        cursor: tuple[int, Literal[0, 1]],
+        completes: bool = False,
+        half: bool = False,
+    ) -> bool:
+        """Replace the bytes `[start, end)` by `data`, record the history entry and place the cursor.
+
+        Args:
+            start: First byte replaced.
+            end: End of the replaced range (exclusive).
+            data: The new bytes, or content that is already stored.
+            kind: What produced the edit (the history groups by it).
+            cursor: Where the cursor goes: the byte offset and the digit.
+            completes: Whether this is the low digit of a byte whose high digit was typed just before.
+            half: Whether the edit leaves a byte that waits for its low digit.
+
+        Returns:
+            True when the document was changed; False when the view is read-only, the edit was refused or nothing happened.
+        """
+        self._sync()
+        if self.is_read_only():
+            return False
+        document = self._document_provider()
+        try:
+            content = data if isinstance(data, Content) else document.content_of_bytes(data)
+            result = document.splice_bytes(start, end, content)
+        except SourceChanged as error:
+            if not self._reported:
+                self._reported = True
+                if self.on_source_changed is not None:
+                    self.on_source_changed(error)
+            return False
+        except (RowUnavailable, ValueError) as error:
+            self._refuse(str(error))
+            return False
+        if result.start_byte is None or result.removed is None or result.inserted is None:
+            raise RuntimeError("splice_bytes returned no byte facts")
+        document.history.record(HexEdit(result.start_byte, result.removed, result.inserted, kind=kind, completes=completes))
+        self._adopt_own_change()
+        offset, nibble = cursor
+        offset = max(0, min(offset, self._length))
+        if offset == self._length or self.cursor.pane == "char":
+            nibble = 0
+        self._anchor = None
+        self.cursor = HexCursor(offset, nibble, self.cursor.pane)
+        self._half = (offset, document.revision) if half else None
+        self.scroll_to_cursor()
+        self.refresh()
+        self.post_message(self.Edited())
+        return True
+
+    def action_undo(self) -> None:
+        """Undo the most recent batch of edits, also those made in the text view (Ctrl+Z); the cursor goes to the place of the edit."""
+        self._move_history("undo")
+
+    def action_redo(self) -> None:
+        """Redo the most recently undone batch of edits (Ctrl+Y); the cursor goes behind the redone bytes."""
+        self._move_history("redo")
+
+    def _move_history(self, direction: Literal["undo", "redo"]) -> None:
+        """Undo or redo one batch through the history of the document, then bring the view in step.
+
+        A refused step (the edit lock) rings the bell and warns; the history is then unchanged. A step that could not be rolled back
+        puts the document in the failed state, like a changed file; a changed file is reported once, as for an edit.
+        """
+        self._sync()
+        document = self._document_provider()
+        history = document.history
+        try:
+            step = history.undo(document) if direction == "undo" else history.redo(document)
+        except SourceChanged as error:
+            self._source_changed(error)
+            return
+        except RowUnavailable as error:
+            self._refuse(str(error))
+            return
+        except HistoryRolledBack as error:
+            self._source_changed(SourceChanged(f"an undo or redo could not be rolled back: {error}"))
+            self._refuse(str(error))
+            return
+        if step is None:
+            return
+        self._adopt_own_change()
+        self._anchor = None
+        self._half = None
+        self.cursor = HexCursor(max(0, min(step.byte, self._length)), 0, self.cursor.pane)
+        self._reveal_cursor()
+        self.refresh()
+        self.post_message(self.Moved(self.cursor, None))
+        self.post_message(self.Edited())
+
+    def _adopt_own_change(self) -> None:
+        """Take over the revision and length of an edit made here; the view keeps the byte offset at the top."""
+        document = self._document_provider()
+        self._revision = document.revision
+        self._length = document.length
+        self._drop_window()
+        self._relayout(self.scrollable_content_region.width)
+
+    # -- clipboard ------------------------------------------------------------------------------------------------------
+
+    def _clipboard_text(self, data: bytes) -> str:
+        """The system clipboard text of `data`: hex pairs in the hex pane, the character rendering in the character pane."""
+        return format_hex_pairs(data) if self.cursor.pane == "hex" else char_text(data)
+
+    def _store_clipboard(self, content: Content, size: int, text: str | None) -> None:
+        """Keep `content` as the internal clipboard and `text` (built only when `size` fits the cap) as the system clipboard."""
+        owner = self.clipboard_owner
+        if owner is not None:
+            owner().store_clipboard_bytes(content, text, size)
+            return
+        cap = NovaTextArea.clipboard_cap
+        if size <= cap and text is not None:
+            self.app.copy_to_clipboard(text)
+        else:
+            text = None
+            self.notify(
+                f"Selection of {size:,} bytes of clipboard text is too large for the system clipboard (limit {cap:,}); it was not updated. Paste inside the editor still works.",
+                severity="warning",
+            )
+        self._private_record = (content, text, self.app.clipboard)
+
+    def _internal_clipboard(self) -> Content | None:
+        """The internal clipboard content while the application clipboard still holds what the last copy left there, else `None`."""
+        owner = self.clipboard_owner
+        if owner is not None:
+            return owner().internal_clipboard()
+        record = self._private_record
+        if record is None:
+            return None
+        content, text, app_clipboard = record
+        return content if self.app.clipboard == (text if text is not None else app_clipboard) else None
+
+    def _copy_selection(self) -> tuple[Content, int, str | None] | None:
+        """Read the selection as content, the size of the clipboard text and the text (`None` above the cap); `None` without a selection or on a refusal."""
+        selection = self.selection
+        if selection is None:
+            return None
+        document = self._document_provider()
+        count = selection.end - selection.start
+        size = 3 * count - 1 if self.cursor.pane == "hex" else count
+        try:
+            content = document.content_between(selection.start, selection.end)
+            text = self._clipboard_text(document.read_bytes(selection.start, count)) if size <= NovaTextArea.clipboard_cap else None
+        except SourceChanged as error:
+            self._source_changed(error)
+            return None
+        except (RowUnavailable, ValueError) as error:
+            self._refuse(str(error))
+            return None
+        return content, size, text
+
+    def action_copy(self) -> None:
+        """Copy the selected bytes (Ctrl+C): hex pairs or characters to the system clipboard, the exact bytes to the internal one."""
+        self._sync()
+        copied = self._copy_selection()
+        if copied is not None:
+            self._store_clipboard(*copied)
+
+    def action_cut(self) -> None:
+        """Remove the selected bytes and copy them (Ctrl+X); nothing without a selection. A refused removal copies nothing."""
+        self._sync()
+        if self.is_read_only():
+            return
+        selection = self.selection
+        copied = self._copy_selection()
+        if selection is None or copied is None:
+            return
+        if self._edit(selection.start, selection.end, b"", kind="delete", cursor=(selection.start, 0)):
+            self._store_clipboard(*copied)
+
+    def action_paste(self) -> None:
+        """Paste (Ctrl+V): the exact internal bytes, else the clipboard text as hex digits (hex pane) or UTF-8 (character pane)."""
+        self._sync()
+        if self.is_read_only():
+            return
+        data: bytes | Content | None = self._internal_clipboard()
+        if data is None:
+            try:
+                data = self._parse_clipboard(self.app.clipboard)
+            except HexTextError as error:
+                self._paste_error(str(error))
+                return
+        count = data.length if isinstance(data, Content) else len(data)
+        if count == 0:
+            return
+        selection = self.selection
+        if selection is not None:
+            start, end = selection.start, selection.end
+        else:
+            start = self.cursor.offset
+            end = start if self.insert_mode else min(start + count, self._length)
+        self._edit(start, end, data, kind="paste", cursor=(start + count, 0))
+
+    def _parse_clipboard(self, text: str) -> bytes:
+        """The bytes of clipboard `text` for the present pane.
+
+        Raises:
+            HexTextError: The text cannot be pasted; the message names the problem.
+        """
+        if self.cursor.pane == "hex":
+            return parse_hex_text(text)
+        if not text:
+            raise HexTextError("Nothing to paste: the clipboard is empty.")
+        try:
+            return text.encode("utf-8", SURROGATE_ESCAPE)
+        except UnicodeEncodeError as error:
+            raise HexTextError("Cannot paste into the character pane: the clipboard text cannot be encoded as UTF-8.") from error
+
+    def _paste_error(self, message: str) -> None:
+        """Ring the bell and warn that the clipboard text cannot be pasted; nothing was changed."""
+        self.app.bell()
+        self.notify(message, severity="warning")
+
+    def _source_changed(self, error: SourceChanged) -> None:
+        """Report a changed file once per document."""
+        if not self._reported:
+            self._reported = True
+            if self.on_source_changed is not None:
+                self.on_source_changed(error)
+
+    def _refuse(self, reason: str) -> None:
+        """Ring the bell and warn that an edit was refused (the edit lock, a closed document)."""
+        self.app.bell()
+        self.notify(f"Edit refused: {reason}.", severity="warning")
 
     # -- synchronisation ------------------------------------------------------------------------------------------------
 
@@ -359,19 +725,36 @@ HexView {
             self._document = document
             self._reported = False
             self._anchor = None
+            self._half = None
             self._revision = document.revision
             self._length = document.length
             self._drop_window()
+            before = self.cursor
             self.cursor = HexCursor(min(self.cursor.offset, self._length), 0, self.cursor.pane)
             self._relayout(width)
+            if self.cursor != before:
+                self._schedule_reveal()
         elif document.revision != self._revision:
             self._revision = document.revision
             self._length = document.length
             self._drop_window()
+            before = self.cursor
             self._clamp_cursor()
             self._relayout(width)
+            if self.cursor != before:
+                self._schedule_reveal()
         elif width != self._width:
             self._relayout(width)
+
+    def _schedule_reveal(self) -> None:
+        """Scroll to the cursor after the next refresh (once), because `_sync` moved it and may run while the view renders."""
+        if not self._reveal:
+            self._reveal = True
+            self.call_after_refresh(self._do_reveal)
+
+    def _do_reveal(self) -> None:
+        self._reveal = False
+        self._reveal_cursor()
 
     def _clamp_cursor(self) -> None:
         """Clamp the cursor and the anchor to `[0, length]`; the end-of-document position has no low digit."""

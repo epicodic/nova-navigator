@@ -110,6 +110,11 @@ CHAR_TABLE: tuple[str, ...] = tuple(chr(byte) if _FIRST_PRINTABLE <= byte <= _LA
 """Character column cell per byte value (REQ-6): printable ASCII as itself, everything else ``.``."""
 
 
+def char_text(data: bytes) -> str:
+    """Return ``data`` as the character column shows it (REQ-6): printable ASCII as itself, else ``.``."""
+    return "".join(CHAR_TABLE[byte] for byte in data)
+
+
 def format_row(layout: HexLayout, offset: int, data: bytes) -> str:
     """Return the text of the row at ``offset`` holding ``data``, padded with spaces to ``total_width``.
 
@@ -124,6 +129,6 @@ def format_row(layout: HexLayout, offset: int, data: bytes) -> str:
             chunk = digits[start * 2 : (start + _GROUP) * 2]
             groups.append(" ".join(chunk[i : i + 2] for i in range(0, len(chunk), 2)))
         hex_text = (" " * _GAP).join(groups)
-        chars = "".join(CHAR_TABLE[byte] for byte in data)
+        chars = char_text(data)
         text += " " * _GAP + hex_text.ljust(layout.hex_width) + " " * _GAP + "|" + chars + "|"
     return text.ljust(layout.total_width)

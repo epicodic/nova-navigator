@@ -17,7 +17,7 @@ The Notes column says what differs from upstream, and what ACT3, ACT4, ACT5, ACT
 
 | Vendored Path | Upstream Path | Notes |
 |---|---|---|
-| `widget/_text_area.py` | `src/textual/widgets/_text_area.py` | Class renamed `TextArea` to `NovaTextArea`; imports updated; lazy document support, cursor state machine, long-row handling and new messages added; ACT4 removed the stock `Document` path and added editing on piece tables, refusal and the clipboard; ACT5 added saving, reload, external change detection and the save messages; ACT6 added the search glue, its messages and the select-all key move; ACT7 imports `TREE_SITTER` and `get_language` from `widget/_tree_sitter.py`, guards `_refresh_size` in `scroll_cursor_visible`, added `line_ending` and `indexing_progress`, and made `cursor_byte_offset` return `None` while the row is unresolved (see below); S0002 ACT5 made `_watch_show_line_numbers` survive an unresolved cursor row; S0003 ACT2 made `history` a property of the document, moved the undo/redo apply loop into `EditHistory`, added `_Jump.allow_end` and the change listener; S0003 ACT4 added `place_cursor_at_byte`, `refresh_if_changed` and `report_source_changed` |
+| `widget/_text_area.py` | `src/textual/widgets/_text_area.py` | Class renamed `TextArea` to `NovaTextArea`; imports updated; lazy document support, cursor state machine, long-row handling and new messages added; ACT4 removed the stock `Document` path and added editing on piece tables, refusal and the clipboard; ACT5 added saving, reload, external change detection and the save messages; ACT6 added the search glue, its messages and the select-all key move; ACT7 imports `TREE_SITTER` and `get_language` from `widget/_tree_sitter.py`, guards `_refresh_size` in `scroll_cursor_visible`, added `line_ending` and `indexing_progress`, and made `cursor_byte_offset` return `None` while the row is unresolved (see below); S0002 ACT5 made `_watch_show_line_numbers` survive an unresolved cursor row; S0003 ACT2 made `history` a property of the document, moved the undo/redo apply loop into `EditHistory`, added `_Jump.allow_end` and the change listener; S0003 ACT4 added `place_cursor_at_byte`, `refresh_if_changed` and `report_source_changed`; S0003 ACT5 added `store_clipboard_bytes`, `internal_clipboard` and `_set_clipboard_record` |
 | `widget/_text_area_theme.py` | `src/textual/_text_area_theme.py` | Imports updated to reference `NovaTextArea`; unchanged by ACT3 |
 | `document/_document.py` | `src/textual/document/_document.py` | Capability methods added; `cell_len` now comes from `rich.cells`; `EditResult` gained `removed`, `start_byte` and `inserted` (ACT4); unchanged by ACT5 |
 | `document/_document_navigator.py` | `src/textual/document/_document_navigator.py` | Lazy-document branches added (see below); `cell_len` now comes from `rich.cells` |
@@ -64,6 +64,8 @@ The following modules are native to `nova_editor` and are not copies of upstream
 | `document/_cursor_anchor.py` | Cursor state machine for long rows (`RESOLVED`, `PROVISIONAL`, `PENDING`). |
 | `document/_long_row_anchor.py` | Adapter from a long-line index to the cursor machine; ACT5 added `rebind`. |
 | `widget/hex_view.py` | none | `HexView`, `HexCursor` and `ByteSelection`: the byte view over a bounded window (S0003 ACT4). |
+| `widget/hex_input.py` | none | `plan_digit`, `DigitPlan`, `format_hex_pairs`, `parse_hex_text` and `HexTextError`: the pure input rules of the hex view (S0003 ACT5). |
+| `document/_hex_edit.py` | none | `HexEdit`, the history entry of the hex view (S0003 ACT5). |
 | `widget/hex_layout.py` | none | `HexLayout`, `choose_layout`, `total_rows` and `format_row`: the pure, Textual-free row layout of the hex view (S0003 ACT4). |
 | `widget/_lazy_window.py` | Windowed text of medium and long rows. |
 | `widget/_long_row_cursor.py` | Cursor machine holder and provisional window layout for long rows; ACT5 added `rebase`. |
@@ -253,9 +255,38 @@ Wiring only: the widget dispatches on what the document decides (`LazyDocument.p
 **Edited members:** `save` (an in-place candidate is a plain save of an unchanged file: no path, no `overwrite`, held identity known), `cancel_save` and `_abandon_save` (set `cancel_requested` under the run lock; a close after the first in-place write posts `SaveFailed(partial=True)`), `_start_save` (the `in_place_candidate` argument, the held identity), `_save_thread` (the in-place branch), `_announce_save_progress` (passes `started`) and `_conclude_save` (the in-place branch; a failure adopts `SaveFailed.identity` and follows `SaveFailed.change` through `_fail_source`).
 The streaming branches of these members are unchanged.
 
+### `widget/_text_area.py` (S0003 ACT5, hex clipboard)
+
+Three additive items so that the hex view shares the clipboard record of the text view and ACT3's redirect covers hex copies without a change.
+**New public methods:** `store_clipboard_bytes(content, system_text, size)` (applies `clipboard_cap` to `size`, writes the system clipboard or warns, keeps the record) and `internal_clipboard()` (public wrapper of `_internal_clipboard`).
+**New private method:** `_set_clipboard_record(content, system_text)`: the last lines of `_store_clipboard` (drop the record while a save runs, else create the `_ClipboardRecord`) moved out unchanged; `_store_clipboard` calls it.
+Text-view behaviour is identical.
+
+### `widget/_text_area.py` (S0003 ACT5, paste of unscanned hex copies)
+
+A `Content` with unknown pieces (a hex copy of a range the line scan has not reached) cannot give an end location, so it is pasted blind and the cursor goes by byte offset.
+**New private methods:** `_after_blind_edit(edit, result)`, `_park_cursor(start)`, `_row_resolved(row)` and `_last_resolved_row()`.
+`_after_blind_edit` refreshes the view like the tail of `edit` and ends with `_place_cursor_at_byte` (a pending jump while the scan has not arrived).
+`_park_cursor` moves a cursor or selection end that sits on an unresolved row to the last resolved row, found by binary search because resolved rows form a prefix.
+**Modified members:** `edit` (after `history.record`, an edit with `is_blind()` takes `_after_blind_edit` and returns), `_after_step` (a batch with a blind edit takes the foreign route), `_after_foreign_step` (`_park_cursor` before placing the cursor), `action_paste` (a blind paste does not move the cursor again; one in row 0 is refused because no resolved row can hold the cursor) and `_refuse_edit` (new optional `hint` argument; the default text is unchanged).
+Text-view behaviour for scanned content is identical.
+
+### `widget/_text_area.py` and `document/_document_navigator.py` (S0003 ACT5, the open row and a cursor without a resolved row)
+
+The last row of a partially scanned document is the open row: it is counted but cannot be resolved, so no cursor may stand on it or move to it.
+**`DocumentNavigator`:** new `last_row()` (the `LazyDocument.last_reachable_row`, else `line_count - 1`); `is_last_document_line` and `clamp_reachable` use it instead of `line_count - 1`.
+**`LazyWrappedDocument.offset_to_location`:** a position below the last reachable row belongs to that row (also for a mouse click).
+**`NovaTextArea`:** `clamp_visitable`, `cursor_at_last_line`, `get_cursor_word_right_location` and the delete-word-right target use `navigator.last_row()` instead of `line_count - 1`.
+**`_guard_source`:** a `RowUnavailable` while the cursor stands on an unresolved row is a no-op that returns the default, as after `close()`.
+The delete actions (`delete_left`, `delete_right`, `delete_line`, `delete_to_start_of_line`, `delete_to_end_of_line`, `delete_word_left`, `delete_word_right`) are decorated with it, and `delete_to_end_of_line_or_delete_line` returns early on such a cursor.
+**`_watch_selection` and `_recompute_cursor_offset`:** a cursor row that does not resolve scrolls and matches nothing (the offset is the top left) instead of raising.
+**`_park_cursor`:** falls back to `(0, 0)` when no row resolves; `action_paste` tests the lower end of the selection for row 0.
+Documents without unknown pieces and with a finished scan behave as before.
+
 ### `document/_edit.py` (ACT5)
 
 **New members:** `contents()` lists every `Content` the edit holds, and `rewrite(contents)` replaces them in the same order after a rebase.
+**New member (S0003 ACT5, unscanned paste):** `is_blind()` tells whether the performed edit inserted or removed unknown pieces.
 **New import:** `Iterator`.
 
 ### `document/_history.py` (ACT5)

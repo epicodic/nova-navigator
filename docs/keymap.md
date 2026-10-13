@@ -319,6 +319,13 @@ Each `EditorScreen` instance builds:
 
 This design allows a Textual app to embed multiple editor screens with different keybinding configurations or contexts.
 
+### Editing Actions and the Hex View
+
+The six editing actions (Undo, Redo, Cut, Copy, Paste, Select All) act on the shown view: the menu runs them on `DocumentView.shown`, and the keymap runs them on the focused widget, which is the shown one.
+Both `NovaTextArea` and `HexView` implement `action_undo`, `action_redo`, `action_cut`, `action_copy`, `action_paste` and `action_select_all`, so a key that the user rebinds applies to both views.
+`HexView` also lists the default keys of these actions as bindings of its own (Ctrl+Z, Ctrl+Y, Ctrl+X, Ctrl+C, Ctrl+V, Ctrl+A), so they work where no screen keymap is present.
+Insert, Delete and Backspace are bindings of `HexView` itself; they are not actions of the registry and cannot be rebound.
+
 ### Keybinding Flow
 
 1. On construction, `EditorScreen.__init__` calls `_apply_keymap()`: it resolves the overrides with `KeybindingsConfig.resolve()` and loads them into the registry, the actions and the hint bar.
