@@ -1116,6 +1116,66 @@ Escape calls `cancel_search`; the binding is active only while a search runs, so
 
 `tests/nova_editor/widget/test_hex_search_budget.py` proves the same for goto and byte search on the sparse 8 GiB file: a goto to any offset, the length included, reads the window once at most; a goto beyond the length reads nothing; a forward search near the end reads at most two windows of chunks; a backward search from the end reads one unit; a cancel stops a running search after a bounded number of reads; and the hex search and goto sources use no row APIs.
 
+**Measured on 2026-10-13**
+
+Method:
+A headless Textual Pilot drives the hex view in a fresh child process for every measurement.
+Three rounds alternate between a 1 GiB file and a 50 GiB file (53,687,091,200 bytes); both are real, non-sparse files on ext4 over LVM and LUKS on NVMe.
+The warm cache comes from a primer pass; the cold open drops the file from the page cache with `fadvise`.
+Seven operations are timed: row scroll down and up, Page Down and Page Up, goto, Ctrl+End and a one-byte edit.
+
+The rule was fixed before the first measurement:
+- Per operation, `|median(50 GiB) - median(1 GiB)| <= max(3 ms, IQR of the 1 GiB samples)`, and both medians stay below 100 ms.
+- The first page appears in less than 0.5 s, cold and warm.
+- With the scan off, the `RssAnon` difference between the two sizes is at most 2 MiB.
+
+Scan off (the line scan is not started):
+
+| Operation | Median 1 GiB (ms) | Median 50 GiB (ms) | Difference (ms) | Limit (ms) | Result |
+|-----------|------------------:|-------------------:|----------------:|-----------:|--------|
+| Row scroll down | 1.98 | 1.92 | 0.06 | 6.98 | pass |
+| Row scroll up | 1.92 | 1.88 | 0.04 | 3.00 | pass |
+| Page Down | 2.13 | 2.03 | 0.10 | 6.97 | pass |
+| Page Up | 2.09 | 2.04 | 0.04 | 6.63 | pass |
+| Goto | 2.08 | 2.05 | 0.03 | 3.00 | pass |
+| Ctrl+End | 2.13 | 2.29 | 0.16 | 9.24 | pass |
+| One-byte edit | 1.81 | 1.80 | 0.01 | 3.00 | pass |
+
+Scan on (the line scan runs from the open, as in the editor):
+
+| Operation | Median 1 GiB (ms) | Median 50 GiB (ms) | Difference (ms) | Limit (ms) | Result |
+|-----------|------------------:|-------------------:|----------------:|-----------:|--------|
+| Row scroll down | 1.95 | 2.03 | 0.08 | 3.00 | pass |
+| Row scroll up | 1.94 | 2.03 | 0.10 | 3.00 | pass |
+| Page Down | 2.11 | 2.24 | 0.13 | 3.00 | pass |
+| Page Up | 2.07 | 2.20 | 0.13 | 3.00 | pass |
+| Goto | 2.09 | 2.22 | 0.13 | 3.00 | pass |
+| Ctrl+End | 2.06 | 2.23 | 0.17 | 3.00 | pass |
+| One-byte edit | 2.13 | 5.17 | 3.04 | 3.00 | **miss** |
+
+Memory, first page and reads:
+
+| Item | Result |
+|------|--------|
+| First page, scan off | cold 23 to 33 ms, warm 6 to 11 ms, on both sizes |
+| First page, scan on | cold 74 to 87 ms, warm 8 to 21 ms, on both sizes |
+| `RssAnon` after the operations, scan off | difference 0.17 MiB between 1 GiB and 50 GiB (33,452 and 33,624 KiB) |
+| Bytes read | at most 1,173 per operation; 66,306 for the first page; no full pass over the file |
+
+With the scan on, six operations pass and the one-byte edit misses the rule by 0.04 ms: the median is 2.13 ms on 1 GiB and 5.17 ms on 50 GiB, a difference of 3.04 ms against a limit of 3.00 ms.
+The cause is a confounder, not a dependence of the view on the file size.
+The scan of the 1 GiB file finishes in about 2 s, while the scan of the 50 GiB file is still running during its operations.
+With the scan off, the same difference is 0.01 ms.
+The absolute bounds of the requirement hold with a wide margin: the first page appears in 6 to 87 ms, all medians are at most 5.2 ms with the scan on, the maxima of the seven operations are at most 30 ms with the scan on, and the 95th percentile on 50 GiB with the scan on is 15.7 to 23.8 ms.
+The rule was not changed after the measurement.
+Throttling the scan would be a new item, if it is wanted.
+
+Caveats:
+- The run is headless, so it does not include the cost of writing the terminal output.
+- The warm cache comes from a primer pass, not from normal use.
+- The load average was 2.67 at the start of the final run.
+- The scan was not run to completion on the 50 GiB file.
+
 ### Known Limits
 
 The drag does not auto-scroll, and rows are cut at widths below 45 columns.
@@ -2178,7 +2238,7 @@ See `src/tools/measure_view.py` for usage.
 | A hex needle can cut a character or a CR LF pair | A hex needle matches bytes | By design; the hex view selects the bytes exactly, the text view maps each end to a character | Not tested for the text view |
 | A plain number is rejected in the hex Go to | A plain number is a line number and the hex view has no lines | By design; `@N` takes a decimal offset | Test `test_a_plain_number_in_the_hex_view_is_rejected_with_the_line_message` |
 | The hint bar lists Wrap Mode in the hex view | `HintBar` does not follow `Action.enabled` | Cosmetic; `F10 Wrap Mode` stays in the bar and does nothing | The menu state only (`test_the_two_items_are_disabled_in_hex_and_enabled_in_text`) |
-| The line scan runs under the hex view | A huge binary file starts its scan at open, because the text view may be opened later | The index grows with the number of rows found; the hex view never waits for it | Unmeasured |
+| The line scan runs under the hex view | A huge binary file starts its scan at open, because the text view may be opened later | The index grows with the number of rows found; the hex view never waits for it | Measured on 2026-10-13: with the scan on, a redraw on 50 GiB stays under 30 ms; see "Budget (REQ-21)" |
 | The in-place save is not atomic | The write patches the file in place | A crash, a power loss or a full disk can leave the file partially patched; save again or use Save As | Tests `test_write_error_after_first_range_is_partial` and `test_save_after_partial_failure_succeeds_and_file_equals_document` |
 | The in-place save cannot open busy files | The kernel refuses to open the file for writing | `ETXTBSY`, `EACCES`, `EPERM` and `EROFS` fail at stage `prepare`; Save As works | Test `test_etxtbsy_is_plain_failure_with_errno_text` |
 | Repeat saves rewrite earlier patches | No tracker of clean ranges | Proportional to the bytes edited or patched so far, never to the file size | Test `test_second_save_after_undo_restores_original_bytes` |
