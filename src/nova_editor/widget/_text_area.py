@@ -28,7 +28,7 @@ from textual.expand_tabs import expand_text_tabs_from_widths
 from textual.screen import Screen
 from textual.style import Style as ContentStyle
 
-from nova_editor.core import ByteSource, BytesSource, ChangeKind, FileIdentity, PreadSource
+from nova_editor.core import ByteSource, BytesSource, ChangeKind, FileIdentity, PreadSource, RowRange
 from nova_editor.core import SourceChanged as CoreSourceChanged
 from nova_editor.core.inplace import InPlaceJob, InPlaceResult
 from nova_editor.core.pieces import Content as PieceContent
@@ -3333,6 +3333,9 @@ NovaTextArea {
             self.suggestion = ""
         self._after_text_change()
         self.history.record(edit)
+        if edit.is_blind():
+            self._after_blind_edit(edit, result)
+            return result
         new_gutter_width = self.gutter_width
 
         if old_gutter_width != new_gutter_width:
@@ -3350,6 +3353,32 @@ NovaTextArea {
         self.update_suggestion()
         self._refresh_size()
         return result
+
+    def _after_blind_edit(self, edit: Edit, result: EditResult) -> None:
+        """Refresh the view after an edit whose end location is meaningless (it pasted a hex copy of an unscanned range) and put the cursor behind the insertion by byte offset."""
+        start = result.start_byte or 0
+        found = self._park_cursor(start)
+        row = found[0] if found is not None else 0
+        self.suggestion = ""
+        if edit.inserted is not None:
+            end = start + edit.inserted.length
+        else:
+            end = start
+        self.wrapped_document.wrap_range((row, 0), (row, 0), (row, 0))
+        self._refresh_size()
+        self._build_highlight_map()
+        self.post_message(self.Changed(self))
+        self.update_suggestion()
+        self._place_cursor_at_byte(end)
+
+    def _park_cursor(self, start: int) -> tuple[int, RowRange] | None:
+        """After a change at byte `start`, move a cursor that now sits on an unresolved row to the last resolved row before it; return the row of `start` (`None` when unresolved)."""
+        found = self.document.row_at_offset(start)
+        if found is None and start > 0:
+            before = self.document.row_at_offset(start - 1)
+            if before is not None:
+                self.selection = Selection.cursor((before[0], 0))
+        return found
 
     def _unresolved_reason(self) -> str | None:
         """Why no edit can be applied now (the cursor of a long row is provisional or pending), or `None` when positions are exact."""
@@ -4154,7 +4183,7 @@ NovaTextArea {
 
     def _after_step(self, step: HistoryStep, old_gutter_width: int) -> None:
         """Refresh the view after an undo or redo of a whole batch."""
-        if any(not isinstance(entry, Edit) for entry in step.batch):
+        if any(not isinstance(entry, Edit) or entry.is_blind() for entry in step.batch):
             self._after_foreign_step(step, old_gutter_width)
             return
         edits = [entry for entry in step.batch if isinstance(entry, Edit)]
@@ -4189,7 +4218,7 @@ NovaTextArea {
 
     def _after_foreign_step(self, step: HistoryStep, old_gutter_width: int) -> None:
         """Refresh the view after a batch of entries made by another view (a batch never mixes origins): wrap from the start row, then place the cursor."""
-        found = self.document.row_at_offset(step.low)
+        found = self._park_cursor(step.low)
         row = found[0] if found is not None else 0
         self._after_text_change()
         if old_gutter_width != self.gutter_width:
@@ -5205,10 +5234,14 @@ NovaTextArea {
             return
         content = self._internal_clipboard()
         if content is not None:
+            if content.unknown > 0 and self.selection.start[0] == 0:
+                # A blind splice leaves no resolved row to keep the cursor on, and row 0 is the first one.
+                self._refuse_edit("the pasted bytes were copied from a range the scan has not reached, and the first row is not safe to edit with them yet")
+                return
             self._restart_blink()
             result = self.edit(Edit("", *self.selection, maintain_selection_offset=False, insert_content=content))
-            if self._edit_refused:
-                return
+            if self._edit_refused or (result.inserted is not None and result.inserted.unknown > 0):
+                return  # a blind edit has placed the cursor by byte offset already
             self.move_cursor(result.end_location)
             return
         clipboard = self.app.clipboard

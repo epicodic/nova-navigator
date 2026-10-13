@@ -1191,6 +1191,7 @@ class LazyDocument(DocumentBase):
 
         Nothing is normalised.
         The end location comes from `Content.breaks` and `Content.tail_chars`, or from a re-decode of the end row when characters merge.
+        A `content` that still holds unknown pieces (a hex copy of an unscanned range) takes the blind path of `splice_bytes`: its `end_location` is meaningless.
 
         Raises:
             RowUnavailable: As for `replace_range`.
@@ -1202,6 +1203,8 @@ class LazyDocument(DocumentBase):
             self._require_editable()
             first = self._locate(top)
             last = self._locate(bottom)
+        if content.unknown > 0:
+            return self.splice_bytes(first.offset, last.offset, content)  # its breaks are unknown: only the blind path keeps the rows right
         return self._splice_located(first, last, content)
 
     def selection_content(self, start: Location, end: Location) -> Content:

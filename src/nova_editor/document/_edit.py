@@ -120,6 +120,10 @@ class Edit(ByteEdit):
         self.end_location = edit_result.end_location
         return edit_result
 
+    def is_blind(self) -> bool:
+        """Whether the performed edit inserted or removed pieces the line scan has not classified, so its end location says nothing (the cursor has to go by byte offset)."""
+        return any(content is not None and content.unknown > 0 for content in (self.inserted, self.removed))
+
     def contents(self) -> list[Content]:
         """Every `Content` this edit holds, in the one order that `rewrite` consumes them.
 
