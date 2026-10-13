@@ -99,7 +99,7 @@ EMPTY = Content.from_pieces((), 0)
 
 
 def hex_edit(document: LazyDocument, start: int, end: int, data: bytes) -> ByteEdit:
-    """Splice `document` and record the splice in its history as the hex view will (S0003 ACT2 task 5)."""
+    """Splice `document` and record the splice in its history as the hex view does (S0003 ACT2 task 5)."""
     content = document._table.add(data) if data else EMPTY
     result = document.splice_bytes(start, end, content)
     assert result.removed is not None
