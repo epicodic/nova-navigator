@@ -379,18 +379,28 @@ class EditorScreen(Screen[None]):
     # View actions: the widget owns the state, the checked items mirror it
 
     def _sync_view_actions(self) -> None:
+        """Mirror the widget in the View items: Line Numbers and Wrap Mode are disabled while the hex view is shown (REQ-20)."""
         editor = self.document.editor
+        enabled = not self.document.hex_mode
+        self._by_id["editor.wrap_mode"].set_enabled(enabled)
+        self._by_id["editor.line_numbers"].set_enabled(enabled)
+        for menu in self.query(Menu):
+            menu.refresh()
         self._by_id["editor.wrap_mode"].set_checked(editor.soft_wrap)
         self._by_id["editor.line_numbers"].set_checked(editor.show_line_numbers)
         self._by_id["editor.hex_mode"].set_checked(self.document.hex_mode)
 
     def action_toggle_wrap(self) -> None:
-        """Wrap Mode: flip `soft_wrap` of the widget."""
+        """Wrap Mode: flip `soft_wrap` of the widget; nothing happens in the hex view."""
+        if self.document.hex_mode:
+            return
         self.document.editor.toggle_wrap()
         self._sync_view_actions()
 
     def action_toggle_line_numbers(self) -> None:
-        """Line Numbers: flip `show_line_numbers` of the widget."""
+        """Line Numbers: flip `show_line_numbers` of the widget; nothing happens in the hex view."""
+        if self.document.hex_mode:
+            return
         editor = self.document.editor
         editor.show_line_numbers = not editor.show_line_numbers
         self._sync_view_actions()
