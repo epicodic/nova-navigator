@@ -271,6 +271,18 @@ A `Content` with unknown pieces (a hex copy of a range the line scan has not rea
 **Modified members:** `edit` (after `history.record`, an edit with `is_blind()` takes `_after_blind_edit` and returns), `_after_step` (a batch with a blind edit takes the foreign route), `_after_foreign_step` (`_park_cursor` before placing the cursor), `action_paste` (a blind paste does not move the cursor again; one in row 0 is refused because no resolved row can hold the cursor) and `_refuse_edit` (new optional `hint` argument; the default text is unchanged).
 Text-view behaviour for scanned content is identical.
 
+### `widget/_text_area.py` and `document/_document_navigator.py` (S0003 ACT5, the open row and a cursor without a resolved row)
+
+The last row of a partially scanned document is the open row: it is counted but cannot be resolved, so no cursor may stand on it or move to it.
+**`DocumentNavigator`:** new `last_row()` (the `LazyDocument.last_reachable_row`, else `line_count - 1`); `is_last_document_line` and `clamp_reachable` use it instead of `line_count - 1`.
+**`LazyWrappedDocument.offset_to_location`:** a position below the last reachable row belongs to that row (also for a mouse click).
+**`NovaTextArea`:** `clamp_visitable`, `cursor_at_last_line`, `get_cursor_word_right_location` and the delete-word-right target use `navigator.last_row()` instead of `line_count - 1`.
+**`_guard_source`:** a `RowUnavailable` while the cursor stands on an unresolved row is a no-op that returns the default, as after `close()`.
+The delete actions (`delete_left`, `delete_right`, `delete_line`, `delete_to_start_of_line`, `delete_to_end_of_line`, `delete_word_left`, `delete_word_right`) are decorated with it, and `delete_to_end_of_line_or_delete_line` returns early on such a cursor.
+**`_watch_selection` and `_recompute_cursor_offset`:** a cursor row that does not resolve scrolls and matches nothing (the offset is the top left) instead of raising.
+**`_park_cursor`:** falls back to `(0, 0)` when no row resolves; `action_paste` tests the lower end of the selection for row 0.
+Documents without unknown pieces and with a finished scan behave as before.
+
 ### `document/_edit.py` (ACT5)
 
 **New members:** `contents()` lists every `Content` the edit holds, and `rewrite(contents)` replaces them in the same order after a rebase.

@@ -982,7 +982,11 @@ A hex copy of a range the line scan has not reached holds unknown pieces, and it
 Pasted into the text view, it is spliced by byte offset (`splice_bytes`) and the cursor goes behind it by byte offset, as a pending jump until the scan arrives.
 Until then the cursor and the selection ends are parked on the last resolved row, after the paste, undo and redo.
 The record keeps the unknown pieces of the copy, so such a paste stays blind even when the scan has moved on.
-A paste of such content in the first row is refused with `EditRefused`, because no resolved row is left to hold the cursor; copy the range again once indexing has reached it, or paste below the first row.
+A paste of such content is refused with `EditRefused` when the selection reaches the first row, at its lower end (a backward selection counts as well), because no resolved row is left to hold the cursor; copy the range again once indexing has reached it, or paste below the first row.
+The rows from the edit row on cannot be resolved until the scan fills the pieces in, so the cursor navigation treats the open row as not there.
+Down, page down, shift and word moves stop on the last resolved row (down goes to the end of that row, as on the last row of a document), and a click below it lands on it.
+The same holds at the scan frontier of an unedited document, whose open row cannot be resolved either.
+A hex paste or edit at offset 0 can leave no resolved row at all; undo and redo in the text view then park the cursor at (0, 0), keys and clicks are ignored (no edit, no movement) and nothing raises until the scan arrives.
 Internal content with unknown pieces takes the blind path and works at any offset.
 
 ### Undo and Redo in Hex
@@ -2066,7 +2070,7 @@ See `src/tools/measure_view.py` for usage.
 | Rows after a blind byte edit | The first unknown piece limits the answerable rows | Row count is a lower bound and line numbers after the edit are unavailable until the scan fills the piece in | Tests (`test_lazy_byte_edit.py`) |
 | Syntax highlighting after a blind byte edit | The syntax mirror cannot follow an edit without rows | The mirror is dropped by every blind byte edit, so any attached mirror is lost (a document has a mirror only up to `highlight_limit` bytes, default 1 MiB) | Test `test_blind_edit_detaches_the_syntax_mirror` (R7) |
 | Unknown pieces of a replaced original are never filled | A save replaces the original; the old index is not continued | Rows through those pieces stay unavailable; bytes are exact | Test in `test_rebase_unknown.py` (R4) |
-| Cursor after a blind paste | The pasted unscanned bytes make the rows from the edit row on unresolved | The cursor is parked on the last resolved row and the byte jump completes when the scan arrives; a paste of such content in row 0 is refused | Tests (`test_hex_clipboard_unscanned.py`) |
+| Cursor after a blind paste | The pasted unscanned bytes make the rows from the edit row on unresolved | The cursor is parked on the last resolved row and the byte jump completes when the scan arrives; navigation stops on the last resolved row; a paste of such content whose selection reaches row 0 is refused; with no resolved row at all (a hex edit at offset 0) the cursor waits at (0, 0) and keys are ignored | Tests (`test_hex_clipboard_unscanned.py`) |
 | `EditResult.end_location` of a byte edit | A blind edit has no row | Meaningless for `splice_bytes` offsets the index cannot resolve; callers in byte mode ignore it (R6) | Not tested |
 | `complete` lags after the scan ends | The fill handles 64 pieces per call | `complete` stays false for a few calls until the fill finishes | Test `test_fill_is_batched` |
 | Tab stops in edited rows over 1 MiB | Splice shifts checkpoints by the width delta only | `abs(stale - exact) < tab width` | Test `test_tab_alignment_behind_an_edit_is_kept_from_before_the_edit` |
