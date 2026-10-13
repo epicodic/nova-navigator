@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import os
 import threading
+from bisect import bisect_left, bisect_right
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
+from itertools import pairwise
 from pathlib import Path
 from typing import Protocol, Self
 
@@ -81,6 +83,15 @@ class ByteSource(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class OverlayRange:
+    """A range `[a, b)` of the original whose pre-patch bytes `read(x, y)` still returns."""
+
+    a: int
+    b: int
+    read: Callable[[int, int], bytes]
+
+
 class PreadSource:
     """`os.pread` with one shared LRU block cache and change detection."""
 
@@ -118,15 +129,108 @@ class PreadSource:
         self._cache: OrderedDict[int, bytes] = OrderedDict()
         self._lock = threading.Condition()  # guards _cache, _failed and the close state; never held across I/O
         self._failed: SourceChanged | None = None
+        self._overlay: tuple[OverlayRange, ...] = ()  # replaced, never mutated; read under _lock
+        self._overlay_starts: tuple[int, ...] = ()
+        self._patching = False  # while set, the descriptor check compares the size only
+        self._patch_generation = 0  # counts the changes of `_patching` and of the held identity; a stat that spans one is repeated
         self._inflight = 0
         self._closing = False
         self._closed = False
+
+    def begin_patch(self, ranges: Sequence[OverlayRange]) -> None:
+        """Install the read overlay for `ranges` and open the patch window; call it before the first byte is written.
+
+        From here on every read of the source (cached, uncached, through `unverified_reader`) returns `range.read(x, y)`
+        instead of the file bytes inside a range, and the descriptor check compares the size only, so the mtime change of
+        the caller's own `pwrite` does not fail the source. A size change still does.
+        The call is additive across saves and atomic: on `ValueError` nothing changed.
+
+        Raises:
+            ValueError: A range is empty, lies outside `[0, length)` or overlaps another range or an installed one.
+        """
+        added = sorted(ranges, key=lambda item: item.a)
+        for item in added:
+            if item.a < 0 or item.b <= item.a or item.b > self._size:
+                raise ValueError(f"overlay range [{item.a}, {item.b}) is empty or outside the source")
+        for before, after in pairwise(added):
+            if after.a < before.b:
+                raise ValueError(f"overlay ranges [{before.a}, {before.b}) and [{after.a}, {after.b}) overlap")
+        with self._lock:
+            if self._closing:
+                raise ValueError("patch of a closed source")
+            merged = sorted((*self._overlay, *added), key=lambda item: item.a)
+            for before, after in pairwise(merged):
+                if after.a < before.b:
+                    raise ValueError(f"overlay ranges [{before.a}, {before.b}) and [{after.a}, {after.b}) overlap")
+            self._overlay = tuple(merged)
+            self._overlay_starts = tuple(item.a for item in merged)
+            self._patching = True
+            self._patch_generation += 1
+
+    def end_patch(self, identity: FileIdentity) -> None:
+        """Close the patch window and adopt `identity` (size and mtime) as the held identity; the overlay stays.
+
+        Raises:
+            SourceChanged: The size of `identity` or of the descriptor differs from the held size, or the inode changed, or the descriptor cannot be read (`UNREADABLE`).
+                The source is then failed for good and the window is closed.
+        """
+        try:
+            if identity.size != self._size or identity.dev != self._identity.dev or identity.ino != self._identity.ino:
+                kind = ChangeKind.TRUNCATED if identity.size < self._size else ChangeKind.MODIFIED
+                raise SourceChanged(f"file changed during the patch: size {self._size} -> {identity.size}", kind)
+            try:
+                info = os.fstat(self._fd)
+            except OSError as error:
+                raise SourceChanged(f"descriptor check failed at the end of the patch: {error}", ChangeKind.UNREADABLE) from error
+            if info.st_size != self._size:
+                kind = ChangeKind.TRUNCATED if info.st_size < self._size else ChangeKind.MODIFIED
+                raise SourceChanged(f"file changed during the patch: size {self._size} -> {info.st_size}", kind)
+        except SourceChanged as error:
+            with self._lock:
+                self._patching = False
+                self._patch_generation += 1
+            raise self._fail(error) from error
+        with self._lock:  # one critical section: no reader sees the window closed and the old identity together
+            self._identity = identity
+            self._mtime_ns = identity.mtime_ns
+            self._patching = False
+            self._patch_generation += 1
+
+    def abort_patch(self) -> None:
+        """Close the patch window without adopting a new identity (nothing was written); the overlay stays."""
+        with self._lock:
+            self._patching = False
+            self._patch_generation += 1
+
+    def _mask(self, offset: int, data: bytes) -> bytes:
+        """Return `data`, read at `offset`, with the bytes inside overlay ranges replaced by their pre-patch bytes."""
+        with self._lock:
+            overlay = self._overlay
+            starts = self._overlay_starts
+        if not overlay or not data:
+            return data
+        end = offset + len(data)
+        first = max(bisect_right(starts, offset) - 1, 0)
+        last = bisect_left(starts, end)
+        out: bytearray | None = None
+        for item in overlay[first:last]:
+            lo = max(item.a, offset)
+            hi = min(item.b, end)
+            if hi <= lo:
+                continue
+            old = item.read(lo, hi)
+            if len(old) != hi - lo:
+                raise ValueError(f"overlay read of [{lo}, {hi}) returned {len(old)} bytes")
+            if out is None:
+                out = bytearray(data)
+            out[lo - offset : hi - offset] = old
+        return data if out is None else bytes(out)
 
     def length(self) -> int:
         return self._size
 
     def identity(self) -> FileIdentity:
-        """Return the identity of the descriptor recorded when the source was opened."""
+        """Return the identity of the descriptor recorded when the source was opened, or adopted by the last `end_patch`."""
         return self._identity
 
     def check(self) -> None:
@@ -170,12 +274,12 @@ class PreadSource:
         if end <= offset:
             return b""
         if not cache or end - offset > self._block_size * self._max_blocks:
-            return self._pread_exact(offset, end - offset)
+            return self._mask(offset, self._pread_exact(offset, end - offset))
         first = offset // self._block_size
         last = (end - 1) // self._block_size
         data = b"".join(self._block(index) for index in range(first, last + 1))
         skip = offset - first * self._block_size
-        return data[skip : skip + (end - offset)]
+        return self._mask(offset, data[skip : skip + (end - offset)])
 
     def close(self) -> None:
         """Close the file descriptor once every read in flight has finished.
@@ -208,10 +312,17 @@ class PreadSource:
         self._check_stat()
 
     def _check_stat(self) -> None:
-        info = os.fstat(self._fd)
-        if info.st_size != self._size or info.st_mtime_ns != self._mtime_ns:
+        while True:
+            with self._lock:
+                generation, patching, held_mtime = self._patch_generation, self._patching, self._mtime_ns
+            info = os.fstat(self._fd)
+            with self._lock:
+                settled = generation == self._patch_generation
+            if settled:  # no patch window opened or closed while the descriptor was read: the snapshot above is the state `info` belongs to
+                break
+        if info.st_size != self._size or (not patching and info.st_mtime_ns != held_mtime):
             kind = ChangeKind.TRUNCATED if info.st_size < self._size else ChangeKind.MODIFIED
-            raise self._fail(SourceChanged(f"file changed: size {self._size} -> {info.st_size}, mtime_ns {self._mtime_ns} -> {info.st_mtime_ns}", kind))
+            raise self._fail(SourceChanged(f"file changed: size {self._size} -> {info.st_size}, mtime_ns {held_mtime} -> {info.st_mtime_ns}", kind))
 
     def _fail(self, error: SourceChanged) -> SourceChanged:
         with self._lock:
@@ -269,7 +380,7 @@ class PreadSource:
             end = min(offset + size, self._size)
             if end <= offset:
                 return b""
-            return self._pread_raw(offset, end - offset)
+            return self._mask(offset, self._pread_raw(offset, end - offset))
         finally:
             with self._lock:
                 self._inflight -= 1

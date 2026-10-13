@@ -6,7 +6,7 @@ from nova_widgets.action import Action
 
 
 def build_editor_actions() -> list[Action]:
-    """Build the 18 editor actions.
+    """Build the 19 editor actions.
 
     Every call returns new objects: key overrides and the checked state of one screen never reach another.
     The `action` names are handled by `EditorScreen` (flows) or by the editor widget (editing).
@@ -33,6 +33,7 @@ def build_editor_actions() -> list[Action]:
         Action("Go to…", id="editor.goto", action="goto", shortcut="ctrl+g", description="Go to a line or a byte offset", show=True, bar_priority=40),
         Action("Line Numbers", id="editor.line_numbers", action="toggle_line_numbers", shortcut="f11", checkable=True, description="Show or hide the line numbers"),
         Action("Wrap Mode", id="editor.wrap_mode", action="toggle_wrap", shortcut="f10", checkable=True, description="Switch soft wrap on or off", show=True, bar_priority=70),
+        Action("Hex Mode", id="editor.hex_mode", action="hex_mode", shortcut="f4", checkable=True, description="Show the document as bytes or as text"),
     ]
 
 

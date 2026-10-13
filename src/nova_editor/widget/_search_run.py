@@ -28,6 +28,8 @@ class SearchRun:
     job: SearchJob
     needle: str
     backward: bool
+    place: Callable[[int, int, bool], None] | None = None
+    """Applies the match instead of the widget (`start`, `end`, `backward`), or `None`."""
     reason: str = "cancelled"
     """Why the run was cancelled (`replaced`, `text changed`, `reloaded`, `cancelled`)."""
     abandoned: bool = False

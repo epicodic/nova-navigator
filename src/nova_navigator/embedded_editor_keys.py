@@ -10,7 +10,7 @@ EDITOR_LABEL_PREFIX = "Editor: "
 
 
 def editor_key_actions() -> list[Action]:
-    """Build the 18 `editor.*` actions for the keybindings dialog.
+    """Build the 19 `editor.*` actions for the keybindings dialog.
 
     The ids and default keys are the editor's own, so the overrides land under the same names in `keybindings.toml` as in the standalone editor.
     Every call returns new objects, so no state is shared with an editor screen or the navigator's registry.

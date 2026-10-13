@@ -117,9 +117,9 @@ async def test_the_wrap_and_gutter_settings_carry_over_and_the_new_editor_is_wat
         await wait_until(pilot, lambda: app.editor.text == "two\n")
         assert app.editor.soft_wrap
         assert not app.editor.show_line_numbers
-        assert await view_marks(pilot, screen) == {"Line Numbers": False, "Wrap Mode": True}
+        assert await view_marks(pilot, screen) == {"Line Numbers": False, "Wrap Mode": True, "Hex Mode": False}
         await pilot.press("f10")  # the watchers follow the new editor: the check mark flips with the widget
-        assert await view_marks(pilot, screen) == {"Line Numbers": False, "Wrap Mode": False}
+        assert await view_marks(pilot, screen) == {"Line Numbers": False, "Wrap Mode": False, "Hex Mode": False}
 
 
 @pytest.mark.asyncio

@@ -40,6 +40,7 @@ __all__ = [
     "SaveResult",
     "SaveSettings",
     "check_path",
+    "refuse_unsuitable",
 ]
 
 CHUNK = 1024 * 1024
@@ -92,11 +93,15 @@ class SaveSettings:
 
 @dataclass(frozen=True)
 class SaveProgress:
-    """Progress of a save; `phase` is `writing`, `flushing`, `history` or `finishing`."""
+    """Progress of a save; `phase` is `writing`, `flushing`, `history` or `finishing`.
+
+    `started` is true once an in-place save has written its first byte: from then on a cancel no longer takes effect.
+    """
 
     phase: str
     done: int
     total: int
+    started: bool = False
 
 
 class PlanPart(NamedTuple):
@@ -132,15 +137,30 @@ class SaveFailed(OSError):
     """The save failed at `stage` (`prepare`, `write`, `flush`, `replace` or `internal`); the errno of the cause is kept.
 
     `committed` is true when the replace already happened: the target holds the new bytes but the editor could not switch to the new file.
+    `partial` is true when an in-place save failed after its first write: the file may hold some of the new bytes and the edits are kept.
+    `change` is set when the failure is a change of the file on disk (the kind), so that the caller can start the external-change flow.
+    `identity` is set on a partial failure: the identity of the file as the failed save left it (our own writes changed its mtime), so that the caller does not take it for a change from outside.
     """
 
-    def __init__(self, stage: str, error: OSError | str, *, committed: bool = False) -> None:
+    def __init__(
+        self,
+        stage: str,
+        error: OSError | str,
+        *,
+        committed: bool = False,
+        partial: bool = False,
+        change: ChangeKind | None = None,
+        identity: FileIdentity | None = None,
+    ) -> None:
         if isinstance(error, OSError):
             super().__init__(error.errno, error.strerror or str(error))
         else:
             super().__init__(error)
         self.stage = stage
         self.committed = committed
+        self.partial = partial
+        self.change = change
+        self.identity = identity
 
 
 class SaveCancelled(Exception):
@@ -178,6 +198,11 @@ def _fsync_dir(path: str) -> None:
         os.close(fd)
 
 
+def _open_write(path: str) -> int:
+    """Open an existing file for writing; no truncation and no creation, so the inode and the content stay."""
+    return os.open(path, os.O_WRONLY | os.O_CLOEXEC)
+
+
 @dataclass
 class SaveIo:
     """The file operations of a save; the defaults call `os`, tests pass instances that fail at the n-th call."""
@@ -192,6 +217,23 @@ class SaveIo:
     unlink: Callable[[str], None] = os.unlink
     fsync_dir: Callable[[str], None] = _fsync_dir
     umask: Callable[[], int] = _read_umask
+    open_write: Callable[[str], int] = _open_write
+    pwrite: Callable[[int, bytes | memoryview, int], int] = os.pwrite
+    fstat: Callable[[int], os.stat_result] = os.fstat
+
+
+def refuse_unsuitable(target: Path) -> None:
+    """Raise `SaveFailed("prepare")` when `target` exists and is not a regular file or is not writable; a missing file passes."""
+    try:
+        info = os.stat(target)
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise SaveFailed("prepare", error) from error
+    if not stat.S_ISREG(info.st_mode):
+        raise SaveFailed("prepare", f"not a regular file: {target}")
+    if not os.access(target, os.W_OK):
+        raise SaveFailed("prepare", "read-only file")
 
 
 def _forget_temp(name: str) -> None:
@@ -276,7 +318,7 @@ class SaveJob:
 
     def _run(self) -> SaveResult:
         target = Path(os.path.realpath(self._target))
-        self._refuse_unsuitable(target)
+        refuse_unsuitable(target)
         mode = self._target_mode(target)
         fd, name = self._open_temp(target)
         renamed = False
@@ -403,18 +445,6 @@ class SaveJob:
     def _check_cancel(self) -> None:
         if self._cancelled.is_set():
             raise SaveCancelled
-
-    def _refuse_unsuitable(self, target: Path) -> None:
-        try:
-            info = os.stat(target)
-        except FileNotFoundError:
-            return
-        except OSError as error:
-            raise SaveFailed("prepare", error) from error
-        if not stat.S_ISREG(info.st_mode):
-            raise SaveFailed("prepare", f"not a regular file: {target}")
-        if not os.access(target, os.W_OK):
-            raise SaveFailed("prepare", "read-only file")
 
     def _target_mode(self, target: Path) -> int:
         try:

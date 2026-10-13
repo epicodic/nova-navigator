@@ -24,7 +24,7 @@ from .find_popup import FindPopup
 from .goto_popup import GotoPopup
 from .screen import EditorScreen
 from .timed_text_area import TimedNovaTextArea
-from .widget import NovaTextArea
+from .widget import HexView, NovaTextArea
 
 
 class NovaEditApp(App[None]):
@@ -48,6 +48,7 @@ class NovaEditApp(App[None]):
         soft_wrap: bool = False,
         config: LazyConfig | None = None,
         editor_class: type[TimedNovaTextArea] = TimedNovaTextArea,
+        start_hex: bool = False,
     ) -> None:
         """Create the app.
 
@@ -59,6 +60,7 @@ class NovaEditApp(App[None]):
             soft_wrap: Start with soft wrapping.
             config: Thresholds of the lazy document (`None`: the defaults).
             editor_class: The editor widget class; the benchmark harness passes a probe subclass.
+            start_hex: Open the file (or the empty document) in the hex view whatever its content.
         """
         super().__init__()
         # Support file_path as an alias for path
@@ -68,6 +70,8 @@ class NovaEditApp(App[None]):
         self._soft_wrap = soft_wrap
         self._config = config
         self._editor_class = editor_class
+        self.start_hex = start_hex
+        """Whether the first document opens in the hex view (`--hex`)."""
 
     def get_default_screen(self) -> EditorScreen:
         """Return the editor screen as the main screen."""
@@ -81,6 +85,7 @@ class NovaEditApp(App[None]):
             standalone=True,
             poll_seconds=self.POLL_SECONDS,
             quit_wait_seconds=self.QUIT_WAIT_SECONDS,
+            start_hex=self.start_hex,
         )
 
     def _editor_screen(self) -> EditorScreen:
@@ -106,6 +111,18 @@ class NovaEditApp(App[None]):
             RuntimeError: If no EditorScreen is on the screen stack.
         """
         return self._editor_screen().document.editor
+
+    @property
+    def hex_view(self) -> HexView:
+        """Get the hex view of the editor screen (shown in hex mode, hidden otherwise), also while a dialog is open.
+
+        Returns:
+            The HexView widget of the current document.
+
+        Raises:
+            RuntimeError: If no EditorScreen is on the screen stack.
+        """
+        return self._editor_screen().document.hex_view
 
     @property
     def goto_popup(self) -> GotoPopup:
@@ -204,6 +221,12 @@ def build_app(argv: Sequence[str]) -> NovaEditApp:
         help="Directory of keybindings.toml (default: ~/.config/nova-edit)",
     )
 
+    parser.add_argument(
+        "--hex",
+        action="store_true",
+        help="Open the file (or the empty document) in the hex view, whatever its content",
+    )
+
     args = parser.parse_args(list(argv))
 
     file_path: Path | None = None
@@ -215,7 +238,7 @@ def build_app(argv: Sequence[str]) -> NovaEditApp:
             sys.exit(1)
 
     config_dir = args.config_dir if args.config_dir is not None else default_config_dir()
-    return NovaEditApp(path=file_path, keybindings=KeybindingsConfig(config_dir))
+    return NovaEditApp(path=file_path, keybindings=KeybindingsConfig(config_dir), start_hex=args.hex)
 
 
 def main() -> None:

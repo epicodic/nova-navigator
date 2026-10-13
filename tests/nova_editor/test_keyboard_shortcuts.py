@@ -19,8 +19,8 @@ from tests.nova_editor.screen_host import EditorScreenHost, write_keys
 from tests.nova_editor.view_menu import open_view_menu
 
 WIDE = (160, 24)
-ITEM_ROW = 3
-"""Row of Keyboard Shortcuts… in the opened View menu (Line Numbers 1, Wrap Mode 2)."""
+ITEM_ROW = 4
+"""Row of Keyboard Shortcuts… in the opened View menu (Line Numbers 1, Wrap Mode 2, Hex Mode 3)."""
 
 
 def dialog_of(app: App[None]) -> KeybindingsDialog | None:
@@ -53,16 +53,16 @@ async def test_the_view_menu_has_the_item_only_with_a_config(tmp_path: Path) -> 
     async with host.run_test(size=WIDE) as pilot:
         await pilot.pause()
         assert host.screen_instance is not None
-        assert len(host.screen_instance.ACTIONS) == 18
-        assert [a.id for a in host.screen_instance.menu_bar.actions[3].actions] == ["editor.line_numbers", "editor.wrap_mode"]
+        assert len(host.screen_instance.ACTIONS) == 19
+        assert [a.id for a in host.screen_instance.menu_bar.actions[3].actions] == ["editor.line_numbers", "editor.wrap_mode", "editor.hex_mode"]
     app = build_app(["--config-dir", str(tmp_path)])
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, EditorScreen)
-        assert len(screen.ACTIONS) == 19
+        assert len(screen.ACTIONS) == 20
         ids = [a.id for a in screen.menu_bar.actions[3].actions]
-        assert ids == ["editor.line_numbers", "editor.wrap_mode", "editor.keyboard_shortcuts"]
+        assert ids == ["editor.line_numbers", "editor.wrap_mode", "editor.hex_mode", "editor.keyboard_shortcuts"]
 
 
 @pytest.mark.asyncio
@@ -88,7 +88,7 @@ async def test_the_dialog_lists_every_editor_action_with_its_effective_binding(t
         dialog = await open_dialog(pilot, app, screen)
         shown = rows(dialog)
         assert list(shown) == expected
-        assert len(shown) == 19
+        assert len(shown) == 20
         assert shown["Find…"] == "Ctrl+K"
         assert shown["Go to…"] == "(none)"
         assert shown["Save"] == "Ctrl+S"
@@ -117,11 +117,22 @@ async def test_a_config_without_the_item_applies_overrides_and_offers_no_dialog(
         await pilot.pause()
         screen = host.screen_instance
         assert screen is not None
-        assert len(screen.ACTIONS) == 18
-        assert [a.id for a in screen.menu_bar.actions[3].actions] == ["editor.line_numbers", "editor.wrap_mode"]
+        assert len(screen.ACTIONS) == 19
+        assert [a.id for a in screen.menu_bar.actions[3].actions] == ["editor.line_numbers", "editor.wrap_mode", "editor.hex_mode"]
         labels = {a.id: a.shortcut_label for a in screen.ACTIONS}
         assert labels["editor.find"] == "Ctrl+K"
         assert labels["editor.goto"] == ""
         screen.action_keyboard_shortcuts()
         await pilot.pause(delay=0.3)
         assert host.screen is screen
+
+
+@pytest.mark.asyncio
+async def test_the_nova_edit_dialog_lists_hex_mode_with_f4(tmp_path: Path) -> None:
+    app = build_app(["--config-dir", str(tmp_path)])
+    async with app.run_test(size=WIDE) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, EditorScreen)
+        dialog = await open_dialog(pilot, app, screen)
+        assert rows(dialog)["Hex Mode"] == "F4"

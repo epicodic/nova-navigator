@@ -80,7 +80,7 @@ async def test_screen_has_per_screen_actions() -> None:
         screen1 = host1.screen_instance
         assert screen1 is not None
         assert hasattr(screen1, "ACTIONS")
-        assert len(screen1.ACTIONS) == 18
+        assert len(screen1.ACTIONS) == 19
 
         # Create another screen and verify they have different action objects
         host2 = EditorScreenHost(standalone=True)
@@ -89,7 +89,7 @@ async def test_screen_has_per_screen_actions() -> None:
             screen2 = host2.screen_instance
             assert screen2 is not None
             assert hasattr(screen2, "ACTIONS")
-            assert len(screen2.ACTIONS) == 18
+            assert len(screen2.ACTIONS) == 19
 
             # Verify action objects are different (not shared)
             screen1_action_ids = {id(a) for a in screen1.ACTIONS}
@@ -167,7 +167,7 @@ async def test_hosted_screen_has_four_menus_in_order_with_req2_items() -> None:
             ["editor.open", "editor.save", "editor.save_as", "editor.reload", "editor.quit"],
             ["editor.undo", "editor.redo", "editor.cut", "editor.copy", "editor.paste", "editor.select_all"],
             ["editor.find", "editor.find_next", "editor.find_previous", "editor.goto"],
-            ["editor.line_numbers", "editor.wrap_mode"],
+            ["editor.line_numbers", "editor.wrap_mode", "editor.hex_mode"],
         ]
 
 
