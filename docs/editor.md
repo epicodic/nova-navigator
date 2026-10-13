@@ -1200,16 +1200,16 @@ Caveats:
 - The warm cache comes from a primer pass, not from normal use.
 - The load average was 2.67 at the start of the final run.
 - The scan was not run to completion on the 50 GiB file.
-- With the scan on, the operations start 2 s after the open (`SCAN_START` in `req21_measure.py`).
+- With the scan on, the operations start 2 s after the open (the measurement script waits 2 s).
 - The operations were timed on the document view with the hex view, without status line, menu or app; only the open was also measured on `NovaEditApp`.
-- The scan-off limits of 6.97 to 9.24 ms come from bimodal 1 GiB samples (IQR up to about 9 ms) and are looser than 3 ms.
+- The scan-off limits of 6.63 to 9.24 ms come from bimodal 1 GiB samples (IQR up to about 9 ms) and are looser than 3 ms.
 - All rounds ran on one machine, one drive and one day.
 - The cold runs dropped the file from the page cache with `fadvise`; the measured cold residency was 0.0 in every run.
 
 ### Known Limits
 
 The drag does not auto-scroll, and rows are cut at widths below 45 columns (more for a file of 4 GiB or more, whose offset column is wider).
-The other limits of the hex view are listed in the global "Known Limits" section, (table and "Hex Editing").
+The other limits of the hex view are listed in the global "Known Limits" section (table and "Hex Editing").
 
 ---
 
