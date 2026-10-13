@@ -269,6 +269,23 @@ HexView {
         """Length of the document in bytes."""
         return self._document_provider().length
 
+    def byte_at_cursor(self) -> int | None:
+        """Return the byte under the cursor, or `None` at the end position or when it cannot be read.
+
+        Reads from the byte window; costs at most one window read when the cursor is outside it.
+        """
+        self._sync()
+        offset = self.cursor.offset
+        if offset >= self._length:
+            return None
+        bytes_per_row = self._layout.bytes_per_row
+        row = offset // bytes_per_row
+        data = self._row_bytes(row)
+        index = offset - row * bytes_per_row
+        if data is None or index >= len(data):
+            return None
+        return data[index]
+
     @property
     def hex_layout(self) -> HexLayout:
         """The row geometry for the present width and document length."""

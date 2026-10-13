@@ -39,7 +39,7 @@ from .editor_actions import build_editor_actions, build_keyboard_shortcuts_actio
 from .editor_menus import build_menu_bar
 from .find_popup import FindPopup
 from .goto_popup import GotoPopup, GotoTarget, hex_goto
-from .status_line import StatusLine, StatusState, byte_percent, format_sizes, row_is_known, save_progress_text
+from .status_line import HexStatusState, StatusLine, StatusState, byte_percent, format_sizes, row_is_known, save_progress_text
 from .timed_text_area import TimedNovaTextArea
 from .widget import ExternalCheck, HexView, NovaTextArea
 
@@ -319,8 +319,19 @@ class EditorScreen(Screen[None]):
         for status in self.query(StatusLine):
             status.set_note(text, timed=timed)
 
-    def _status_state(self) -> StatusState | None:
+    def _status_state(self) -> StatusState | HexStatusState | None:
         editor = self.document.editor
+        if self.document.hex_mode:
+            hex_view = self.document.hex_view
+            file_path = self.document.file_path
+            return HexStatusState(
+                file_name=None if file_path is None else file_path.name,
+                offset=hex_view.cursor.offset,
+                length=editor.document.length,
+                byte=hex_view.byte_at_cursor(),
+                insert=hex_view.insert_mode,
+                modified=editor.modified,
+            )
         row, column = editor.cursor_location
         cursor_state, _ = editor.peek_cursor_state()
         snapshot = editor.document.snapshot()
