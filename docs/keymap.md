@@ -295,6 +295,8 @@ After the dialog is dismissed, `MainScreen._reload_keymap` is called to apply an
 The navigator lists `MainScreen.ACTIONS` followed by the 19 editor actions of `editor_key_actions()` (`nova_navigator/embedded_editor_keys.py`), labelled `Editor: <text>`.
 One of them is Hex Mode (`editor.hex_mode`, F4).
 The default F4 is also the key of the navigator's `browser.open_editor`; the two do not clash, because the editor screen and the file browser are different scopes, and the dialog lists both.
+F10/F11 do nothing while the hex view is shown (a screen guard, the keys stay in the keymap).
+Inside the editor screen F4 is Hex Mode, the browser's F4 works only in the file list.
 The ids stay `editor.*`, so the overrides land under the same names in `keybindings.toml` as in the standalone editor.
 Every `editor.*` id must be in the list, because a save replaces the overrides in the file with the map of the listed actions.
 

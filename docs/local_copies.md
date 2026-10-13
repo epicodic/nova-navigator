@@ -22,6 +22,7 @@ F4 on a file, and the user menu entry "Edit User Menu File", open the built-in e
 Enter on a file is unchanged: it runs the configured filetype command, through a local copy for a non-local file.
 A file on the local filesystem is edited in place; it is never copied and nothing appears in the Local Copies dialog for it.
 A file from SSH, Azure, or an archive (including an archive reached over SSH) is edited through a local copy, and a notice names the source.
+A binary file opens in the hex view, hex edits and the in-place save patch the copy and are written back like any save; the whole file is downloaded first (no ranged reads).
 Every save in the editor is detected like a save of an external application and written back once; the editor does not ask "file changed" after that write-back.
 Closing the editor (File > Close, Ctrl+W, or Quit) returns to the file list, stops watching the copy and writes a save that was not synced yet, once.
 The entry then shows ` (closed)` in the Local Copies dialog; the local file stays for fast reuse.

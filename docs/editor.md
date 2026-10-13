@@ -396,12 +396,14 @@ class MyEditorApp(App):
 ```sh
 uv run ned                    # Open editor with no file
 uv run ned /path/to/file.txt  # Open a specific file
+uv run ned --hex FILE         # Open a file in the hex view, whatever its content
 uv run ned --config-dir DIR   # Use a custom directory for keybindings.toml
 ```
 
 The key file is `~/.config/nova-edit/keybindings.toml` by default.
 A path that exists but is not a regular file (a FIFO, a device, a directory) is refused: `main()` prints `ned: <path>: not a regular file` to stderr and exits with status 1.
 A path that does not exist opens an empty buffer that the first save creates (see "EditorScreen").
+Binary files open in the hex view; see "Hex View" for the rule.
 Every file is opened through `NovaTextArea.open`; there is no eager path.
 The environment variable `NOVA_EDIT_TIMING_FILE` makes `TimedNovaTextArea` write `FIRST_CONTENT <ns>` when content first renders (used by the benchmark harness).
 
@@ -440,6 +442,7 @@ EditorScreen(
     standalone: bool = False,
     poll_seconds: float = 2.0,
     quit_wait_seconds: float = 2.0,
+    start_hex: bool = False,
 ) -> None:
 ```
 
@@ -458,6 +461,7 @@ EditorScreen(
 - `standalone` — `True` for the standalone app (File menu has Quit), `False` for embedded (File menu has Close).
 - `poll_seconds` — Interval of the check for a change of the file on disk (default 2.0).
 - `quit_wait_seconds` — Longest wait for a cancelled save before the quit question (default 2.0).
+- `start_hex` — Show the first document in the hex view whatever its content; Open uses the binary detection (default `False`).
 
 ### Architecture
 
@@ -588,6 +592,7 @@ The menu bar has four menus:
 - Keyboard Shortcuts… (no default key; shown only when the screen has a key config)
 
 Checkable menu items start with the state of the widget, which is checked for Line Numbers and unchecked for Wrap Mode and Hex Mode, and are kept in sync with the widget's reactive properties (`soft_wrap`, `show_line_numbers`); Hex Mode is checked exactly while `DocumentView.hex_mode` is true.
+While the hex view is shown, Line Numbers and Wrap Mode are disabled and F10 and F11 do nothing; they show and keep the state they had.
 
 The path label on the right of the menu bar is sized to the room left after the menu entries (truncated keeping its end behind an ellipsis, or hidden), so menus stay clickable at 80 columns.
 Tests are in `tests/nova_editor/test_menu_path_label.py`.
@@ -655,6 +660,19 @@ Parts are added in order while text still fits the width; the tail is cut first 
 | 8 | `LF`, `CRLF` or `CR` | `editor.line_ending` |
 
 A note keeps its place when the line is cut: the position parts drop first.
+
+In the hex view the status line shows the parts of this table; the narrow rule is the same as for the text view: the note keeps its place and the tail is cut first.
+
+| # | Text | Rule |
+|---|---|---|
+| 0 | name | `_fit_name(file_name or "(unsaved)", width)`, always kept |
+| 0 | note | as in `format_status` (`status_line.py:101-104`) |
+| 1 | `Off 0x{offset:0{n}X} ({offset}) {P}%` | `n = max(8, len(f"{length:X}"))` (the width of the offset column, REQ-5); decimal without thousands separators (as the example); `P = byte_percent(offset, length)` (`status_line.py:82-86`); the ` P%` is left out when the document is empty |
+| 2 | `0x41 65 'A'` | `0x{b:02X} {b} '{CHAR_TABLE[b]}'` (REQ-6 character: printable ASCII else `.`); `EOF` when `offset == length`; `?` when `byte is None` below the end |
+| 3 | `OVR` or `INS` | `insert` |
+| 4 | `Modified` | only when modified |
+| 5 | `64.0 GiB` | `format_size(length)`: `N B` below 1 KiB, else one decimal and the unit (`KiB`..`TiB`), the same unit rule as `format_sizes` (`status_line.py:54-66`) |
+| 6 | `Hex` | always |
 The status line reads from the editor on its own timer (0.05 s) to keep updates off the critical path.
 
 ### On Mount
@@ -682,6 +700,7 @@ A directory raises `IsADirectoryError`, and a missing or unreadable file raises 
 Any other file (SSH, Azure, an archive member, an archive over SSH) is edited through its local copy (`docs/local_copies.md`).
 The screen opens the copy's path, a save writes the copy, and the copy mechanism writes it back to the source.
 The editor never touches the VFS; the host passes a path.
+The navigator passes a local path, so detection, the hex view, hex edits and the in-place save work on a local copy; the copy mechanism writes the saved copy back.
 The file provider of the dialogs stays the local one, so Open and Save As browse the local file system, starting in the directory of the file.
 A Save As to another local path leaves the copy, and later saves are not written back.
 
@@ -702,6 +721,7 @@ The navigator's keybindings dialog lists the 19 `editor.*` actions after its own
 The `KeybindingsConfig` of the navigator is passed to every new `EditorScreen` with `keyboard_shortcuts_item=False`, so there is no second dialog that could overwrite the file.
 The overrides are applied when the editor is opened; the dialog is not reachable while an editor is open, so no live reload is needed.
 If `editor.quit` is moved or unmapped, Ctrl+Q still reaches the editor, because `NovaNavigator.action_quit` asks the screen instead of exiting.
+F4 inside the editor screen is Hex Mode; the file list's F4 is not reachable until the editor closes.
 
 **Closing with Esc.**
 An embedded editor (`standalone=False`) also closes with Esc, through the `close_embedded` binding of `EditorScreen`; it runs the same flow as Close, so unsaved edits still ask first.
@@ -810,6 +830,14 @@ Save, reload, search and the external-change check stay on `editor` in both mode
 
 F4 (Hex Mode, `editor.hex_mode`) shows the document as bytes instead of text.
 `HexView` (`widget/hex_view.py`) is a `ScrollView` over the document of the text widget; the pure layout is in `widget/hex_layout.py`, which imports no Textual.
+
+### Opening in hex
+
+A file whose first 64 KiB (the whole file, if shorter) contain a NUL byte opens in the hex view.
+`core/binary_detect.py` reads exactly once from offset 0 for at most 64 KiB, through the document of the text widget.
+`DocumentView.open` runs it for `nova_edit`, for the navigator and for the Open flow; a failed read means text.
+`ned --hex` (`EditorScreen(start_hex=True)`) opens the first document in the hex view whatever its content; Open uses the detection.
+A reload and an external change do not detect again; the view the user chose stays.
 
 ### Layout
 
@@ -1082,8 +1110,6 @@ Escape calls `cancel_search`; the binding is active only while a search runs, so
 ### Interim Limits
 
 These stay until the later activities:
-- The status line still shows the state of the (hidden) text view (until ACT7).
-- View > Line Numbers and Wrap Mode act on the hidden text widget.
 - The drag does not auto-scroll.
 - Rows are cut at widths below 45 columns.
 
@@ -1105,6 +1131,7 @@ The popups are not dialogs, and the dialogs are plain `MessageBox` and `FileDial
 ### Status line
 
 `StatusLine` shows the state of the editor.
+In the hex view the status line shows the parts listed under "StatusLine".
 The `EditorScreen` builds a `StatusState` from the widget, and the pure function `format_status(state, width)` turns it into text.
 Parts are added in the order below while the text still fits the width; the tail is cut first on a narrow terminal, and the file name is always kept.
 
@@ -2118,6 +2145,8 @@ See `src/tools/measure_view.py` for usage.
 | Tab stops in edited rows over 1 MiB | Splice shifts checkpoints by the width delta only | `abs(stale - exact) < tab width` | Test `test_tab_alignment_behind_an_edit_is_kept_from_before_the_edit` |
 | Mixed line endings show the first style | No per-row counting in the scan | Display only; bytes are never changed | Unmeasured by design |
 | `text` above 8 MiB is `""` | Reading costs O(size) | `TEXT_LIMIT` = 8 MiB | Not applicable |
+
+A huge binary file starts its line scan in the background while the hex view is shown; nothing in the hex view waits for it.
 | Memory per piece | `Piece` object and tree nodes | About 99 bytes against the 80-byte design target | Measured on earlier code (98.2 and 99.4 bytes) |
 | `wrap_range` is O(measured blocks) | Measured blocks are never evicted | Grows with the number of blocks scrolled through | Unmeasured |
 | `LongLineIndex` adopt and splice copy the checkpoints | Both copy the checkpoint arrays of the row | Grows with the number of checkpoints | Not measured at scale; only the 200 MB line was measured |
@@ -2134,7 +2163,7 @@ See `src/tools/measure_view.py` for usage.
 | `stat` on a hung mount | `save` checks the path on the UI thread | Until the mount answers | Not applicable |
 | Search needle size | Pattern tier cost | 1 MiB plain, 4,096 characters for the pattern tier | Not applicable |
 | Search is literal | By design | No regular expressions, whole word or replace | Not applicable |
-| Hex view interim limits | The hex search, Go to and status line follow in later activities | Find and Go to show a note in hex mode, the status line shows the text view, View > Line Numbers and Wrap Mode act on the hidden text widget, a drag does not auto-scroll, rows are cut below 45 columns | Tests (`test_editor_screen_hex.py`) |
+| Hex view interim limits | The drag and the narrow layout of the hex view are not finished | A drag does not auto-scroll, rows are cut below 45 columns | Tests (`test_editor_screen_hex.py`) |
 | Hex typing beyond the scanned part | An edit whose removed or inserted content holds unknown pieces may contain a break, so it always ends its batch | One undo step per digit there; bytes are exact | Tests (`test_hex_history.py`) |
 | Huge selection copy, cut and delete in hex | `content_between` and the edit read the break-free tail of the range (`tail_chars_of`) on the UI thread | Unbounded for a huge selection without line breaks; Select All alone reads nothing | Not measured |
 | Hex copy during a save | A copy during a save keeps no internal record (as in the text view) | A later paste parses the system text | Tests (`test_hex_clipboard_inplace.py`) |
@@ -2509,6 +2538,12 @@ Further properties check that the tiers return the same result on ASCII data and
 - `widget/test_hex_edit_budget.py` — hex edits on the 8 GiB sparse file.
 - `widget/test_hex_clipboard.py`, `test_hex_clipboard_inplace.py` — copy, cut and paste forms and errors, and the shared record across an in-place save (the paste yields the original bytes) and across a copy during a save.
 - `test_editor_screen_hex_edit.py` — the six editing actions through menu and key (also a rebound key) on the hex view.
+- `core/test_binary_detect.py` — the NUL-byte check of the first 64 KiB.
+- `test_app_hex_flag.py` — the `--hex` flag of `ned`.
+- `test_open_binary.py` — binary detection at open in `DocumentView.open`, the screen start and the Open flow.
+- `test_hex_status.py`, `widget/test_hex_cursor_byte.py` — the hex status line and `HexView.byte_at_cursor`.
+- `test_hex_view_menu.py` — the View menu while the hex view is shown.
+- `tests/integration/test_editor_hex_integration.py`, `tests/integration/ssh/test_ssh_editor_hex.py` — the hex view in the navigator-hosted editor and on non-local files (the SSH test needs an SSH server).
 
 **Helpers and benchmarks:**
 - `helpers_view.py`, `test_helpers_view.py` — synthetic file builder and oracle.
