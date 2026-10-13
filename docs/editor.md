@@ -328,6 +328,7 @@ class MyEditorApp(App):
 - `cancel_pending()` — cancel a pending jump or deferred cursor operation; the action is bound to Escape while one is pending or a search runs.
 - `toggle_wrap()` — flip `soft_wrap`; `nova_edit` binds it to F10.
 - `select_all` is bound to `ctrl+shift+a` and `f8`; the stock binding was `f7` only, and Ctrl+F belongs to the search of `nova_edit`.
+  While the scan runs, `select_all` selects up to the last reachable row (`navigator.last_row()`); once the scan is complete it selects the whole document.
 
 ### Saving, reloading, external changes
 
@@ -666,7 +667,7 @@ Parts are added in order while text still fits the width; the tail is cut first 
 
 A note keeps its place when the line is cut: the position parts drop first.
 
-In the hex view the status line shows the parts of this table; the narrow rule is the same as for the text view: the note keeps its place and the tail is cut first.
+In the hex view the status line shows the parts of this table; the narrow rule differs from the text view: the name and the note keep their place, and the other parts drop in the order byte value, offset, `Hex`, size, `Modified`, mode (`HEX_DROP_ORDER` in `status_line.py`).
 
 | # | Text | Rule |
 |---|---|---|
@@ -677,7 +678,7 @@ In the hex view the status line shows the parts of this table; the narrow rule i
 | 3 | `OVR` or `INS` | `insert` |
 | 4 | `Modified` | only when modified |
 | 5 | `64.0 GiB` | `format_size(length)`: `N B` below 1 KiB, else one decimal and the unit (`KiB`..`TiB`), the same unit rule as `format_sizes` |
-| 6 | `Hex` | always |
+| 6 | `Hex` | unless the width forces it out |
 The status line reads from the editor on its own timer (0.05 s) to keep updates off the critical path.
 
 ### On Mount
@@ -862,6 +863,7 @@ A row is the offset, the hex pane and the character pane.
 - The number of rows is `length // bytes_per_row + 1`.
   When the length is a multiple of the row size (and for the empty document) the last row has no bytes: it is the end-of-document row, where the cursor can stand and where a byte can be appended.
 - Below 45 columns not even 8 bytes fit; the row is then cut at the right edge.
+  The 45 columns hold for offsets of up to 8 digits; a file of 4 GiB or more needs a wider offset column (46 columns for the 50 GiB file).
 
 ### The Byte Window
 
@@ -914,6 +916,7 @@ Insert, Delete and Backspace are bindings of the widget; they are not editor act
 A click puts the cursor on the digit or character under the pointer; Shift+click extends the selection from the cursor.
 A drag selects from the pressed byte to the byte under the pointer, both ends included, and stays in the pane where it started.
 The drag does not scroll on its own: it follows only the move events, and a pointer above or below the view reaches one row beyond it.
+The end of a drag stays where it was while the pointer is over the offset column, a gap or a `|` mark.
 A click outside both panes on a row does nothing.
 The mouse wheel scrolls the view.
 A click or drag above the first row stays on the first row, and one below the last row goes to the end-of-document position.
@@ -1073,7 +1076,7 @@ Result: digits and characters typed within 2 s and 100 characters of each other,
 
 ### Interpretations
 
-The requirements are silent or ambiguous on these points; the design settled them (decision DEC-23):
+The requirements are silent or ambiguous on these points; the design settled them:
 - I6: typing with a selection collapses it to its start (see "Editing").
 - I7: paste with a selection replaces it in both modes.
 - I8: a non-hex key in the hex pane is silent, without a bell.
@@ -1139,6 +1142,8 @@ The rule was fixed before the first measurement:
 - Per operation, `|median(50 GiB) - median(1 GiB)| <= max(3 ms, IQR of the 1 GiB samples)`, and both medians stay below 100 ms.
 - The first page appears in less than 0.5 s, cold and warm.
 - With the scan off, the `RssAnon` difference between the two sizes is at most 2 MiB.
+- The `tracemalloc` peak after the operations differs between the two sizes by at most 256 KiB.
+- The bytes requested before the first page and per operation are at most 2 MiB.
 
 Scan off (the line scan is not started):
 
@@ -1171,13 +1176,17 @@ Memory, first page and reads:
 | First page, scan off | cold 23 to 33 ms, warm 6 to 11 ms, on both sizes |
 | First page, scan on | cold 74 to 87 ms, warm 8 to 21 ms, on both sizes |
 | `RssAnon` after the operations, scan off | difference 0.17 MiB between 1 GiB and 50 GiB (33,452 and 33,624 KiB) |
-| Bytes read | at most 1,173 per operation; 66,306 for the first page; no full pass over the file |
+| `tracemalloc` peak after the operations | difference 116,914 B between 1 GiB and 50 GiB (limit 256 KiB) |
+| Bytes requested | at most 1,173 per operation and 66,306 before the first page (limit 2 MiB each); no full pass over the file |
+| `RssAnon` after the operations, scan on | about 35 MiB on 1 GiB and about 54 MiB on 50 GiB; this is the line index of the running scan, not the hex view, and the memory rule was set for scan off |
 
 With the scan on, six operations pass and the one-byte edit misses the rule by 0.04 ms: the median is 2.13 ms on 1 GiB and 5.17 ms on 50 GiB, a difference of 3.04 ms against a limit of 3.00 ms.
-The cause is a confounder, not a dependence of the view on the file size.
-The scan of the 1 GiB file finishes in about 2 s, while the scan of the 50 GiB file is still running during its operations.
-With the scan off, the same difference is 0.01 ms.
-The absolute bounds of the requirement hold with a wide margin: the first page appears in 6 to 87 ms, all medians are at most 5.2 ms with the scan on, the maxima of the seven operations are at most 30 ms with the scan on, and the 95th percentile on 50 GiB with the scan on is 15.7 to 23.8 ms.
+Not every pre-registered bound was met: the one-byte edit with the scan on is the only miss.
+The likely cause is a confounder, not a dependence of the view on the file size.
+The scan of the 1 GiB file probably finishes within the first seconds, while the scan of the 50 GiB file is still running during its operations.
+The completion of the 1 GiB scan was not logged; it is inferred from the flat 1 GiB latency after the first seconds.
+The scan-off difference of 0.01 ms supports this cause.
+The absolute bounds of the requirement hold with a wide margin: the first page appears in 6 to 87 ms, all medians are at most 5.2 ms with the scan on, the operation samples with the scan on stay at or below 29.6 ms, the first visit of an operation reaches 32.6 ms (scan on, 50 GiB), and the 95th percentile on 50 GiB with the scan on is 15.7 to 23.8 ms.
 The rule was not changed after the measurement.
 Throttling the scan would be a new item, if it is wanted.
 
@@ -1186,10 +1195,12 @@ Caveats:
 - The warm cache comes from a primer pass, not from normal use.
 - The load average was 2.67 at the start of the final run.
 - The scan was not run to completion on the 50 GiB file.
+- All rounds ran on one machine, one drive and one day.
+- The cold runs dropped the file from the page cache with `fadvise`; the measured cold residency was 0.0 in every run.
 
 ### Known Limits
 
-The drag does not auto-scroll, and rows are cut at widths below 45 columns.
+The drag does not auto-scroll, and rows are cut at widths below 45 columns (more for a file of 4 GiB or more, whose offset column is wider).
 The other limits of the hex view are listed in the global "Known Limits" section, under "Hex Editing".
 
 ---
@@ -2245,7 +2256,13 @@ See `src/tools/measure_view.py` for usage.
 | `stat` on a hung mount | `save` checks the path on the UI thread | Until the mount answers | Not applicable |
 | Search needle size | Pattern tier cost | 1 MiB plain, 4,096 characters for the pattern tier | Not applicable |
 | Search is literal | By design | No regular expressions, whole word or replace | Not applicable |
-| Hex view drag and narrow layout | The drag has no auto-scroll and the row layout needs 45 columns | A drag does not auto-scroll, rows are cut below 45 columns | Tests `widget/test_hex_view.py::test_wider_and_narrower_terminals_change_the_byte_count` and `test_drag_forward_and_backward_selects_the_inclusive_range`; the missing auto-scroll and the 45-column cut are not tested explicitly |
+| Hex view drag and narrow layout | The drag has no auto-scroll and the row layout needs 45 columns for offsets of up to 8 digits | A drag does not auto-scroll, rows are cut below 45 columns (a file of 4 GiB or more has a wider offset column: 46 columns for the 50 GiB file) | Tests `widget/test_hex_view.py::test_wider_and_narrower_terminals_change_the_byte_count` and `test_drag_forward_and_backward_selects_the_inclusive_range`; the missing auto-scroll and the 45-column cut are not tested explicitly |
+| Hex drag over the offset column, a gap or a `\|` mark | `_hit` returns no byte there | The end of a drag freezes while the pointer is over such a cell and follows again on the next byte | Not tested |
+| Hex Shift+Up, Shift+Down and Shift+End stop at the row | The target is clamped to the row: Shift+Up on the first row and Shift+Down on the last row keep the column on the same row, and Shift+End on a full row ends on its last byte | The selection does not reach the edge of the document; use Shift+Ctrl+Home and Shift+Ctrl+End | The row-wise moves are tested (`test_shift_down_end_pagedown_and_ctrl_shift_end`); the cases at the first and last row are not |
+| A hex, text, hex switch before the scan arrives loses a pending text goto | The switch to the hex view cancels a pending jump (see "Switching") | The goto is lost; repeat it | The cancel on the first switch is tested (`test_toggle_during_a_pending_goto_leaves_no_pending_progress`); the three-step sequence is not |
+| A same-size external change during an in-place write is not detected | The own `pwrite` changes the mtime, so the change check compares the size only while the patch window is open | A change that keeps the size and happens in the write window goes unnoticed | The patch window is tested at source level (`core/test_source_overlay.py`, `core/test_source_patch_race.py`); a same-size foreign change in the window is not |
+| The read overlay and the patched ranges stay after a failed in-place save | The overlay serves the pre-patch bytes of the ranges and is not removed on a rollback | They stay until a streaming save, a reload or the close | Test `test_abort_patch_keeps_the_overlay_and_restores_the_full_check` (`core/test_source_overlay.py`); the view after a failed save is not tested |
+| Hex on non-local files is tested only against a stub | The editor works on a local copy of the remote file | Not tested against real SSH servers, Azure, nested archives, huge remote files or change detection on a slow file system | The local-copy path is tested with local files and mocks, and `tests/integration/ssh/test_ssh_editor_hex.py` runs against a local stub SFTP server |
 | Hex typing beyond the scanned part | An edit whose removed or inserted content holds unknown pieces may contain a break, so it always ends its batch | One undo step per digit there; bytes are exact | Tests `document/test_hex_edit.py::test_unknown_content_blocks_merging` and `widget/test_hex_edit.py::test_typing_works_before_the_scan_has_reached_the_position` |
 | Huge selection copy, cut and delete in hex | `content_between` and the edit read the break-free tail of the range (`tail_chars_of`) on the UI thread | Unbounded for a huge selection without line breaks; Select All alone reads nothing | Not measured |
 | Hex copy during a save | A copy during a save keeps no internal record (as in the text view) | A later paste parses the system text | Test `test_a_copy_made_during_an_in_place_save_is_not_recorded` (`test_hex_clipboard_inplace.py`) |
@@ -2254,7 +2271,7 @@ See `src/tools/measure_view.py` for usage.
 | A hex needle can cut a character or a CR LF pair | A hex needle matches bytes | By design; the hex view selects the bytes exactly, the text view maps each end to a character | Matcher level: `test_a_needle_that_splits_a_utf8_character_or_crlf_matches` (`tests/nova_editor/core/test_search_bytes.py`); the text-view mapping of the ends is not tested |
 | A plain number is rejected in the hex Go to | A plain number is a line number and the hex view has no lines | By design; `@N` takes a decimal offset | Test `test_a_plain_number_in_the_hex_view_is_rejected_with_the_line_message` |
 | The hint bar lists Wrap Mode in the hex view | `HintBar` does not follow `Action.enabled` | Cosmetic; `F10 Wrap Mode` stays in the bar and does nothing | The menu state only (`test_the_two_items_are_disabled_in_hex_and_enabled_in_text`) |
-| The line scan runs under the hex view | A huge binary file starts its scan at open, because the text view may be opened later | The index grows with the number of rows found; the hex view never waits for it | Measured on 2026-10-13: with the scan on, a redraw on 50 GiB stays under 30 ms; see "Budget (REQ-21)" |
+| The line scan runs under the hex view | A huge binary file starts its scan at open, because the text view may be opened later | The index grows with the number of rows found; the hex view never waits for it | Measured on 2026-10-13: with the scan on, operation samples stay at or below 29.6 ms and first-visit samples reach 32.6 ms (50 GiB); the scan costs on 50 GiB a 95th percentile of 15.7 to 23.8 ms and a one-byte-edit median of 5.2 ms against about 2 ms on 1 GiB; see "Budget (REQ-21)" |
 | The in-place save is not atomic | The write patches the file in place | A crash, a power loss or a full disk can leave the file partially patched; save again or use Save As | Tests `test_write_error_after_first_range_is_partial` and `test_save_after_partial_failure_succeeds_and_file_equals_document` |
 | The in-place save cannot open busy files | The kernel refuses to open the file for writing | `ETXTBSY`, `EACCES`, `EPERM` and `EROFS` fail at stage `prepare`; Save As works | Tests `test_etxtbsy_is_plain_failure_with_errno_text` and `test_unwritable_file_fails_before_any_write_with_read_only_message` (both `core/test_inplace_job.py`); `EPERM` and `EROFS` are not tested separately |
 | Repeat saves rewrite earlier patches | No tracker of clean ranges | Proportional to the bytes edited or patched so far, never to the file size | The rewrite of a patched range is tested by `test_second_save_after_undo_restores_original_bytes`; the cost bound (proportional to the bytes edited) is not tested |
@@ -2302,6 +2319,7 @@ See `src/tools/measure_view.py` for usage.
 The final performance benchmarks were skipped by owner decision.
 No measurement exists for the final code of the app.
 The hex view is the exception: it is measured on the final code, see "Budget (REQ-21)".
+The open of `NovaEditApp` on a hex file was measured on the final code too: 31 to 64 ms on 1 GiB and 50 GiB, cold and warm.
 The following five items are UNMEASURED on the final code and must not be read as met:
 
 1. **The wrap-on first `ctrl+end` fix.**
@@ -2344,7 +2362,8 @@ The edit requirements were measured at resolved positions: after indexing on the
 
 A provisional window assumes tab phase 0 at its left edge, so tabs may shift when the cursor resolves.
 Word moves on an unresolved row are a fixed 8 characters.
-`select_line` and `select_all` do nothing while the row length is unknown.
+`select_line` does nothing while the row length is unknown.
+`select_all` selects up to the last reachable row while the scan runs, because the open row cannot be read, and the whole document once the scan is complete; the partly scanned case is pinned by `test_select_all_on_a_partly_scanned_document`.
 Mouse clicks on a long row beyond the scanned frontier are ignored, and so are clicks on a provisional row without wrap.
 
 ### Tab Stops in Edited Rows Over 1 MiB
@@ -2658,7 +2677,7 @@ Further properties check that the tiers return the same result on ASCII data and
 - `test_open_binary.py` — binary detection at open in `DocumentView.open`, the screen start and the Open flow.
 - `test_hex_status.py`, `widget/test_hex_cursor_byte.py` — the hex status line and `HexView.byte_at_cursor`.
 - `test_hex_view_menu.py` — the View menu while the hex view is shown.
-- `tests/integration/test_editor_hex_integration.py`, `tests/integration/ssh/test_ssh_editor_hex.py` — the hex view in the navigator-hosted editor and on non-local files (the SSH test needs an SSH server).
+- `tests/integration/test_editor_hex_integration.py`, `tests/integration/ssh/test_ssh_editor_hex.py` — the hex view in the navigator-hosted editor and on non-local files (the SSH test runs against a local stub SFTP server).
 
 **Helpers and benchmarks:**
 - `helpers_view.py`, `test_helpers_view.py` — synthetic file builder and oracle.
