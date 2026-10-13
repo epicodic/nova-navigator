@@ -174,7 +174,7 @@ The package exports `EditsLocked`, `LazyDocument` and `RowUnavailable`.
 
 **Lazy classes:**
 - `LazyDocument` — editable document over a `PieceTable`; decodes rows on demand with capability methods that never wait.
-  Its edit methods are `replace_range` (text), `splice` (piece references between locations) and `splice_bytes` (piece references between byte offsets, used by undo and redo).
+  Its edit methods are `replace_range` (text), `splice` (piece references between locations; content with unknown pieces takes the `splice_bytes` path, because its row breaks are not known) and `splice_bytes` (piece references between byte offsets, used by undo and redo).
   `selection_content` returns the bytes of a selection as piece references without reading them.
   `content_of_bytes(data)` stores bytes in the add store and returns them as `Content`; `content_between(start, end)` returns the bytes of a byte range as piece references at any scan state, reading only the break-free tail, and returns exactly that range: half a CR LF pair is the lone CR or LF byte (both are used by the hex view).
   `search_plan(offset, limit)` returns a `SearchPlan` (revision, length and parts) in one lock hold, and `revision` counts the committed edits (see "Search").
@@ -977,6 +977,12 @@ Application: with a selection, the selection is replaced in both modes (I7: afte
 Without a selection, overwrite replaces `min(N, length - offset)` bytes, so a paste past the end extends the document, and insert inserts.
 The cursor ends behind the pasted bytes.
 A paste is one history entry with its own batch.
+
+A hex copy of a range the line scan has not reached holds unknown pieces, and its row count is not known.
+Pasted into the text view, it is spliced by byte offset (`splice_bytes`) and the cursor goes behind it by byte offset, as a pending jump until the scan arrives.
+Until then the cursor and the selection ends are parked on the last resolved row, after the paste, undo and redo.
+The record keeps the unknown pieces of the copy, so such a paste stays blind even when the scan has moved on.
+A paste of such content in the first row is refused with `EditRefused`, because no resolved row is left to hold the cursor; copy the range again once indexing has reached it, or paste below the first row.
 Internal content with unknown pieces takes the blind path and works at any offset.
 
 ### Undo and Redo in Hex
@@ -2060,6 +2066,7 @@ See `src/tools/measure_view.py` for usage.
 | Rows after a blind byte edit | The first unknown piece limits the answerable rows | Row count is a lower bound and line numbers after the edit are unavailable until the scan fills the piece in | Tests (`test_lazy_byte_edit.py`) |
 | Syntax highlighting after a blind byte edit | The syntax mirror cannot follow an edit without rows | The mirror is dropped by every blind byte edit, so any attached mirror is lost (a document has a mirror only up to `highlight_limit` bytes, default 1 MiB) | Test `test_blind_edit_detaches_the_syntax_mirror` (R7) |
 | Unknown pieces of a replaced original are never filled | A save replaces the original; the old index is not continued | Rows through those pieces stay unavailable; bytes are exact | Test in `test_rebase_unknown.py` (R4) |
+| Cursor after a blind paste | The pasted unscanned bytes make the rows from the edit row on unresolved | The cursor is parked on the last resolved row and the byte jump completes when the scan arrives; a paste of such content in row 0 is refused | Tests (`test_hex_clipboard_unscanned.py`) |
 | `EditResult.end_location` of a byte edit | A blind edit has no row | Meaningless for `splice_bytes` offsets the index cannot resolve; callers in byte mode ignore it (R6) | Not tested |
 | `complete` lags after the scan ends | The fill handles 64 pieces per call | `complete` stays false for a few calls until the fill finishes | Test `test_fill_is_batched` |
 | Tab stops in edited rows over 1 MiB | Splice shifts checkpoints by the width delta only | `abs(stale - exact) < tab width` | Test `test_tab_alignment_behind_an_edit_is_kept_from_before_the_edit` |
