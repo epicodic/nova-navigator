@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import ClassVar, Literal
 
@@ -15,8 +16,17 @@ from nova_widgets.popup_widget import PopupWidget
 
 HINT = "Line number, or @ and a byte offset"
 """The message row while nothing is wrong."""
-INVALID = "Not a line number or @byte offset (for example 120 or @4096)"
+INVALID = "Not a line number or byte offset (for example 120, @4096, 0x1F00 or 1F00h)"
 """The message row for text that `parse_goto` refuses."""
+HEX_HINT = "Byte offset: 0x1F00, 1F00h or @7936"
+"""The message row of the popup in the hex view, while nothing is wrong."""
+HEX_INVALID = "Not a byte offset (for example 0x1F00, 1F00h or @7936)"
+"""The message row in the hex view for text that `parse_goto` refuses."""
+HEX_LINE_MESSAGE = "Line numbers are not available in the hex view; use 0x…, …h or @offset"
+"""The reason for a line number in the hex view, which has no lines."""
+
+_HEX_PREFIXED = re.compile(r"0[xX]([0-9a-fA-F]+)")
+_HEX_SUFFIXED = re.compile(r"([0-9a-fA-F]+)[hH]")
 
 
 @dataclass
@@ -28,7 +38,7 @@ class GotoTarget:
 
 
 def parse_goto(text: str) -> GotoTarget | None:
-    """Parse goto input: 'N' for line, '@N' for byte offset.
+    """Parse goto input: 'N' for a line, '@N', '0x1F00' or '1F00h' for a byte offset (hex digits in either case).
 
     Args:
         text: Input text (stripped of surrounding whitespace).
@@ -49,6 +59,11 @@ def parse_goto(text: str) -> GotoTarget | None:
         except ValueError:
             return None
 
+    for form in (_HEX_PREFIXED, _HEX_SUFFIXED):
+        found = form.fullmatch(text)
+        if found is not None:
+            return GotoTarget("byte", int(found.group(1), 16))
+
     try:
         line_num = int(text)
         if line_num < 0:
@@ -56,6 +71,24 @@ def parse_goto(text: str) -> GotoTarget | None:
         return GotoTarget("line", line_num)
     except ValueError:
         return None
+
+
+def hex_goto(target: GotoTarget, length: int) -> int | str:
+    """Resolve `target` for the hex view, which has bytes and no lines.
+
+    Args:
+        target: The parsed target.
+        length: The document length in bytes.
+
+    Returns:
+        The byte offset to move the cursor to (`length` is the end-of-document position), or the reason the target is refused:
+        a line number has no meaning there and an offset beyond `length` does not exist.
+    """
+    if target.kind == "line":
+        return HEX_LINE_MESSAGE
+    if target.value > length:
+        return f"byte offset {target.value} is beyond the end of the file ({length} bytes)"
+    return target.value
 
 
 class GotoPopup(PopupWidget, can_focus=True):
@@ -117,6 +150,8 @@ class GotoPopup(PopupWidget, can_focus=True):
         """Whether a jump that this popup started has not answered yet."""
         self.shown = HINT
         """The text of the message row."""
+        self.hex = False
+        """Whether the popup was opened for the hex view."""
         self._message = Static(HINT, id="goto_message", markup=False)
         self.display = False
 
@@ -125,11 +160,13 @@ class GotoPopup(PopupWidget, can_focus=True):
         yield Horizontal(Static("Go to:", id="goto_label"), self.input)
         yield self._message
 
-    def open(self, offset: tuple[int, int]) -> None:
-        """Show the popup at `offset`, with the hint, and focus the input with its text selected."""
+    def open(self, offset: tuple[int, int], *, hex: bool = False) -> None:
+        """Show the popup at `offset`, with the hint (the byte offset hint in the hex view), and focus the input with its text selected."""
         self.offset = offset
         self.awaiting = False
-        self.show_message(HINT, error=False)
+        self.hex = hex
+        self.input.placeholder = "Byte offset" if hex else "Line, or @byte offset"
+        self.show_message(HEX_HINT if hex else HINT, error=False)
         self.show()
         self.input.focus()
         self.input.select_all()
@@ -156,7 +193,7 @@ class GotoPopup(PopupWidget, can_focus=True):
         event.stop()
         target = parse_goto(event.value)
         if target is None:
-            self.show_message(INVALID, error=True)
+            self.show_message(HEX_INVALID if self.hex else INVALID, error=True)
             return
         self.awaiting = True
         self.post_message(self.Requested(target))

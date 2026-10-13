@@ -38,7 +38,7 @@ from .document_view import DocumentView
 from .editor_actions import build_editor_actions, build_keyboard_shortcuts_action
 from .editor_menus import build_menu_bar
 from .find_popup import FindPopup
-from .goto_popup import GotoPopup
+from .goto_popup import GotoPopup, GotoTarget, hex_goto
 from .status_line import StatusLine, StatusState, byte_percent, format_sizes, row_is_known, save_progress_text
 from .timed_text_area import TimedNovaTextArea
 from .widget import ExternalCheck, HexView, NovaTextArea
@@ -908,29 +908,35 @@ class EditorScreen(Screen[None]):
         """Repeat the last search backward."""
         self._repeat_search(backward=True)
 
-    def _hex_guard(self) -> bool:
-        """Whether the hex view is shown: Go to is not available there yet and shows a note instead (the guard goes with the hex goto)."""
-        if not self.document.hex_mode:
-            return False
-        self._note("Not available in the hex view yet", timed=True)
-        return True
-
     def action_goto(self) -> None:
-        """Open the Go to popup; with the popup already open it stays open (not in the hex view yet)."""
-        if self._hex_guard():
-            return
-        self.goto_popup.open(self._popup_offset(GotoPopup.WIDTH))
+        """Open the Go to popup (for byte offsets in the hex view); with the popup already open it stays open."""
+        self.goto_popup.open(self._popup_offset(GotoPopup.WIDTH), hex=self.document.hex_mode)
 
     def on_goto_popup_requested(self, message: GotoPopup.Requested) -> None:
         """Run the jump; the widget answers with `JumpCompleted` or `JumpRejected`, or keeps the target pending (S0001 REQ-6)."""
-        editor = self.document.editor
         target = message.target
+        if self.document.hex_mode:
+            self._goto_in_hex_view(target)
+            return
+        editor = self.document.editor
         if target.kind == "line":
             editor.goto_line(target.value)
         else:  # byte
             editor.goto_byte(target.value)
         if editor.pending_progress is not None:  # the target lies beyond the scan: the status line shows the progress, Escape cancels it
             self._close_popup(self.goto_popup)
+
+    def _goto_in_hex_view(self, target: GotoTarget) -> None:
+        """Move the hex cursor to a byte offset (the length is the end position); a refused target stays in the popup as a message."""
+        popup = self.goto_popup
+        view = self.document.hex_view
+        placed = hex_goto(target, view.length)
+        if isinstance(placed, str):
+            popup.reject(placed)
+            return
+        view.goto(placed)
+        popup.awaiting = False
+        self._close_popup(popup)
 
     def on_goto_popup_dismissed(self, message: GotoPopup.Dismissed) -> None:
         """Escape: close the popup and focus the editor."""
