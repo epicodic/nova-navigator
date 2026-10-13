@@ -160,6 +160,7 @@ async def test_f4_in_the_list_works_again_after_close(app_ctx: AppCtx) -> None:
     await back_in_the_list(app_ctx)
     await app_ctx.pilot.press("f4")
     await poll_until(app_ctx.pilot, lambda: isinstance(app_ctx.app.screen, EditorScreen))
+    assert isinstance(app_ctx.app.screen, EditorScreen)
 
     again = editor_of(app_ctx)
     assert again is not screen
@@ -347,6 +348,7 @@ async def test_a_conflict_after_a_hex_save_is_reported_at_close(app_ctx: AppCtx,
     await back_in_the_list(app_ctx)
 
     await poll_until(app_ctx.pilot, lambda: any("changed on the source" in n for n in notices))
+    assert any("changed on the source" in n for n in notices)
     assert content(fs, "/d/f.bin") == b"server\n"
     assert entry.copy.path.read_bytes() == b"\xee" + BINARY[1:]
     assert manager.unsynced() == [entry]
@@ -369,8 +371,8 @@ async def test_a_binary_jar_member_opens_in_hex_view_only(app_ctx: AppCtx, tmp_p
     assert screen.document.editor.read_only
     await edit_first_byte(app_ctx)
     await app_ctx.pilot.press("ctrl+s")
-    await app_ctx.pilot.pause(delay=0.2)
-
+    await poll_until(app_ctx.pilot, lambda: not screen.document.editor.saving and not screen.document.editor.modified)
+    assert not screen.document.editor.saving
     assert not screen.document.editor.modified
     assert "Modified" not in status_text(screen)
     assert screen.document.editor.document.read_bytes(0, len(BINARY)) == BINARY

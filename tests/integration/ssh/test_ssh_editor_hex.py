@@ -55,7 +55,9 @@ async def test_a_remote_binary_file_is_edited_in_hex_and_the_remote_file_gets_th
     assert not screen.document.editor.modified
     await pilot.press("ctrl+w")
     await poll_until(pilot, lambda: isinstance(app.screen, MainScreen))
+    assert isinstance(app.screen, MainScreen)
     await poll_until(pilot, lambda: entry.detector is None)
+    assert entry.detector is None
     assert len(runner.sync_jobs) == 1
     assert remote.read_bytes() == EDITED
     assert not [item.name for item in ssh_app_ctx.remote_dir.iterdir() if item.name.endswith(".nn-tmp")]

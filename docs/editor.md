@@ -1107,9 +1107,9 @@ Escape calls `cancel_search`; the binding is active only while a search runs, so
 
 `tests/nova_editor/widget/test_hex_search_budget.py` proves the same for goto and byte search on the sparse 8 GiB file: a goto to any offset, the length included, reads the window once at most; a goto beyond the length reads nothing; a forward search near the end reads at most two windows of chunks; a backward search from the end reads one unit; a cancel stops a running search after a bounded number of reads; and the hex search and goto sources use no row APIs.
 
-### Interim Limits
+### Known Limits
 
-These stay until the later activities:
+The hex view has two limits that are still open:
 - The drag does not auto-scroll.
 - Rows are cut at widths below 45 columns.
 
@@ -2163,7 +2163,7 @@ A huge binary file starts its line scan in the background while the hex view is 
 | `stat` on a hung mount | `save` checks the path on the UI thread | Until the mount answers | Not applicable |
 | Search needle size | Pattern tier cost | 1 MiB plain, 4,096 characters for the pattern tier | Not applicable |
 | Search is literal | By design | No regular expressions, whole word or replace | Not applicable |
-| Hex view interim limits | The drag and the narrow layout of the hex view are not finished | A drag does not auto-scroll, rows are cut below 45 columns | Tests (`test_editor_screen_hex.py`) |
+| Hex view known limits | The drag and the narrow layout of the hex view are not finished | A drag does not auto-scroll, rows are cut below 45 columns | Tests (`test_editor_screen_hex.py`) |
 | Hex typing beyond the scanned part | An edit whose removed or inserted content holds unknown pieces may contain a break, so it always ends its batch | One undo step per digit there; bytes are exact | Tests (`test_hex_history.py`) |
 | Huge selection copy, cut and delete in hex | `content_between` and the edit read the break-free tail of the range (`tail_chars_of`) on the UI thread | Unbounded for a huge selection without line breaks; Select All alone reads nothing | Not measured |
 | Hex copy during a save | A copy during a save keeps no internal record (as in the text view) | A later paste parses the system text | Tests (`test_hex_clipboard_inplace.py`) |
@@ -2530,7 +2530,7 @@ Further properties check that the tiers return the same result on ASCII data and
 **Hex view:**
 - `widget/test_hex_layout.py`, `widget/test_hex_scroll_spike.py` — the pure layout and the Textual spike for billions of virtual rows.
 - `widget/test_hex_view.py`, `widget/test_hex_view_budget.py` — rendering, cursor, selection, keys and mouse, and the view budget (REQ-21) on an 8 GiB sparse file; `widget/hex_helpers.py` holds the helpers.
-- `test_document_view_hex.py`, `test_editor_screen_hex.py` — `DocumentView.show_hex` and the F4 action, menu item, focus, save and reload in hex mode, and the interim guard.
+- `test_document_view_hex.py`, `test_editor_screen_hex.py` — `DocumentView.show_hex` and the F4 action, menu item, focus, save and reload in hex mode, and the guards of hex mode (Line Numbers and Wrap Mode do nothing while the hex view is shown).
 - `test_hex_mapping.py`, `test_text_area_view_switch.py` — the byte-offset mapping between the views and the three `NovaTextArea` methods of the switch.
 - `document/test_hex_edit.py`, `document/test_lazy_byte_content.py` — `HexEdit` (shape, characters, coalescing, grouping in a real `EditHistory` with a fake clock) and `content_of_bytes` / `content_between`.
 - `widget/test_hex_input.py` — `plan_digit`, `format_hex_pairs`, `char_text` and `parse_hex_text` without Pilot.

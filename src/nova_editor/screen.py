@@ -562,7 +562,7 @@ class EditorScreen(Screen[None]):
     async def _swap_document(self, view: DocumentView) -> None:
         """Replace the document by `view`: remove the old widgets, mount the new ones and re-establish everything the screen derived from the old one.
 
-        The hex view is removed first: the text widget closes the document when it is removed. The new document starts in text mode.
+        The hex view is removed first: the text widget closes the document when it is removed. A binary file opened this way starts in the hex view through detection, any other file in the text view.
         """
         editor = self.document.editor
         hex_view = self.document.hex_view
