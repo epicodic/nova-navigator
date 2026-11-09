@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from nova_editor.core import Content, LineIndex, PreadSource
+from nova_editor.core import Content, FileIdentity, InPlaceHost, InPlaceJob, InPlaceResult, LineIndex, PreadSource
 from nova_editor.core.pieces import aggregate_of_bytes
 from nova_editor.core.rebase import RebasePlan
-from nova_editor.core.save import PlanPart, SaveJob, SaveResult, SaveSettings
+from nova_editor.core.save import PlanPart, SaveIo, SaveJob, SaveProgress, SaveResult, SaveSettings
 from nova_editor.document._document import EditResult
 from nova_editor.document._edit import Edit
 from nova_editor.document._lazy_config import LazyConfig
@@ -40,6 +42,56 @@ def open_pread_document(directory: Path, data: bytes, config: LazyConfig = SMALL
     path = directory / name
     path.write_bytes(data)
     return LazyDocument.from_path(path, config), data
+
+
+def content_of(doc: LazyDocument, data: bytes) -> Content:
+    """Return `data` as `Content` in the add store of `doc` (what typing it would insert)."""
+    return doc._table.add(data)
+
+
+def held_identity(doc: LazyDocument, path: Path) -> FileIdentity:
+    """Return the identity the editor holds of the file behind `doc`: the one its source adopted, or a fresh `stat` for a source in memory."""
+    source = doc._source
+    return source.identity() if isinstance(source, PreadSource) else FileIdentity.from_stat(os.stat(path))
+
+
+def in_place_job(
+    doc: LazyDocument,
+    path: Path,
+    *,
+    io: SaveIo | None = None,
+    host: InPlaceHost | None = None,
+    settings: SaveSettings = SAVE_SETTINGS,
+    progress: Callable[[SaveProgress], None] | None = None,
+    held: FileIdentity | None = None,
+) -> InPlaceJob:
+    """Create an `InPlaceJob` for `doc` (or for `host`, a wrapper of it) with the identity the editor holds."""
+    return InPlaceJob(host if host is not None else doc, path, held if held is not None else held_identity(doc, path), settings, progress, io)
+
+
+def run_job(doc: LazyDocument, job: InPlaceJob) -> InPlaceResult:
+    """Run `job` with the edits of `doc` locked and a save registered, as the widget does."""
+    doc.lock_edits("saving")
+    doc.begin_save()
+    try:
+        return job.run()
+    finally:
+        doc.end_save()
+        doc.unlock_edits()
+
+
+def run_in_place(
+    doc: LazyDocument,
+    path: Path,
+    *,
+    io: SaveIo | None = None,
+    host: InPlaceHost | None = None,
+    settings: SaveSettings = SAVE_SETTINGS,
+    progress: Callable[[SaveProgress], None] | None = None,
+    held: FileIdentity | None = None,
+) -> InPlaceResult:
+    """Create and run an in-place job for `doc` (the options of `in_place_job`)."""
+    return run_job(doc, in_place_job(doc, path, io=io, host=host, settings=settings, progress=progress, held=held))
 
 
 def save_result(doc: LazyDocument, target: Path, settings: SaveSettings = SAVE_SETTINGS) -> SaveResult:

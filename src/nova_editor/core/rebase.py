@@ -18,7 +18,19 @@ from nova_editor.core.add_store import AddStore
 from nova_editor.core.byte_source import ByteSource, SourceChanged
 from nova_editor.core.line_index import LineIndex
 from nova_editor.core.original_source import OriginalSource
-from nova_editor.core.pieces import MAX_GENERATION, Content, Piece, PieceSource, generation_of, make_piece, make_src, merge_pieces, segment_of
+from nova_editor.core.pieces import (
+    MAX_GENERATION,
+    Content,
+    Piece,
+    PieceSource,
+    RowNotIndexed,
+    generation_of,
+    make_piece,
+    make_src,
+    make_unknown_piece,
+    merge_pieces,
+    segment_of,
+)
 from nova_editor.core.save_layout import SaveLayout
 
 __all__ = ["UNDO_COPY_LIMIT", "RebasePlan", "Rebaser"]
@@ -170,7 +182,7 @@ class Rebaser:
                 continue
             for part in parts[piece]:
                 if part.present:
-                    built.append((make_piece(self._new_original, 0, part.out, part.out + part.b - part.a), True))
+                    built.append((self._saved(part), True))
                 elif (found := copied.get((piece.src, part.a, part.b))) is not None:
                     built.append((found, True))
                 else:
@@ -183,12 +195,26 @@ class Rebaser:
                 merged.append((piece, rewritten))
         return _with_pieces(content, [piece for piece, _ in merged])
 
+    def _saved(self, part: _Part) -> Piece:
+        """Return the present part as a piece of the new original; unknown when the new original has not scanned that far."""
+        a, b = part.out, part.out + part.b - part.a
+        try:
+            return make_piece(self._new_original, 0, a, b)
+        except RowNotIndexed:
+            return make_unknown_piece(self._new_original, 0, a, b)
+
     def _kept(self, piece: Piece, part: _Part) -> Piece:
         """Return the orphan part as a piece of the retained generation (the old range, a new `src`)."""
         src = make_src(self._generation, segment_of(piece.src))
         if part.a == piece.a and part.b == piece.b:
             return piece._replace(src=src)
-        return make_piece(self._old[piece.src], src, part.a, part.b)
+        source = self._old[piece.src]
+        if piece.unknown:
+            return make_unknown_piece(source, src, part.a, part.b)
+        try:
+            return make_piece(source, src, part.a, part.b)
+        except RowNotIndexed:
+            return make_unknown_piece(source, src, part.a, part.b)  # an unscanned orphan stays a piece of the retained generation
 
     def _split(self, piece: Piece) -> list[_Part]:
         """Split `piece` against the intervals of its source into present and orphan parts, in order."""
@@ -222,5 +248,10 @@ def _in_generation(piece: Piece, generation: int) -> Piece:
 
 
 def _with_pieces(content: Content, pieces: list[Piece]) -> Content:
-    """Return `content` with other pieces for the same bytes: the aggregate fields are copied."""
-    return replace(content, pieces=tuple(pieces))
+    """Return `content` with other pieces for the same bytes.
+
+    The aggregate fields are copied, or recomputed when unknown pieces may have become known.
+    """
+    if content.unknown == 0 and not any(piece.unknown for piece in pieces):
+        return replace(content, pieces=tuple(pieces))
+    return Content.from_pieces(pieces, content.tail_chars)

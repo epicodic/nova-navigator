@@ -9,6 +9,9 @@ from typing import ClassVar, Literal
 from textual.timer import Timer
 from textual.widgets import Static
 
+from .core.control_names import bracketed_control_name
+from .widget.hex_layout import CHAR_TABLE
+
 SEPARATOR = "  "
 UNSAVED_NAME = "(unsaved)"
 """Shown in place of the file name while the document is not bound to a path."""
@@ -43,6 +46,26 @@ class StatusState:
     """A transient text (progress or result of a save, a search or a reload) shown right after the file name; set by `StatusLine.set_note`."""
 
 
+@dataclass(frozen=True)
+class HexStatusState:
+    """What the status line shows in the hex view; built from the view by the screen, formatted by `format_hex_status` (REQ-19)."""
+
+    file_name: str | None
+    """Name (no directory) of the file the document is bound to, `None` while it has no path."""
+    offset: int
+    """Offset of the cursor, `0..length`."""
+    length: int
+    """Length of the document in bytes."""
+    byte: int | None
+    """The byte under the cursor; `None` at the end position or when it cannot be read."""
+    insert: bool
+    """Whether typing inserts (`INS`) rather than overwrites (`OVR`)."""
+    modified: bool
+    """Whether the document has unsaved changes."""
+    note: str | None = None
+    """A transient text shown right after the file name; set by `StatusLine.set_note`."""
+
+
 def row_is_known(row: int, line_count: int, complete: bool) -> bool:
     """Whether the 0-based `row` of the cursor is resolved by the line scan.
 
@@ -66,8 +89,8 @@ def format_sizes(done: int, total: int) -> str:
     return f"{done / scale:.1f} / {total / scale:.1f} {_UNITS[unit]}"
 
 
-def save_progress_text(phase: str, done: int, total: int) -> str:
-    """The note of a running save: the bytes written, or the name of a later phase."""
+def save_progress_text(phase: str, done: int, total: int, *, started: bool = False) -> str:
+    """The note of a running save: the bytes written, or the name of a later phase; `started` (an in-place save wrote its first byte) drops the hint that Esc cancels."""
     if phase == "flushing":
         return "Flushing"
     if phase == "history":
@@ -75,7 +98,8 @@ def save_progress_text(phase: str, done: int, total: int) -> str:
     if phase == "finishing":
         return "Finishing"
     percent = 100 if total <= 0 else round(done * 100 / total)
-    return f"Saving  {format_sizes(done, total)}  {percent} %  Esc cancels"
+    hint = "" if started else "  Esc cancels"
+    return f"Saving  {format_sizes(done, total)}  {percent} %{hint}"
 
 
 def byte_percent(byte_offset: int | None, length: int) -> int | None:
@@ -130,6 +154,67 @@ def format_status(state: StatusState, width: int) -> str:
     return text
 
 
+def format_size(length: int) -> str:
+    """Format a byte count: `N B` below 1 KiB, else one decimal and the binary unit (`64.5 KiB`)."""
+    unit = 0
+    while unit < len(_UNITS) - 1 and length >= _KIB ** (unit + 1):
+        unit += 1
+    if unit == 0:
+        return f"{length} B"
+    return f"{length / _KIB**unit:.1f} {_UNITS[unit]}"
+
+
+HEX_DROP_ORDER: tuple[str, ...] = ("byte", "offset", "hex", "size", "modified", "mode")
+"""The order in which hex status parts are dropped at a narrow width (DEC-27).
+
+The position parts go first (the byte value, then the offset), then the rest tail-first; the name and the note are never dropped.
+"""
+
+
+def _hex_byte_text(state: HexStatusState) -> str:
+    if state.offset >= state.length:
+        return "EOF"
+    if state.byte is None:
+        return "?"
+    byte = state.byte
+    label = bracketed_control_name(byte)
+    if label is None:
+        label = f"'{CHAR_TABLE[byte]}'"
+    return f"0x{byte:02X} {byte} {label}"
+
+
+def format_hex_status(state: HexStatusState, width: int) -> str:
+    """Return the hex status text: name, note, offset, byte value, `OVR`/`INS`, `Modified`, size and `Hex`.
+
+    The parts keep this display order; when they do not fit in `width`, parts are dropped in the order of `HEX_DROP_ORDER` until the text fits.
+    The file name is always kept; a note that does not fit is cut with an ellipsis, never dropped.
+    """
+    head: list[str] = [_fit_name(UNSAVED_NAME if state.file_name is None else state.file_name, width)]
+    if state.note is not None:
+        room = width - len(head[0]) - len(SEPARATOR)
+        if room > 0:
+            head.append(state.note if len(state.note) <= room else state.note[: room - 1] + ELLIPSIS)
+    digits = max(8, len(f"{state.length:X}"))
+    percent = byte_percent(state.offset, state.length)
+    parts = {
+        "offset": f"Off 0x{state.offset:0{digits}X} ({state.offset})" + ("" if percent is None else f" {percent}%"),
+        "byte": _hex_byte_text(state),
+        "mode": "INS" if state.insert else "OVR",
+        "modified": "Modified",
+        "size": format_size(state.length),
+        "hex": "Hex",
+    }
+    shown = ["offset", "byte", "mode", "modified", "size", "hex"]
+    if not state.modified:
+        shown.remove("modified")
+    drop = [key for key in HEX_DROP_ORDER if key in shown]
+    while True:
+        text = SEPARATOR.join(head + [parts[key] for key in shown])
+        if len(text) <= width or not drop:
+            return text
+        shown.remove(drop.pop(0))
+
+
 class StatusLine(Static):
     """One row below the editor; `request()` coalesces updates to at most one per `REFRESH_SECONDS` and never does work on the key's critical path."""
 
@@ -137,7 +222,7 @@ class StatusLine(Static):
     NOTE_SECONDS: ClassVar[float] = 4.0
     """How long a timed note stays (a result such as `Saved`)."""
 
-    def __init__(self, source: Callable[[], StatusState | None]) -> None:
+    def __init__(self, source: Callable[[], StatusState | HexStatusState | None]) -> None:
         super().__init__("", id="status_line", markup=False)
         self.text = ""
         """The text shown."""
@@ -184,7 +269,13 @@ class StatusLine(Static):
         state = self._source()
         if state is not None and self.note is not None:
             state = replace(state, note=self.note)
-        text = "" if state is None else format_status(state, max(self.size.width, 1))
+        width = max(self.size.width, 1)
+        if state is None:
+            text = ""
+        elif isinstance(state, HexStatusState):
+            text = format_hex_status(state, width)
+        else:
+            text = format_status(state, width)
         if text != self.text:
             self.text = text
             self.update(text)

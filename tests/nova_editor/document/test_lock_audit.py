@@ -109,6 +109,8 @@ CALLS: dict[str, Call] = {
     "close": lambda d, _: d.close(),
     "column_at_display": lambda d, r: d.column_at_display(r, 5),
     "column_slice": lambda d, r: d.column_slice(r, 1, 6),
+    "content_between": lambda d, _: d.content_between(0, min(4, d.length)),
+    "content_of_bytes": lambda d, _: d.content_of_bytes(b"xy"),
     "content_text": lambda d, _: d.content_text(d.selection_content((0, 0), (0, 2))),
     "display_column": lambda d, r: d.display_column(r, 4),
     "end": lambda d, _: d.end,
@@ -119,6 +121,7 @@ CALLS: dict[str, Call] = {
     "has_syntax": lambda d, _: d.has_syntax,
     "is_growing": lambda d, _: d.is_growing(),
     "is_long": lambda d, r: d.is_long(r),
+    "last_reachable_row": lambda d, _: d.last_reachable_row,
     "length": lambda d, _: d.length,
     "line_count": lambda d, _: d.line_count,
     "line_length": lambda d, r: d.line_length(r),
@@ -156,13 +159,33 @@ CALLS: dict[str, Call] = {
     "apply_rebase": lambda d, r: _save_and_rebase(d, r, apply=True),
     "wait_rebased": lambda d, _: d.wait_rebased(0.0),
     "join_on_close": lambda d, _: d.join_on_close(_finished_thread()),
+    "plan_in_place": lambda d, _: d.plan_in_place(),
+    "prepare_patch": lambda d, _: d.prepare_patch([(0, 2)], 4, lambda: None),
+    "begin_patch": lambda d, _: d.begin_patch([], []),
+    "end_patch": lambda d, _: d.end_patch(None),
+    "abort_patch": lambda d, _: d.abort_patch(),
+    "redirect_for": lambda d, _: d.redirect_for([]),
     "plan": lambda d, r: (d.plan(0, d.length, unverified=False), d.plan(max(r, 0), 7, unverified=True)),
     "revision": lambda d, _: d.revision,
     "search_plan": lambda d, r: (d.search_plan(0, d.length), d.search_plan(max(r, 0), 7)),
     "require_not_saving": _gated(lambda d, _: d.require_not_saving("audit")),
     "saving": lambda d, _: d.saving,
 }
-ATTRIBUTES = frozenset({"attach_syntax", "call_log", "foreground", "from_bytes", "from_path", "from_text", "rebase_installed", "rebase_problems"})
+ATTRIBUTES = frozenset(
+    {
+        "add_change_listener",
+        "attach_syntax",
+        "call_log",
+        "change_kind",
+        "foreground",
+        "from_bytes",
+        "from_path",
+        "from_text",
+        "history",
+        "rebase_installed",
+        "rebase_problems",
+    }
+)
 """Public members that are not driven: constructors, plain attributes and the syntax mirror hook and the diagnostics of the last rebase (none touches the table)."""
 
 

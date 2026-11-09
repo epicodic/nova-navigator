@@ -10,7 +10,7 @@ import stat
 import threading
 import time
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -28,8 +28,9 @@ from textual.expand_tabs import expand_text_tabs_from_widths
 from textual.screen import Screen
 from textual.style import Style as ContentStyle
 
-from nova_editor.core import ByteSource, BytesSource, ChangeKind, FileIdentity, PreadSource
+from nova_editor.core import ByteSource, BytesSource, ChangeKind, FileIdentity, PreadSource, RowRange
 from nova_editor.core import SourceChanged as CoreSourceChanged
+from nova_editor.core.inplace import InPlaceJob, InPlaceResult
 from nova_editor.core.pieces import Content as PieceContent
 from nova_editor.core.rebase import RebasePlan
 from nova_editor.core.save import PlanPart, SaveIo, SaveJob, SaveResult, SaveSettings, check_path
@@ -39,6 +40,7 @@ from nova_editor.core.save import SaveProgress as CoreSaveProgress
 from nova_editor.core.search import SearchError, SearchJob, SearchPlan, SearchSettings, SearchSpec
 from nova_editor.core.search import SearchProgress as CoreSearchProgress
 from nova_editor.core.text_width import SURROGATE_ESCAPE, utf8_len
+from nova_editor.document._byte_edit import ByteEdit
 from nova_editor.document._cursor_anchor import CursorMachine, CursorState, Op, Verdict
 from nova_editor.document._document import (
     EditResult,
@@ -48,9 +50,9 @@ from nova_editor.document._document import (
 )
 from nova_editor.document._document_navigator import DocumentNavigator
 from nova_editor.document._edit import Edit
-from nova_editor.document._history import EditHistory
+from nova_editor.document._history import EditHistory, HistoryRolledBack, HistoryStep
 from nova_editor.document._lazy_config import LazyConfig
-from nova_editor.document._lazy_document import LazyDocument, RowUnavailable, WholeLineAccess
+from nova_editor.document._lazy_document import DocumentChange, LazyDocument, RowUnavailable, WholeLineAccess
 from nova_editor.document._lazy_wrapped_document import LazyWrappedDocument
 from nova_editor.document._syntax_aware_document import (
     SyntaxAwareDocument,
@@ -130,6 +132,8 @@ class _Jump:
     """A search placement of a match that was found after wrapping around; `SearchFound` carries it."""
     to_end: bool = False
     """A goto of the end of the document: `byte` is not used, the target is the length."""
+    allow_end: bool = False
+    """A goto of the offset equal to the length is accepted: the end of the document, exact at once."""
     anchor: Location | None = None
     """A goto that selects (Shift+Ctrl+Home and Shift+Ctrl+End): the fixed end of the selection, taken when the key was pressed."""
 
@@ -178,7 +182,7 @@ _GuardedMethod = TypeVar("_GuardedMethod", bound=Callable[..., Any])
 def _guard_source(default: object) -> Callable[[_GuardedMethod], _GuardedMethod]:
     """Make a cursor entry point survive `SourceChanged` of a lazy document: the widget fails (see `_fail_source`) and `default` is returned.
 
-    A `RowUnavailable` after `close()` (the document is closed) is a no-op that returns `default`; with an open document it still propagates.
+    A `RowUnavailable` after `close()` (the document is closed), or while the cursor stands on an unresolved row, is a no-op that returns `default`; otherwise it propagates.
     """
 
     def decorate(method: _GuardedMethod) -> _GuardedMethod:
@@ -190,8 +194,8 @@ def _guard_source(default: object) -> Callable[[_GuardedMethod], _GuardedMethod]
                 self._fail_source(str(error), error.kind)
                 return default
             except RowUnavailable:
-                if self._lazy_closed:
-                    return default
+                if self._lazy_closed or not self._row_resolved(self.selection.end[0]):
+                    return default  # closed, or the cursor is stranded on an unresolved row (a blind edit in the first row): there is nowhere to move
                 raise
 
         return cast("_GuardedMethod", wrapper)
@@ -334,13 +338,30 @@ class _SaveRun:
 
     target: Path
     contents: list[PieceContent]
-    job: SaveJob | None = None
+    job: SaveJob | InPlaceJob | None = None
     abandoned: bool = False
     """True once the widget was closed: the thread then discards its outcome and the close already posted the terminal message."""
     progress: CoreSaveProgress | None = None
     progress_outstanding: bool = False
     last_message: float = 0.0
+    last_started: bool = False
+    """The `started` flag of the last announced report: a report that flips it is never throttled."""
     lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
+    held: FileIdentity | None = None
+    """The identity of the file the editor holds, for the in-place job."""
+    cancel_requested: bool = False
+    """Set (under `lock`) by `cancel_save` and `_abandon_save`: a cancel that arrives before the save thread built its job is not lost."""
+    in_place: _InPlaceOutcome | None = None
+    """Written by the save thread before it posts: the successful in-place save, concluded on the UI thread."""
+
+
+@dataclass
+class _InPlaceOutcome:
+    """What the save thread hands to the UI thread after an in-place save: the result and the translation of the references (`None` when it failed)."""
+
+    result: InPlaceResult
+    translated: dict[int, PieceContent] | None
+    redirect: Callable[[PieceContent], PieceContent] | None
 
 
 class NovaTextArea(ScrollView):
@@ -992,6 +1013,8 @@ NovaTextArea {
         """Bytes to write."""
         text_area: NovaTextArea
         """The `text_area` that sent this message."""
+        started: bool = False
+        """True once an in-place save wrote its first byte: from then on a cancel has no effect."""
 
         @property
         def control(self) -> NovaTextArea:
@@ -1026,6 +1049,8 @@ NovaTextArea {
         """The `text_area` that sent this message."""
         committed: bool = False
         """True when the replace already happened: the file holds the new bytes, but the document stays on the old file (reload to see the new one)."""
+        partial: bool = False
+        """True when an in-place save failed after its first write: the file may hold some of the new bytes; the edits and the history are kept."""
 
         @property
         def control(self) -> NovaTextArea:
@@ -1076,7 +1101,10 @@ NovaTextArea {
 
     @dataclass
     class SearchFound(Message):
-        """Posted once when a search found a match and the selection covers it; `row` and `column` are the cursor location (the end that holds the cursor)."""
+        """Posted once when a search found a match and the selection covers it; `row` and `column` are the cursor location (the end that holds the cursor).
+
+        `row` and `column` are 0 when a `place` callback applied the match.
+        """
 
         start: int
         """Byte offset of the start of the match."""
@@ -1230,12 +1258,20 @@ NovaTextArea {
         self._word_pattern = re.compile(r"(?<=\W)(?=\w)|(?<=\w)(?=\W)")
         """Compiled regular expression for what we consider to be a 'word'."""
 
-        self.history: EditHistory = EditHistory(
-            max_checkpoints=max_checkpoints,
-            checkpoint_timer=2.0,
-            checkpoint_max_characters=100,
-        )
-        """A stack (the end of the list is the top of the stack) for tracking edits."""
+        self._max_checkpoints = max_checkpoints
+        """The limit of undo checkpoints; it is applied to the history of every document the widget gets."""
+
+        self._step_direction: Literal["undo", "redo"] = "undo"
+        """The direction of the undo or redo step that runs, for `_move_entry`."""
+
+        self._step_top: Location = (0, 0)
+        """The smallest top location of the entries the running step moved."""
+
+        self._own_change = False
+        """True while the widget itself changes the document (an edit, undo or redo), so the change listener ignores the announcement."""
+
+        self._stale = False
+        """True once another view changed the document behind the widget's back; cleared when the document is replaced, and read (and cleared) by `refresh_if_changed`."""
 
         self._selecting = False
         """True if we're currently selecting text using the mouse, otherwise False."""
@@ -1304,6 +1340,12 @@ NovaTextArea {
 
         self.document: LazyDocument = _prebuilt_document if _prebuilt_document is not None else self._text_document(text, _DEFAULT_INDENT_WIDTH)
         """The document this widget is currently editing: always a lazy document over a piece table (`text=` and small files included)."""
+
+        if max_checkpoints is not None:
+            self.document.history.set_max_checkpoints(max_checkpoints)
+
+        self._remove_listener: Callable[[], None] = self.document.add_change_listener(self._on_document_change)
+        """Removes the change listener from the current document."""
 
         self.wrapped_document: LazyWrappedDocument = LazyWrappedDocument(self.document, tab_width=_DEFAULT_INDENT_WIDTH)
         """The wrapped view of the document."""
@@ -1425,6 +1467,7 @@ NovaTextArea {
         if timer is not None:
             timer.stop()
         self._line_cache.clear()
+        self._remove_listener()
         lazy.close()
 
     def _on_unmount(self) -> None:
@@ -1757,7 +1800,7 @@ NovaTextArea {
             return self._drive_line(jump, jump.row, snap.count, complete=snap.complete)
         if jump.to_end:
             return self._drive_byte(jump, lazy, lazy.length, snap.scanned_bytes, complete=snap.complete, allow_end=True)
-        return self._drive_byte(jump, lazy, jump.byte or 0, snap.scanned_bytes, complete=snap.complete)
+        return self._drive_byte(jump, lazy, jump.byte or 0, snap.scanned_bytes, complete=snap.complete, allow_end=jump.allow_end)
 
     def _drive_line(self, jump: _Jump, row: int, count: int, *, complete: bool) -> float | None:
         if row < count - 1 or complete:
@@ -2300,6 +2343,13 @@ NovaTextArea {
 
         cursor_location = selection.end
 
+        if not self._row_resolved(cursor_location[0]):
+            # A blind edit in the first row left no resolved row to park the cursor on: there is nothing to scroll to or to match until the scan arrives.
+            self._matching_bracket_location = None
+            if previous_selection != selection:
+                self.post_message(self.SelectionChanged(selection, self))
+            return
+
         self._track_cursor()
         if self._suppress_scroll:
             self._recompute_cursor_offset()
@@ -2340,7 +2390,11 @@ NovaTextArea {
 
     def _recompute_cursor_offset(self) -> None:
         """Recompute the (x, y) coordinate of the cursor in the wrapped document (a provisional cursor row: from its window layout)."""
-        self._cursor_offset = self.wrapped_document.location_to_offset(self.cursor_location)
+        try:
+            self._cursor_offset = self.wrapped_document.location_to_offset(self.cursor_location)
+        except RowUnavailable:
+            self._cursor_offset = Offset(0, 0)  # no resolved row to stand on (a blind edit in the first row): the top left until the scan arrives
+            return
         cursor = self._long_cursor
         layout = None if self.soft_wrap else cursor.provisional_layout(self.cursor_location[0])
         if layout is not None:
@@ -2665,13 +2719,24 @@ NovaTextArea {
         self._lazy_closed = False
         self._indexing_announced = False
         self._line_cache.clear()
+        self._remove_listener()
         self.document = document
+        self._remove_listener = document.add_change_listener(self._on_document_change)
+        self._stale = False
+        if self._max_checkpoints is not None:
+            document.history.set_max_checkpoints(self._max_checkpoints)
         self.wrapped_document = wrapped
         self.navigator = navigator
         self._long_cursor = long_cursor
         old.close()
         if self._mounted_scan:
             self._wire_scan()
+
+    def _on_document_change(self, change: DocumentChange) -> None:
+        """Note that another view changed the document (runs on the committing thread, so it only sets a flag)."""
+        if self._own_change or change.kind == "save":
+            return
+        self._stale = True
 
     def _wire_scan(self) -> None:
         """Start observing the scan of the current document: the estimate timer state and the progress subscription."""
@@ -3263,6 +3328,7 @@ NovaTextArea {
         result = EditResult(edit.top, "")
         if reason is None:
             try:
+                self._own_change = True
                 result = edit.do(self)
             except RowUnavailable as error:
                 reason = str(error)
@@ -3270,6 +3336,8 @@ NovaTextArea {
                 self._fail_source(str(error), error.kind)
                 self._edit_refused = True
                 return result
+            finally:
+                self._own_change = False
         if reason is not None:
             self._refuse_edit(reason)
             return result
@@ -3279,6 +3347,9 @@ NovaTextArea {
             self.suggestion = ""
         self._after_text_change()
         self.history.record(edit)
+        if edit.is_blind():
+            self._after_blind_edit(edit, result)
+            return result
         new_gutter_width = self.gutter_width
 
         if old_gutter_width != new_gutter_width:
@@ -3297,6 +3368,52 @@ NovaTextArea {
         self._refresh_size()
         return result
 
+    def _after_blind_edit(self, edit: Edit, result: EditResult) -> None:
+        """Refresh the view after an edit whose end location is meaningless (it pasted a hex copy of an unscanned range) and put the cursor behind the insertion by byte offset."""
+        start = result.start_byte or 0
+        found = self._park_cursor(start)
+        row = found[0] if found is not None else 0
+        self.suggestion = ""
+        if edit.inserted is not None:
+            end = start + edit.inserted.length
+        else:
+            end = start
+        self.wrapped_document.wrap_range((row, 0), (row, 0), (row, 0))
+        self._refresh_size()
+        self._build_highlight_map()
+        self.post_message(self.Changed(self))
+        self.update_suggestion()
+        self._place_cursor_at_byte(end)
+
+    def _park_cursor(self, start: int) -> tuple[int, RowRange] | None:
+        """After a change at byte `start`, move a cursor or selection end that sits on an unresolved row to the last resolved row; return the row of `start` (`None` when unresolved)."""
+        found = self.document.row_at_offset(start)
+        if not all(self._row_resolved(row) for row, _column in (self.selection.start, self.selection.end)):
+            last = self._last_resolved_row()
+            self.selection = Selection.cursor((last if last is not None else 0, 0))  # no resolved row at all: the start of the document is the one safe place
+        return found
+
+    def _row_resolved(self, row: int) -> bool:
+        """Whether `row` exists and its byte range is known."""
+        try:
+            self.document.row_byte_length(row)
+        except (RowUnavailable, IndexError):
+            return False
+        return True
+
+    def _last_resolved_row(self) -> int | None:
+        """The last row whose byte range is known (resolved rows form a prefix of the document); `None` when not even the first one is."""
+        low, high = 0, max(self.document.snapshot().count - 1, 0)
+        if not self._row_resolved(low):
+            return None
+        while low < high:
+            middle = (low + high + 1) // 2
+            if self._row_resolved(middle):
+                low = middle
+            else:
+                high = middle - 1
+        return low
+
     def _unresolved_reason(self) -> str | None:
         """Why no edit can be applied now (the cursor of a long row is provisional or pending), or `None` when positions are exact."""
         self._track_cursor()
@@ -3304,12 +3421,17 @@ NovaTextArea {
             return "the cursor position in this long line is not indexed yet"
         return None
 
-    def _refuse_edit(self, reason: str) -> None:
-        """Tell the user that an edit was refused (bell, warning, `EditRefused`); nothing was changed."""
+    def _refuse_edit(self, reason: str, hint: str = "It works once indexing reaches the position.") -> None:
+        """Tell the user that an edit was refused (bell, warning, `EditRefused`); nothing was changed. `hint` says what makes it work."""
         self._edit_refused = True
         self.app.bell()
-        self.notify(f"Edit refused: {reason}. It works once indexing reaches the position.", severity="warning")
+        self.notify(f"Edit refused: {reason}. {hint}", severity="warning")
         self.post_message(self.EditRefused(reason, self))
+
+    @property
+    def history(self) -> EditHistory:
+        """The edit history of the current document (shared with every other view of it)."""
+        return self.document.history
 
     @property
     def modified(self) -> bool:
@@ -3357,7 +3479,8 @@ NovaTextArea {
         if kind is not ChangeKind.UNCHANGED and not overwrite:
             self.post_message(self.SaveNeedsConfirmation(kind, Path(target), self).set_sender(self))
             return False
-        self._start_save(Path(target), unverified=origin in {ChangeKind.MODIFIED, ChangeKind.TRUNCATED})
+        in_place = path is None and not overwrite and held is not None and self.file_path is not None and origin is ChangeKind.UNCHANGED
+        self._start_save(Path(target), unverified=origin in {ChangeKind.MODIFIED, ChangeKind.TRUNCATED}, in_place_candidate=in_place)
         return True
 
     def check_external_change(self) -> ChangeKind:
@@ -3481,17 +3604,17 @@ NovaTextArea {
     def cancel_save(self) -> None:
         """Ask a running save to stop; it ends with `SaveCancelled` unless the replace already happened. Does nothing when no save runs."""
         run = self._save_run
-        if run is not None and run.job is not None:
-            run.job.cancel()
-
-    def _reachable_edits(self) -> Iterator[Edit]:
-        """Every edit of the undo and redo stacks, oldest first: the one order of `_reachable_contents` and `_apply_translated`."""
-        for batch in (*self.history.undo_stack, *self.history.redo_stack):
-            yield from batch
+        if run is None:
+            return
+        with run.lock:
+            run.cancel_requested = True
+            job = run.job
+        if job is not None:
+            job.cancel()
 
     def _reachable_contents(self) -> list[PieceContent]:
         """Every `Content` that refers to pieces of the document and outlives a save: those of the history (see `Edit.contents`), then the clipboard record."""
-        found = [content for edit in self._reachable_edits() for content in edit.contents()]
+        found = self.history.references()
         record = self._clipboard_record
         if record is not None:
             found.append(record.content)
@@ -3500,25 +3623,47 @@ NovaTextArea {
     def _apply_translated(self, contents: Sequence[PieceContent]) -> None:
         """Write the translated contents back into the history and the clipboard record, in the order of `_reachable_contents`."""
         translated = iter(contents)
-        for edit in self._reachable_edits():
-            edit.rewrite(translated)
+        self.history.rewrite_references(translated)
         record = self._clipboard_record
         if record is not None:
             record.content = next(translated)
 
-    def _start_save(self, target: Path, *, unverified: bool) -> None:
-        """UI thread: lock the document, collect what the history refers to and start the `nova-save` thread."""
+    def _start_save(self, target: Path, *, unverified: bool, in_place_candidate: bool = False) -> None:
+        """UI thread: lock the document, collect what the history refers to and start the `nova-save` thread.
+
+        For an `in_place_candidate` the thread builds the job (the document decides whether an in-place plan exists); every other save builds its streaming job here.
+        """
         document = self.document
         self._save_epoch += 1
         document.begin_save()
         document.lock_edits("saving")
         self.history.checkpoint()
-        run = _SaveRun(target, self._reachable_contents())
-        run.job = SaveJob(_DocumentPlanner(document), target, self.save_settings, functools.partial(self._on_save_report, run), None, unverified, self.save_io)
+        run = _SaveRun(target, self._reachable_contents(), held=self._held_identity)
+        if not in_place_candidate:
+            run.job = self._streaming_job(run, unverified)
         self._save_run = run
         thread = threading.Thread(target=self._save_thread, args=(run,), name="nova-save", daemon=True)
         thread.start()
         document.join_on_close(thread)
+
+    def _streaming_job(self, run: _SaveRun, unverified: bool) -> SaveJob:
+        """The temp-file-and-replace job of `run`."""
+        return SaveJob(_DocumentPlanner(self.document), run.target, self.save_settings, functools.partial(self._on_save_report, run), None, unverified, self.save_io)
+
+    def _save_job(self, run: _SaveRun) -> SaveJob | InPlaceJob:
+        """Save thread: the job of `run`; an in-place candidate gets the `InPlaceJob` when the document has a plan, else the streaming job. A cancel that came first is passed on."""
+        built: SaveJob | InPlaceJob | None = run.job
+        if built is None:
+            document = self.document
+            if document.plan_in_place() is not None:
+                built = InPlaceJob(document, run.target, run.held, self.save_settings, functools.partial(self._on_save_report, run), self.save_io)
+            else:
+                built = self._streaming_job(run, False)
+        with run.lock:
+            run.job = built
+            if run.cancel_requested:
+                built.cancel()
+        return built
 
     def _save_thread(self, run: _SaveRun) -> None:
         """The `nova-save` thread: write the file, translate the history, post the outcome. It never touches the widget state or unlocks the document.
@@ -3529,8 +3674,12 @@ NovaTextArea {
         plan: RebasePlan | None = None
         error: CoreSaveFailed | None = CoreSaveFailed("internal", "the save thread ended unexpectedly")
         try:
-            assert run.job is not None
-            result = run.job.run()
+            job = self._save_job(run)
+            if isinstance(job, InPlaceJob):
+                run.in_place = self._redirect_after_patch(run, job.run())
+                error = None
+                return
+            result = job.run()
             error = CoreSaveFailed("internal", "the save thread ended unexpectedly", committed=True)  # the replace happened
             self._on_save_report(run, CoreSaveProgress("history", result.length, result.length))
             plan = self.document.prepare_rebase(result, run.contents)
@@ -3539,10 +3688,27 @@ NovaTextArea {
             error = None
         except CoreSaveFailed as failure:
             error = failure
+        except RowUnavailable as failure:  # the document was closed: before the replace nothing was written
+            error = CoreSaveFailed("internal", f"{type(failure).__name__}: {failure}", committed=result is not None)
         except (OSError, ValueError, CoreSourceChanged) as failure:  # the translation failed: the file is written but the document is not rebased
             error = CoreSaveFailed("internal", f"{type(failure).__name__}: {failure}", committed=True)
         finally:
             self._post_save_outcome(run, result, plan, error)
+
+    def _redirect_after_patch(self, run: _SaveRun, result: InPlaceResult) -> _InPlaceOutcome:
+        """Save thread: translate the references the UI thread collected off the patched ranges; a failure is logged and leaves the references as they are.
+
+        Their reads stay correct through the read overlay of the source, so the save still counts as done.
+        """
+        if run.abandoned:  # the widget was closed: nobody applies the translation
+            return _InPlaceOutcome(result, None, None)
+        try:
+            redirect = self.document.redirect_for(result.copies)
+            translated = {id(content): redirect.apply(content) for content in run.contents}
+        except Exception:
+            logging.getLogger(__name__).exception("the references could not be redirected after the in-place save")
+            return _InPlaceOutcome(result, None, None)
+        return _InPlaceOutcome(result, translated, redirect.apply)
 
     def _post_save_outcome(self, run: _SaveRun, result: SaveResult | None, plan: RebasePlan | None, error: CoreSaveFailed | None) -> None:
         """Save thread: hand the outcome to the UI thread (exactly once); a saved file that nobody can take over is closed here."""
@@ -3579,10 +3745,13 @@ NovaTextArea {
             run.progress_outstanding = False
             report = run.progress
         now = self.save_clock()
-        if report is None or self._save_run is not run or now - run.last_message < _MESSAGE_INTERVAL:
+        if report is None or self._save_run is not run:
             return
+        if now - run.last_message < _MESSAGE_INTERVAL and report.started == run.last_started:
+            return  # the flip of `started` must reach the status line: the hint `Esc cancels` is wrong from then on
         run.last_message = now
-        self.post_message(self.SaveProgress(report.phase, report.done, report.total, self).set_sender(self))
+        run.last_started = report.started
+        self.post_message(self.SaveProgress(report.phase, report.done, report.total, self, report.started).set_sender(self))
 
     # --- Search (ACT6 design 6, 7)
     @property
@@ -3590,12 +3759,30 @@ NovaTextArea {
         """True from the start of a search until its terminal message is posted."""
         return self._search_run is not None
 
-    def search(self, needle: str, *, backward: bool = False, case_sensitive: bool = True, wrap: bool = True) -> bool:
+    def search(
+        self,
+        needle: str | bytes,
+        *,
+        backward: bool = False,
+        case_sensitive: bool = True,
+        wrap: bool = True,
+        origin: int | None = None,
+        place: Callable[[int, int, bool], None] | None = None,
+    ) -> bool:
         """Search for `needle` off the UI thread and select the match.
 
         A forward search starts at the end of the selection (the cursor when empty), a backward one at its start; a match is selected with the
         cursor at its end (forward) or its start (backward), so a repeat continues from it. A running search is cancelled (`SearchCancelled`
         with reason `replaced`). Exactly one of `SearchFound`, `SearchNotFound`, `SearchCancelled` and `SearchFailed` is posted per search.
+        A `bytes` needle is matched as exact bytes; `SearchNotFound` then shows it as spaced upper-case hex.
+
+        Args:
+            needle: The text or the bytes to search for.
+            backward: Search towards the start of the document.
+            case_sensitive: Match case (ignored for a byte needle).
+            wrap: Continue at the other end of the document.
+            origin: The byte offset to start from; `None` starts at the selection.
+            place: Called on the UI thread with `(start, end, backward)` instead of selecting the match in this widget (the hex view applies the match itself).
 
         Returns:
             True when a search started; False for a closed widget, or for a needle that cannot be searched (`SearchFailed` is posted).
@@ -3609,12 +3796,12 @@ NovaTextArea {
 
         try:
             spec = SearchSpec(needle, case_sensitive, backward, wrap)
-            job = SearchJob(_DocumentSearchPlanner(document), spec, self._search_origin(backward), self.search_settings, report, document.foreground)
+            job = SearchJob(_DocumentSearchPlanner(document), spec, self._search_origin(backward) if origin is None else origin, self.search_settings, report, document.foreground)
         except SearchError as error:
             self.post_message(self.SearchFailed(error, self).set_sender(self))
             return False
         self._replace_search()
-        run = SearchRun(job, needle, backward)
+        run = SearchRun(job, needle if isinstance(needle, str) else needle.hex(" ").upper(), backward, place)
         self._search_run = run
         thread = threading.Thread(target=run_search_thread, args=(run, functools.partial(self._post_search_outcome, run)), name="nova-search", daemon=True)
         try:
@@ -3631,6 +3818,10 @@ NovaTextArea {
         run = self._search_run
         if run is not None:
             run.job.cancel()
+
+    def cancel_search_now(self) -> None:
+        """UI thread: drop the running search at once, also one that has finished and whose outcome is still queued; it ends with `SearchCancelled` (reason `cancelled`)."""
+        self._cancel_search_for("cancelled")
 
     def _replace_search(self) -> None:
         """UI thread: drop the running search for a new one and post its `SearchCancelled` (reason `replaced`)."""
@@ -3754,6 +3945,9 @@ NovaTextArea {
             return self.SearchCancelled("text changed", self)
         if self._source_failed:
             return self.SearchFailed(CoreSourceChanged(STALE_REASON, self._stale_kind or ChangeKind.MODIFIED), self)
+        if run.place is not None:
+            run.place(result.start, result.end, run.backward)
+            return self.SearchFound(result.start, result.end, 0, 0, result.wrapped, self)
         self._select_match(result.start, result.end, run.backward, wrapped=result.wrapped)
         return None
 
@@ -3796,12 +3990,15 @@ NovaTextArea {
 
     def _conclude_save(self, run: _SaveRun, result: SaveResult | None, plan: RebasePlan | None, error: CoreSaveFailed | None) -> Message:
         """UI thread: apply the outcome of the save thread and return its terminal message (the caller lifts the lock and posts it)."""
+        if run.in_place is not None:
+            return self._conclude_in_place(run, run.in_place)
         if result is None or plan is None:
             if result is not None:
                 result.source.close()
             if error is None:
                 return self.SaveCancelled(self)
-            return self.SaveFailed(error, error.stage, run.target, self, error.committed)
+            self._adopt_failed_patch(error)
+            return self.SaveFailed(error, error.stage, run.target, self, error.committed, error.partial)
         try:
             self.document.apply_rebase(plan)  # closes the file itself when it fails before the swap: the document is then still on the old table
         except BaseException:
@@ -3825,6 +4022,39 @@ NovaTextArea {
             self._clipboard_record = None
             raise
         return self.Saved(result.target, result.length, self)
+
+    def _adopt_failed_patch(self, error: CoreSaveFailed) -> None:
+        """UI thread: a failed in-place save left the file as it is: hold its identity (a retry must not take our own write for a change from outside), and follow a change seen on disk."""
+        if error.identity is not None:
+            self._held_identity = error.identity
+        if error.change is not None:
+            self._fail_source(f"the file changed on disk ({error.change.value})", error.change)
+
+    def _conclude_in_place(self, run: _SaveRun, outcome: _InPlaceOutcome) -> Message:
+        """UI thread: the file was patched. Redirect the references off the patched ranges, hold the new identity and mark the document saved; no rebase happens."""
+        translated, redirect = outcome.translated, outcome.redirect
+        if translated is not None and redirect is not None:
+
+            def redirected(content: PieceContent) -> PieceContent:
+                found = translated.get(id(content))
+                return found if found is not None else redirect(content)
+
+            try:
+                self._redirect_references(redirected)
+            except Exception:
+                logging.getLogger(__name__).exception("the references could not be redirected after the in-place save")
+        self._held_identity = outcome.result.identity
+        self.history.mark_saved()
+        self._lift_stale()
+        return self.Saved(run.target, outcome.result.length, self)
+
+    def _redirect_references(self, fn: Callable[[PieceContent], PieceContent]) -> None:
+        """UI thread: map the history and the clipboard record through `fn`, all or nothing."""
+        record = self._clipboard_record
+        content = fn(record.content) if record is not None else None
+        self.history.map_references(fn)
+        if record is not None and content is not None:
+            record.content = content
 
     def _adopt_after_failed_rebase(self, result: SaveResult) -> None:
         """UI thread: `apply_rebase` raised after it replaced the table. The widget follows the document: the new file, and no history that could undo into the old sources."""
@@ -3857,14 +4087,20 @@ NovaTextArea {
         if run is None:
             return
         run.abandoned = True
-        job = run.job
-        committed = job is not None and job.committed
+        with run.lock:
+            run.cancel_requested = True
+            job = run.job
         if job is not None:
             job.cancel()
+        patching = isinstance(job, InPlaceJob) and job.committed  # past the last cancel point: the writer completes the patch, whatever the cancel above
+        committed = isinstance(job, SaveJob) and job.committed
         self._end_save(run)
-        if committed:
+        if patching:
+            reason = CoreSaveFailed("internal", "the widget was closed while the file was being patched", partial=True)
+            message: Message = self.SaveFailed(reason, reason.stage, run.target, self, partial=True)
+        elif committed:
             reason = CoreSaveFailed("internal", "the file was written but the widget was closed before it switched to it", committed=True)
-            message: Message = self.SaveFailed(reason, reason.stage, run.target, self, committed=True)
+            message = self.SaveFailed(reason, reason.stage, run.target, self, committed=True)
         else:
             message = self.SaveCancelled(self)
         try:
@@ -3900,12 +4136,7 @@ NovaTextArea {
 
         Refused (see `edit`) when a position it needs is not resolved yet; the history is then unchanged.
         """
-        if (reason := self._unresolved_reason()) is not None:
-            self._refuse_edit(reason)
-            return
-        if edits := self.history._pop_undo():
-            if not self._undo_batch(edits):
-                self.history._restore_undo(edits)
+        self._move_history("undo")
 
     def action_undo(self) -> None:
         """Undo the edits since the last checkpoint (the most recent batch of edits)."""
@@ -3916,50 +4147,119 @@ NovaTextArea {
 
         Refused (see `edit`) when a position it needs is not resolved yet; the history is then unchanged.
         """
-        if (reason := self._unresolved_reason()) is not None:
-            self._refuse_edit(reason)
-            return
-        if edits := self.history._pop_redo():
-            if not self._redo_batch(edits):
-                self.history._restore_redo(edits)
+        self._move_history("redo")
 
     def action_redo(self) -> None:
         """Redo the most recently undone batch of edits."""
         self.redo()
 
-    def _undo_batch(self, edits: Sequence[Edit]) -> bool:
-        """Undo a batch of Edits.
+    def _move_history(self, direction: Literal["undo", "redo"]) -> None:
+        """Undo or redo one batch through the history of the document, then bring the view in step."""
+        if (reason := self._unresolved_reason()) is not None:
+            self._refuse_edit(reason)
+            return
+        history = self.history
+        batch = history.peek_undo() if direction == "undo" else history.peek_redo()
+        if not batch:
+            return
+        self._step_direction = direction
+        first = batch[-1] if direction == "undo" else batch[0]
+        self._step_top = first.top if isinstance(first, Edit) else self._start_location(first)
+        old_gutter_width = self.gutter_width
+        try:
+            self._own_change = True
+            step = history.undo(self.document, self._move_entry) if direction == "undo" else history.redo(self.document, self._move_entry)
+        except RowUnavailable as error:
+            self._after_refused_step(self._step_top, str(error))
+            return
+        except HistoryRolledBack as error:
+            self._fail_source(f"an undo or redo could not be rolled back: {error}")
+            self._after_refused_step(self._step_top, str(error))
+            return
+        finally:
+            self._own_change = False
+        if step is not None:
+            self._after_step(step, old_gutter_width)
 
-        The sequence must be chronologically ordered by edit time.
+    def _start_location(self, entry: ByteEdit) -> Location:
+        """The location of the start of a byte entry: its row when the row is known, else the start of the document."""
+        found = self.document.row_at_offset(entry.start_byte or 0)
+        return (found[0], 0) if found is not None else (0, 0)
 
-        There must be no edits missing from the sequence, or the resulting content
-        will be incorrect.
+    def _place_cursor_at_byte(self, offset: int) -> None:
+        """Put the cursor on byte `offset`; the end of the document counts, and an offset the scan has not reached waits (a pending jump)."""
+        self._start_jump(_Jump(byte=offset, allow_end=True), "")
+
+    def place_cursor_at_byte(self, offset: int) -> None:
+        """Put the cursor on byte `offset`, the route of the switch from the hex view (REQ-2).
+
+        An offset inside a multi-byte character lands on that character, the end of the document is accepted, and an offset the line scan
+        has not reached stays a pending jump (`pending_progress`) that completes when the scan arrives.
+        A selection is dropped at once (collapsed on the cursor), also while the jump is pending: the switch does not carry it.
 
         Args:
-            edits: The edits to undo, in the order they were originally performed.
+            offset: byte offset from the start of the document, at most its length.
+        """
+        if not self.selection.is_empty:
+            self.selection = Selection.cursor(self.selection.end)
+        self._place_cursor_at_byte(offset)
+
+    def refresh_if_changed(self) -> bool:
+        """Bring the view up to date if another view changed the document while this one was hidden, and clear the stale flag.
 
         Returns:
-            False when a position was not resolved: the batch is refused and the document is unchanged.
+            True if the view was stale and has been refreshed (one `Changed` is posted), False if nothing had changed.
         """
-        if not edits:
-            return True
+        if not self._stale:
+            return False
+        self._stale = False
+        self._after_text_change()
+        self.wrapped_document.wrap(self.wrap_width, self.indent_width)
+        self._line_cache.clear()
+        self._refresh_size()
+        self._build_highlight_map()
+        self.post_message(self.Changed(self))
+        self.update_suggestion()
+        self.refresh()
+        return True
 
-        old_gutter_width = self.gutter_width
-        minimum_top = edits[-1].top
+    def report_source_changed(self, error: CoreSourceChanged) -> None:
+        """Enter the failed state for a source change another view found (a read of the hex view): edits lock and `SourceChanged` is posted once.
+
+        Args:
+            error: the change the read reported; its message is the reason and its `kind` the kind of the change.
+        """
+        self._fail_source(str(error), error.kind)
+
+    def _move_entry(self, entry: ByteEdit, direction: Literal["undo", "redo"]) -> EditResult:
+        """Move one history entry the way the text view does (the selection follows) and note where a refused step has to wrap again."""
+        if not isinstance(entry, Edit):
+            return entry.revert(self.document) if direction == "undo" else entry.apply(self.document)
+        result = entry.undo(self) if direction == "undo" else entry.do(self, record_selection=False)
+        if direction == self._step_direction:  # not the move back of a rollback
+            self._step_top = min(self._step_top, entry.top)
+        return result
+
+    def _after_step(self, step: HistoryStep, old_gutter_width: int) -> None:
+        """Refresh the view after an undo or redo of a whole batch."""
+        if any(not isinstance(entry, Edit) or entry.is_blind() for entry in step.batch):
+            self._after_foreign_step(step, old_gutter_width)
+            return
+        edits = [entry for entry in step.batch if isinstance(entry, Edit)]
+        minimum_top = step.batch[-1].top if step.direction == "undo" else step.batch[0].top
         maximum_old_bottom = (0, 0)
         maximum_new_bottom = (0, 0)
-        done: list[Edit] = []
-        try:
-            for edit in reversed(edits):
-                edit.undo(self)
-                done.append(edit)
-                end_location = edit._edit_result.end_location if edit._edit_result else (0, 0)
-                minimum_top = min(minimum_top, edit.top)
+        for edit in step.applied:
+            if not isinstance(edit, Edit):
+                continue
+            end_location = edit._edit_result.end_location if edit._edit_result else (0, 0)
+            minimum_top = min(minimum_top, edit.top)
+            if step.direction == "undo":
                 maximum_old_bottom = max(maximum_old_bottom, end_location)
                 maximum_new_bottom = max(maximum_new_bottom, edit.bottom)
-        except RowUnavailable as error:
-            self._roll_back(done, minimum_top, str(error))
-            return False
+            else:
+                maximum_new_bottom = max(maximum_new_bottom, end_location)
+                maximum_old_bottom = max(maximum_old_bottom, edit.bottom)
 
         self._after_text_change()
         new_gutter_width = self.gutter_width
@@ -3969,78 +4269,29 @@ NovaTextArea {
             self.wrapped_document.wrap_range(minimum_top, maximum_old_bottom, maximum_new_bottom)
 
         self._refresh_size()
-        for edit in reversed(edits):
+        for edit in reversed(edits) if step.direction == "undo" else edits:
             edit.after(self)
         self._build_highlight_map()
         self.post_message(self.Changed(self))
         self.update_suggestion()
-        return True
 
-    def _redo_batch(self, edits: Sequence[Edit]) -> bool:
-        """Redo a batch of Edits in order.
-
-        The sequence must be chronologically ordered by edit time.
-
-        Edits are applied from the start of the sequence to the end.
-
-        There must be no edits missing from the sequence, or the resulting content
-        will be incorrect.
-
-        Args:
-            edits: The edits to redo.
-
-        Returns:
-            False when a position was not resolved: the batch is refused and the document is unchanged.
-        """
-        if not edits:
-            return True
-
-        old_gutter_width = self.gutter_width
-        minimum_top = edits[0].top
-        maximum_old_bottom = (0, 0)
-        maximum_new_bottom = (0, 0)
-        done: list[Edit] = []
-        try:
-            for edit in edits:
-                edit.do(self, record_selection=False)
-                done.append(edit)
-                end_location = edit._edit_result.end_location if edit._edit_result else (0, 0)
-                minimum_top = min(minimum_top, edit.top)
-                maximum_new_bottom = max(maximum_new_bottom, end_location)
-                maximum_old_bottom = max(maximum_old_bottom, edit.bottom)
-        except RowUnavailable as error:
-            self._roll_back(done, minimum_top, str(error), redo=True)
-            return False
-
+    def _after_foreign_step(self, step: HistoryStep, old_gutter_width: int) -> None:
+        """Refresh the view after a batch of entries made by another view (a batch never mixes origins): wrap from the start row, then place the cursor."""
+        found = self._park_cursor(step.low)
+        row = found[0] if found is not None else 0
         self._after_text_change()
-        new_gutter_width = self.gutter_width
-        if old_gutter_width != new_gutter_width:
+        if old_gutter_width != self.gutter_width:
             self.wrapped_document.wrap(self.wrap_width, self.indent_width)
         else:
-            self.wrapped_document.wrap_range(
-                minimum_top,
-                maximum_old_bottom,
-                maximum_new_bottom,
-            )
-
+            self.wrapped_document.wrap_range((row, 0), (row, 0), (row, 0))
         self._refresh_size()
-        for edit in edits:
-            edit.after(self)
         self._build_highlight_map()
         self.post_message(self.Changed(self))
         self.update_suggestion()
-        return True
+        self._place_cursor_at_byte(step.byte)
 
-    def _roll_back(self, done: Sequence[Edit], top: Location, reason: str, *, redo: bool = False) -> None:
-        """Reverse the applied part of a refused undo batch (`redo=True`: of a redo batch) so that the document is unchanged, then report the refusal."""
-        try:
-            for edit in reversed(done):
-                if redo:
-                    edit.undo(self)
-                else:
-                    edit.do(self, record_selection=False)
-        except RowUnavailable as error:
-            self._fail_source(f"an undo or redo could not be rolled back: {error}")
+    def _after_refused_step(self, top: Location, reason: str) -> None:
+        """The history reversed what a refused undo or redo had applied: wrap the touched rows again and report the refusal."""
         self._after_text_change()
         self.wrapped_document.wrap_range(top, top, top)
         self._refresh_size()
@@ -4253,7 +4504,7 @@ NovaTextArea {
             fits = False
             length = 0
 
-        row = clamp(row, 0, document.line_count - 1)
+        row = clamp(row, 0, self.navigator.last_row())
         if fits or length is None:
             # An unknown length (lazy documents only) keeps the column instead of guessing a clamp.
             column = max(column, 0)
@@ -4378,7 +4629,7 @@ NovaTextArea {
     @_guard_source(None)
     def select_all(self) -> None:
         """Select all of the text in the `NovaTextArea`."""
-        last_line = self.document.line_count - 1
+        last_line = self.navigator.last_row()
         length_of_last_line = self.document.line_length(last_line)
         if length_of_last_line is None:
             # Unknown length (lazy documents only): leave the selection unchanged.
@@ -4428,7 +4679,7 @@ NovaTextArea {
     @property
     def cursor_at_last_line(self) -> bool:
         """True if and only if the cursor is on the last line."""
-        return self.selection.end[0] == self.document.line_count - 1
+        return self.selection.end[0] == self.navigator.last_row()
 
     @property
     def cursor_at_start_of_line(self) -> bool:
@@ -4686,7 +4937,7 @@ NovaTextArea {
             The location the cursor will jump on "jump word right".
         """
         cursor_row, cursor_column = self.selection.end
-        if cursor_row < self.document.line_count - 1 and not self.document.has_char_at(cursor_row, cursor_column):
+        if cursor_row < self.navigator.last_row() and not self.document.has_char_at(cursor_row, cursor_column):
             # Moving to the line below
             return cursor_row + 1, 0
 
@@ -4893,6 +5144,7 @@ NovaTextArea {
         result = self.replace(insert, start, end, maintain_selection_offset=False)
         return None if self._edit_refused else result
 
+    @_guard_source(None)
     def action_delete_left(self) -> None:
         """Deletes the character to the left of the cursor and updates the cursor location.
 
@@ -4909,6 +5161,7 @@ NovaTextArea {
 
         self._delete_via_keyboard(start, end)
 
+    @_guard_source(None)
     def action_delete_right(self) -> None:
         """Deletes the character to the right of the cursor and keeps the cursor at the same location.
 
@@ -4925,6 +5178,7 @@ NovaTextArea {
 
         self._delete_via_keyboard(start, end)
 
+    @_guard_source(None)
     def action_delete_line(self) -> None:
         """Deletes the lines which intersect with the selection."""
         if self.read_only:
@@ -4993,10 +5247,38 @@ NovaTextArea {
                 f"Selection of {content.length:,} bytes is too large for the system clipboard (limit {self.clipboard_cap:,}); it was not updated. Paste inside the editor still works.",
                 severity="warning",
             )
+        self._set_clipboard_record(content, system_text)
+
+    def _set_clipboard_record(self, content: PieceContent, system_text: str | None) -> None:
+        """Keep `content` as the internal clipboard record, or drop the record while a save runs."""
         if self._save_run is not None:
             self._clipboard_record = None  # the save rewrites the references of the record it collected; a new one would name the old file
             return
         self._clipboard_record = self._ClipboardRecord(content, content.length, system_text, self.app.clipboard)
+
+    def store_clipboard_bytes(self, content: PieceContent, system_text: str | None, size: int) -> None:
+        """Make `content` the internal clipboard and, when `size` fits `clipboard_cap`, `system_text` the system clipboard (the hex view copies through this).
+
+        The record is the one the text view uses, so the redirect of an in-place save and every place that drops it cover hex copies too.
+
+        Args:
+            content: The copied bytes as piece references; the internal paste keeps them exact.
+            system_text: The text for the system clipboard, or `None` when none was built (the copy is above the cap).
+            size: The length of the clipboard text in bytes, which `clipboard_cap` limits; above it a warning says that only the internal paste works.
+        """
+        if size <= self.clipboard_cap and system_text is not None:
+            self.app.copy_to_clipboard(system_text)
+        else:
+            system_text = None
+            self.notify(
+                f"Selection of {size:,} bytes of clipboard text is too large for the system clipboard (limit {self.clipboard_cap:,}); it was not updated. Paste inside the editor still works.",
+                severity="warning",
+            )
+        self._set_clipboard_record(content, system_text)
+
+    def internal_clipboard(self) -> PieceContent | None:
+        """The internal clipboard content when the application clipboard still holds what the last copy left there, else `None` (the hex view pastes with this)."""
+        return self._internal_clipboard()
 
     def _internal_clipboard(self) -> PieceContent | None:
         """The internal clipboard content when the application clipboard still holds what the last copy left there, else `None`."""
@@ -5014,16 +5296,24 @@ NovaTextArea {
             return
         content = self._internal_clipboard()
         if content is not None:
+            if content.unknown > 0 and min(self.selection.start, self.selection.end)[0] == 0:
+                # A blind splice leaves no resolved row to keep the cursor on when it starts in row 0 (the lower end of the selection, whichever way it was made).
+                self._refuse_edit(
+                    "the pasted bytes were copied from a range the scan has not reached, and the first row is not safe to edit with them",
+                    "Paste below the first row, or copy the range again once indexing has reached it.",
+                )
+                return
             self._restart_blink()
             result = self.edit(Edit("", *self.selection, maintain_selection_offset=False, insert_content=content))
-            if self._edit_refused:
-                return
+            if self._edit_refused or (result.inserted is not None and result.inserted.unknown > 0):
+                return  # a blind edit has placed the cursor by byte offset already
             self.move_cursor(result.end_location)
             return
         clipboard = self.app.clipboard
         if result := self._replace_via_keyboard(clipboard, *self.selection):
             self.move_cursor(result.end_location)
 
+    @_guard_source(None)
     def action_delete_to_start_of_line(self) -> None:
         """Deletes from the cursor location to the start of the line."""
         if self.read_only:
@@ -5040,6 +5330,7 @@ NovaTextArea {
             to_location = self.get_cursor_line_start_location()
             self._delete_via_keyboard(from_location, to_location)
 
+    @_guard_source(None)
     def action_delete_to_end_of_line(self) -> None:
         """Deletes from the cursor location to the end of the line."""
         from_location = self.selection.end
@@ -5051,6 +5342,8 @@ NovaTextArea {
 
         The line will be deleted if the line is empty.
         """
+        if not self._row_resolved(self.selection.end[0]):
+            return  # the cursor is stranded on an unresolved row (a blind edit in the first row): there is no line to delete
         # Assume we're just going to delete to the end of the line.
         action = "delete_to_end_of_line"
         if self.get_cursor_line_start_location() == self.get_cursor_line_end_location():
@@ -5062,6 +5355,7 @@ NovaTextArea {
             action = "delete_right"
         await self.run_action(action)
 
+    @_guard_source(None)
     def action_delete_word_left(self) -> None:
         """Deletes the word to the left of the cursor and updates the cursor location."""
         if self.cursor_at_start_of_text:
@@ -5077,6 +5371,7 @@ NovaTextArea {
         to_location = self.get_cursor_word_left_location()
         self._delete_via_keyboard(self.selection.end, to_location)
 
+    @_guard_source(None)
     def action_delete_word_right(self) -> None:
         """Deletes the word to the right of the cursor and keeps the cursor at the same location.
 
@@ -5101,7 +5396,7 @@ NovaTextArea {
         at_end = not self.document.has_char_at(cursor_row, cursor_column)
         if matches:
             to_location = (cursor_row, cursor_column + matches[0].end())
-        elif cursor_row < self.document.line_count - 1 and at_end:
+        elif cursor_row < self.navigator.last_row() and at_end:
             to_location = (cursor_row + 1, 0)
         else:
             to_location = (cursor_row, cursor_column + len(line))

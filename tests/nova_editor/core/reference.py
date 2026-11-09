@@ -3,12 +3,26 @@
 from __future__ import annotations
 
 import re
+import threading
 from bisect import bisect_right
+
+from nova_editor.core import BytesSource, LineIndex
+from nova_editor.core.pieces import RowNotIndexed
 
 BREAK = re.compile(rb"\r\n|\n|\r")
 
 # Junction alphabet: terminators, multibyte characters and the pieces of a split UTF-8 sequence.
 ALPHABET: list[bytes] = [b"a", b"\r", b"\n", "é".encode(), b"\xff", b"\xe2", b"\x82", b"\xac", b"\t", "漢".encode(), b"\xef\xbb\xbf"]
+
+
+ORIGINALS: dict[str, bytes] = {
+    "lf": b"alpha\nbeta\n\ngamma\ndelta\nepsilon\nzeta\n",
+    "crlf": b"alpha\r\nbeta\r\n\r\ngamma\r\ndelta\r\nepsilon\r\n",
+    "cr": b"alpha\rbeta\r\rgamma\rdelta\repsilon\r",
+    "mixed": b"a\r\nb\nc\rd\r\r\n\n\re\xff\xe2\x82\xac\r\nf\t\n",
+    "no-trailing": b"alpha\nbeta\r\ngamma\rlast row without newline",
+    "empty": b"",
+}
 
 
 def break_ends(data: bytes) -> list[int]:
@@ -88,3 +102,78 @@ class Rng:
 
     def choice[T](self, items: list[T]) -> T:
         return items[self.next() % len(items)]
+
+
+class Frontier(FakeSource):
+    """The original as the row oracle sees it mid-scan: nothing at or beyond `frontier` can be asked."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.frontier = 0
+        self.row_calls = 0
+
+    def row_of(self, offset: int) -> int:
+        self.row_calls += 1
+        if offset >= self.frontier:
+            raise RowNotIndexed(offset)
+        return super().row_of(offset)
+
+    def row_start(self, row: int) -> int | None:
+        found = super().row_start(row)
+        return None if found is None or found > self.frontier else found
+
+    def breaks_between(self, a: int, b: int) -> int:
+        return self.row_of(b) - self.row_of(a)
+
+
+class StepSource:
+    """Byte source whose scan reads wait for `step()`, so a test advances the scan one block at a time without sleeping."""
+
+    def __init__(self, data: bytes, scan_block: int) -> None:
+        self._inner = BytesSource(data)
+        self._blocks = -(-len(data) // scan_block)
+        self._done = 0
+        self._permits = threading.Semaphore(0)
+        self._progress = threading.Event()
+        self.index: LineIndex | None = None
+
+    def length(self) -> int:
+        return self._inner.length()
+
+    def read(self, offset: int, size: int, *, cache: bool = True) -> bytes:
+        if not cache:
+            self._permits.acquire()
+        return self._inner.read(offset, size, cache=cache)
+
+    def close(self) -> None:
+        self._inner.close()
+
+    def attach(self, index: LineIndex) -> None:
+        self.index = index
+        index.subscribe(self._progress.set)
+        index.start()
+        if self._blocks == 0:
+            assert index.join(10)
+
+    def stop(self) -> None:
+        """Release a scan that is still waiting (a failed test must not leave the thread behind)."""
+        if self.index is not None:
+            self.index.cancel()
+            self._permits.release(self._blocks + 1)
+            self.index.join(10)
+
+    @property
+    def finished(self) -> bool:
+        return self._done >= self._blocks
+
+    def step(self) -> None:
+        """Let the scan thread process one more block and wait until it published it."""
+        assert self.index is not None
+        if self.finished:
+            return
+        self._progress.clear()
+        self._done += 1
+        self._permits.release()
+        assert self._progress.wait(10)
+        if self.finished:
+            assert self.index.join(10)

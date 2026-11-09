@@ -49,6 +49,22 @@ def _counted(op: str, real: Callable[..., object], counter: Counter[str]) -> Cal
     return wrapper
 
 
+def recording_io(events: list[str], base: SaveIo | None = None) -> SaveIo:
+    """Return a `SaveIo` that appends the name of every file operation of an in-place or streaming save to `events`, then calls `base` (or `os`)."""
+    io = base if base is not None else SaveIo()
+    for op in ("mkstemp", "write", "fsync", "replace", "open_write", "pwrite"):
+        setattr(io, op, _recorded(op, getattr(io, op), events))
+    return io
+
+
+def _recorded(op: str, real: Callable[..., object], events: list[str]) -> Callable[..., object]:
+    def wrapper(*args: object, **kwargs: object) -> object:
+        events.append(op)
+        return real(*args, **kwargs)
+
+    return wrapper
+
+
 def make_job(
     target: Path,
     *,

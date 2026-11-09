@@ -69,7 +69,7 @@ def test_view_menu_items() -> None:
     view_menu: Menu = menus[3]
     items = list(view_menu.actions)
     ids = [a.id for a in items if a.id]
-    assert ids == ["editor.line_numbers", "editor.wrap_mode"]
+    assert ids == ["editor.line_numbers", "editor.wrap_mode", "editor.hex_mode"]
 
 
 def test_menu_items_are_the_very_action_objects_passed_in() -> None:

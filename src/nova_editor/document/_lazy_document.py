@@ -6,13 +6,16 @@ is reported as `None` (or an empty slice) and the caller asks again after a subs
 
 from __future__ import annotations
 
+import bisect
+import contextlib
 import functools
 import logging
 import re
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, NamedTuple, overload
 
@@ -24,29 +27,37 @@ from nova_editor.core import (
     BytesSource,
     ChangeKind,
     Content,
+    Copy,
+    FileIdentity,
     LineIndex,
     LineSnapshot,
     LongLineIndex,
     OriginalSource,
+    OverlayRange,
     PieceSource,
     PieceTable,
     PreadSource,
     RebasePlan,
     Rebaser,
+    Redirect,
     RowNotIndexed,
     RowRange,
     SourceChanged,
 )
 from nova_editor.core.foreground import Foreground
+from nova_editor.core.inplace import InPlacePlan
+from nova_editor.core.inplace_layout import inplace_ranges
 from nova_editor.core.line_index import call_subscriber
 from nova_editor.core.long_line_index import SPLICE_SYNC_BYTES
 from nova_editor.core.long_line_index import Edit as LongEdit
-from nova_editor.core.pieces import MAX_GENERATION
+from nova_editor.core.pieces import MAX_GENERATION, Piece
 from nova_editor.core.rebase import UNDO_COPY_LIMIT
 from nova_editor.core.save import PlanPart, SaveResult
 from nova_editor.core.search import SearchPlan
 from nova_editor.core.text_width import SURROGATE_ESCAPE, advance_disp, locate_cover, utf8_len
 from nova_editor.document._document import DocumentBase, EditResult, Location, Newline
+from nova_editor.document._errors import EditsLocked, RowUnavailable
+from nova_editor.document._history import EditHistory
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.document._long_row_anchor import LongRowAnchorIndex
 
@@ -70,20 +81,15 @@ RELOCATE_LIMIT = 256 * 1024
 _MERGE_CONTEXT = 3
 _NEWLINE = re.compile(r"\r\n|\r|\n")
 _CRLF = b"\r\n"
+_BEYOND_LAST_ROW = 1 << 62
+"""A row or column bound larger than any real one: an edit that reaches past the rows it can name."""
+_LOGGER = logging.getLogger(__name__)
 
 RowClass = Literal["short", "medium", "long"]
 
 
 class WholeLineAccess(AssertionError):
     """A caller asked for the whole text of a long row (or of the whole document)."""
-
-
-class RowUnavailable(RuntimeError):
-    """The row exists but its byte range is not resolvable yet: the scan has not reached its end, or the read budget was exceeded."""
-
-
-class EditsLocked(RowUnavailable):
-    """The document refuses edits at the moment (`LazyDocument.lock_edits`); the message holds the reason."""
 
 
 class _Swap(NamedTuple):
@@ -94,6 +100,60 @@ class _Swap(NamedTuple):
     retired: list[LongLineIndex]
     reapers: list[threading.Thread]
     release: list[tuple[LineIndex, ByteSource]]
+
+
+def _merged(ranges: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Return `ranges` sorted, without empty ranges, with overlapping and touching ranges joined."""
+    out: list[tuple[int, int]] = []
+    for start, end in sorted(ranges):
+        if end <= start:
+            continue
+        if out and out[-1][1] >= start:
+            out[-1] = (out[-1][0], max(out[-1][1], end))
+        else:
+            out.append((start, end))
+    return out
+
+
+def _union(left: Sequence[tuple[int, int]], right: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    return _merged([*left, *right])
+
+
+def _subtract_each(ranges: Sequence[tuple[int, int]], cut: Sequence[tuple[int, int]]) -> list[list[tuple[int, int]]]:
+    """Return, for every range in `ranges` (any order), the parts that lie outside the ascending, disjoint `cut`.
+
+    Each range starts at the first cut that ends after it by bisection, so the work is proportional to the ranges plus the overlaps.
+    """
+    ends = [cut_end for _, cut_end in cut]
+    result: list[list[tuple[int, int]]] = []
+    for start, end in ranges:
+        parts: list[tuple[int, int]] = []
+        position = start
+        for index in range(bisect.bisect_right(ends, start), len(cut)):
+            cut_start, cut_end = cut[index]
+            if cut_start >= end:
+                break
+            if cut_start > position:
+                parts.append((position, cut_start))
+            position = max(position, cut_end)
+        if position < end:
+            parts.append((position, end))
+        result.append(parts)
+    return result
+
+
+def _subtract(ranges: Sequence[tuple[int, int]], cut: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Return the parts of the ascending, disjoint `ranges` that lie outside the ascending, disjoint `cut`."""
+    return [part for parts in _subtract_each(ranges, cut) for part in parts]
+
+
+def _copy_reader(store: AddStore, segment: int, shift: int) -> Callable[[int, int], bytes]:
+    """Return the reader of the old bytes `[x, y)` of an overlaid range: they sit at `x + shift` of the add segment."""
+
+    def read(x: int, y: int) -> bytes:
+        return store.read(segment, x + shift, y + shift)
+
+    return read
 
 
 def _release(files: list[tuple[LineIndex, ByteSource]]) -> None:
@@ -118,7 +178,7 @@ class _SegmentBytes:
 
     def length(self) -> int:
         """Return an upper bound; the plan never reads beyond the pieces it names."""
-        return 1 << 62
+        return _BEYOND_LAST_ROW
 
     def read(self, offset: int, size: int, *, cache: bool = True) -> bytes:
         """Return the bytes `[offset, offset + size)` of the piece source; `cache` is accepted for the protocol."""
@@ -195,6 +255,19 @@ def index_step(config: LazyConfig) -> int:
     return max(1, min(config.checkpoint_chars, MAX_WINDOW_CHARS))
 
 
+@dataclass(frozen=True)
+class DocumentChange:
+    """One committed splice (or a save rebase) of a `LazyDocument`, as the change listeners receive it."""
+
+    kind: Literal["edit", "undo", "redo", "save"]
+    """Why the document changed; `save` is a rebase onto the saved file (the bytes stay the same)."""
+    start_byte: int
+    removed_length: int
+    inserted_length: int
+    revision: int
+    """The document revision after the change."""
+
+
 class LazyDocument(DocumentBase):
     """Read-only document backed by a `ByteSource`, a `LineIndex` and one `LongLineIndex` per displayed long row.
 
@@ -214,6 +287,10 @@ class LazyDocument(DocumentBase):
         self._saving = False
         self._save_edits: int | None = None
         self._edit_count = 0
+        self.history: EditHistory = EditHistory()
+        """The one edit history of the document; every view records into it and undoes and redoes through it."""
+        self._change_listeners: list[Callable[[DocumentChange], None]] = []
+        self._change_kind: Literal["edit", "undo", "redo", "save"] = "edit"
         self._close_done = threading.Event()
         self._reapers: list[threading.Thread] = []
         self._rebase_closers: list[threading.Thread] = []
@@ -221,6 +298,12 @@ class LazyDocument(DocumentBase):
         self._rebase_problems: list[str] = []
         self._legacy_files: list[tuple[LineIndex, ByteSource]] = []
         """The line index and source behind each legacy generation of the table (generation `g` is element `g - 1`); closed with the document."""
+        self._patched: list[tuple[int, int]] = []
+        """The ascending, disjoint ranges of the original that in-place saves overwrote (empty until one has run); a streaming save clears it."""
+        self._overlaid: list[tuple[int, int]] = []
+        """The ascending, disjoint ranges the read overlay of the original serves; a superset of `_patched` (a patch that was rolled back leaves its overlay, which is invisible)."""
+        self._patch_added: list[tuple[int, int]] = []
+        """The ranges the running patch added to `_patched`; what `abort_patch` takes back."""
         self._started = False
         self.foreground = Foreground()
         """Touched by the widget on key and mouse events; the scans of this document give way to the UI while it is."""
@@ -438,6 +521,125 @@ class LazyDocument(DocumentBase):
             self._require_open()
             return self._parts(offset, limit, unverified=unverified)
 
+    def plan_in_place(self) -> InPlacePlan | None:
+        """Return the ranges an in-place save would write, or `None` when the layout needs the streaming save.
+
+        The plan is `None` unless the original is a `PreadSource` or a `BytesSource`, the length equals the original's and every run of the
+        original sits at its own offset outside the ranges that earlier in-place saves patched (`inplace_ranges`).
+        The lock is held for this call only; nothing is read and the table is not changed, so unknown pieces stay unknown.
+
+        Raises:
+            RowUnavailable: The document is closed.
+        """
+        with self._lock:
+            self._require_open()
+            source = self._source
+            if not isinstance(source, PreadSource | BytesSource):
+                return None
+            length = self._table.length
+            ranges = inplace_ranges(self._table.layout_iter(0, length), length, source.length(), self._patched)
+            return None if ranges is None else InPlacePlan(length, tuple(ranges))
+
+    def prepare_patch(self, ranges: Sequence[tuple[int, int]], chunk: int, check: Callable[[], None]) -> list[Copy]:
+        """Copy the old bytes of `ranges` (document offsets, which are original offsets in an in-place layout) into the add store; return where they went.
+
+        Only the parts of a range that no earlier in-place save patched are copied: the others are protected by the copies of that save.
+        The original is read in pieces of at most `chunk` bytes with the verified read that does not fill the block cache.
+        `check` is called before each piece and may raise (a cancel).
+        The lock is held only to take the source, the add store and the patched ranges, never across I/O; the copies stay in the add store until
+        a streaming save, a reload or the close, whatever happens next.
+
+        Raises:
+            RowUnavailable: The document is closed.
+            SourceChanged: The original changed or could not be read.
+            ValueError: `chunk` is not positive.
+        """
+        if chunk <= 0:
+            raise ValueError("chunk must be positive")
+        with self._lock:
+            self._require_open()
+            source, store, patched = self._source, self._add_store, list(self._patched)
+        copies: list[Copy] = []
+        for start, end in _subtract(_merged(ranges), patched):
+            offset = start
+            while offset < end:
+                check()
+                data = source.read(offset, min(chunk, end - offset), cache=False)
+                if not data:
+                    raise SourceChanged(f"short read at {offset}", ChangeKind.TRUNCATED)
+                segment, first, _ = store.append(data)
+                copies.append(Copy(offset, offset + len(data), segment, first))
+                offset += len(data)
+        return copies
+
+    def begin_patch(self, copies: Sequence[Copy], ranges: Sequence[tuple[int, int]]) -> None:
+        """Protect the old bytes of `copies` and mark `ranges` as patched; call it before the first byte of the file is written.
+
+        A `PreadSource` original gets a read overlay serving the copies (the parts an earlier save overlaid already are not installed twice);
+        a `BytesSource` is immutable and needs none.
+        `end_patch` closes the window; `end_patch(None)` or `abort_patch` takes `ranges` back out of the patched set.
+        The call is atomic: when it raises nothing changed.
+
+        Raises:
+            RowUnavailable: The document is closed.
+            ValueError: A copy is empty or outside the original, or the source refused the overlay.
+        """
+        with self._lock:
+            self._require_open()
+            source, store = self._source, self._add_store
+            added = _subtract(_merged(ranges), self._patched)
+            if isinstance(source, PreadSource):
+                fresh = _subtract_each([(copy.a, copy.b) for copy in copies], self._overlaid)
+                overlays = [OverlayRange(a, b, _copy_reader(store, copy.segment, copy.seg_a - copy.a)) for copy, parts in zip(copies, fresh, strict=True) for a, b in parts]
+                source.begin_patch(overlays)
+                self._overlaid = _union(self._overlaid, [(item.a, item.b) for item in overlays])
+            self._patch_added = added
+            self._patched = _union(self._patched, added)
+
+    def end_patch(self, identity: FileIdentity | None) -> None:
+        """Close the patch window.
+
+        With the identity of the file after the write the source adopts it (size and mtime) and the ranges stay patched.
+        With `None` nothing was written: the ranges this patch added leave the patched set (see `abort_patch`).
+
+        Raises:
+            SourceChanged: The size of the file differs from the held one; the source is then failed for good.
+        """
+        if identity is None:
+            self.abort_patch()
+            return
+        with self._lock:
+            source = self._source
+            self._patch_added = []
+        if isinstance(source, PreadSource):
+            source.end_patch(identity)
+
+    def abort_patch(self) -> None:
+        """Close the patch window of a patch that wrote nothing and remove the ranges it added from the patched set (those of earlier saves stay).
+
+        The overlay that `begin_patch` installed stays: it serves the old bytes, which are still the bytes of the file.
+        """
+        with self._lock:
+            source = self._source
+            self._patched = _subtract(self._patched, self._patch_added)
+            self._patch_added = []
+        if isinstance(source, PreadSource):
+            source.abort_patch()
+
+    def redirect_for(self, copies: Sequence[Copy]) -> Redirect:
+        """Return the `Redirect` that moves references off the original ranges `copies` hold the old bytes of (what `InPlaceResult.copies` lists).
+
+        Pure and safe on the save thread: the lock is taken only to read which original, line index and add store are current.
+
+        Raises:
+            RowUnavailable: The document is closed.
+            ValueError: The copies overlap or are malformed.
+        """
+        with self._lock:
+            self._require_open()
+            source, line_index, store = self._source, self._line_index, self._add_store
+        return Redirect(copies, OriginalSource(line_index, source), store)
+
     @property
     def revision(self) -> int:
         """Count of committed edits; a search plan of another revision is stale (the rebase after a save does not change it)."""
@@ -535,6 +737,7 @@ class LazyDocument(DocumentBase):
             source.close()
             return
         self._finish_install(swap, line_index)
+        self._announce_save()
 
     @property
     def rebase_installed(self) -> bool:
@@ -551,7 +754,7 @@ class LazyDocument(DocumentBase):
         try:
             step()
         except Exception as failure:
-            logging.getLogger(__name__).exception("rebase: %s failed", what)
+            _LOGGER.exception("rebase: %s failed", what)
             self._rebase_problems.append(f"{what}: {type(failure).__name__}: {failure}")
             return False
         return True
@@ -622,6 +825,7 @@ class LazyDocument(DocumentBase):
             old.cancel()
         self._legacy_files = kept
         self._source, self._line_index, self._add_store, self._table = source, line_index, plan.new_add_store, table
+        self._patched, self._overlaid, self._patch_added = [], [], []  # the new original is the file as written: nothing of it is patched or overlaid
         self._rebase_installed = True  # still under the lock: no gap between the swap and the flag
         self._ranges.clear()
         self._texts.clear()
@@ -862,6 +1066,21 @@ class LazyDocument(DocumentBase):
         """A lower bound while the scan runs (`snapshot().count`)."""
         return self.snapshot().count
 
+    @property
+    def last_reachable_row(self) -> int:
+        """The last row a cursor can stand on: `line_count - 1`, or the row before it while that open row cannot be resolved yet.
+
+        The count includes the open row at the end of the scanned part (the row the scan has not terminated, or the first unknown piece of an edit),
+        and its text cannot be read, so cursor movement stops on the row before it.
+        """
+        last = max(self.line_count - 1, 0)
+        if last > 0 and not self.snapshot().complete:
+            try:
+                self.row_byte_length(last)
+            except (RowUnavailable, IndexError):
+                return last - 1
+        return last
+
     def get_line(self, index: int) -> str:
         text = self._text(index)
         self.call_log.record("get_line", index, len(text))
@@ -979,6 +1198,7 @@ class LazyDocument(DocumentBase):
         if mirror is not None:
             mirror.replace_range(top, bottom, text)
         self._notify_subscribers()
+        self._announce(result)
         return result
 
     def splice(self, start: Location, end: Location, content: Content) -> EditResult:
@@ -986,6 +1206,7 @@ class LazyDocument(DocumentBase):
 
         Nothing is normalised.
         The end location comes from `Content.breaks` and `Content.tail_chars`, or from a re-decode of the end row when characters merge.
+        A `content` that still holds unknown pieces (a hex copy of an unscanned range) takes the blind path of `splice_bytes`: its `end_location` is meaningless.
 
         Raises:
             RowUnavailable: As for `replace_range`.
@@ -997,6 +1218,8 @@ class LazyDocument(DocumentBase):
             self._require_editable()
             first = self._locate(top)
             last = self._locate(bottom)
+        if content.unknown > 0:
+            return self.splice_bytes(first.offset, last.offset, content)  # its breaks are unknown: only the blind path keeps the rows right
         return self._splice_located(first, last, content)
 
     def selection_content(self, start: Location, end: Location) -> Content:
@@ -1013,17 +1236,68 @@ class LazyDocument(DocumentBase):
             last = self._locate(bottom)
             return self._table.content(first.offset, last.offset, _span_tail_chars(first, last))
 
+    def content_of_bytes(self, data: bytes) -> Content:
+        """Store `data` in the add store and return it as `Content` (one piece), ready for `splice_bytes`; empty data gives the empty content.
+
+        Raises:
+            RowUnavailable: The document is closed.
+        """
+        with self._lock:
+            self._require_open()
+            return self._table.add(data) if data else _EMPTY
+
+    def content_between(self, start_byte: int, end_byte: int) -> Content:
+        """The bytes `[start_byte, end_byte)` as piece references at any scan state (hex copy and cut); only the break-free tail is read.
+
+        The content is exactly `[start_byte, end_byte)`: a boundary inside a CR LF pair keeps only the half in the range (the lone CR or LF is one piece),
+        so copying and cutting half a pair stores that one byte; `splice_bytes` takes the other half along by itself when the content is spliced.
+
+        Raises:
+            RowUnavailable: The document is closed or a piece cannot be split within the read budget.
+            ValueError: The offsets are not ordered or lie outside the document.
+        """
+        if not 0 <= start_byte <= end_byte:
+            msg = f"invalid byte range {start_byte}..{end_byte}"
+            raise ValueError(msg)
+        with self._lock:
+            self._require_open()
+            if end_byte > self._table.length:
+                msg = f"byte {end_byte} is beyond the document"
+                raise ValueError(msg)
+            if start_byte == end_byte:
+                return _EMPTY
+            head: tuple[Piece, ...] = ()
+            tail: tuple[Piece, ...] = ()
+            try:
+                # A half pair cannot be a boundary of `table.content`: take its byte as a piece of its own.
+                if start_byte > 0 and self._table.read(start_byte - 1, 2) == _CRLF:
+                    head = self._table.byte_content(start_byte).pieces
+                    start_byte += 1
+                if self._table.read(end_byte - 1, 2) == _CRLF:
+                    tail = self._table.byte_content(end_byte - 1).pieces
+                    end_byte -= 1
+                middle = self._table.content(start_byte, end_byte) if start_byte < end_byte else _EMPTY
+            except RowNotIndexed as error:
+                msg = f"offset {end_byte} is not scanned yet"
+                raise RowUnavailable(msg) from error
+            if not head and not tail:
+                return middle
+            return Content.from_pieces([*head, *middle.pieces, *tail], 0 if tail else middle.tail_chars)
+
     def content_text(self, content: Content) -> str:
         """The decoded text of `content` (invalid bytes as U+DC80 to U+DCFF); it reads every byte, so ask only for small contents."""
         with self._lock:
             return self._table.content_bytes(content, 0, content.length).decode("utf-8", SURROGATE_ESCAPE)
 
     def splice_bytes(self, start_byte: int, end_byte: int, content: Content) -> EditResult:
-        """Replace the bytes `[start_byte, end_byte)` by `content` (undo and redo: the offsets are exact, the locations are derived from them).
+        """Replace the bytes `[start_byte, end_byte)` by `content` at any scan state (undo, redo and byte editing).
+
+        Offsets the row index cannot resolve yet, or a `content` that still holds unknown pieces, take the blind path: the bytes are exact,
+        `EditResult.end_location` is meaningless, the row count stays a lower bound and an attached syntax mirror is detached.
 
         Raises:
-            RowUnavailable: The document is closed or a position is not resolved yet.
-            ValueError: The offsets are not ordered or lie beyond the document.
+            RowUnavailable: The document is closed or edits are locked.
+            ValueError: The offsets are not ordered, lie beyond the document, or a boundary lies inside a line terminator of a resolved row.
         """
         if not 0 <= start_byte <= end_byte:
             msg = f"invalid byte range {start_byte}..{end_byte}"
@@ -1043,9 +1317,48 @@ class LazyDocument(DocumentBase):
                 tail = self._table.byte_content(end_byte)
                 content = Content.from_pieces([*content.pieces, *tail.pieces], 0)
                 end_byte += 1
-            first = self._locate_offset(start_byte)
-            last = first if end_byte == start_byte else self._locate_offset(end_byte)
+            blind = content.unknown > 0
+            if not blind:
+                try:
+                    first = self._locate_offset(start_byte)
+                    last = first if end_byte == start_byte else self._locate_offset(end_byte)
+                except RowUnavailable:
+                    blind = True
+            if blind:
+                result = self._splice_blind(start_byte, end_byte, content)
+        if blind:
+            self._notify_subscribers()
+            self._announce(result)
+            return result
         return self._splice_located(first, last, content)
+
+    def _splice_blind(self, begin: int, finish: int, content: Content) -> EditResult:
+        """Splice by byte offsets without row knowledge; the caller holds the lock."""
+        try:
+            removed = self._table.splice(begin, finish, content, None)
+        except RowNotIndexed as error:
+            msg = f"offset {finish} is not scanned yet"
+            raise RowUnavailable(msg) from error
+        self._edit_count += 1
+        if self._syntax is not None:
+            self._syntax = None  # a mirror cannot follow an edit whose rows are unknown
+            _LOGGER.debug("byte edit at %d without resolved rows: syntax mirror detached", begin)
+        row = self._blind_row(begin)
+        self._after_edit(row, _BEYOND_LAST_ROW, 0, None, None)
+        replaced = ""
+        if removed.length <= REPLACED_TEXT_LIMIT:
+            replaced = self._table.content_bytes(removed, 0, removed.length).decode("utf-8", SURROGATE_ESCAPE)
+        return EditResult((row, 0), replaced, removed, begin, content)
+
+    def _blind_row(self, offset: int) -> int:
+        """The row that holds `offset`, or the open row when it is not resolved; the caller holds the lock."""
+        found = self._table.row_at_offset(offset)
+        if found is not None:
+            return found[0]
+        snapshot = self._table.snapshot()
+        if offset >= snapshot.scanned_bytes:
+            return snapshot.count - 1
+        return 0  # unresolved below the frontier (a read-budget overflow): every row cache is evicted
 
     def _splice_located(self, first: _Located, last: _Located, content: Content) -> EditResult:
         with self._lock:
@@ -1057,6 +1370,7 @@ class LazyDocument(DocumentBase):
         if mirror is not None:
             mirror.replace_range((first.row, first.column), (last.row, last.column), inserted.decode("utf-8", SURROGATE_ESCAPE))
         self._notify_subscribers()
+        self._announce(result)
         return result
 
     def _locate_offset(self, offset: int) -> _Located:
@@ -1085,6 +1399,53 @@ class LazyDocument(DocumentBase):
             msg = "document is closed"
             raise RowUnavailable(msg)
 
+    def add_change_listener(self, callback: Callable[[DocumentChange], None]) -> Callable[[], None]:
+        """Call `callback` with a `DocumentChange` after every committed splice and every save rebase (UI thread, outside the document lock).
+
+        A listener that raises is logged and does not stop the edit or the other listeners.
+
+        Returns:
+            A function that removes the listener again (calling it twice is harmless).
+        """
+        with self._lock:
+            self._change_listeners.append(callback)
+
+        def remove() -> None:
+            with self._lock:
+                if callback in self._change_listeners:
+                    self._change_listeners.remove(callback)
+
+        return remove
+
+    @contextlib.contextmanager
+    def change_kind(self, kind: Literal["edit", "undo", "redo", "save"]) -> Iterator[None]:
+        """Label the changes announced inside the block with `kind` (`EditHistory.undo` and `redo` use it; UI thread)."""
+        previous = self._change_kind
+        self._change_kind = kind
+        try:
+            yield
+        finally:
+            self._change_kind = previous
+
+    def _announce(self, result: EditResult) -> None:
+        """Tell the change listeners about a committed splice; the caller does not hold the lock."""
+        removed = 0 if result.removed is None else result.removed.length
+        inserted = 0 if result.inserted is None else result.inserted.length
+        self._deliver(DocumentChange(self._change_kind, 0 if result.start_byte is None else result.start_byte, removed, inserted, self.revision))
+
+    def _announce_save(self) -> None:
+        """Tell the change listeners that the document was rebased onto a saved file; the caller does not hold the lock."""
+        self._deliver(DocumentChange("save", 0, 0, 0, self.revision))
+
+    def _deliver(self, change: DocumentChange) -> None:
+        with self._lock:
+            listeners = list(self._change_listeners)
+        for callback in listeners:
+            try:
+                callback(change)
+            except Exception:
+                _LOGGER.exception("change listener failed")
+
     def _notify_subscribers(self) -> None:
         with self._lock:
             subscribers = list(self._subscribers)
@@ -1102,7 +1463,7 @@ class LazyDocument(DocumentBase):
             if not self.snapshot().complete:
                 msg = f"row {row} is not resolved yet"
                 raise RowUnavailable(msg)
-            row, column = count - 1, 1 << 62
+            row, column = count - 1, _BEYOND_LAST_ROW
         found = self._range(row)
         if not self.is_long(row):
             text = self._text(row)
@@ -1298,7 +1659,7 @@ class LazyDocument(DocumentBase):
     def attach_syntax(self, syntax: SyntaxAwareDocument | None) -> None:
         """Delegate `prepare_query` and `query_syntax_tree` to `syntax`, a parse of the whole text used for highlighting (`None` detaches it).
 
-        `replace_range` forwards every edit to it.
+        `replace_range` forwards every edit to it; a byte edit whose rows are not resolved yet detaches the mirror.
         """
         self._syntax = syntax
 

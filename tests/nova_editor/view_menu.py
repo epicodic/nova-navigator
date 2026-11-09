@@ -42,9 +42,9 @@ async def view_marks(pilot: Pilot[None], screen: EditorScreen) -> dict[str, bool
 
 
 async def choose_item(pilot: Pilot[None], screen: EditorScreen, menu_index: int, label: str) -> None:
-    """Open the menu at `menu_index`, move to the item `label` with the arrow keys and press Enter."""
+    """Open the menu at `menu_index`, move to the item `label` with the arrow keys and press Enter (disabled items are skipped by the arrows, so only the enabled ones count)."""
     menu = await open_view_menu(pilot, screen, menu_index)
-    index = [action.text for action in menu.actions].index(label)
+    index = [action.text for action in menu.actions if action.enabled].index(label)
     await pilot.press(*["down"] * (index + 1), "enter")
     await wait_until(pilot, lambda: menu not in list(screen.query(Menu)))
 

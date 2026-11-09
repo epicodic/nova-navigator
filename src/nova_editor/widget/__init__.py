@@ -13,10 +13,12 @@ from nova_editor.widget._text_area import (
     TextAreaLanguage,
     ThemeDoesNotExist,
 )
+from nova_editor.widget.hex_view import HexView
 
 __all__ = [
     "DEFAULT_HIGHLIGHT_LIMIT",
     "ExternalCheck",
+    "HexView",
     "LanguageDoesNotExist",
     "NovaTextArea",
     "TextAreaLanguage",

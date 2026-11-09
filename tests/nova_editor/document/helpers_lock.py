@@ -8,7 +8,7 @@ from typing import Any, Self
 from nova_editor.core import PieceTable
 from nova_editor.document._lazy_document import LazyDocument
 
-_GUARDED_PROPERTIES = frozenset({"length", "tree", "is_identity", "has_open_tail", "legacy"})
+_GUARDED_PROPERTIES = frozenset({"length", "tree", "is_identity", "has_open_tail", "has_unknown", "legacy"})
 
 
 class TrackedLock:

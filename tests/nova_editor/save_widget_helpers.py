@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -38,6 +39,23 @@ class Gate:
             return real.write(fd, data)
 
         return SaveIo(write=write)
+
+    def inplace_io(self, op: str = "pwrite", at: int = 1) -> SaveIo:
+        """A `SaveIo` that blocks the `at`-th call of the in-place operation `op` (`open_write`, `pwrite` or `fsync`) until `release()`."""
+        io = SaveIo()
+        real: Callable[..., object] = getattr(io, op)
+        calls = 0
+
+        def gated(*args: object) -> object:
+            nonlocal calls
+            calls += 1
+            if calls == at:
+                self.reached.set()
+                assert self.opened.wait(GATE_SECONDS)
+            return real(*args)
+
+        setattr(io, op, gated)
+        return io
 
 
 class SaveHost(HostApp):

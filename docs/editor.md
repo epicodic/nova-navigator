@@ -17,10 +17,11 @@ The lazy document layer (`LazyDocument`, `LazyWrappedDocument`) uses the core to
 Its capability methods never wait for a scan and return `None` or empty results beyond the scanned frontier.
 Every document uses this one path: `text=`, `load_text` and files of every size all become a `LazyDocument` (see "Converged Document Model").
 The widget is editable; undo, redo, cut, copy and paste work on piece references.
-Saving streams the document to a temporary file on a worker thread and replaces the target atomically (see "Streaming Save").
+Saving picks one of two strategies at save time: a plain Save of an unchanged file whose length is unchanged and whose original bytes all stay at their offsets patches only the changed ranges into the file in place; every other save streams the document to a temporary file on a worker thread and replaces the target atomically (see "In-Place Save" and "Streaming Save").
 After a save the document stands on the saved file, and undo still works (see "Rebase After a Save").
 A change of the file on disk is detected and never overwritten silently (see "External Changes").
 A literal search runs over the whole document on a worker thread (see "Search").
+The document can also be shown as bytes in the hex view (F4), and a binary file opens in it (see "Hex View").
 The standalone app `nova_edit` wraps the widget with a menu bar, a status line, a HintBar, popups, dialogs and a quit confirmation (see "nova_edit").
 
 **Where to look:**
@@ -30,6 +31,7 @@ The standalone app `nova_edit` wraps the widget with a menu bar, a status line, 
 | Structure and imports | "Layering" |
 | Classes, properties, messages | "Public API" |
 | The standalone app | "nova_edit" |
+| The hex view (bytes, editing, budget) | "Hex View" |
 | Numbers | "Performance (measured)" |
 | What does not work, and what was not measured | "Known Limits" |
 | Vendored code | "Vendoring Policy" and "Updating from Upstream" |
@@ -68,6 +70,10 @@ A plain `import nova_editor.core` loads no Textual module, because the top-level
 Cell widths come from `rich.cells`; the module does not import Textual.
 Functions `advance_disp`, `locate_cover`, `safe_cut`, `resync`, `utf8_len` support the long-line index.
 A long text with some non-ASCII characters is split into ASCII and non-ASCII runs, so the per-character width lookup runs only over the non-ASCII part.
+
+`control_names` — The table of the ASCII control character names (`CONTROL_NAMES`) with `control_name` and `bracketed_control_name`.
+The table is read-only and has 33 entries: the standard abbreviations of 0x00-0x1F (`NUL` to `US`) and of 0x7F (`DEL`).
+The module does not import Textual, so other packages can reuse it.
 
 `line_index` — Sparse background line index over the file.
 `LineIndex` scans rows in a daemon thread, appending stride entries (every 64th row by default).
@@ -174,8 +180,9 @@ The package exports `EditsLocked`, `LazyDocument` and `RowUnavailable`.
 
 **Lazy classes:**
 - `LazyDocument` — editable document over a `PieceTable`; decodes rows on demand with capability methods that never wait.
-  Its edit methods are `replace_range` (text), `splice` (piece references between locations) and `splice_bytes` (piece references between byte offsets, used by undo and redo).
+  Its edit methods are `replace_range` (text), `splice` (piece references between locations; content with unknown pieces takes the `splice_bytes` path, because its row breaks are not known) and `splice_bytes` (piece references between byte offsets, used by undo and redo).
   `selection_content` returns the bytes of a selection as piece references without reading them.
+  `content_of_bytes(data)` stores bytes in the add store and returns them as `Content`; `content_between(start, end)` returns the bytes of a byte range as piece references at any scan state, reading only the break-free tail, and returns exactly that range: half a CR LF pair is the lone CR or LF byte (both are used by the hex view).
   `search_plan(offset, limit)` returns a `SearchPlan` (revision, length and parts) in one lock hold, and `revision` counts the committed edits (see "Search").
   `newline` is the terminator of the first row (the one that new line breaks use).
 - `LazyWrappedDocument` — wrapping layer over `LazyDocument`; manages grid wrap sections and a sparse vertical size estimate.
@@ -184,6 +191,12 @@ The package exports `EditsLocked`, `LazyDocument` and `RowUnavailable`.
 **Edit classes (vendored, changed):**
 - `Edit` — one edit; after `do` it holds `start_byte`, `removed` and `inserted` (piece references) and `end_location`.
 - `EditHistory` — undo and redo stacks of batches of edits (see "Undo and Redo").
+- `LazyDocument.history` is the one `EditHistory` of the document; every view records into and undoes through it.
+- `ByteEdit` (`document/_byte_edit.py`, native; the module itself imports no Textual) is the view-neutral entry; the vendored `Edit` subclasses it and adds locations and selections.
+- `HexEdit` (`document/_hex_edit.py`, native, no Textual) is the entry of the hex view (`origin="hex"`); see "Hex View" > "Grouping and History".
+- `LazyDocument.add_change_listener(callback)` announces every committed splice as a `DocumentChange(kind, start_byte, removed_length, inserted_length, revision)` on the committing thread, after the lock is released; `kind` is `edit`, `undo`, `redo` (set by `EditHistory.undo/redo` through `LazyDocument.change_kind`) or `save` (after `apply_rebase`).
+- The text view's change listener ignores `save` and only sets its `_stale` flag.
+  `refresh_if_changed` reads the flag when the text view is shown again after the hex view changed the document.
 
 **Wrap helpers (vendored):**
 `document/_wrap.py` holds `compute_wrap_offsets` and `cell_width_to_column_index`, copied from Textual (see "Vendoring Policy").
@@ -216,7 +229,7 @@ See "Cursor State Machine (Long Rows)" for the states and transitions.
 ### Widget Layer (`nova_editor/widget/`)
 
 Textual widget and lazy rendering support.
-The package exports `NovaTextArea`, `DEFAULT_HIGHLIGHT_LIMIT`, `ExternalCheck`, `TextAreaLanguage`, `ThemeDoesNotExist` and `LanguageDoesNotExist`.
+The package exports `NovaTextArea`, `HexView`, `DEFAULT_HIGHLIGHT_LIMIT`, `ExternalCheck`, `TextAreaLanguage`, `ThemeDoesNotExist` and `LanguageDoesNotExist`.
 
 **Core module:**
 - `NovaTextArea` — the main editor widget (vendored from Textual 8.2.8, renamed from `TextArea`).
@@ -229,6 +242,9 @@ The package exports `NovaTextArea`, `DEFAULT_HIGHLIGHT_LIMIT`, `ExternalCheck`, 
 - `_lazy_window.py` — windowed rendering for medium and long rows; decodes at most 8192 characters per window.
 - `_long_row_cursor.py` — cursor machine integration and provisional window layout for long rows.
 - `_search_run.py` — `SearchRun`, the state of one running search, and `run_search_thread`, the body of the `nova-search` thread.
+- `hex_view.py` — `HexView`, `HexCursor` and `ByteSelection`: the byte view shown instead of the text widget (see "Hex View").
+- `hex_layout.py` — `HexLayout`, `choose_layout`, `total_rows`, `format_row`, `char_text`: the pure layout of one hex row and the character rendering, without Textual.
+- `hex_input.py` — `plan_digit`, `DigitPlan`, `format_hex_pairs`, `parse_hex_text`, `HexTextError`: the pure input rules of the hex view (nibble state machine and clipboard text), without Textual.
 
 The widget's members and messages are listed in "Public API".
 
@@ -242,6 +258,7 @@ The widget's members and messages are listed in "Public API".
 `languages.py` holds `language_for_path`, which maps a file path to the highlight language.
 `timed_text_area.py` holds `TimedNovaTextArea`.
 All of them import the widget layer, `nova_widgets` and Textual, and nothing from `nova_navigator` or the VFS.
+`EditorScreen.action_hex_mode` (F4) switches between the text widget and the hex view through `DocumentView.show_hex`.
 The app is described in "nova_edit".
 
 ---
@@ -315,6 +332,7 @@ class MyEditorApp(App):
 - `cancel_pending()` — cancel a pending jump or deferred cursor operation; the action is bound to Escape while one is pending or a search runs.
 - `toggle_wrap()` — flip `soft_wrap`; `nova_edit` binds it to F10.
 - `select_all` is bound to `ctrl+shift+a` and `f8`; the stock binding was `f7` only, and Ctrl+F belongs to the search of `nova_edit`.
+  While the scan runs, `select_all` selects up to the last reachable row (`navigator.last_row()`); once the scan is complete it selects the whole document.
 
 ### Saving, reloading, external changes
 
@@ -330,7 +348,9 @@ class MyEditorApp(App):
 
 ### Search
 
-- `search(needle, *, backward=False, case_sensitive=True, wrap=True) -> bool` — start a literal search (see "Search").
+- `search(needle, *, backward=False, case_sensitive=True, wrap=True, origin=None, place=None) -> bool` — start a literal search, or an exact byte search when `needle` is `bytes` (see "Search").
+- `origin` is the byte offset the search starts from; `None` starts at the selection.
+- `place(start, end, backward)` applies a match on the UI thread instead of selecting it in the widget, which the hex view uses.
 - `cancel_search()` — ask a running search to stop; nothing happens when none runs.
 - `searching` (read-only) — whether a search runs.
 - `search_settings` (class attribute) — `SearchSettings` (chunk, progress interval, tier switch); tests lower it.
@@ -351,6 +371,7 @@ class MyEditorApp(App):
 - `Reloaded` and `ReloadFailed(error, path)` — the outcome of `reload`.
 - `SearchProgress(done, total, phase)` — posted at most 10 times per second while a search runs.
 - `SearchFound(start, end, row, column, wrapped)`, `SearchNotFound(needle)`, `SearchCancelled(reason)` and `SearchFailed(error)` — the terminal messages of a search; exactly one is posted per search.
+- `row` and `column` of `SearchFound` are 0 when a `place` callback applied the match.
 
 ### Thresholds (defaults, tunable via `LazyConfig`)
 
@@ -383,12 +404,14 @@ class MyEditorApp(App):
 ```sh
 uv run ned                    # Open editor with no file
 uv run ned /path/to/file.txt  # Open a specific file
+uv run ned --hex FILE         # Open a file in the hex view, whatever its content
 uv run ned --config-dir DIR   # Use a custom directory for keybindings.toml
 ```
 
 The key file is `~/.config/nova-edit/keybindings.toml` by default.
 A path that exists but is not a regular file (a FIFO, a device, a directory) is refused: `main()` prints `ned: <path>: not a regular file` to stderr and exits with status 1.
 A path that does not exist opens an empty buffer that the first save creates (see "EditorScreen").
+Binary files open in the hex view; see "Hex View" for the rule.
 Every file is opened through `NovaTextArea.open`; there is no eager path.
 The environment variable `NOVA_EDIT_TIMING_FILE` makes `TimedNovaTextArea` write `FIRST_CONTENT <ns>` when content first renders (used by the benchmark harness).
 
@@ -402,10 +425,10 @@ The environment variable `NOVA_EDIT_TIMING_FILE` makes `TimedNovaTextArea` write
 It can be used as a standalone app (`ned`) or embedded in other Textual applications.
 
 The screen holds:
-- **Per-screen action registry** (18 editor actions, built fresh per screen instance)
+- **Per-screen action registry** (19 editor actions, built fresh per screen instance)
 - **Per-screen MenuBar** (File, Edit, Search, View menus)
 - **Per-screen KeymapRegistry and HintBar** (for action key binding and hint display)
-- **DocumentView** (holds the NovaTextArea widget and file metadata)
+- **DocumentView** (holds the NovaTextArea widget, the HexView and file metadata)
 - **Popups** (the Go to and Find popups) and the modal dialogs of its flows (Open, Save As, the questions)
 - **StatusLine** (shows editor progress and file status)
 
@@ -427,6 +450,7 @@ EditorScreen(
     standalone: bool = False,
     poll_seconds: float = 2.0,
     quit_wait_seconds: float = 2.0,
+    start_hex: bool = False,
 ) -> None:
 ```
 
@@ -445,12 +469,13 @@ EditorScreen(
 - `standalone` — `True` for the standalone app (File menu has Quit), `False` for embedded (File menu has Close).
 - `poll_seconds` — Interval of the check for a change of the file on disk (default 2.0).
 - `quit_wait_seconds` — Longest wait for a cancelled save before the quit question (default 2.0).
+- `start_hex` — Show the first document in the hex view whatever its content; Open uses the binary detection (default `False`).
 
 ### Architecture
 
 The screen builds these components on construction:
 
-1. **ACTIONS** — Fresh list of 18 `Action` objects (built by `build_editor_actions()`), plus Keyboard Shortcuts… when the screen has a key config.
+1. **ACTIONS** — Fresh list of 19 `Action` objects (built by `build_editor_actions()`), plus Keyboard Shortcuts… when the screen has a key config.
 2. **MenuBar** — Menu bar with File, Edit, Search, View menus (built by `build_menu_bar()`).
 3. **HintBar** — Key hint display (one per screen).
 4. **KeymapRegistry** — Manages keybindings and dispatches actions (one per screen).
@@ -459,7 +484,7 @@ The screen builds these components on construction:
 Each screen instance has its own action registry, menu bar, and keybinding registry.
 This allows multiple EditorScreen instances in different Textual screens to have independent key bindings and menu states.
 
-### The 18 Editor Actions (19 with a config)
+### The 19 Editor Actions (20 with a config)
 
 **File operations:**
 | Action | ID | Key | Description |
@@ -494,6 +519,7 @@ This allows multiple EditorScreen instances in different Textual screens to have
 |--------|-----|-----|---|
 | Line Numbers | `editor.line_numbers` | F11 | Show/hide line numbers (checkable) |
 | Wrap Mode | `editor.wrap_mode` | F10 | Toggle soft wrap (checkable) |
+| Hex Mode | `editor.hex_mode` | F4 | Show the document as bytes or as text (checkable) |
 
 The line number gutter is shown when the editor screen starts.
 `EditorScreen` passes `show_line_numbers=True` to `DocumentView.open()`; the reusable `NovaTextArea` still starts without a gutter.
@@ -536,8 +562,8 @@ Escape, Enter and Alt+C are not mapped to an action and reach the popup.
 ### Keyboard Shortcuts dialog
 
 The dialog is opened from View > "Keyboard Shortcuts…" (`editor.keyboard_shortcuts` id, no default key).
-It exists only when the screen has a `KeybindingsConfig` and `keyboard_shortcuts_item` is true, so the 18-action list, the default key table and a config-less host stay exactly as they are.
-The dialog lists the `editor.*` actions (all 19 including itself) and their effective bindings from the config.
+It exists only when the screen has a `KeybindingsConfig` and `keyboard_shortcuts_item` is true, so the 19-action list, the default key table and a config-less host stay exactly as they are.
+The dialog lists all 20 `editor.*` actions (the 19 editor actions and itself) and their effective bindings from the config.
 After the dialog is dismissed (OK or Cancel), the flow calls `reload_keymap()`, which re-reads the file, runs `_apply_keymap()` and re-measures the menus, applying at once any changes to the key, the menu label, the hint bar, the swallowing of old editing keys and unmap handling.
 The standalone host passes the nova-edit file.
 The navigator passes its own file with `keyboard_shortcuts_item=False`; see "Embedding in the navigator".
@@ -570,9 +596,12 @@ The menu bar has four menus:
 **View Menu:**
 - Line Numbers (F11, checkable)
 - Wrap Mode (F10, checkable)
+- Hex Mode (F4, checkable)
 - Keyboard Shortcuts… (no default key; shown only when the screen has a key config)
 
-Checkable menu items start with the state of the widget, which is checked for Line Numbers and unchecked for Wrap Mode, and are kept in sync with the widget's reactive properties (`soft_wrap`, `show_line_numbers`).
+Checkable menu items start with the state of the widget, which is checked for Line Numbers and unchecked for Wrap Mode and Hex Mode, and are kept in sync with the widget's reactive properties (`soft_wrap`, `show_line_numbers`); Hex Mode is checked exactly while `DocumentView.hex_mode` is true.
+While the hex view is shown, Line Numbers and Wrap Mode are disabled and F10 and F11 do nothing; they show and keep the state they had.
+Back in the text view the items and F10 and F11 work again.
 
 The path label on the right of the menu bar is sized to the room left after the menu entries (truncated keeping its end behind an ellipsis, or hidden), so menus stay clickable at 80 columns.
 Tests are in `tests/nova_editor/test_menu_path_label.py`.
@@ -580,15 +609,29 @@ Tests are in `tests/nova_editor/test_menu_path_label.py`.
 ### Popups and dialogs
 
 **Go to popup** (`GotoPopup`, Ctrl+G) — Go to a line or a byte offset.
-- Input: `N` for a line, `@N` for a byte offset.
+- Input: `N` for a line, `@N` for a decimal byte offset, `0xHEX` or `HEXh` for a hex byte offset (hex digits in either case).
+- The text view takes the hex forms like `@N`.
 - Enter jumps and closes the popup; Escape closes it and gives the focus back to the editor.
-- Text that is no target shows `Not a line number or @byte offset (for example 120 or @4096)` in the popup.
+- Text that is no target shows `Not a line number or byte offset (for example 120, @4096, 0x1F00 or 1F00h)` in the popup.
 - A target that the widget rejects (`line N is beyond the last line (COUNT)` and the other texts of "Goto messages") keeps the popup open with that reason and the input selected.
 - A target beyond the scanned part closes the popup; the status line shows `Goto P%  Esc cancels`.
+- In the hex view the popup takes a byte offset only (`0x1F00`, `1F00h` or `@7936`), and its message row shows `Byte offset: 0x1F00, 1F00h or @7936` while nothing is wrong.
+- A plain number in the hex view is rejected with `Line numbers are not available in the hex view; use 0x…, …h or @offset` and the popup stays open, because the hex view has no lines.
+- In the hex view an offset equal to the length is accepted and puts the cursor at the end-of-document position.
+- In the hex view an offset beyond the length is rejected with `byte offset N is beyond the end of the file (L bytes)` and the popup stays open.
+- The text view keeps `@N` as it was, so an offset equal to the length is rejected there.
 
 **Find popup** (`FindPopup`, Ctrl+F) — a literal search.
-- Controls: the needle, `Match case` (on by default, Alt+C), `Previous` and `Next`, and a status row.
+- Controls: the needle, `Match case` (on by default, Alt+C), `Hex` (off by default, Alt+H), `Previous` and `Next`, and a status row.
 - There is no replace, no regular expression and no whole word.
+- With `Hex` on, the needle is hex byte pairs such as `DE AD BE EF`, and spaces are ignored, so `DEAD` is the same needle.
+- A hex needle is checked in the popup first: an odd number of digits (`Odd number of hex digits (3)`) or a character that is no hex digit (`Not a hex digit: 'x'`, which includes a `0x` prefix) shows in the status row, and no search starts.
+- `Match case` has no effect with `Hex` on, because a hex needle matches exact bytes.
+- A hex needle works in both views: from the hex view it selects the bytes there, and from the text view it selects them in the text view.
+- A hex needle searched in the text view selects the whole character or line break a matching byte lies in.
+- A match that does not start on a character boundary collapses to a cursor in the text view.
+- Reopening the popup prefills the last needle and sets the `Hex` box to the mode of that search, so the text and the box agree; without a last needle the box keeps its state.
+- With `Hex` off, a search from the hex view runs the text search and selects the bytes of the match there.
 - Enter and `Next` search forward and the popup stays open, so Enter repeats; `Previous` searches backward; F3 and Shift+F3 work with the popup open or closed.
 - Escape cancels a running search first, then closes the popup and gives the focus back to the editor.
 - The progress and the result of the search (`Searching 42% (2.1 of 5.0 GiB), Esc cancels`, `Found`, `Wrapped to the top`, `Not found: <needle>`, ...) appear in the status row while the popup is open, and as a note of the status line while it is closed.
@@ -627,6 +670,25 @@ Parts are added in order while text still fits the width; the tail is cut first 
 | 8 | `LF`, `CRLF` or `CR` | `editor.line_ending` |
 
 A note keeps its place when the line is cut: the position parts drop first.
+
+In the hex view the status line shows the parts of this table; the narrow rule differs from the text view: the name and the note keep their place, and the other parts drop in the order byte value, offset, `Hex`, size, `Modified`, mode (`HEX_DROP_ORDER` in `status_line.py`).
+
+| # | Text | Rule |
+|---|---|---|
+| 0 | name | `_fit_name(file_name or "(unsaved)", width)`, always kept |
+| 0 | note | as in `format_status` |
+| 1 | `Off 0x{offset:0{n}X} ({offset}) {P}%` | `n = max(8, len(f"{length:X}"))` (the width of the offset column); decimal without thousands separators (as the example); `P = byte_percent(offset, length)`; the ` P%` is left out when the document is empty |
+| 2 | `0x41 65 'A'` | `0x{b:02X} {b}` followed by `bracketed_control_name(b)` (`<BEL>`) for 0x00-0x1F and 0x7F, else `'{CHAR_TABLE[b]}'` (printable ASCII character in quotes, `'.'` for 0x80-0xFF); `EOF` when `offset == length`; `?` when `byte is None` below the end |
+| 3 | `OVR` or `INS` | `insert` |
+| 4 | `Modified` | only when modified |
+| 5 | `64.0 GiB` | `format_size(length)`: `N B` below 1 KiB, else one decimal and the unit (`KiB`..`TiB`), the same unit rule as `format_sizes` |
+| 6 | `Hex` | unless the width forces it out |
+
+The byte part is up to two characters longer for a control character (`<ESC>`), and it drops whole under `HEX_DROP_ORDER` like any other part.
+The name table names the 33 ASCII control characters only, and it has no names for C1 or Latin-1 bytes.
+It is reusable through `from nova_editor.core.control_names import control_name`.
+The character column of the hex rows (REQ-6) and the clipboard text are unchanged and still use `.`.
+
 The status line reads from the editor on its own timer (0.05 s) to keep updates off the critical path.
 
 ### On Mount
@@ -654,6 +716,7 @@ A directory raises `IsADirectoryError`, and a missing or unreadable file raises 
 Any other file (SSH, Azure, an archive member, an archive over SSH) is edited through its local copy (`docs/local_copies.md`).
 The screen opens the copy's path, a save writes the copy, and the copy mechanism writes it back to the source.
 The editor never touches the VFS; the host passes a path.
+The navigator passes a local path, so detection, the hex view, hex edits and the in-place save work on a local copy; the copy mechanism writes the saved copy back.
 The file provider of the dialogs stays the local one, so Open and Save As browse the local file system, starting in the directory of the file.
 A Save As to another local path leaves the copy, and later saves are not written back.
 
@@ -670,10 +733,11 @@ A failed or conflicting final write-back is reported in a notice; the copy keeps
 A second F4 is ignored while a session opens, is open or ends.
 
 **Keys.**
-The navigator's keybindings dialog lists the 18 `editor.*` actions after its own, labelled `Editor: <text>`, and stores them in its own `keybindings.toml`.
+The navigator's keybindings dialog lists the 19 `editor.*` actions after its own, labelled `Editor: <text>`, and stores them in its own `keybindings.toml`.
 The `KeybindingsConfig` of the navigator is passed to every new `EditorScreen` with `keyboard_shortcuts_item=False`, so there is no second dialog that could overwrite the file.
 The overrides are applied when the editor is opened; the dialog is not reachable while an editor is open, so no live reload is needed.
 If `editor.quit` is moved or unmapped, Ctrl+Q still reaches the editor, because `NovaNavigator.action_quit` asks the screen instead of exiting.
+F4 inside the editor screen is Hex Mode; the file list's F4 is not reachable until the editor closes.
 
 **Closing with Esc.**
 An embedded editor (`standalone=False`) also closes with Esc, through the `close_embedded` binding of `EditorScreen`; it runs the same flow as Close, so unsaved edits still ask first.
@@ -687,7 +751,7 @@ The standalone editor does not close with Esc.
 
 ### Purpose
 
-`DocumentView` is a holder of per-document state: the `NovaTextArea` widget, the file path, and the load outcome.
+`DocumentView` is a holder of per-document state: the `NovaTextArea` widget, the `HexView` over the same document, the file path, and the load outcome.
 
 It is not part of `EditorScreen` directly; instead, `EditorScreen.document` holds a reference to one.
 
@@ -704,7 +768,20 @@ class DocumentView:
     deferred_change: ChangeKind | None = None  # A change seen while a save ran, announced after it
     polling: bool = False                 # Whether a check of the file on disk runs on a worker thread
     change_question: bool = False  # A question about a change of the file is open or queued
+
+    hex_view: HexView  # Not a field: created in __post_init__ over the document of `editor`, hidden at first
 ```
+
+Members beyond the fields:
+- `hex_view` — the `HexView` over `editor.document`; it follows a replaced document (reload) and never closes it.
+- `hex_mode` — `True` while the hex view is shown (`hex_view.display`).
+- `shown` — the widget the user sees (`hex_view` or `editor`); the target of the focus, the menu actions and the popup position.
+- `focus_shown()` — gives the focus to `shown`.
+- `show_hex(on)` — switches the view (see "Hex View").
+- `needle_hex` — whether `needle` was searched as hex bytes; a plain attribute, not a field, so Find Next and Find Previous repeat it with the same Hex option.
+
+The screen mounts both widgets (`editor` and `hex_view`) and replaces both when Open loads another document.
+The mode belongs to the `DocumentView`: a document opened with Open starts in text mode, and the mode is not carried across Open.
 
 ### Construction
 
@@ -760,6 +837,388 @@ editor.search(needle="foo")
 ```
 
 The document reference is stable across the lifetime of the screen.
+The screen uses `self.document.shown` and `focus_shown()` wherever it means the widget the user sees, for example after a dialog or a popup closes and in `_carry_out`.
+Save, reload, search and the external-change check stay on `editor` in both modes.
+
+---
+
+## Hex View
+
+F4 (Hex Mode, `editor.hex_mode`) shows the document as bytes instead of text.
+`HexView` (`widget/hex_view.py`) is a `ScrollView` over the document of the text widget; the pure layout is in `widget/hex_layout.py`, which imports no Textual.
+
+### Opening in hex
+
+A file whose first 64 KiB (the whole file, if shorter) contain a NUL byte opens in the hex view.
+`core/binary_detect.py` reads exactly once from offset 0 for at most 64 KiB, through the document of the text widget.
+`DocumentView.open` runs it for `nova_edit`, for the navigator and for the Open flow; a failed read means text.
+`ned --hex` (`EditorScreen(start_hex=True)`) opens the first document in the hex view whatever its content; Open uses the detection.
+A reload and an external change do not detect again; the view the user chose stays.
+A NUL byte at offset 65535 makes the file binary; the first NUL at offset 65536 does not.
+An empty file opens in the text view.
+`ned --help` lists `--hex`.
+
+### Layout
+
+A row is the offset, the hex pane and the character pane.
+
+```
+00000010  41 42 43 44 45 46 47 48  49 4A 4B 4C 4D 4E 4F 50  |ABCDEFGHIJKLMNOP|
+```
+
+- Hex digits are upper case, in groups of 8 bytes separated by one extra space.
+- The character pane sits between two `|`: printable ASCII (0x20 to 0x7E) as itself, every other byte as `.`.
+- Bytes per row is the largest power of two, at least 8, whose full row fits the width (80 columns give 16, 144 give 32).
+- The offset has at least 8 hex digits, and as many as the start of the last row needs (9 from a 4 GiB document).
+- The number of rows is `length // bytes_per_row + 1`.
+  When the length is a multiple of the row size (and for the empty document) the last row has no bytes: it is the end-of-document row, where the cursor can stand and where a byte can be appended.
+- Below 45 columns not even 8 bytes fit; the row is then cut at the right edge.
+  The 45 columns hold for offsets of up to 8 digits; a file of 4 GiB or more needs a wider offset column (46 columns for the 50 GiB file).
+
+### The Byte Window
+
+The view keeps one window of bytes: the rows from one screen above the first visible row up to two screens below its start.
+A miss refills the window with one `LazyDocument.read_bytes` call.
+The view never asks for rows, lines or the line index, so it works while the scan runs and on a document of billions of rows (the virtual height is the row count; Textual's scrollbar maths holds at 8 GiB, see `widget/test_hex_scroll_spike.py`).
+The window is dropped when the document is replaced, its revision changes or the row size changes.
+A failed read keeps the old window and draws blanks.
+A `SourceChanged` from a read is reported once, through `on_source_changed`, which `DocumentView` connects to `NovaTextArea.report_source_changed`: the text widget enters its failed state and posts `SourceChanged`, so the screen asks the usual question.
+
+### Cursor and Selection
+
+The active pane shows the cursor; the other pane marks the same byte.
+
+- `HexCursor(offset, nibble, pane)`: `offset` is in `[0, length]` (`length` is the end-of-document position), `nibble` is 0 or 1 (always 0 in the character pane and at the end), `pane` is `"hex"` or `"char"`.
+- `ByteSelection(start, end)`: whole bytes, half-open `[start, end)`, `start < end`.
+  There is no partial-byte selection.
+- Shift moves extend the selection by whole bytes in both panes; a plain move with a selection clears it and moves from the cursor.
+- The selection is highlighted in both panes.
+- The view posts `HexView.Moved(cursor, selection)` after every change; the screen refreshes the status line.
+- The view has no cursor blink.
+
+API: `set_cursor(offset, nibble=0, *, pane=None, select=False)`, `goto(offset, *, select=False)`, `select_all()`, `scroll_to_cursor(center=False)` and `follow_document()`.
+
+### Keys
+
+| Key | Action |
+|---|---|
+| Left, Right | One digit in the hex pane (high digit, low digit, next byte); one byte in the character pane |
+| Up, Down | One row |
+| Page Up, Page Down | One screen |
+| Home, End | Start and end of the row (End on the low digit of the last byte in the hex pane; on a short last row, End goes to the end-of-document position instead) |
+| Ctrl+Home, Ctrl+End | Start of the document, end of the document |
+| Tab, Shift+Tab | Switch between the panes at the same offset |
+| Ctrl+A | Select all (reads no bytes, however large the document) |
+| Shift with any move key | The same move, extending the selection (Shift+Up, Shift+Down and Shift+End have limits, see Known Limits) |
+| Insert | Switch between overwrite and insert mode |
+| 0-9, A-F (hex pane) | Type a hex digit |
+| Printable ASCII (character pane) | Type that character |
+| Delete, Backspace | Delete the selection, or the byte under or before the cursor |
+| Ctrl+Z, Ctrl+Y | Undo, redo (also `super+z` and `super+y`) |
+| Ctrl+X, Ctrl+C, Ctrl+V | Cut, copy, paste (also `super+x` and `super+c`) |
+| Escape | Cancel a running search (the key is active only while one runs) |
+
+Ctrl+A, Ctrl+Z, Ctrl+Y, Ctrl+X, Ctrl+C and Ctrl+V are the keys of the editor actions; the widget declares them as bindings of its own, and a key that the user rebinds reaches the same action methods through the keymap (see `docs/keymap.md`, "Editing Actions and the Hex View").
+Insert, Delete and Backspace are bindings of the widget; they are not editor actions and cannot be rebound.
+
+Every move scrolls the cursor into view.
+Moves stop at offset 0 and at the end-of-document position.
+
+### Mouse
+
+A click puts the cursor on the digit or character under the pointer; Shift+click extends the selection from the cursor.
+A drag selects from the pressed byte to the byte under the pointer, both ends included, and stays in the pane where it started.
+The drag does not scroll on its own: it follows only the move events, and a pointer above or below the view reaches one row beyond it.
+The end of a drag stays where it was while the pointer is over the offset column, a gap or a `|` mark on a row that holds bytes or on the end row; below the last row the end-of-document position wins.
+A click outside both panes on a row does nothing.
+The mouse wheel scrolls the view.
+A click or drag above the first row stays on the first row, and one below the last row goes to the end-of-document position.
+
+### Editing
+
+The hex view edits bytes in place of the cursor, in overwrite mode (the default) or insert mode.
+Insert toggles the mode (`HexView.insert_mode`, message `ModeChanged`); every open of a document starts in overwrite mode, because `DocumentView` creates a new `HexView` per document.
+Toggling sets a history checkpoint and forgets a half-typed byte, so a run of typing never spans a mode change; it also works in a read-only document, because it only flips a flag.
+
+Every edit goes through one private method, `HexView._edit`, which runs on the UI thread:
+
+:::{mermaid}
+flowchart LR
+    K[key or action] --> E["_edit(start, end, data)"]
+    E --> S["document.splice_bytes"]
+    S --> H["history.record(HexEdit)"]
+    H --> A["_adopt_own_change"]
+    A --> C[cursor, scroll, Edited]
+:::
+
+- `splice_bytes` accepts any offset at any scan state; at an offset the scan has not reached it takes the blind path.
+  The view never asks for rows, so typing works while the scan runs, on a document of billions of rows and beyond the scanned part (REQ-12).
+- The history entry is built from the `EditResult` (`start_byte`, `removed`, `inserted`), not from the typed range, so a splice that was widened by a neighbouring CR LF pair is recorded exactly and undoes exactly.
+- `_adopt_own_change` takes over the new revision and length, drops the byte window and re-lays out the rows (the offset column may change width); it does not run the clamp-and-reveal path of `_sync`, so the view keeps the byte offset at the top.
+  The next `_sync` sees an unchanged revision and does nothing.
+- The text widget sees the splice through the document's change listener, flags itself stale and rebuilds when it is shown again; no cross-widget call is needed.
+- After an edit the view clears the selection, places the cursor, scrolls to it and posts `HexView.Edited`; the screen refreshes the status line on `Edited` and `ModeChanged`.
+
+**Read-only.**
+`HexView.is_read_only` is a callable that `DocumentView` sets to `lambda: self.editor.read_only` (the navigator sets `read_only` on the text widget).
+Typing, Delete, Backspace, Cut and Paste are silent no-ops then, as in the text view.
+Copy, navigation, Select All and Insert still work.
+Undo and redo are not guarded, as in the text view.
+
+**Refusal.**
+`RowUnavailable` (which includes `EditsLocked`, so a running save or a stale source) and `ValueError` ring the bell and show the warning `Edit refused: <reason>.`; nothing changes and no entry is recorded.
+A `SourceChanged` is reported once through `on_source_changed`, like a failed read.
+
+**Bell and silence.**
+The bell rings only for a character that cannot be typed in the character pane, for a refusal and for a paste error.
+A key that is not a hex digit in the hex pane, Delete at the end position, Backspace at offset 0, an empty copy or cut, and every read-only no-op are silent.
+
+**Typing over a selection (I6).**
+A digit or a character typed with a selection active first collapses it to its start (`min` of anchor and cursor, high digit) and types there in the current mode.
+It does not replace the selection, because the nibble state machine has no clean meaning for that.
+
+### Nibble State Machine
+
+`plan_digit(digit, offset, nibble, length, insert, current, *, half=False)` in `widget/hex_input.py` is a pure function; it returns a `DigitPlan(start, end, data, cursor_offset, cursor_nibble, completes)`.
+`current` is the document byte at `offset` (`None` only at the end position).
+
+| Cursor | Mode | Splice `[start, end)` becomes | Cursor after | `completes` |
+|---|---|---|---|---|
+| End position (`offset == length`) | either | append `digit << 4` | same offset, low digit | no |
+| High digit | overwrite | `digit << 4` plus the low digit of `current` | same byte, low digit | no |
+| High digit | insert | insert `digit << 4` before the byte | the new byte, low digit | no |
+| Low digit | either | high digit of `current` plus `digit` | next byte, high digit | `half` |
+
+At the end position both modes append, so the new byte is created with its low digit still to type.
+Overwrite changes the digit under the cursor; insert on a high digit inserts `X0` and the next digit sets its low digit.
+The extra keyword `half` is true when the byte at `offset` was created by the previous high digit of the same run; it is the only input that does not come from the document and the cursor, and it becomes `completes` of a low-digit plan.
+
+`HexView` keeps `_half = (offset, revision)` after an edit that leaves such a byte, and passes `half=True` only when the cursor is still on that offset and the document revision is the one after that edit.
+Any other action clears it: cursor moves, a pane switch, mouse, selection, delete, paste, undo, redo, the Insert toggle and a reload.
+Nothing in the document marks a half byte; `X0` is a real byte, and the high digit alone can be undone only when a checkpoint separated the two digits.
+
+### Character Pane
+
+In the character pane a printable ASCII key (0x20 to 0x7E) overwrites the byte under the cursor, or inserts before it in insert mode, or appends at the end position; the cursor moves to the next byte.
+Any other key event that carries a character (`ä`, Enter, an unbound control character) changes nothing and rings the bell (REQ-10); events without a character, such as arrows, are not typing and are ignored.
+Bound keys never reach the typing handler `_on_key`.
+
+### Delete and Cut
+
+- Delete removes the selection, or the byte under the cursor; at the end position nothing happens.
+- Backspace removes the selection, or the byte before the cursor (whichever digit the cursor is on); at offset 0 nothing happens.
+- The cursor goes to the start of the removed range; both panes and both modes behave the same.
+- Cut needs a selection (without one nothing happens; unlike the text view it does not cut a line).
+  It builds the clipboard text first, removes the selection as one history entry, and stores the clipboard only when the removal succeeded, so a refused cut leaves the clipboard alone.
+
+### Clipboard
+
+Copy and cut need a selection.
+The content is taken with `LazyDocument.content_between`, so the internal copy is made of piece references and keeps the exact bytes.
+The system clipboard text depends on the active pane:
+- hex pane: upper-case pairs joined by single spaces (`DE AD BE EF`, `format_hex_pairs`);
+- character pane: the character rendering of the layout, `A.B` for `41 00 42` (`char_text`).
+
+The size of the text is computed before the text is built (`3 * N - 1` in the hex pane, `N` in the character pane).
+When it is at most `NovaTextArea.clipboard_cap` the bytes are read and the text is written with `app.copy_to_clipboard`.
+Above the cap nothing is built and a warning says that the selection is too large for the system clipboard (the cap is measured on the text, I10); the internal copy is kept in both cases.
+
+**One shared record.**
+The hex view does not keep a clipboard of its own.
+`DocumentView` sets `HexView.clipboard_owner` to the text widget, and the view stores and reads the copy through two public methods of `NovaTextArea`: `store_clipboard_bytes(content, system_text, size)` and `internal_clipboard()`.
+The record is therefore the one of the text view (`_clipboard_record`), and everything that the in-place save and the other sites do with it applies to hex copies without a change: the redirect and translation of the references, the drop on reload, on a history clear and on a failed rebase, and the rule that a copy during a save keeps no record.
+A `HexView` without an owner (unit tests, a standalone host) keeps a private `(content, system_text, app_clipboard)` triple.
+
+Effect (I12): a copy in either view is an internal paste source in the other, as exact bytes.
+Copying `DE AD` in the hex pane and pasting in the text view inserts the bytes `DE AD`, not the text `DE AD`, as any internal paste does.
+
+### Paste Parsing
+
+Paste is refused silently in a read-only document.
+It uses the internal content when `app.clipboard` still holds what the copy left there (the rule of the text view); otherwise it parses `app.clipboard`:
+- **Hex pane** (`parse_hex_text`): split on whitespace (spaces, tabs, newlines); a token may start with `0x` or `0X`; the remaining characters must be hex digits, and their total count must be even.
+  So `de ad be ef`, `DEADBEEF`, `0xDE 0xAD` and `de adbe ef` work, and `d e` is `DE` (I11).
+  Commas, colons and `\x` are not accepted.
+- **Character pane**: `text.encode("utf-8", "surrogateescape")`, without line-ending changes; escaped bytes round-trip.
+
+A parse error rings the bell, shows a warning that names the problem, and pastes nothing:
+- `Nothing to paste: the clipboard is empty.`
+- `Cannot paste into the hex pane: "<ch>" at position <i> of the clipboard text is not a hex digit.` (1-based; control characters as `U+00XX`)
+- `Cannot paste into the hex pane: the clipboard text holds an odd number of hex digits (<n>).`
+- `Cannot paste into the hex pane: "0x" without digits at position <i>.`
+- `Cannot paste into the character pane: the clipboard text cannot be encoded as UTF-8.`
+
+Application: with a selection, the selection is replaced in both modes (I7: after Shift moves the cursor sits at the end of the selection, so an overwrite at the cursor would hit other bytes).
+Without a selection, overwrite replaces `min(N, length - offset)` bytes, so a paste past the end extends the document, and insert inserts.
+The cursor ends behind the pasted bytes.
+A paste is one history entry with its own batch.
+
+A hex copy of a range the line scan has not reached holds unknown pieces, and its row count is not known.
+Pasted into the text view, it is spliced by byte offset (`splice_bytes`) and the cursor goes behind it by byte offset, as a pending jump until the scan arrives.
+Until then the cursor and the selection ends are parked on the last resolved row, after the paste, undo and redo.
+The record keeps the unknown pieces of the copy, so such a paste stays blind even when the scan has moved on.
+A paste of such content is refused with `EditRefused` when the selection reaches the first row, at its lower end (a backward selection counts as well), because no resolved row is left to hold the cursor; copy the range again once indexing has reached it, or paste below the first row.
+The rows from the edit row on cannot be resolved until the scan fills the pieces in, so the cursor navigation treats the open row as not there.
+Down, page down, shift and word moves stop on the last resolved row (down goes to the end of that row, as on the last row of a document), and a click below it lands on it.
+The same holds at the scan frontier of an unedited document, whose open row cannot be resolved either.
+A hex paste or edit at offset 0 can leave no resolved row at all; undo and redo in the text view then park the cursor at (0, 0), keys and clicks are ignored (no edit, no movement) and nothing raises until the scan arrives.
+No message is shown and no bell rings there: movement keys and clicks change nothing, and the cursor just stops.
+Internal content with unknown pieces takes the blind path and works at any offset.
+
+### Undo and Redo in Hex
+
+Ctrl+Z and Ctrl+Y call `document.history.undo(document)` and `redo(document)`.
+The default mover is exact for every entry type, so an entry made in the text view is undone in the hex view and the other way round (REQ-13).
+After a step the view adopts the new revision, clears selection and half-typed byte, puts the cursor on the place of the edit (`step.byte`: the start for an undo, behind the inserted bytes for a redo), scrolls it into view (centred when it was more than a screen away) and posts `Edited`.
+`RowUnavailable` (the edit lock) rings the bell and warns, and the history stays unchanged; `HistoryRolledBack` reports a failed source, like a changed file.
+
+**Scroll after a foreign change.**
+When `_sync` moves the cursor (a replaced document or a clamp after a shrink), it schedules one scroll to the cursor after the next refresh (`_reveal`), never inside a render.
+
+### Grouping and History
+
+A hex edit is a `HexEdit(ByteEdit)` with `origin="hex"`, a `kind` (`type`, `delete`, `paste`) and `completes`.
+The history decides undo grouping by batch membership with the rules of the text view: a 2 s timer, 100 characters, a different origin, a newline, and replacement versus insertion; `HexEdit.coalesce` only saves entries.
+- `characters` is `max(2, inserted)` for a paste, so a paste is its own batch with a checkpoint after it, and `max(inserted, removed)` otherwise, so the delete of a multi-byte selection is its own batch while single-byte Delete or Backspace joins a run.
+- `shape()` reports typing as never a replacement (overwrite typing is typing, so a Delete after typing starts a new batch and a mode switch does not), a `completes` edit never as a replacement (the low digit joins the batch of its high digit), and delete and replacing paste as replacements.
+- `coalesce` merges adjacent insertions, the low digit completing a one-byte insertion, adjacent equal-length overwrites, and forward or backward runs of single-byte deletes.
+  It never merges when a content has a line break, an unknown piece or a non-ASCII byte, so the sum of tail characters stays exact.
+- Cursor moves, mouse, pane switch, the Insert toggle and a view switch set a checkpoint.
+
+Result: digits and characters typed within 2 s and 100 characters of each other, without a move or mode change between them, undo together.
+
+### Interpretations
+
+The requirements are silent or ambiguous on these points; the design settled them:
+- I6: typing with a selection collapses it to its start (see "Editing").
+- I7: paste with a selection replaces it in both modes.
+- I8: a non-hex key in the hex pane is silent, without a bell.
+- I9: Ctrl+End lands on the end-of-document position (REQ-7 to REQ-9), so a digit typed there appends a byte, which becomes the new last byte; the file's last byte changes without a refusal.
+  The old last byte is overwritten with Ctrl+End, Left, Left, digit.
+- I10: the clipboard cap is measured on the clipboard text.
+- I11: hex paste concatenates the digits across whitespace and needs an even total.
+- I12: the clipboard record is shared with the text view.
+- Cut without a selection does nothing; Insert is allowed in a read-only document.
+
+### Switching
+
+`DocumentView.show_hex(on)` switches the views (REQ-2).
+- It sets a history checkpoint first, so that an undo does not join edits across a switch.
+- To hex: it cancels a pending jump and a running search, hides the text widget, shows the hex view, and after the next refresh puts the hex cursor on `cursor_byte_offset` and centers it; when that offset is unknown (`None`) the hex cursor keeps its previous offset.
+- To text: it calls `refresh_if_changed()` on the text widget (the document may have changed in the hex view), swaps the displays, and after the next refresh puts the text cursor on the hex cursor's byte (`place_cursor_at_byte`).
+  `place_cursor_at_byte` drops a text selection at once, also while the jump to an unscanned offset is pending.
+- Either switch cancels a running search, because it would act on the hidden view; the switch to the hex view also cancels a pending jump.
+- A switch before that refresh (two quick F4 presses, key repeat) does not read the cursor of the widget it leaves, which is not placed yet: the view keeps the scheduled offset (`_transfer`, valid while `_pending`) and carries it on, and only the finish step of the last switch runs.
+  An unknown offset is carried on as unknown: the widget shown in the end keeps its cursor.
+  The pending state is set only after every call that may raise, so a failed switch leaves no stale offset.
+- A switch changes no edit, no modified flag and no undo or redo entry.
+- The mapping is by byte offset.
+  The selection is not carried over.
+- Text to hex puts the hex cursor on the first byte of the character under the text cursor.
+  The end-of-document position maps to the end-of-document position.
+- Hex to text puts the text cursor on the character that contains the byte, so a byte inside a multi-byte character maps to that character.
+- The focus goes to the widget that becomes visible (`focus_shown()`).
+
+Edits made in either view show in the other, because both share the document and its history.
+After an edit in the hex view the text view keeps working, and the line number and the line count that it cannot know show as unknown (`Ln ?`, `>= N lines`; see the table of "StatusLine").
+Save, Save As, in-place save, reload and the external-change flow work in both modes because they act on the text widget, which owns the document.
+A reload in hex mode repaints at once (`follow_document()`).
+The action is ignored while the document closes or is replaced (one of its two widgets is no longer attached), and it is allowed while a save runs because it only swaps the displays.
+
+### Search and Goto
+
+The hex view has no lines, so its goto takes a byte offset only (see "Popups and dialogs").
+`select_range(start, end, *, cursor_at_start=False)` selects the bytes `[start, end)`, puts the cursor on one end and scrolls it into view, centring a far target.
+`search_origin(backward)` is the end of the selection for a forward search, its start for a backward one, and the cursor when nothing is selected.
+`place_match(start, end, backward)` is the `place` callback of the search; it selects the match with `select_range`.
+Escape calls `cancel_search`; the binding is active only while a search runs, so it never shadows another use of the key.
+`DocumentView` points the view's `searching` and `cancel_search` hooks at the text widget's search.
+
+### Budget (REQ-21)
+
+`tests/nova_editor/widget/test_hex_view_budget.py` proves the view budget on a sparse 8 GiB file: the first page, each key and each mouse action read the window at most once, Page Down four times reads at most once per step, memory does not depend on the file size, a source change is reported once, and Select All reads nothing.
+`test_hex_sources_do_not_use_whole_row_apis` fails if the hex sources use row, line or line index APIs.
+`tests/nova_editor/widget/test_hex_edit_budget.py` proves the same for edits on the sparse 8 GiB file with the scan not started: appending at Ctrl+End, overwriting the last byte, inserting and deleting near the end each succeed without `EditsLocked`, read the window at most once per operation and use none of the row APIs.
+
+`tests/nova_editor/widget/test_hex_search_budget.py` proves the same for goto and byte search on the sparse 8 GiB file: a goto to any offset, the length included, reads the window once at most; a goto beyond the length reads nothing; a forward search near the end reads at most two windows of chunks; a backward search from the end reads one unit; a cancel stops a running search after a bounded number of reads; and the hex search and goto sources use no row APIs.
+
+**Measured on 2026-10-13**
+
+Method:
+A headless Textual Pilot drives the hex view in a fresh child process for every measurement.
+Three rounds alternate between a 1 GiB file and a 50 GiB file (53,687,091,200 bytes); both are real, non-sparse files on ext4 over LVM and LUKS on NVMe.
+The warm cache comes from a primer pass; the cold open drops the file from the page cache with `fadvise`.
+Seven operations are timed: row scroll down and up, Page Down and Page Up, goto, Ctrl+End and a one-byte edit.
+The time of the first page includes the binary detection.
+
+The rule was fixed before the first measurement:
+- Per operation, `|median(50 GiB) - median(1 GiB)| <= max(3 ms, IQR of the 1 GiB samples)`, and both medians stay below 100 ms.
+- The first page appears in less than 0.5 s, cold and warm.
+- With the scan off, the `RssAnon` difference between the two sizes is at most 2 MiB.
+- The `tracemalloc` peak after the operations differs between the two sizes by at most 256 KiB.
+- The bytes requested before the first page and per operation are at most 2 MiB.
+
+Scan off (the line scan is not started):
+
+| Operation | Median 1 GiB (ms) | Median 50 GiB (ms) | Difference (ms) | Limit (ms) | Result |
+|-----------|------------------:|-------------------:|----------------:|-----------:|--------|
+| Row scroll down | 1.98 | 1.92 | 0.06 | 6.98 | pass |
+| Row scroll up | 1.92 | 1.88 | 0.04 | 3.00 | pass |
+| Page Down | 2.13 | 2.03 | 0.10 | 6.97 | pass |
+| Page Up | 2.09 | 2.04 | 0.04 | 6.63 | pass |
+| Goto | 2.08 | 2.05 | 0.03 | 3.00 | pass |
+| Ctrl+End | 2.13 | 2.29 | 0.16 | 9.24 | pass |
+| One-byte edit | 1.81 | 1.80 | 0.01 | 3.00 | pass |
+
+Scan on (the line scan runs from the open, as in the editor):
+
+| Operation | Median 1 GiB (ms) | Median 50 GiB (ms) | Difference (ms) | Limit (ms) | Result |
+|-----------|------------------:|-------------------:|----------------:|-----------:|--------|
+| Row scroll down | 1.95 | 2.03 | 0.08 | 3.00 | pass |
+| Row scroll up | 1.94 | 2.03 | 0.10 | 3.00 | pass |
+| Page Down | 2.11 | 2.24 | 0.13 | 3.00 | pass |
+| Page Up | 2.07 | 2.20 | 0.13 | 3.00 | pass |
+| Goto | 2.09 | 2.22 | 0.13 | 3.00 | pass |
+| Ctrl+End | 2.06 | 2.23 | 0.17 | 3.00 | pass |
+| One-byte edit | 2.13 | 5.17 | 3.04 | 3.00 | **miss** |
+
+Memory, first page and reads:
+
+| Item | Result |
+|------|--------|
+| First page, scan off | cold 23 to 33 ms, warm 6 to 11 ms, on both sizes |
+| First page, scan on | cold 74 to 87 ms, warm 8 to 21 ms, on both sizes |
+| `RssAnon` after the operations, scan off | difference 0.17 MiB between 1 GiB and 50 GiB (33,452 and 33,624 KiB) |
+| `tracemalloc` peak after the operations | difference 116,914 B between 1 GiB and 50 GiB (limit 256 KiB) |
+| Bytes requested | at most 1,173 per operation and 66,306 before the first page (limit 2 MiB each); no full pass over the file |
+| `RssAnon` after the operations, scan on | about 35 MiB on 1 GiB and about 54 MiB on 50 GiB; this is the line index of the running scan, not the hex view, and the memory rule was set for scan off |
+
+With the scan on, six operations pass and the one-byte edit misses the rule by 0.04 ms: the median is 2.13 ms on 1 GiB and 5.17 ms on 50 GiB, a difference of 3.04 ms against a limit of 3.00 ms.
+Not every pre-registered bound was met: the one-byte edit with the scan on is the only miss.
+The likely cause is a confounder, not a dependence of the view on the file size.
+The scan of the 1 GiB file probably finishes within the first seconds, while the scan of the 50 GiB file is still running during its operations.
+The completion of the 1 GiB scan was not logged; it is inferred from the flat 1 GiB latency after the first seconds.
+Why only the one-byte edit is affected was not investigated; a splice may contend with the running scan for the document, which was not checked.
+The scan-off difference of 0.01 ms shows that the view alone does not depend on the size.
+The absolute bounds of the requirement hold with a wide margin: the first page appears in 6 to 87 ms, all medians are at most 5.2 ms with the scan on, the operation samples with the scan on stay at or below 29.5 ms, the first visit of an operation reaches 32.6 ms (scan on, 50 GiB), and the 95th percentile on 50 GiB with the scan on is 15.7 to 23.8 ms.
+The rule was not changed after the measurement.
+Throttling the scan would be a new item, if it is wanted.
+
+Caveats:
+- The run is headless, so it does not include the cost of writing the terminal output.
+- The warm cache comes from a primer pass, not from normal use.
+- The load average was 2.67 at the start of the final run.
+- The scan was not run to completion on the 50 GiB file.
+- With the scan on, the operations start 2 s after the open (the measurement script waits 2 s).
+- The operations were timed on the document view with the hex view, without status line, menu or app; only the open was also measured on `NovaEditApp`.
+- The scan-off limits of 6.63 to 9.24 ms come from bimodal 1 GiB samples (IQR up to about 9 ms) and are looser than 3 ms.
+- All rounds ran on one machine, one drive and one day.
+- The cold runs dropped the file from the page cache with `fadvise`; the measured cold residency was 0.0 in every run.
+
+### Known Limits
+
+The drag does not auto-scroll, and rows are cut at widths below 45 columns (more for a file of 4 GiB or more, whose offset column is wider).
+The other limits of the hex view are listed in the global "Known Limits" section (table and "Hex Editing").
 
 ---
 
@@ -779,6 +1238,7 @@ The popups are not dialogs, and the dialogs are plain `MessageBox` and `FileDial
 ### Status line
 
 `StatusLine` shows the state of the editor.
+In the hex view the status line shows the parts listed under "StatusLine".
 The `EditorScreen` builds a `StatusState` from the widget, and the pure function `format_status(state, width)` turns it into text.
 Parts are added in the order below while the text still fits the width; the tail is cut first on a narrow terminal, and the file name is always kept.
 
@@ -837,11 +1297,12 @@ When an editing action (Undo, Redo, Cut, Copy, Paste, Select All) is moved or un
 | `Ctrl+F` | Find popup; Enter and Next search forward, Previous backward, Escape closes it |
 | `F3` | Repeat the search forward, with the popup open or closed; without a needle it opens the popup |
 | `Shift+F3` | Repeat the search backward, with the popup open or closed |
-| `Ctrl+G` | Go to popup: `N` for a line, `@N` for a byte offset; Enter jumps and closes, Escape closes |
+| `Ctrl+G` | Go to popup: `N` for a line, `@N` for a byte offset; in the hex view a byte offset only (`0x1F00`, `1F00h` or `@N`); Enter jumps and closes, Escape closes |
 | `F11` | Show or hide the line numbers (checkable) |
 | `F10` | Toggle soft wrap |
 | `Alt+C` | In the Find popup: toggle between match case and ignore case |
-| `Escape` | Close the popup that has the focus; cancel a running search first, then a running save and a pending jump |
+| `Alt+H` | In the Find popup: toggle the `Hex` option, which reads the needle as hex byte pairs |
+| `Escape` | Close the popup that has the focus; cancel a running search first, then a running save and a pending jump; in the hex view Escape also cancels a running search |
 
 ### Quit flow
 
@@ -878,11 +1339,15 @@ The widget posts `JumpRejected`; the popup shows its reason (a toast when the po
 
 A target beyond the scanned part stays pending: the status line shows `Goto P%  Esc cancels`, and Escape cancels it.
 
+The hex view has its own messages, which the popup shows in the same way: `Line numbers are not available in the hex view; use 0x…, …h or @offset` for a line number, and `byte offset N is beyond the end of the file (L bytes)` for an offset greater than the length.
+An offset equal to the length is accepted there, because it is the end-of-document position; the text view still rejects `@N` with N equal to the length.
+
 ### Search in nova_edit
 
 `Ctrl+F` opens the Find popup, Enter and `Next` search forward, `Previous` searches backward, and Escape closes it (a running search is cancelled first).
 `F3` and `Shift+F3` repeat the last needle forward and backward, with the popup open or closed.
 `Alt+C` flips `Match case`, which is on by default.
+`Alt+H` turns on the `Hex` option, which reads the needle as hex byte pairs; a hex search works in both views.
 While the popup is open the texts appear in its status row, and while it is closed as a note of the status line.
 The texts are `Searching 42% (2.1 of 5.0 GiB), Esc cancels` while it runs, then `Found`, `Wrapped to the top`, `Wrapped to the bottom`, `Not found: <needle>`, `Search cancelled` (with `: <reason>` unless the user cancelled) or `Search failed: <error>`.
 A needle is shown at most 40 characters in `Not found`.
@@ -924,10 +1389,11 @@ The document is the byte string that results from concatenating pieces in order.
 Original bytes are never copied: a piece only names a range of a source.
 
 **Piece:**
-A `Piece` is `(src, a, b, breaks, row0, first_is_lf, last_is_cr)`.
+A `Piece` is `(src, a, b, breaks, row0, first_is_lf, last_is_cr, unknown)`.
 `src` is `0` for the original file or `k >= 1` for add segment `k`, and `[a, b)` is a non-empty byte range of that source.
 `breaks` counts the terminators of those bytes read on their own, and `row0` is the row, inside the source, that contains byte `a`.
 The two flags tell whether the first byte is LF and whether the last byte is CR.
+A piece of the original file beyond the scan frontier is *unknown*: its `breaks` and `row0` are not stored (both 0) and must not be read, but the two flags are always exact because they are single-byte reads. Only pieces of an original file can be unknown; add segments always know their breaks.
 
 **Content:**
 `Content` is an immutable tuple of pieces with its byte length, break count and `tail_chars`, the characters after its last break.
@@ -937,7 +1403,8 @@ Undo records, the clipboard and `splice` exchange `Content`, so no text is copie
 A B+ tree (fan-out 32) keeps the pieces in parallel `array` columns, 37 bytes per piece in the leaf columns.
 That is the leaf slot only.
 The total per piece, with the inner nodes and the `Piece` object, is about 99 bytes (see "Performance (measured)" and "Known Limits"); the design target of below 80 bytes was missed.
-Every node carries the piece count and an aggregate `(length, breaks, first_is_lf, last_is_cr)`.
+Every node carries the piece count and an aggregate `(length, breaks, first_is_lf, last_is_cr, unknown, lead_breaks, first_unknown, last_unknown)`.
+`breaks` is a lower bound while `unknown > 0`; `lead_breaks` is the number of breaks before the first unknown piece, so rows `0 .. lead_breaks - 1` are exact. A CR|LF junction is subtracted only between two known pieces; the subtraction is applied when the scan fills the unknown piece in.
 The aggregates combine associatively, so offsets and breaks are found in O(log n).
 `splice(start, end, content)` replaces a byte range, returns the removed `Content`, merges adjacent pieces that are contiguous in one source, and rebalances.
 Typing therefore extends one piece instead of adding one piece per key.
@@ -966,21 +1433,17 @@ It raises `RowNotIndexed` when the index cannot answer yet.
 The start of row `r` is the end of the `r`-th break: the tree descends by break count, picks the piece, and asks its source for the row start.
 The terminator length of a row is read from at most two bytes before its end.
 Each answer keeps the per-call read budget of 4 MiB.
-While the document is exactly the original (one original piece), every query goes straight to the `LineIndex`, so an unedited document costs what the index costs.
+While the document is exactly the original (one original piece), every query goes straight to the `LineIndex`, so an unedited document costs what the index costs. A document edited beyond the scan frontier answers rows below the first unknown piece only.
 
-**Open tail:**
-While the original scan is incomplete, the last original piece `[t, L)` stays outside the tree, because its break count is not final.
-Its rows come from the original index on demand.
-A position inside the scanned part cuts the tail at that position, which moves `[t, x)` into the tree with exact counts.
-A position beyond the scanned part is not accepted for an edit.
-When the scan completes, the next call folds the tail into the tree.
-Row counts are lower bounds until then.
+**Unknown pieces and the fill:**
+The document is the pieces of the tree; there is no separate tail. At open the tree holds one unknown piece for the whole original file. A byte splice is accepted at any offset in `[0, length]`, scanned or not, and never waits for the scan; `length` and `read` never consult the scan. `PieceTable._fill` runs on every call: it takes the first unknown piece in document order, and when that piece lies below the scan frontier it cuts it at the frontier and replaces the lower part by a known piece (at most 64 pieces per call). Unknown pieces behind the first one wait until it is filled, because only the first unknown piece limits which rows can be answered. Row queries answer only rows before the first unknown piece (`lead_breaks`); the open row and everything after it return `None`/unavailable, and the row count is a lower bound. `snapshot().complete` is true only when no unknown piece is left and the scan has finished. Pieces of an old original that was replaced by a save (a retained generation) are never filled; rows through them stay unavailable (see "Known Limits").
 
 **Junction rules:**
 A boundary between a CR and an LF is rejected by the tree with `ValueError`.
 The aggregate counts breaks over junctions between sources exactly, so the row count always equals a split of the joined bytes on `\r\n|\n|\r`.
 A deletion can join a CR and an LF into one CRLF; the aggregate then reports one break fewer, and the document rebuilds its row caches from the row above the edit.
 Undo and redo take the other half of a CRLF along when a recorded boundary falls inside one.
+Next to an unknown piece the CR or LF half is counted once on the known side; the junction subtraction is applied when the scan fills the unknown piece in. Deleting bytes so that a CR meets an LF inside an unknown region changes no known count.
 
 **Merge guard:**
 Decoding is defined over the whole row, not per piece, so an edit can merge bytes into other characters (a truncated UTF-8 lead byte followed by inserted continuation bytes).
@@ -1050,6 +1513,17 @@ The stock batching rules stay: a timer (2 s), a character limit (100), a newline
 `EditHistory.max_checkpoints` defaults to `None`, which keeps every batch; the stock default of 50 is gone.
 An undo or redo that needs an unresolved position is refused as a whole, and an applied part is rolled back so that the document is unchanged.
 
+**Shared history:**
+Byte entries (`ByteEdit`) are shared by both views, because the history belongs to the document.
+`EditHistory.undo(document, mover)` and `redo` return a `HistoryStep` (`byte`, `low`, `high_old`, `high_new`), or `None` when there is nothing to move.
+An entry that fails (`RowUnavailable` or any other exception) reverses the entries applied so far and leaves the history unchanged (all-or-nothing for any exception, which is re-raised); an undo or redo whose reversal is refused too raises `HistoryRolledBack`.
+Entries of different origins (`text`, `hex`) never share a batch.
+The hex view records `HexEdit` entries (see "Hex View" > "Grouping and History") and undoes through the same `EditHistory`, so a text edit, a hex edit and their undo steps interleave freely.
+An entry whose removed or inserted content holds unknown pieces may contain a break, so it ends its batch and is never coalesced.
+Closed in S0003 ACT2 (R5): unknown content counts as possibly containing a break; tests `test_byte_edit.py`.
+The text view places the cursor of a hex-origin entry with the byte jump (`_place_cursor_at_byte`): an offset equal to the length is accepted, and an offset the scan has not reached waits.
+The text view passes a mover to `undo` and `redo`, so `Edit.do` and `Edit.undo` keep the selection logic.
+
 ---
 
 ## Clipboard
@@ -1067,6 +1541,9 @@ The system clipboard is written through `app.copy_to_clipboard` only when the se
 `clipboard_cap` is 2 MiB (2,097,152 bytes).
 The system text is the decoded selection with U+DC80 to U+DCFF replaced by U+FFFD, so the system copy is lossy for invalid bytes and the internal copy is exact.
 Above the cap, `notify` shows a warning: the system clipboard was not updated, and pasting inside the editor still works.
+
+**Hex view:**
+The hex view copies and pastes through the same internal record, through `NovaTextArea.store_clipboard_bytes` and `internal_clipboard`; the system text is hex pairs or the character rendering instead of decoded text, and the cap is measured on that text (see "Hex View" > "Clipboard").
 
 **How the cap was chosen:**
 The rule is the largest measured size whose copy plus terminal write stays clearly under 20 ms at p95 on the development machine.
@@ -1136,8 +1613,69 @@ The document registers the save thread with its closer, so the source is closed 
 **Special targets:**
 - A symlink is followed: the target is replaced and the link stays; a dangling link creates the file it names.
 - A directory that is not writable fails at `prepare` with "cannot create a temporary file in <dir>; use Save As", and so does a read-only file system.
-  An in-place write is not offered, because pieces refer to the original bytes.
+  A plain Save that qualifies is done in place instead (see "In-Place Save"); this section describes every other save.
 - A new file is created with the mode `0o666 & ~umask`, and the document continues on it.
+
+---
+
+## In-Place Save
+
+A plain Save of an unchanged file can patch the changed bytes into the file itself instead of writing a new file.
+`NovaTextArea.save` starts the save on the `nova-save` thread as usual; the thread builds an `InPlaceJob` when the document has a plan, and a streaming job otherwise.
+
+**Decision rule:**
+A save is in place only when all of these hold:
+- It is a plain `save()` without a path and without `overwrite=True`, so a Save As and a save after an external-change confirmation stream.
+- The document is modified and the file still matches the identity the editor holds.
+- The original is a file read with `pread` or in-memory bytes, and the length of the document equals the length of the original.
+- Every run of the original sits at its own offset and outside the ranges that earlier in-place saves patched (`inplace_ranges` in `core/inplace_layout.py`).
+
+A range whose bytes were overwritten and then undone to the original bytes is not written.
+The rules are the same whether the save is started from the hex view or the text view.
+
+A moved original streams even when the length is restored, and so does any length change.
+
+**Steps of `InPlaceJob.run`:**
+1. The plan is taken (`plan_in_place`), the target is resolved with `os.path.realpath`, `refuse_unsuitable` checks that it is a regular file, and `check_path` must report no change.
+   A file that changed on disk since the open or the last save is seen before the job starts: nothing is written and the existing change question (`SaveNeedsConfirmation`) is asked.
+   A file that cannot be opened for writing fails at stage `prepare` with the message `read-only file` before any byte is written.
+2. The file is opened with `O_WRONLY` and without truncation, and the identity of the descriptor is compared with the held one.
+3. `prepare_patch` copies the old bytes of each range that no earlier in-place save patched into the add store, in pieces of at most `SaveSettings.chunk` (1 MiB); a cancel is checked before each piece.
+4. The parts of every range to write are taken from the document, then `begin_patch` installs the read overlay and marks the ranges as patched.
+5. The descriptor is compared with the held identity once more, so that a same-size change since the open fails the save before the first byte; then the job is committed (the last cancel point).
+6. The job `pwrite`s the ranges in ascending order, one chunk at a time, with the new bytes read from the parts of step 4, so it does not need the document to stay open; short writes are looped.
+7. `fsync` follows, the size must still equal the held size, and `end_patch` adopts the identity of the file.
+
+No temp file is created, no `os.replace` happens and the target keeps its inode.
+
+**Read overlay:**
+Reads of the original keep returning the pre-patch bytes of the patched ranges, so the line index and the scan stay valid.
+The overlay lives until a streaming save, a reload or the close.
+While a patch runs, the change check of the source compares the size only, because the own `pwrite` changes the mtime; after `end_patch` the full check applies again.
+
+**Reference redirect:**
+The history and the clipboard record hold piece references to the original bytes, and an overwritten range would otherwise change under them.
+The save thread computes the translation that moves every reference inside a copied range onto the copy in the add store (`Redirect`, built by `redirect_for`).
+The UI thread applies it with one `map_references` call after the write, so the history changes all or nothing.
+If the redirect fails, nothing is rewritten and the failure is logged; the overlay still serves the old bytes, so the references stay readable.
+
+**After the save:**
+No rebase happens: the pieces, the line index and the caches stay, nothing is rescanned, and the saved state is marked in the history, so `modified` clears.
+Undo, redo and paste keep working, and no `save` change is announced to the change listeners.
+
+**Failure:**
+Before the job is committed, a failure or a cancel changes nothing: the file, the document and the patched ranges stay as they were.
+A first write call that raises is a plain failure, not a partial one: `partial` is false, but the call may have written bytes, so the patched ranges stay and the identity of the file is adopted, and a retry rewrites them.
+After the first write call returned, a failure is partial: `SaveFailed` carries `partial`, the file may hold some of the new bytes, the overlay and the patched ranges stay, the edits and the history are kept, and the document stays modified.
+The identity of the file as the failed save left it is adopted, so the next save does not take its own write for a change from outside, and a second Save rewrites the whole write set.
+
+**Messages:**
+A partial failure shows `Save failed (<stage>): <reason>` followed by `<name> may now be partially patched. Your edits are kept; save again to finish.`
+After the first write the status line drops the hint `Esc cancels`, and a cancel (Esc or Ctrl+Q) is ignored; closing the widget then posts `SaveFailed` with `partial`, and the writer still completes the patch.
+
+**Preserved:**
+The inode, the owner, the group, the mode, the hard links, the ACLs and the extended attributes of the target stay, because the file is written in place.
+No temp file and no free space for a copy of the file are needed; the copies of the old bytes stay in memory, in the add store.
 
 ---
 
@@ -1148,6 +1686,7 @@ The widget treats it like any refusal: bell, warning, `EditRefused(reason)`, not
 The locks are a list of reasons; the latest one is reported, and `unlock_edits` lifts one reason, or all when none is given.
 The reasons are `"saving"` and `"file changed on disk"`.
 A save holds `"saving"` from its start until the terminal handler runs on the UI thread, so the lock cannot stay set.
+The hex view refuses its edits, undo and redo in the same way, with the bell and the warning `Edit refused: <reason>.`.
 Cursor, selection, scrolling and goto stay live during a save.
 `load_text`, `reload`, `open` and replacing the document raise `RuntimeError` while a save runs.
 A copy during a save updates the system clipboard but keeps no internal clipboard record, so a later paste inserts text.
@@ -1171,6 +1710,7 @@ After the replace the document must stand on the saved file, so that the old ori
 `LongLineIndex.rebased` is `spliced` with an identity edit at the end of the row.
 Checkpoints are kept, an unfinished scan resumes from its frontier, and row numbers, columns and cached measurements stay valid.
 `apply_rebase` raises `ValueError` when the document changed since the save started; the widget then closes the new source and reports `SaveFailed` with stage `internal`.
+An orphan part of an old original whose rows were not scanned yet is kept as an unknown piece of the retained generation instead of falling back to retaining everything.
 
 A document opened with `text=` or from a small file stands on an adopted file descriptor after its first save.
 
@@ -1207,6 +1747,10 @@ Pieces of legacy generations stay as they are.
 Redo records are translated the same way, so undo, save and redo works.
 Present parts never need a generation, so repeated saves with small deletions retain nothing.
 
+**Reference API:**
+`EditHistory.references()` lists every `Content` the history holds, `rewrite_references(iterator)` writes them back in the same order, `map_references(fn)` replaces each by `fn(content)` (all or nothing), and `original_ranges()` yields the byte ranges of the original file that the history still references.
+The in-place save redirects references with `map_references` (see "In-Place Save") and applies the same function to the clipboard record, which lives in the widget.
+
 ---
 
 ## Modified State
@@ -1217,6 +1761,7 @@ A record after an undo opens a new branch, so the revision counter alone cannot 
 `modified` is `(revision, branch) != saved`, so undo back to the saved state reads unmodified, and so does the undo of typing after a save.
 A save forces a new batch (`checkpoint()` at its start and in `mark_saved()`), so coalesced typing never spans a save.
 `EditHistory.clear` resets the saved state to the current one, so `modified` is false afterwards.
+The saved state lives in the shared history, so `NovaTextArea.modified` and every other view of the document read the same value; undo back to the saved state reads unmodified in either view.
 
 ---
 
@@ -1331,6 +1876,9 @@ A match is a byte range `[start, end)` that starts and ends on a character bound
 A raw byte such as 0xA9 therefore does not match inside a valid `é`.
 A line break in the needle (`\n`, `\r\n` or `\r`) counts as one character and matches exactly one document terminator.
 `compile_matcher` raises `SearchError` for an empty needle, a lone surrogate outside U+DC80 to U+DCFF, and a needle over the limits (see "Known Limits").
+A byte needle (`bytes`) is matched as exact bytes: it has no character boundary, line break or case rule, and `SearchNotFound` shows it as spaced upper-case hex.
+Only the empty and the over-long checks apply to it, and `ByteMatcher` serves it behind the `NeedleMatcher` protocol.
+`parse_hex_needle` turns the hex text of the Find popup into those bytes; whitespace anywhere is ignored, and a fault raises `HexNeedleError` with the message the popup shows.
 
 ### Case Folding
 
@@ -1402,15 +1950,19 @@ A repeat therefore continues from the match and never overlaps it in the search 
 A needle `aa` finds `aaaa` twice, not three times.
 When the only match is the current selection, the search finds it again after wrapping.
 The default is case-sensitive, which is the fast path.
+The same rule holds for a byte needle.
+A repeat uses the Hex option of the search it repeats (`DocumentView.needle_hex`).
 
 ### Placing the Match
 
-The match is placed through the jump machinery (`_Jump` with `select_to`), so the selection is always exact.
+In the text view the match is placed through the jump machinery (`_Jump` with `select_to`), so the selection is always exact.
 When both ends are below the frontier of the line index and in rows that are not long, the selection is set at once and the view scrolls to it.
 An end beyond the frontier keeps the jump pending, with `JumpProgress`, until the scan reaches it.
 A match in a long row waits until the long index has resolved both ends, then selects.
 Until then the cursor does not move, and Escape cancels.
 `SearchFound` is posted when the selection is set.
+In the hex view the search passes a `place` callback, which `NovaTextArea` calls on the UI thread with the match.
+`HexView.place_match` then selects the bytes and scrolls them into view, so a match in an unscanned file is selected without waiting for the line scan.
 
 ### Progress and Cancel
 
@@ -1425,6 +1977,7 @@ The `Foreground` gate of the document is asked before every unit, and the job sl
 Exactly one terminal message is posted per search, by the handler on the UI thread: `SearchFound`, `SearchNotFound`, `SearchCancelled` or `SearchFailed`.
 The thread posts its outcome from a `finally`, so no defect leaves the widget in the searching state.
 `SearchCancelled.reason` is `cancelled`, `replaced`, `text changed` or `reloaded`.
+A hex-view edit does not go through the text widget, so the running job sees a changed document as `SearchStale`, and the screen shows `Search cancelled: text changed` rather than `Search failed`.
 A second `search` replaces the running one and posts `SearchCancelled` with the reason `replaced` for it.
 A needle that cannot be searched posts `SearchFailed`, and `search` returns False.
 A change of the source during a read ends the search with `SearchFailed` and the stale view policy (see "External Changes").
@@ -1446,6 +1999,7 @@ Memory is bounded by the structures, not by the document size.
 **Pieces:**
 The piece table costs about 99 bytes per piece (see "Performance (measured)").
 Typing extends one piece, so a piece is added by an edit that splits or separates text, not by a keystroke.
+An edit at any offset of a file that is still being scanned adds at most two pieces and the added bytes; nothing allocates in proportion to the file size.
 
 **Undo records:**
 A record holds piece references, so its size does not depend on the size of the edit.
@@ -1566,6 +2120,7 @@ Cancelled long-row scans beyond the retired-list limit are joined on a daemon re
 
 **Save thread:**
 A save runs on one daemon thread, `nova-save` (see "Streaming Save").
+The `nova-save` thread also runs the in-place job; the redirect is computed there and applied on the UI thread (see "In-Place Save").
 It reads and writes outside every lock and takes the document lock only for the plan of each chunk.
 It posts its outcome with `post_message(events.Callback(...))`, like the scans, and the UI thread runs the terminal handler.
 `LazyDocument.close()` waits for the save thread through its closer before it closes the source.
@@ -1692,7 +2247,13 @@ See `src/tools/measure_view.py` for usage.
 
 | Limit | Cause | Bound | Where measured |
 |---|---|---|---|
-| Edits refused at unresolved positions | The scan has not reached the position | Until the scan covers it | Tests; REQ numbers measured at resolved positions |
+| Text edits refused at unresolved rows | The text API needs a row and column; the scan has not reached the position | Until the scan covers it; byte edits (`LazyDocument.splice_bytes`, undo and redo) are accepted at any offset | Tests |
+| Rows after a blind byte edit | The first unknown piece limits the answerable rows | Row count is a lower bound and line numbers after the edit are unavailable until the scan fills the piece in | Tests (`test_lazy_byte_edit.py`) |
+| Syntax highlighting after a blind byte edit | The syntax mirror cannot follow an edit without rows | The mirror is dropped by every blind byte edit, so any attached mirror is lost (a document has a mirror only up to `highlight_limit` bytes, default 1 MiB) | Test `test_blind_edit_detaches_the_syntax_mirror` (R7) |
+| Unknown pieces of a replaced original are never filled | A save replaces the original; the old index is not continued | Rows through those pieces stay unavailable; bytes are exact | Test in `test_rebase_unknown.py` (R4) |
+| Cursor after a blind paste | The pasted unscanned bytes make the rows from the edit row on unresolved | The cursor is parked on the last resolved row and the byte jump completes when the scan arrives; navigation stops on the last resolved row; a paste of such content whose selection reaches row 0 is refused; with no resolved row at all (a hex edit at offset 0) the cursor waits at (0, 0) and keys are ignored | Tests (`test_hex_clipboard_unscanned.py`) |
+| `EditResult.end_location` of a byte edit | A blind edit has no row | Meaningless for `splice_bytes` offsets the index cannot resolve; callers in byte mode ignore it (R6) | Not tested |
+| `complete` lags after the scan ends | The fill handles 64 pieces per call | `complete` stays false for a few calls until the fill finishes | Test `test_fill_is_batched` |
 | Tab stops in edited rows over 1 MiB | Splice shifts checkpoints by the width delta only | `abs(stale - exact) < tab width` | Test `test_tab_alignment_behind_an_edit_is_kept_from_before_the_edit` |
 | Mixed line endings show the first style | No per-row counting in the scan | Display only; bytes are never changed | Unmeasured by design |
 | `text` above 8 MiB is `""` | Reading costs O(size) | `TEXT_LIMIT` = 8 MiB | Not applicable |
@@ -1712,12 +2273,71 @@ See `src/tools/measure_view.py` for usage.
 | `stat` on a hung mount | `save` checks the path on the UI thread | Until the mount answers | Not applicable |
 | Search needle size | Pattern tier cost | 1 MiB plain, 4,096 characters for the pattern tier | Not applicable |
 | Search is literal | By design | No regular expressions, whole word or replace | Not applicable |
+| Hex view drag and narrow layout | The drag has no auto-scroll and the row layout needs 45 columns for offsets of up to 8 digits | A drag does not auto-scroll, rows are cut below 45 columns (a file of 4 GiB or more has a wider offset column: 46 columns for the 50 GiB file) | Tests `widget/test_hex_view.py::test_wider_and_narrower_terminals_change_the_byte_count` and `test_drag_forward_and_backward_selects_the_inclusive_range`; the missing auto-scroll and the 45-column cut are not tested explicitly |
+| Hex drag over the offset column, a gap or a `\|` mark | `_hit` returns no byte there | The end of a drag freezes while the pointer is over such a cell on a row that holds bytes or on the end row, and follows again on the next byte; below the last row the end-of-document position wins | Not tested |
+| Hex Shift+Up, Shift+Down and Shift+End stop at the row | The target is clamped to the row: with no selection, Shift+Up on the first row and Shift+Down on the last row do nothing; with a selection the cursor keeps its column on that row; Shift+End on a full row stops the cursor on its last byte, and the half-open selection does not include it | The selection does not reach the edge of the document; use Shift+Ctrl+Home and Shift+Ctrl+End | The row-wise moves are tested (`test_shift_down_end_pagedown_and_ctrl_shift_end`); the cases at the first and last row are not |
+| A failing first write is reported as a plain failure | The first `pwrite` that raises may already have written bytes | `partial` is false and the message does not say "partially patched"; the patched ranges stay and a second Save rewrites them | Test `test_first_pwrite_error_is_plain` (`tests/nova_editor/core/test_inplace_job.py`) |
+| A hex, text, hex switch before the scan arrives loses a pending text goto | The switch to the hex view cancels a pending jump (see "Switching") | The goto is lost; repeat it | The cancel on the first switch is tested (`test_toggle_during_a_pending_goto_leaves_no_pending_progress`); the three-step sequence is not |
+| A same-size external change during an in-place write is not detected | The own `pwrite` changes the mtime, so the change check compares the size only while the patch window is open | A change that keeps the size and happens in the write window goes unnoticed | The patch window is tested at source level (`core/test_source_overlay.py`, `core/test_source_patch_race.py`); a same-size foreign change in the window is not |
+| The read overlay and the patched ranges stay after a failed in-place save | The overlay serves the pre-patch bytes of the ranges and is not removed on a rollback | They stay until a streaming save, a reload or the close | Test `test_abort_patch_keeps_the_overlay_and_restores_the_full_check` (`core/test_source_overlay.py`); the view after a failed save is not tested |
+| Hex on non-local files is tested only against a stub | The editor works on a local copy of the remote file | Not tested against real SSH servers, Azure, nested archives, huge remote files or change detection on a slow file system | The local-copy path is tested with local files and mocks, and `tests/integration/ssh/test_ssh_editor_hex.py` runs against a local stub SFTP server |
+| Hex typing beyond the scanned part | An edit whose removed or inserted content holds unknown pieces may contain a break, so it always ends its batch | One undo step per digit there; bytes are exact | Tests `document/test_hex_edit.py::test_unknown_content_blocks_merging` and `widget/test_hex_edit.py::test_typing_works_before_the_scan_has_reached_the_position` |
+| Huge selection copy, cut and delete in hex | `content_between` and the edit read the break-free tail of the range (`tail_chars_of`) on the UI thread | Unbounded for a huge selection without line breaks; Select All alone reads nothing | Not measured |
+| Hex copy during a save | A copy during a save keeps no internal record (as in the text view) | A later paste parses the system text | Test `test_a_copy_made_during_an_in_place_save_is_not_recorded` (`test_hex_clipboard_inplace.py`) |
+| Text view gives no sign of a stranded cursor (no message is shown) | A hex edit or paste at offset 0 leaves no resolved row in the text view | No message is shown and no bell rings; movement keys and clicks in the text view change nothing until the line scan reaches the first rows; the bytes are exact | Test `test_keys_and_clicks_with_no_resolved_row_change_nothing_and_do_not_raise` |
+| The open row cannot be reached in the text view | The row at the end of the scanned part cannot be read | The text cursor stays on the row before it until the scan passes it | Tests `test_open_row_is_unavailable_but_earlier_rows_resolve` and `test_navigation_at_the_scan_frontier_of_an_unedited_document_stays_on_resolved_rows` |
+| A hex needle can cut a character or a CR LF pair | A hex needle matches bytes | By design; the hex view selects the bytes exactly, the text view maps each end to a character | Matcher level: `test_a_needle_that_splits_a_utf8_character_or_crlf_matches` (`tests/nova_editor/core/test_search_bytes.py`); the text-view mapping of the ends is not tested |
+| A plain number is rejected in the hex Go to | A plain number is a line number and the hex view has no lines | By design; `@N` takes a decimal offset | Test `test_a_plain_number_in_the_hex_view_is_rejected_with_the_line_message` |
+| The hint bar lists Wrap Mode in the hex view | `HintBar` does not follow `Action.enabled` | Cosmetic; `F10 Wrap Mode` stays in the bar and does nothing | The menu state only (`test_the_two_items_are_disabled_in_hex_and_enabled_in_text`) |
+| The line scan runs under the hex view | A huge binary file starts its scan at open, because the text view may be opened later | The index grows with the number of rows found; the hex view never waits for it | Measured on 2026-10-13: with the scan on, operation samples stay at or below 29.5 ms and first-visit samples reach 32.6 ms (50 GiB); the scan costs on 50 GiB a 95th percentile of 15.7 to 23.8 ms and a one-byte-edit median of 5.2 ms against about 2 ms on 1 GiB; see "Budget (REQ-21)" |
+| The in-place save is not atomic | The write patches the file in place | A crash, a power loss or a full disk can leave the file partially patched; save again or use Save As | Tests `test_write_error_after_first_range_is_partial` and `test_save_after_partial_failure_succeeds_and_file_equals_document` |
+| The in-place save cannot open busy files | The kernel refuses to open the file for writing | `ETXTBSY`, `EACCES`, `EPERM` and `EROFS` fail at stage `prepare`; Save As works | Tests `test_etxtbsy_is_plain_failure_with_errno_text` and `test_unwritable_file_fails_before_any_write_with_read_only_message` (both `core/test_inplace_job.py`); `EPERM` and `EROFS` are not tested separately |
+| Repeat saves rewrite earlier patches | No tracker of clean ranges | Proportional to the bytes edited or patched so far, never to the file size | The rewrite of a patched range is tested by `test_second_save_after_undo_restores_original_bytes`; the cost bound (proportional to the bytes edited) is not tested |
 | Unverified claims | The final benchmarks were skipped | Five items | Unmeasured on the final code |
+
+### Hex Editing
+
+- **One undo step per digit beyond the scan.**
+  Typing over bytes that the scan has not reached removes unknown pieces; such an entry may contain a break and never joins a batch.
+  The result is correct, only finer than the 2 s grouping.
+- **Huge selections.**
+  Copy, cut and Delete of a selection read the break-free tail of the range on the UI thread (`tail_chars_of`); a break-free selection of tens of gigabytes reads all of it.
+  REQ-14, REQ-15 and REQ-21 do not bound this.
+  Select All reads nothing.
+- **Copy during a save.**
+  The record is dropped while a save runs, as in the text view; the internal copy is lost and a paste parses the system text.
+- **Stranded text view.**
+  When a hex edit or paste at offset 0 leaves no resolved row in the text view, movement keys and clicks in the text view change nothing until the line scan reaches the first rows.
+  No message or bell is shown; the cursor just stops.
+  The bytes are exact.
+- **The open row.**
+  In a partially scanned document the last scanned row is the open row.
+  The text cursor cannot be moved onto it and stays on the row before it until the scan passes it.
+  No message or bell is shown; the keys and clicks change nothing and the cursor just stops.
+- **A hex needle can cut a character or a CR LF pair.**
+  A hex search needle matches bytes, so a match may start or end inside a multi-byte character or between CR and LF.
+  The hex view selects the bytes exactly.
+  The text view maps each end of the match to the character that holds its byte, and an end inside a line break lands at the end of the row, so a match that covers only part of a character or line break may select less than the bytes or nothing.
+  Found is still shown.
+- **A plain number is rejected in the hex Go to.**
+  A plain number is a line number and the hex view has no lines, so the popup rejects it with a message instead of reading it as a decimal offset.
+  Use `@N` for a decimal offset.
+- **The hint bar lists Wrap Mode in the hex view.**
+  `HintBar` does not follow `Action.enabled`, so `F10 Wrap Mode` stays in the bar while the hex view is shown and does nothing.
+- **The line scan runs under the hex view.**
+  A huge binary file starts its line scan in the background at open, because the text view may be opened later.
+  The hex view never waits for it, but the scan reads the whole file and its index grows with the number of rows it finds.
+- **The in-place save.**
+  It is not atomic, cannot open busy files and rewrites earlier patches on a repeat save; see "The In-Place Save Is Not Atomic", "In-Place Save Cannot Open Busy Files" and "Repeat Saves Rewrite Earlier Patches".
+- **REQ-12 reading.**
+  A digit after Ctrl+End appends a byte (I9), it does not overwrite the old last byte.
 
 ### Unverified claims
 
 The final performance benchmarks were skipped by owner decision.
-No measurement exists for the final code of the app.
+No step-latency measurement exists for the final code of the app.
+The hex view is the exception: it is measured on the final code, see "Budget (REQ-21)".
+The open of `NovaEditApp` on a hex file was measured on the final code too: 31 to 64 ms on 1 GiB and 50 GiB, cold and warm.
 The following five items are UNMEASURED on the final code and must not be read as met:
 
 1. **The wrap-on first `ctrl+end` fix.**
@@ -1760,7 +2380,8 @@ The edit requirements were measured at resolved positions: after indexing on the
 
 A provisional window assumes tab phase 0 at its left edge, so tabs may shift when the cursor resolves.
 Word moves on an unresolved row are a fixed 8 characters.
-`select_line` and `select_all` do nothing while the row length is unknown.
+`select_line` does nothing while the row length is unknown.
+`select_all` selects up to the last reachable row while the scan runs, because the open row cannot be read, and the whole document once the scan is complete; the partly scanned case is pinned by `test_select_all_on_a_partly_scanned_document`.
 Mouse clicks on a long row beyond the scanned frontier are ignored, and so are clicks on a provisional row without wrap.
 
 ### Tab Stops in Edited Rows Over 1 MiB
@@ -1848,7 +2469,8 @@ The text itself is exact; only the cursor column after such an edit is affected.
 Bytes that were typed or pasted stay in the add store until the next save, even after undo or delete.
 The history and the internal clipboard may still reference them.
 A save rebases the add store: typed text that is in the file becomes part of the file, and only orphans are copied into the fresh store (see "Undo Across Saves").
-Between saves memory grows only with typed and pasted text.
+Between saves memory grows with typed and pasted text, and with the copies of overwritten original bytes that an in-place save keeps.
+Those copies stay in the add store and in the read overlay until a streaming save, a reload or the close.
 
 ### `text` Above 8 MiB
 
@@ -1859,9 +2481,10 @@ The streaming save does not use `text` and has no size limit.
 
 ### Hard Links, Owner, Group, ACLs and Xattrs
 
-A save creates a new inode and replaces the target, so a second hard link keeps the old content.
+A streaming save creates a new inode and replaces the target, so a second hard link keeps the old content.
 The owner, the group, ACLs and extended attributes of the target are not copied to the new file.
 Only the permission bits are restored, with `fchmod`.
+These statements hold for the streaming save; the in-place save writes into the same inode and keeps all of them.
 
 ### The Retained Generation Keeps Disk Space
 
@@ -1887,6 +2510,31 @@ A normal exit, a failure and a cancel remove the temp file.
 When the file was changed in place (`MODIFIED` or `TRUNCATED`) and the user confirms the overwrite, the unchanged parts of the document are read from the file as it is now.
 Bytes that were rewritten in place therefore appear in the saved file.
 A truncation that removed needed bytes fails the save.
+
+### The In-Place Save Is Not Atomic
+
+The in-place write is non-atomic: a crash, a power loss or a full disk during the write can leave the file partially patched.
+The editor reports that the file may now be partially patched, keeps the edits and stays modified.
+If the first write call itself raises, the failure is plain and the message does not say so (see "Closing During an In-Place Save" and the Known Limits).
+A save again rewrites the write set, and Save As writes a safe copy.
+
+### In-Place Save Cannot Open Busy Files
+
+A file that the kernel refuses to open for writing fails the in-place save at stage `prepare` with the errno text: `ETXTBSY` for a running executable, and `EACCES`, `EPERM` or `EROFS` (reported as "read-only file") for a file that refuses `O_WRONLY`.
+Save As works there.
+The streaming save replaces the file instead of opening it, so it would have worked for `ETXTBSY`; a file without write permission fails there too.
+
+### Repeat Saves Rewrite Earlier Patches
+
+A repeat save writes every dirty range again, including the ranges that an earlier in-place save patched, because the file holds other bytes there than the original did.
+The cost is proportional to the bytes edited or patched so far, never to the file size; a tracker of clean ranges is not built.
+
+### Closing During an In-Place Save
+
+An in-place save is cancelled by a cancel or a close only up to its commit, which comes after the overlay is installed and the descriptor was checked, right before the first `pwrite`.
+After the commit a close posts `SaveFailed` with `partial` at once, and the writer completes the patch on its thread, because it holds the parts of its ranges; the source closes after it.
+A first `pwrite` that raises may have written bytes: its ranges stay patched, so that a retry or a save of restored text rewrites them.
+The streaming path has a short window between its last cancel check and the replace.
 
 ### `stat` on a Hung Mount
 
@@ -1917,6 +2565,7 @@ Any other `fchmod` error fails the save at stage `flush`.
   A save does not cancel a search, because the bytes and their offsets stay the same.
   `reload` and `load_text` cancel it with the reason `reloaded`, and `close` cancels it without a message.
   A result that arrives after an edit is dropped and never moves the cursor.
+  An edit in the hex view cancels a running search too, and the message is `Search cancelled: text changed`.
 - **The search is literal.**
   The needle is literal text.
   The byte pattern that the pattern tier compiles is an implementation detail built from escaped bytes.
@@ -1957,6 +2606,11 @@ Any other `fchmod` error fails the save at stage `flush`.
 Tests are located under `tests/nova_editor/` and `tests/tools/`.
 
 **Core layer:**
+- `core/test_inplace_layout.py`, `core/test_piece_table_layout_iter.py` — the layout rule of the in-place save against a per-byte model, and the run iterator of the piece table.
+- `core/test_source_overlay.py` — the read overlay of `PreadSource`, the size-only change check during a patch and the identity adopted at the end.
+- `core/test_redirect.py` — `Redirect` and `map_references`: bytes and break facts unchanged, references moved off the copied ranges.
+- `core/test_inplace_job.py` — `InPlaceJob` with failure injection through `SaveIo`: the order of the steps, cancel before and after the first write, partial failures, and `ETXTBSY`.
+- `core/test_inplace_sparse.py` — a patch of a sparse file; it skips when the file system has no sparse files.
 - `core/test_byte_source.py`, `core/test_line_index.py`, `core/test_line_index_budget.py`, `core/test_long_line_index.py` — sources and indexes, including property tests against reference implementations.
 - `core/test_foreground.py`, `core/test_row_at_offset.py`, `core/test_text_width.py` — the foreground gate, `row_at_offset` and the width helpers.
 - `core/test_piece_tree.py`, `core/test_add_store.py`, `core/test_piece_table.py`, `core/test_original_source.py`, `core/test_row_source.py`, `core/test_scan_now.py` — the piece table and its parts, fuzzed against plain `bytes` and a regular-expression split (`core/reference.py` holds the reference and the seeded `Rng`).
@@ -1969,11 +2623,14 @@ Tests are located under `tests/nova_editor/` and `tests/tools/`.
 - `core/test_casefold.py` — the fold, the variant classes and the static ASCII table against the full scan.
 - `core/test_search_matcher.py`, `core/test_search_job.py`, `core/test_search_properties.py`, `core/test_search_context.py` — the matcher, the job (cancel, gate, stale, retry, progress), hypothesis properties and the context bytes.
 - `core/search_reference.py`, `core/test_search_reference.py`, `core/fake_planner.py` — the brute-force reference model, its own tests, and the fake planner with a revision.
+- `core/test_search_bytes.py`, `core/test_hex_needle.py` — the byte needle in the matcher and the job, and `parse_hex_needle`.
 
 **Document layer (`document/`):**
+- `document/test_plan_in_place.py`, `document/test_inplace_document.py` — `plan_in_place`, the patched ranges and the rollback of a patch on `LazyDocument`, and the redirected history surviving a job.
 - `test_lazy_document.py`, `test_lazy_wrapped_document.py`, `test_lazy_window.py` — lazy documents, wrapping and windows.
 - `test_lazy_edit.py`, `test_lazy_long_edit.py`, `test_lazy_bounded_edit.py`, `test_lazy_from_text.py` — document edits against a `str` reference (`reference_text.py`), long-row edits with lowered thresholds, and `text=` sources.
 - `test_edit_history.py`, `test_history_modified.py` — byte-based undo and redo records, typing coalescing, and the modified state.
+- `test_byte_edit.py`, `test_shared_history.py`, `test_document_changes.py` — the view-neutral `ByteEdit` and the unknown-piece rule, the shared undo and redo loop with its reference API, and `LazyDocument.history` with the change listeners.
 - `test_edit_lock.py`, `test_lock_audit.py`, `test_lazy_document_locking.py` — the edit lock and the table accesses under the document lock.
 - `test_search_plan.py`, `test_search_document_properties.py` — `search_plan`, `revision` and search properties over the real document.
 - `test_save_rebase.py`, `test_save_rebase_fuzz.py`, `test_rebase_holders.py` — the rebase and its seeded fuzz, and the holders that are re-pointed at the swap.
@@ -1982,6 +2639,7 @@ Tests are located under `tests/nova_editor/` and `tests/tools/`.
 - `test_wrap_parity.py` — the drift test of the vendored wrap code (see "Vendoring Policy").
 
 **Widget:**
+- `test_widget_inplace.py` — the in-place save of `NovaTextArea`: the strategy choice, the edits refused while patching, undo and redo after a save, cancel and close before and after the first write, and the failures.
 - `test_widget.py`, `test_widget_capabilities.py` — widget behaviour on small documents, including `line_ending` and `indexing_progress`.
 - `test_stock_characterization.py`, `test_lazy_characterization.py` — golden traces (`golden/`) that the converged widget and the unedited lazy path must still match.
 - `test_convergence.py` — `text=`, `load_text` and small files on the lazy document, and the removal of the stock widget path.
@@ -1991,12 +2649,17 @@ Tests are located under `tests/nova_editor/` and `tests/tools/`.
 - `test_keyboard_selection.py` — Shift+PageUp, Shift+PageDown, Shift+Ctrl+Home and Shift+Ctrl+End, including the pending case.
 - `test_wrapped_cursor_end.py` — the stale-height refresh in `scroll_cursor_visible`.
 - `test_lazy_edit_widget.py`, `test_lazy_clipboard.py`, `test_lazy_edit_long_row_memory.py` — editing, refusal, undo, redo, clipboard and memory on long rows through the widget.
+- `test_shared_history_widget.py` — the text view working through the history that belongs to the document.
 - `test_widget_save.py`, `test_widget_save_rebase.py`, `test_widget_save_efbig.py`, `test_widget_external_change.py`, `test_save_long_row_cursor.py` — the widget API of saving, the rebase of the widget, a real write error, external changes and the cursor on a long row across a save.
 - `test_widget_search.py`, `test_widget_search_events.py`, `test_widget_search_long_row.py` — the widget search: selection, wrap, repeat, cancel, edits, reload, save, truncation, close, and long rows with lowered thresholds.
+- `test_widget_search_bytes.py`, `widget/test_hex_search_glue.py` — the byte needle through the widget, and the hex view glue (`select_range`, `place_match`, the search origin).
+- `test_hex_find.py`, `test_hex_goto.py` — the Hex option of the Find popup and the byte goto through the screen, in both views.
+- `widget/test_hex_search_budget.py` — the REQ-21 budget of hex goto and byte search on the sparse file.
 - `test_lazy_exports.py` — the lazy exports.
   `tests/test_package_independence.py` guards that `nova_editor` and `nova_widgets` do not depend on `nova_navigator`, and that `nova_editor` does not use the VFS.
 
 **App:**
+- `test_app_inplace.py` — the in-place save in `nova_edit`: the saved note, the partial-failure text and the progress hint `Esc cancels` before and after the first write.
 - `test_app.py`, `test_app_lazy.py`, `test_app_save.py`, `test_bindings.py` — the app, opening files, the save status and key bindings (including key collisions).
 - `test_app_status.py` — the status line text, its fields, its states and its coalescing.
 - `test_line_numbers.py` — the gutter at the start, F11 and the View item, the check marks, the session only rule, no config file and the wrap indicator.
@@ -2016,6 +2679,25 @@ It decodes the bytes to `str` with `surrogateescape`, compares character by char
 It implements direction, origin, wrap and the owned-range rules by brute force.
 The properties compare the job with it over random piece layouts, random needles (also substrings of the document), both case modes, both directions, wrap on and off, and chunk sizes from 1 to 17 bytes and large.
 Further properties check that the tiers return the same result on ASCII data and that the reversed pattern agrees with the forward scan.
+
+**Hex view:**
+- `widget/test_hex_layout.py`, `widget/test_hex_scroll_spike.py` — the pure layout and the Textual spike for billions of virtual rows.
+- `widget/test_hex_view.py`, `widget/test_hex_view_budget.py` — rendering, cursor, selection, keys and mouse, and the view budget (REQ-21) on an 8 GiB sparse file; `widget/hex_helpers.py` holds the helpers.
+- `test_document_view_hex.py`, `test_editor_screen_hex.py` — `DocumentView.show_hex` and the F4 action, menu item, focus, save and reload in hex mode, and the guards of hex mode (Line Numbers and Wrap Mode do nothing while the hex view is shown).
+- `test_hex_mapping.py`, `test_text_area_view_switch.py` — the byte-offset mapping between the views and the three `NovaTextArea` methods of the switch.
+- `document/test_hex_edit.py`, `document/test_lazy_byte_content.py` — `HexEdit` (shape, characters, coalescing, grouping in a real `EditHistory` with a fake clock) and `content_of_bytes` / `content_between`.
+- `widget/test_hex_input.py` — `plan_digit`, `format_hex_pairs`, `char_text` and `parse_hex_text` without Pilot.
+- `widget/test_hex_edit.py`, `widget/test_hex_history.py` — typing, delete, Insert, read-only, the edit lock, grouping, undo and redo (including the text and hex cross-view acceptance), and the cursor and scroll after a step.
+- `widget/test_hex_edit_budget.py` — hex edits on the 8 GiB sparse file.
+- `widget/test_hex_clipboard.py`, `test_hex_clipboard_inplace.py` — copy, cut and paste forms and errors, and the shared record across an in-place save (the paste yields the original bytes) and across a copy during a save.
+- `test_editor_screen_hex_edit.py` — the six editing actions through menu and key (also a rebound key) on the hex view.
+- `core/test_binary_detect.py` — the NUL-byte check of the first 64 KiB.
+- `core/test_control_names.py` — all 33 entries, the bracketed form and the immutability of the table.
+- `test_app_hex_flag.py` — the `--hex` flag of `ned`.
+- `test_open_binary.py` — binary detection at open in `DocumentView.open`, the screen start and the Open flow.
+- `test_hex_status.py`, `widget/test_hex_cursor_byte.py` — the hex status line and `HexView.byte_at_cursor`.
+- `test_hex_view_menu.py` — the View menu while the hex view is shown.
+- `tests/integration/test_editor_hex_integration.py`, `tests/integration/ssh/test_ssh_editor_hex.py` — the hex view in the navigator-hosted editor and on non-local files (the SSH test runs against a local stub SFTP server).
 
 **Helpers and benchmarks:**
 - `helpers_view.py`, `test_helpers_view.py` — synthetic file builder and oracle.
@@ -2047,6 +2729,11 @@ They are:
 - `widget/_tree_sitter.py` — the optional tree-sitter loader, from `textual/_tree_sitter.py`.
 - `document/_document.py`, `_document_navigator.py`, `_edit.py`, `_history.py`, `_syntax_aware_document.py` and `_wrapped_document.py`.
 - `document/_wrap.py` — `compute_wrap_offsets` from `textual/_wrap.py`, `cell_width_to_column_index` from `textual/_cells.py` and the `loop_last` helper from `textual/_loop.py`; `cell_len` comes from `rich.cells`.
+- ACT2 changed vendored code: `widget/_text_area.py` (history is a property of the document; undo/redo loops use `EditHistory.undo/redo`; `_Jump.allow_end`; change listener), `document/_edit.py` (`Edit(ByteEdit)`, `shape()`, unknown rule) and `document/_history.py` (`record` via `shape()`, origin rule, step API, reference API).
+
+- S0003 ACT4 added three additive methods to `widget/_text_area.py` for the view switch: `place_cursor_at_byte`, `refresh_if_changed` and `report_source_changed`.
+- S0003 ACT3 added the in-place save members to `widget/_text_area.py`; `src/nova_editor/UPSTREAM.md` lists them under "(S0003 ACT3, in-place save)".
+- S0003 ACT5 added three additive items to `widget/_text_area.py` for the hex clipboard: `store_clipboard_bytes`, `internal_clipboard` and the private `_set_clipboard_record`, which holds the last lines of `_store_clipboard` unchanged; the text view behaves as before (`test_lazy_clipboard.py` and the save tests guard it).
 
 Everything else in the package is native to `nova_editor`.
 

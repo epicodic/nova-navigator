@@ -292,7 +292,11 @@ This is the map passed to `KeymapRegistry.reload()`.
 It is opened from the system menu under **Key Bindings…** or programmatically via `action_keybindings`.
 
 After the dialog is dismissed, `MainScreen._reload_keymap` is called to apply any changes.
-The navigator lists `MainScreen.ACTIONS` followed by the 18 editor actions of `editor_key_actions()` (`nova_navigator/embedded_editor_keys.py`), labelled `Editor: <text>`.
+The navigator lists `MainScreen.ACTIONS` followed by the 19 editor actions of `editor_key_actions()` (`nova_navigator/embedded_editor_keys.py`), labelled `Editor: <text>`.
+One of them is Hex Mode (`editor.hex_mode`, F4).
+The default F4 is also the key of the navigator's `browser.open_editor`; the two do not clash, because the editor screen and the file browser are different scopes, and the dialog lists both.
+F10/F11 do nothing while the hex view is shown (a screen guard, the keys stay in the keymap).
+Inside the editor screen F4 is Hex Mode, the browser's F4 works only in the file list.
 The ids stay `editor.*`, so the overrides land under the same names in `keybindings.toml` as in the standalone editor.
 Every `editor.*` id must be in the list, because a save replaces the overrides in the file with the map of the listed actions.
 
@@ -310,12 +314,19 @@ Actions with neither default nor override are not written.
 ### Architecture
 
 Each `EditorScreen` instance builds:
-1. **ACTIONS** — 18 editor actions (File, Edit, Search, View), plus Keyboard Shortcuts… when the screen has a key config.
+1. **ACTIONS** — 19 editor actions (File, Edit, Search, View; View has Hex Mode on F4), plus Keyboard Shortcuts… when the screen has a key config.
 2. **KeymapRegistry** — Per-screen registry for those actions (not shared).
 3. **MenuBar** — Per-screen menu bar with current bindings.
 4. **HintBar** — Per-screen hint bar.
 
 This design allows a Textual app to embed multiple editor screens with different keybinding configurations or contexts.
+
+### Editing Actions and the Hex View
+
+The six editing actions (Undo, Redo, Cut, Copy, Paste, Select All) act on the shown view: the menu runs them on `DocumentView.shown`, and the keymap runs them on the focused widget, which is the shown one.
+Both `NovaTextArea` and `HexView` implement `action_undo`, `action_redo`, `action_cut`, `action_copy`, `action_paste` and `action_select_all`, so a key that the user rebinds applies to both views.
+`HexView` also lists the default keys of these actions as bindings of its own (Ctrl+Z, Ctrl+Y, Ctrl+X, Ctrl+C, Ctrl+V, Ctrl+A), so they work where no screen keymap is present.
+Insert, Delete and Backspace are bindings of `HexView` itself; they are not actions of the registry and cannot be rebound.
 
 ### Keybinding Flow
 

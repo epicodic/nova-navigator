@@ -1,26 +1,37 @@
 from __future__ import annotations
 
+import logging
 import time
 from collections import deque
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from itertools import islice
+from typing import TYPE_CHECKING, Any, Literal
 
-from nova_editor.document._edit import Edit
+from nova_editor.core.pieces import Content, generation_of, segment_of
+from nova_editor.document._byte_edit import ByteEdit, HistoryException
+from nova_editor.document._document import EditResult
+
+if TYPE_CHECKING:
+    from nova_editor.document._lazy_document import LazyDocument
+
+_LOGGER = logging.getLogger(__name__)
+
+__all__ = ["Batch", "EditHistory", "HistoryException", "HistoryRolledBack", "HistoryStep", "Mover"]
+
+Mover = Callable[[ByteEdit, Literal["undo", "redo"]], EditResult]
+"""Applies one entry in the given direction and returns the result; a view passes its own to keep cursors and selections in step."""
 
 
-class HistoryException(Exception):
-    """Indicates misuse of the EditHistory API.
-
-    For example, trying to undo() an Edit that has yet to be done.
-    """
-
-
-class Batch(list[Edit]):
+class Batch(list[Any]):
     """A batch of edits that are undone and redone together, with the revision states around it.
 
     A state is a `(revision, branch)` pair.
+    The elements are `ByteEdit` entries or view entries that extend them (the text view's `Edit`), so the element type is left open:
+    a view and its tests use the richer entry API without a cast.
     """
 
-    def __init__(self, edits: list[Edit], revision_before: int, branch_before: int, branch: int) -> None:
+    def __init__(self, edits: list[ByteEdit], revision_before: int, branch_before: int, branch: int) -> None:
         super().__init__(edits)
         self.revision_before = revision_before
         """Revision of the document before the batch."""
@@ -32,9 +43,45 @@ class Batch(list[Edit]):
         """Branch id of the batch (and of the state after it)."""
 
 
+class HistoryRolledBack(Exception):
+    """A refused undo or redo could not be rolled back: the document no longer matches the history."""
+
+
+@dataclass
+class HistoryStep:
+    """What one undo or redo did, for the view that refreshes itself afterwards."""
+
+    direction: Literal["undo", "redo"]
+    """Which way the batch was moved."""
+
+    batch: Batch
+    """The batch that was moved."""
+
+    applied: list[ByteEdit]
+    """The entries in the order they were applied (an undo applies the batch last to first)."""
+
+    results: list[EditResult]
+    """One result per applied entry, in the same order."""
+
+    byte: int
+    """Cursor hint: after an undo the start of the first entry of the batch, after a redo the end of the last entry's insertion."""
+
+    low: int
+    """Lowest byte offset any applied entry touched."""
+
+    high_old: int
+    """Highest end offset of the replaced range, before the step."""
+
+    high_new: int
+    """Highest end offset of the replacement, after the step."""
+
+
 @dataclass
 class EditHistory:
-    """Manages batching/checkpointing of Edits into groups that can be undone/redone in the TextArea."""
+    """Manages batching/checkpointing of Edits into groups that can be undone/redone, and owns the byte-level undo/redo loop.
+
+    Use it on the UI thread only; the save thread works on the snapshot returned by `references()`.
+    """
 
     max_checkpoints: int | None = None
     """Maximum number of batches kept in the undo stack; `None` keeps them all."""
@@ -60,6 +107,12 @@ class EditHistory:
     Every other edit is considered a pure insertion.
     """
 
+    _redo_evicted: Batch | None = field(init=False, default=None)
+    """The oldest undo batch that the last `_pop_redo` pushed out of a full undo stack, for `_restore_redo`."""
+
+    _redo_flag_before: bool = field(init=False, default=False)
+    """The `_force_end_batch` flag as it was before the last `_pop_redo`, for `_restore_redo`."""
+
     def __post_init__(self) -> None:
         self._revision = 0
         self._branch = 0
@@ -70,7 +123,7 @@ class EditHistory:
         self._redo_stack: deque[Batch] = deque()
         """Stores batches that have been undone, allowing them to be redone."""
 
-    def record(self, edit: Edit) -> None:
+    def record(self, edit: ByteEdit) -> None:
         """Record an Edit so that it may be undone and redone.
 
         Determines whether to batch the Edit with previous Edits, or create a new batch/checkpoint.
@@ -100,22 +153,10 @@ class EditHistory:
         Args:
             edit: The edit to record.
         """
-        edit_result = edit._edit_result
-        if edit_result is None:
-            raise HistoryException("Cannot add an edit to history before it has been performed using `Edit.do`.")
-
-        removed = edit_result.removed
-        if removed is not None and edit.inserted is not None:
-            # Lazy documents: the removed text may be too large to be reported, so the lengths and breaks of the pieces decide.
-            if edit.inserted.length == 0 and removed.length == 0:
-                return
-            is_replacement = removed.length > 0
-            contains_newline = edit.inserted.breaks > 0 or removed.breaks > 0
-        else:
-            if edit.text == "" and edit_result.replaced_text == "":
-                return
-            is_replacement = bool(edit_result.replaced_text)
-            contains_newline = "\n" in edit.text or "\n" in edit_result.replaced_text
+        shape = edit.shape()
+        if shape is None:
+            return
+        is_replacement, contains_newline = shape
         undo_stack = self._undo_stack
         current_time = self._get_time()
         edit_characters = edit.characters
@@ -130,6 +171,7 @@ class EditHistory:
         if (
             not undo_stack
             or self._force_end_batch
+            or undo_stack[-1][-1].origin != edit.origin
             or edit_characters > 1
             or contains_newline
             or is_replacement != self._previously_replaced
@@ -190,6 +232,9 @@ class EditHistory:
         redo_stack = self._redo_stack
         if redo_stack:
             batch = redo_stack.pop()
+            self._redo_flag_before = self._force_end_batch
+            full = bool(undo_stack) and len(undo_stack) == undo_stack.maxlen
+            self._redo_evicted = undo_stack[0] if full else None
             undo_stack.append(batch)
             self._revision = batch.revision_after
             self._branch = batch.branch
@@ -210,9 +255,156 @@ class EditHistory:
         """Put back a batch that `_pop_redo` returned but that was refused (it is again the top of the redo stack)."""
         if self._undo_stack and self._undo_stack[-1] is batch:
             self._undo_stack.pop()
+        if self._redo_evicted is not None:
+            self._undo_stack.appendleft(self._redo_evicted)
+            self._redo_evicted = None
+        self._force_end_batch = self._redo_flag_before
         self._redo_stack.append(batch)
         self._revision = batch.revision_before
         self._branch = batch.branch_before
+
+    def undo(self, document: LazyDocument, mover: Mover | None = None) -> HistoryStep | None:
+        """Undo the newest batch, all or nothing.
+
+        Args:
+            document: The document the entries were recorded on.
+            mover: Applies one entry; the default calls `ByteEdit.revert` and `ByteEdit.apply`.
+
+        Returns:
+            What was done, or `None` when there is nothing to undo.
+
+        Raises:
+            RowUnavailable: An entry was refused; the entries applied so far were reversed and the history is unchanged.
+            Exception: Any other failure of an entry is handled the same way (all or nothing) and re-raised unchanged.
+            HistoryRolledBack: The reversal itself was refused; the document no longer matches the history.
+        """
+        batch = self._pop_undo()
+        if batch is None:
+            return None
+        move = mover or _document_mover(document)
+        applied: list[ByteEdit] = []
+        results: list[EditResult] = []
+        with document.change_kind("undo"):
+            try:
+                for entry in reversed(batch):
+                    results.append(move(entry, "undo"))
+                    applied.append(entry)
+            except Exception as error:
+                failure = self._reverse(applied, "redo", move)
+                self._restore_undo(batch)
+                if failure is not None:
+                    raise HistoryRolledBack(str(failure)) from error
+                raise
+        return self._step("undo", batch, applied, results)
+
+    def redo(self, document: LazyDocument, mover: Mover | None = None) -> HistoryStep | None:
+        """Redo the newest undone batch, all or nothing (see `undo` for the arguments and errors)."""
+        batch = self._pop_redo()
+        if batch is None:
+            return None
+        move = mover or _document_mover(document)
+        applied: list[ByteEdit] = []
+        results: list[EditResult] = []
+        with document.change_kind("redo"):
+            try:
+                for entry in batch:
+                    results.append(move(entry, "redo"))
+                    applied.append(entry)
+            except Exception as error:
+                failure = self._reverse(applied, "undo", move)
+                self._restore_redo(batch)
+                if failure is not None:
+                    raise HistoryRolledBack(str(failure)) from error
+                raise
+        self._redo_evicted = None
+        self._redo_flag_before = False
+        return self._step("redo", batch, applied, results)
+
+    @staticmethod
+    def _reverse(applied: list[ByteEdit], direction: Literal["undo", "redo"], move: Mover) -> Exception | None:
+        """Move the entries applied before a failure back, newest first.
+
+        Returns:
+            The failure that stopped the reversal, or `None` when the document is as before.
+        """
+        try:
+            for entry in reversed(applied):
+                move(entry, direction)
+        except Exception as failure:
+            _LOGGER.exception("history: reversing the applied entries failed")
+            return failure
+        return None
+
+    @staticmethod
+    def _step(direction: Literal["undo", "redo"], batch: Batch, applied: list[ByteEdit], results: list[EditResult]) -> HistoryStep:
+        """Build the report of a finished step."""
+        low = high_old = high_new = 0
+        spans: list[tuple[int, int, int]] = []
+        for entry in applied:
+            if entry.start_byte is None or entry.removed is None or entry.inserted is None:
+                continue
+            old, new = (entry.inserted, entry.removed) if direction == "undo" else (entry.removed, entry.inserted)
+            spans.append((entry.start_byte, entry.start_byte + old.length, entry.start_byte + new.length))
+        if spans:
+            low = min(span[0] for span in spans)
+            high_old = max(span[1] for span in spans)
+            high_new = max(span[2] for span in spans)
+        if direction == "undo":
+            byte = batch[0].start_byte or 0
+        else:
+            last = batch[-1]
+            byte = (last.start_byte or 0) + (last.inserted.length if last.inserted is not None else 0)
+        return HistoryStep(direction, batch, applied, results, byte, low, high_old, high_new)
+
+    def peek_undo(self) -> Batch | None:
+        """The batch an undo would move, without moving it (O(1), unlike `undo_stack`)."""
+        return self._undo_stack[-1] if self._undo_stack else None
+
+    def peek_redo(self) -> Batch | None:
+        """The batch a redo would move, without moving it (O(1), unlike `redo_stack`)."""
+        return self._redo_stack[-1] if self._redo_stack else None
+
+    def set_max_checkpoints(self, count: int | None) -> None:
+        """Limit the undo stack to the newest `count` batches (`None` keeps them all)."""
+        self.max_checkpoints = count
+        self._undo_stack = deque(self._undo_stack, maxlen=count)
+
+    def _entries(self) -> Iterator[ByteEdit]:
+        """Every entry in the order the reference API visits them: the undo stack, then the redo stack, oldest first."""
+        for batch in (*self._undo_stack, *self._redo_stack):
+            yield from batch
+
+    def references(self) -> list[Content]:
+        """Every `Content` the history holds, in the order `rewrite_references` consumes them."""
+        return [content for entry in self._entries() for content in entry.contents()]
+
+    def rewrite_references(self, translated: Iterator[Content]) -> None:
+        """Replace every referenced `Content` by the next one of `translated`, in `references()` order.
+
+        Exactly `len(references())` items are taken from the iterator, so a caller may hand over one shared iterator.
+
+        Raises:
+            ValueError: `translated` ran dry; nothing was changed.
+        """
+        needed = len(self.references())
+        chunk = list(islice(translated, needed))
+        if len(chunk) < needed:
+            raise ValueError("too few contents")
+        items = iter(chunk)
+        for entry in self._entries():
+            entry.rewrite(items)
+
+    def map_references(self, fn: Callable[[Content], Content]) -> None:
+        """Replace every referenced `Content` by `fn(content)`; when `fn` raises, nothing is changed."""
+        mapped = [fn(content) for content in self.references()]
+        self.rewrite_references(iter(mapped))
+
+    def original_ranges(self) -> Iterator[tuple[int, int]]:
+        """The byte ranges `(a, b)` of the original file (generation 0, segment 0) that the history still references."""
+        for content in self.references():
+            for piece in content.pieces:
+                if generation_of(piece.src) == 0 and segment_of(piece.src) == 0:
+                    yield piece.a, piece.b
 
     def clear(self) -> None:
         """Completely clear the history; the current text is then the saved state (`modified` is false)."""
@@ -267,3 +459,12 @@ class EditHistory:
             The result of `time.monotonic()` as a float.
         """
         return time.monotonic()
+
+
+def _document_mover(document: LazyDocument) -> Mover:
+    """The mover for plain entries: `revert` on undo, `apply` on redo, both on `document`."""
+
+    def move(entry: ByteEdit, direction: Literal["undo", "redo"]) -> EditResult:
+        return entry.revert(document) if direction == "undo" else entry.apply(document)
+
+    return move

@@ -3,6 +3,8 @@
 Leaves hold pieces in parallel `array` columns (37 bytes per piece plus node overhead); `Piece` objects exist only while they are accessed.
 Every node carries the piece count and the aggregate of its run, so offsets and breaks are found in O(log n).
 `splice` costs O(log n) plus the number of pieces it removes or inserts.
+An unknown piece (original bytes beyond the line scan) carries no break facts and is flagged in the third flag bit;
+`breaks` is then a lower bound, `lead_breaks` counts the breaks before the first unknown piece, and rows are only answered up to there.
 """
 
 from __future__ import annotations
@@ -17,9 +19,11 @@ from nova_editor.core.pieces import (
     Aggregate,
     Content,
     Piece,
+    RowNotIndexed,
     SourceOf,
     combine,
     merge_pieces,
+    segment_of,
     tail_chars_of,
 )
 
@@ -28,6 +32,7 @@ _MIN_FANOUT = 4
 _TWO = 2
 _FIRST_LF = 1
 _LAST_CR = 2
+_UNKNOWN = 4
 
 type _Row = tuple[int, int, int, int, int, int]
 
@@ -45,7 +50,7 @@ class Location(NamedTuple):
 
 
 def _to_row(piece: Piece) -> _Row:
-    flags = (_FIRST_LF if piece.first_is_lf else 0) | (_LAST_CR if piece.last_is_cr else 0)
+    flags = (_FIRST_LF if piece.first_is_lf else 0) | (_LAST_CR if piece.last_is_cr else 0) | (_UNKNOWN if piece.unknown else 0)
     return (piece.src, piece.a, piece.b, piece.breaks, piece.row0, flags)
 
 
@@ -73,7 +78,7 @@ class _Leaf:
 
     def piece(self, i: int) -> Piece:
         flags = self.flg[i]
-        return Piece(self.src[i], self.a[i], self.b[i], self.brk[i], self.row0[i], bool(flags & _FIRST_LF), bool(flags & _LAST_CR))
+        return Piece(self.src[i], self.a[i], self.b[i], self.brk[i], self.row0[i], bool(flags & _FIRST_LF), bool(flags & _LAST_CR), bool(flags & _UNKNOWN))
 
     def row(self, i: int) -> _Row:
         return (self.src[i], self.a[i], self.b[i], self.brk[i], self.row0[i], self.flg[i])
@@ -107,7 +112,12 @@ class _Leaf:
         agg = EMPTY_AGGREGATE
         for i in range(len(self.src)):
             flags = self.flg[i]
-            agg = combine(agg, Aggregate(self.b[i] - self.a[i], self.brk[i], bool(flags & _FIRST_LF), bool(flags & _LAST_CR)))
+            length = self.b[i] - self.a[i]
+            if flags & _UNKNOWN:
+                piece_agg = Aggregate(length, 0, bool(flags & _FIRST_LF), bool(flags & _LAST_CR), 1, 0, True, True)
+            else:
+                piece_agg = Aggregate(length, self.brk[i], bool(flags & _FIRST_LF), bool(flags & _LAST_CR), 0, self.brk[i])
+            agg = combine(agg, piece_agg)
         self.agg = agg
         self.count = len(self.src)
 
@@ -236,8 +246,18 @@ class PieceTree:
 
     @property
     def breaks(self) -> int:
-        """Number of terminators in the document (CRLF counts once, also across piece junctions)."""
+        """Number of terminators in the known pieces (CRLF counts once, also across known junctions); a lower bound when `unknown > 0`."""
         return self._root.agg.breaks
+
+    @property
+    def unknown(self) -> int:
+        """Number of unknown pieces."""
+        return self._root.agg.unknown
+
+    @property
+    def lead_breaks(self) -> int:
+        """Number of terminators before the first unknown piece (equals `breaks` when there is none)."""
+        return self._root.agg.lead_breaks
 
     @property
     def piece_count(self) -> int:
@@ -325,9 +345,9 @@ class PieceTree:
         Returns `None` when the source cannot place the break (its `row_start` is `None`).
 
         Raises:
-            IndexError: when `k` is not in `1..breaks`.
+            IndexError: when `k` is not in `1..lead_breaks`.
         """
-        if not 1 <= k <= self.breaks:
+        if not 1 <= k <= self.lead_breaks:
             raise IndexError(k)
         node = self._root
         acc = EMPTY_AGGREGATE
@@ -351,7 +371,7 @@ class PieceTree:
             acc = joined
         if piece is None:
             raise AssertionError("aggregate does not match the leaf")
-        lead = acc.last_is_cr and piece.first_is_lf
+        lead = acc.last_is_cr and piece.first_is_lf and not acc.last_unknown and not piece.unknown
         rank = k - acc.breaks + lead
         piece_end = acc.length + piece.length
         if rank == piece.breaks and piece.last_is_cr:
@@ -368,10 +388,15 @@ class PieceTree:
 
         For `offset == length` this is the row after the last break.
         An offset between a CR and an LF gives the row that the CRLF ends.
+
+        Raises:
+            RowNotIndexed: when an unknown piece lies at or before the offset (the row is not known yet).
         """
         if not 0 <= offset <= self.length:
             raise ValueError(f"offset {offset} outside 0..{self.length}")
         if offset == self.length:
+            if self.unknown:
+                raise RowNotIndexed(f"offset {offset} is behind an unknown piece")
             return self.breaks
         node = self._root
         acc = EMPTY_AGGREGATE
@@ -386,6 +411,8 @@ class PieceTree:
         for i in range(node.size()):
             piece = node.piece(i)
             if offset < start + piece.length:
+                if piece.unknown or acc.unknown:
+                    raise RowNotIndexed(f"offset {offset} is behind an unknown piece")
                 inner = offset - start
                 lead = acc.last_is_cr and piece.first_is_lf
                 if inner == 0:
@@ -395,6 +422,45 @@ class PieceTree:
             acc = combine(acc, piece.aggregate)
             start += piece.length
         raise AssertionError("aggregate does not match the leaf")
+
+    def first_unknown(self) -> tuple[int, Piece, int] | None:
+        """Return `(index, piece, start_offset)` of the first unknown piece, or `None` when there is none."""
+        if self._root.agg.unknown == 0:
+            return None
+        node = self._root
+        index = 0
+        start = 0
+        while isinstance(node, _Inner):
+            for child in node.children:
+                if child.agg.unknown:
+                    node = child
+                    break
+                index += child.count
+                start += child.agg.length
+            else:
+                raise AssertionError("aggregate does not match the children")
+        for i in range(node.size()):
+            piece = node.piece(i)
+            if piece.unknown:
+                return index + i, piece, start
+            start += piece.length
+        raise AssertionError("aggregate does not match the leaf")
+
+    def replace_piece(self, index: int, piece: Piece) -> None:
+        """Replace the piece `index` by `piece` of the same length (typically an unknown piece that became known).
+
+        Raises:
+            IndexError: when `index` is not a piece.
+            ValueError: when the length differs.
+        """
+        if self.piece_at(index).length != piece.length:
+            raise ValueError("replacement must have the same length")
+        self._replace_at(self._root, index, _to_row(piece))
+
+    def merge_around(self, index: int) -> None:
+        """Merge the piece `index` with its neighbours when they are contiguous in one source and equally known (see `merge_pieces`)."""
+        self._try_merge(index + 1)
+        self._try_merge(index)
 
     # ----- boundaries ----------------------------------------------------------------------------------------------------------------
 
@@ -426,6 +492,12 @@ class PieceTree:
         x = piece.a + location.inner
         source = self._source_of(piece.src)
         around = source.read(x - 1, x + 1)
+        if piece.unknown:
+            left = Piece(piece.src, piece.a, x, 0, 0, piece.first_is_lf, around[:1] == b"\r", True)
+            right = Piece(piece.src, x, piece.b, 0, 0, around[1:2] == b"\n", piece.last_is_cr, True)
+            self._replace_at(self._root, location.index, _to_row(left))
+            self._insert_piece(location.index + 1, right)
+            return location.index + 1
         left_breaks = source.breaks_between(piece.a, x)
         left = Piece(piece.src, piece.a, x, left_breaks, piece.row0, piece.first_is_lf, around[:1] == b"\r")
         right = Piece(piece.src, x, piece.b, piece.breaks - left_breaks, piece.row0 + left_breaks, around[1:2] == b"\n", piece.last_is_cr)
@@ -656,7 +728,10 @@ class PieceTree:
             for i in range(node.size()):
                 piece = node.piece(i)
                 self._fail(piece.a < piece.b, "empty piece")
-                self._fail(piece.breaks <= piece.length, "more breaks than bytes")
+                if piece.unknown:
+                    self._fail(piece.breaks == 0 and piece.row0 == 0, f"unknown piece with break facts: {piece}")
+                else:
+                    self._fail(piece.breaks <= piece.length, "more breaks than bytes")
                 agg = combine(agg, piece.aggregate)
                 count += 1
                 if deep:
@@ -677,7 +752,10 @@ class PieceTree:
         source = self._source_of(piece.src)
         data = source.read(piece.a, piece.b)
         self._fail(len(data) == piece.length, f"piece beyond its source: {piece}")
-        self._fail(piece.breaks == len(_BREAK.findall(data)), f"wrong break count: {piece}")
         self._fail(piece.first_is_lf == (data[:1] == b"\n"), f"wrong first_is_lf: {piece}")
         self._fail(piece.last_is_cr == (data[-1:] == b"\r"), f"wrong last_is_cr: {piece}")
+        if piece.unknown:
+            self._fail(segment_of(piece.src) == 0, f"unknown piece outside the original: {piece}")
+            return
+        self._fail(piece.breaks == len(_BREAK.findall(data)), f"wrong break count: {piece}")
         self._fail(piece.row0 == source.row_of(piece.a), f"wrong row0: {piece}")

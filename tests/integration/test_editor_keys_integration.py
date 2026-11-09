@@ -104,7 +104,7 @@ async def test_the_dialog_lists_the_editor_actions_after_the_navigators(app_ctx:
     labels = dialog_labels(dialog)
 
     navigator_count = len(MainScreen.ACTIONS)
-    assert len(labels) == navigator_count + 18
+    assert len(labels) == navigator_count + 19
     assert labels[:navigator_count] == [action.text for action in MainScreen.ACTIONS]
     assert labels[navigator_count] == "Editor: Open…"
     assert "Editor: Save As…" in labels
@@ -168,8 +168,8 @@ async def test_the_embedded_editor_offers_no_keyboard_shortcuts_item(app_ctx: Ap
 
     screen = await open_with_f4(app_ctx)
 
-    assert len(screen.ACTIONS) == 18
-    assert [a.id for a in screen.menu_bar.actions[3].actions] == ["editor.line_numbers", "editor.wrap_mode"]
+    assert len(screen.ACTIONS) == 19
+    assert [a.id for a in screen.menu_bar.actions[3].actions] == ["editor.line_numbers", "editor.wrap_mode", "editor.hex_mode"]
     assert not (config_dir_of(app_ctx) / "keybindings.toml").exists()
 
 

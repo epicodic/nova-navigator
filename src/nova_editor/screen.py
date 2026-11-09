@@ -30,6 +30,7 @@ from nova_widgets.response import Response
 
 from .core.byte_source import ChangeKind
 from .core.save import check_path
+from .core.search import HexNeedleError, SearchStale, parse_hex_needle
 from .decisions import failure_box, file_question, open_question, quit_question, reload_question
 from .document._cursor_anchor import CursorState
 from .document._lazy_config import LazyConfig
@@ -37,10 +38,10 @@ from .document_view import DocumentView
 from .editor_actions import build_editor_actions, build_keyboard_shortcuts_action
 from .editor_menus import build_menu_bar
 from .find_popup import FindPopup
-from .goto_popup import GotoPopup
-from .status_line import StatusLine, StatusState, byte_percent, format_sizes, row_is_known, save_progress_text
+from .goto_popup import GotoPopup, GotoTarget, hex_goto
+from .status_line import HexStatusState, StatusLine, StatusState, byte_percent, format_sizes, row_is_known, save_progress_text
 from .timed_text_area import TimedNovaTextArea
-from .widget import ExternalCheck, NovaTextArea
+from .widget import ExternalCheck, HexView, NovaTextArea
 
 QUIT_POLL_SECONDS = 0.02
 NEEDLE_SHOWN = 40
@@ -90,7 +91,7 @@ class EditorScreen(Screen[None]):
         padding: 0 1;
     }
 
-    #editor {
+    #editor, #hex_view {
         width: 1fr;
         height: 1fr;
     }
@@ -122,6 +123,7 @@ class EditorScreen(Screen[None]):
         standalone: bool = False,
         poll_seconds: float = 2.0,
         quit_wait_seconds: float = 2.0,
+        start_hex: bool = False,
     ) -> None:
         """Create the editor screen.
 
@@ -136,6 +138,7 @@ class EditorScreen(Screen[None]):
             standalone: `True` for standalone app (Quit in the File menu), `False` for embedded (Close).
             poll_seconds: Interval of the check for a change of the file on disk.
             quit_wait_seconds: Longest wait for a cancelled save before the quit question.
+            start_hex: Show the first document in the hex view whatever its content; later documents (Open) use the binary detection.
         """
         super().__init__()
         self._keybindings = keybindings
@@ -148,7 +151,7 @@ class EditorScreen(Screen[None]):
         self._open_flows = 0
 
         self.ACTIONS: list[Action] = build_editor_actions()
-        """The 18 `editor.*` actions of this screen, plus Keyboard Shortcuts… with a key config and `keyboard_shortcuts_item`; the menus, the registry and the handlers use these very objects."""
+        """The 19 `editor.*` actions of this screen, plus Keyboard Shortcuts… with a key config and `keyboard_shortcuts_item`; the menus, the registry and the handlers use these very objects."""
         if keybindings is not None and keyboard_shortcuts_item:
             self.ACTIONS.append(build_keyboard_shortcuts_action())
         self._by_id: dict[str, Action] = {a.id: a for a in self.ACTIONS if a.id is not None}
@@ -167,7 +170,7 @@ class EditorScreen(Screen[None]):
 
         self._editor_class = editor_class
         self._config = config
-        self.document, self._load_error = self._open_view(path, soft_wrap=soft_wrap, show_line_numbers=True)
+        self.document, self._load_error = self._open_view(path, soft_wrap=soft_wrap, show_line_numbers=True, force_hex=start_hex)
 
     # Keymap
 
@@ -215,7 +218,7 @@ class EditorScreen(Screen[None]):
             return False
         if await self.keymap_registry.handle_key(key, self.app):
             return True
-        if self._swallowed and self.focused is self.document.editor:
+        if self._swallowed and self.focused is self.document.shown:
             return KeySequence((KeyChord.parse(key),)) in self._swallowed
         return False
 
@@ -235,14 +238,14 @@ class EditorScreen(Screen[None]):
                 popup.hide()
 
     async def on_menu_triggered(self, event: Menu.Triggered) -> None:
-        """A menu item runs the same action as its key: the editor widget first, then the screen."""
+        """A menu item runs the same action as its key: the shown widget (text or hex) first, then the screen."""
         name = event.action.action
         if name is None:
             return
-        editor = self.document.editor
+        shown = self.document.shown
         if self.focused is None:
-            editor.focus()
-        if await self.app.run_action(name, editor):
+            shown.focus()
+        if await self.app.run_action(name, shown):
             return
         await self.app.run_action(name, self)
 
@@ -252,6 +255,7 @@ class EditorScreen(Screen[None]):
         """Compose the menu bar, the editor, the popups, the status line and the hint bar."""
         yield self.menu_bar
         yield self.document.editor
+        yield self.document.hex_view
         yield StatusLine(self._status_state)
         yield self.hint_bar
         yield self.goto_popup
@@ -265,6 +269,8 @@ class EditorScreen(Screen[None]):
         self.set_interval(self._poll_seconds, self.poll)
         self._sync_view_actions()
         self._watch_editor()
+        if self.document.hex_mode:
+            self.document.focus_shown()
 
     def on_resize(self, event: events.Resize) -> None:
         """Adjust the path label when the terminal is resized."""
@@ -313,8 +319,19 @@ class EditorScreen(Screen[None]):
         for status in self.query(StatusLine):
             status.set_note(text, timed=timed)
 
-    def _status_state(self) -> StatusState | None:
+    def _status_state(self) -> StatusState | HexStatusState | None:
         editor = self.document.editor
+        if self.document.hex_mode:
+            hex_view = self.document.hex_view
+            file_path = self.document.file_path
+            return HexStatusState(
+                file_name=None if file_path is None else file_path.name,
+                offset=hex_view.cursor.offset,
+                length=editor.document.length,
+                byte=hex_view.byte_at_cursor(),
+                insert=hex_view.insert_mode,
+                modified=editor.modified,
+            )
         row, column = editor.cursor_location
         cursor_state, _ = editor.peek_cursor_state()
         snapshot = editor.document.snapshot()
@@ -340,7 +357,7 @@ class EditorScreen(Screen[None]):
 
     # Document management
 
-    def _open_view(self, path: Path | None, *, soft_wrap: bool, show_line_numbers: bool) -> tuple[DocumentView, str | None]:
+    def _open_view(self, path: Path | None, *, soft_wrap: bool, show_line_numbers: bool, force_hex: bool = False) -> tuple[DocumentView, str | None]:
         """Open `path` as a document: the one call of `DocumentView.open`, so that `NOVA_EDIT_TIMING_FILE` reaches every widget the screen builds."""
         return DocumentView.open(
             path,
@@ -349,6 +366,7 @@ class EditorScreen(Screen[None]):
             show_line_numbers=show_line_numbers,
             config=self._config,
             timing_file=os.environ.get("NOVA_EDIT_TIMING_FILE"),
+            force_hex=force_hex,
         )
 
     def _watch_editor(self) -> None:
@@ -361,20 +379,57 @@ class EditorScreen(Screen[None]):
     # View actions: the widget owns the state, the checked items mirror it
 
     def _sync_view_actions(self) -> None:
+        """Mirror the widget in the View items: Line Numbers and Wrap Mode are disabled while the hex view is shown (REQ-20)."""
         editor = self.document.editor
+        enabled = not self.document.hex_mode
+        self._by_id["editor.wrap_mode"].set_enabled(enabled)
+        self._by_id["editor.line_numbers"].set_enabled(enabled)
+        for menu in self.query(Menu):
+            menu.refresh()
         self._by_id["editor.wrap_mode"].set_checked(editor.soft_wrap)
         self._by_id["editor.line_numbers"].set_checked(editor.show_line_numbers)
+        self._by_id["editor.hex_mode"].set_checked(self.document.hex_mode)
 
     def action_toggle_wrap(self) -> None:
-        """Wrap Mode: flip `soft_wrap` of the widget."""
+        """Wrap Mode: flip `soft_wrap` of the widget; nothing happens in the hex view."""
+        if self.document.hex_mode:
+            return
         self.document.editor.toggle_wrap()
         self._sync_view_actions()
 
     def action_toggle_line_numbers(self) -> None:
-        """Line Numbers: flip `show_line_numbers` of the widget."""
+        """Line Numbers: flip `show_line_numbers` of the widget; nothing happens in the hex view."""
+        if self.document.hex_mode:
+            return
         editor = self.document.editor
         editor.show_line_numbers = not editor.show_line_numbers
         self._sync_view_actions()
+
+    def action_hex_mode(self) -> None:
+        """Hex Mode: show the document as bytes or as text; the cursor follows by byte offset (REQ-1, REQ-2).
+
+        Ignored while the document closes or is replaced (one of its two widgets is no longer attached); allowed while a save runs, because it only swaps the displays.
+        """
+        document = self.document
+        if not (document.editor.is_attached and document.hex_view.is_attached):
+            return
+        self.goto_popup.hide()
+        self.find_popup.hide()
+        document.show_hex(not document.hex_mode)
+        self._sync_view_actions()
+        self._request_status()
+
+    def on_hex_view_moved(self, message: HexView.Moved) -> None:
+        """Refresh the status line."""
+        self._request_status()
+
+    def on_hex_view_edited(self, message: HexView.Edited) -> None:
+        """Refresh the status line (the length and the modified mark changed)."""
+        self._request_status()
+
+    def on_hex_view_mode_changed(self, message: HexView.ModeChanged) -> None:
+        """Refresh the status line (the insert mode changed)."""
+        self._request_status()
 
     def action_open_file(self) -> None:
         """Open: pick a file in the file dialog; the document is replaced after the unsaved-changes question."""
@@ -490,37 +545,42 @@ class EditorScreen(Screen[None]):
         answer = await dialog.run()
         selected = dialog.selected_path
         if answer is not Response.OK or selected is None or document is not self.document:
-            self.document.editor.focus()
+            self.document.focus_shown()
             return
         if editor.modified and await open_question(selected.name).run() is not Response.DISCARD:
-            self.document.editor.focus()
+            self.document.focus_shown()
             return
         if document is not self.document or editor.saving:
             return
         view, error = self._open_view(selected, soft_wrap=editor.soft_wrap, show_line_numbers=editor.show_line_numbers)
         if error is not None:  # unreadable, vanished or not a regular file: nothing was replaced
             await failure_box("Open", error).run()
-            self.document.editor.focus()
+            self.document.focus_shown()
             return
         await self._swap_document(view)
 
     async def _swap_document(self, view: DocumentView) -> None:
-        """Replace the document by `view`: remove the old editor, mount the new one and re-establish everything the screen derived from the old one."""
+        """Replace the document by `view`: remove the old widgets, mount the new ones and re-establish everything the screen derived from the old one.
+
+        The hex view is removed first: the text widget closes the document when it is removed. A binary file opened this way starts in the hex view through detection, any other file in the text view.
+        """
         editor = self.document.editor
+        hex_view = self.document.hex_view
         if editor.searching:
             editor.cancel_search()
         editor.cancel_pending()
         self.goto_popup.hide()
         self.find_popup.hide()
+        await hex_view.remove()
         await editor.remove()
         self.document = view
-        await self.mount(view.editor, after=self.menu_bar)
+        await self.mount(view.editor, view.hex_view, after=self.menu_bar)
         self._watch_editor()
         self._show_path()
         self._sync_view_actions()
         self._note(None)
         self._request_status()
-        view.editor.focus()
+        view.focus_shown()
 
     async def _keyboard_shortcuts_flow(self) -> None:
         """Keyboard Shortcuts: open the keyboard shortcuts dialog and apply the saved config."""
@@ -545,7 +605,7 @@ class EditorScreen(Screen[None]):
         selected = dialog.selected_path
         if answer is Response.OK and selected is not None and document is self.document:
             self._save_to(selected)
-        self.document.editor.focus()
+        self.document.focus_shown()
 
     def _is_current(self, editor: NovaTextArea) -> bool:
         """Whether `editor` is the widget of the current document (a message of a replaced editor must change nothing)."""
@@ -557,7 +617,7 @@ class EditorScreen(Screen[None]):
         editor = document.editor
         if answer is Response.DISCARD and document is self.document and not editor.saving:
             editor.reload()
-        self.document.editor.focus()
+        self.document.focus_shown()
 
     async def _overwrite_flow(self, document: DocumentView, kind: ChangeKind, path: Path) -> None:
         """Ask before saving onto a file that exists: a save as onto an existing file, or the first save of a path that appeared since the start."""
@@ -600,7 +660,7 @@ class EditorScreen(Screen[None]):
         if document is not self.document:
             return
         editor = document.editor
-        editor.focus()
+        document.focus_shown()
         if answer is Response.OVERWRITE and path is not None:
             if editor.file_path is None:
                 self._save_to(path, confirmed=True)
@@ -714,7 +774,7 @@ class EditorScreen(Screen[None]):
         if answer is Response.DISCARD:
             self.post_message(self.Closed())
         else:
-            self.document.editor.focus()
+            self.document.focus_shown()
 
     async def _failure_flow(self, document: DocumentView, title: str, text: str, *, committed: bool, recheck: bool) -> None:
         await failure_box(title, text).run()
@@ -722,7 +782,7 @@ class EditorScreen(Screen[None]):
             return
         if recheck:
             self._recheck_deferred_change(committed=committed)
-        document.editor.focus()
+        document.focus_shown()
 
     def _save_to(self, path: Path, *, confirmed: bool = False) -> None:
         """Save to `path` (a save as, or the first save of a new file)."""
@@ -736,7 +796,7 @@ class EditorScreen(Screen[None]):
 
     def on_nova_text_area_save_progress(self, message: NovaTextArea.SaveProgress) -> None:
         """Show the progress of the save in the status line."""
-        self._note(save_progress_text(message.phase, message.done, message.total))
+        self._note(save_progress_text(message.phase, message.done, message.total, started=message.started))
 
     def on_nova_text_area_saved(self, message: NovaTextArea.Saved) -> None:
         """Show the result and follow the file the document is bound to now."""
@@ -757,6 +817,8 @@ class EditorScreen(Screen[None]):
         self._note(None)
         reason = message.error.strerror or str(message.error)
         written = " The file was written. Reload to read it again." if message.committed else ""
+        if message.partial:
+            written = f" {message.path.name} may now be partially patched. Your edits are kept; save again to finish."
         text = f"Save failed ({message.stage}): {reason}{written}"
         self._start_flow(partial(self._failure_flow, self.document, "Save failed", text, committed=message.committed, recheck=True))
 
@@ -798,9 +860,10 @@ class EditorScreen(Screen[None]):
             self._queue_change(kind)
 
     def on_nova_text_area_reloaded(self, message: NovaTextArea.Reloaded) -> None:
-        """Show that the file was reloaded."""
+        """Show that the file was reloaded; the hex view follows the new document at once."""
         if not self._is_current(message.text_area):
             return
+        self.document.hex_view.follow_document()
         self._request_status()
         self._note("Reloaded", timed=True)
 
@@ -813,34 +876,55 @@ class EditorScreen(Screen[None]):
 
     # Search and Go to
 
-    def search(self, needle: str, *, backward: bool = False, case_sensitive: bool | None = None) -> None:
+    def search(self, needle: str, *, backward: bool = False, case_sensitive: bool | None = None, hex: bool = False) -> None:
         """Search the editor for `needle` and remember it for Find Next and Find Previous.
 
+        In the hex view the match is placed by the hex view (the bytes are selected and scrolled into view), for a text needle as well.
+
         Args:
-            needle: The text to find (it may hold line breaks, which the popup cannot take).
+            needle: The text to find (it may hold line breaks, which the popup cannot take), or hex byte pairs with `hex`.
             backward: Search towards the start of the document.
-            case_sensitive: Distinguish case; the case option of the Find popup when `None`.
+            case_sensitive: Distinguish case; the case option of the Find popup when `None`. No effect on a hex needle.
+            hex: Read `needle` as hex byte pairs; a fault is shown as a search text and no search starts.
         """
         if not needle:
             return
         if case_sensitive is None:
             case_sensitive = self.find_popup.case_sensitive
         document = self.document
+        target: str | bytes = needle
+        if hex:
+            try:
+                target = parse_hex_needle(needle)
+            except HexNeedleError as error:
+                self._show_search_text(str(error), final=True)
+                return
         document.needle = needle
+        document.needle_hex = hex
         document.last_backward = backward
-        document.editor.search(needle, backward=backward, case_sensitive=case_sensitive)
+        if document.hex_mode:
+            view = document.hex_view
+            document.editor.search(
+                target,
+                backward=backward,
+                case_sensitive=case_sensitive,
+                origin=view.search_origin(backward),
+                place=view.place_match,
+            )
+        else:
+            document.editor.search(target, backward=backward, case_sensitive=case_sensitive)
 
     def _repeat_search(self, *, backward: bool) -> None:
         needle = self.document.needle
         if needle is None:
             self.action_find()
             return
-        self.search(needle, backward=backward)
+        self.search(needle, backward=backward, hex=self.document.needle_hex)
 
     def action_find(self) -> None:
         """Open the Find popup with the last needle selected."""
         self.goto_popup.hide()
-        self.find_popup.open(self._popup_offset(FindPopup.WIDTH), self.document.needle)
+        self.find_popup.open(self._popup_offset(FindPopup.WIDTH), self.document.needle, self.document.needle_hex)
 
     def action_find_next(self) -> None:
         """Repeat the last search forward."""
@@ -851,13 +935,16 @@ class EditorScreen(Screen[None]):
         self._repeat_search(backward=True)
 
     def action_goto(self) -> None:
-        """Open the Go to popup; with the popup already open it stays open."""
-        self.goto_popup.open(self._popup_offset(GotoPopup.WIDTH))
+        """Open the Go to popup (for byte offsets in the hex view); with the popup already open it stays open."""
+        self.goto_popup.open(self._popup_offset(GotoPopup.WIDTH), hex=self.document.hex_mode)
 
     def on_goto_popup_requested(self, message: GotoPopup.Requested) -> None:
         """Run the jump; the widget answers with `JumpCompleted` or `JumpRejected`, or keeps the target pending (S0001 REQ-6)."""
-        editor = self.document.editor
         target = message.target
+        if self.document.hex_mode:
+            self._goto_in_hex_view(target)
+            return
+        editor = self.document.editor
         if target.kind == "line":
             editor.goto_line(target.value)
         else:  # byte
@@ -865,13 +952,25 @@ class EditorScreen(Screen[None]):
         if editor.pending_progress is not None:  # the target lies beyond the scan: the status line shows the progress, Escape cancels it
             self._close_popup(self.goto_popup)
 
+    def _goto_in_hex_view(self, target: GotoTarget) -> None:
+        """Move the hex cursor to a byte offset (the length is the end position); a refused target stays in the popup as a message."""
+        popup = self.goto_popup
+        view = self.document.hex_view
+        placed = hex_goto(target, view.length)
+        if isinstance(placed, str):
+            popup.reject(placed)
+            return
+        view.goto(placed)
+        popup.awaiting = False
+        self._close_popup(popup)
+
     def on_goto_popup_dismissed(self, message: GotoPopup.Dismissed) -> None:
         """Escape: close the popup and focus the editor."""
         self._close_popup(self.goto_popup)
 
     def on_find_popup_requested(self, message: FindPopup.Requested) -> None:
         """Enter, Next or Previous in the popup: search; the popup stays open."""
-        self.search(message.needle, backward=message.backward, case_sensitive=message.case_sensitive)
+        self.search(message.needle, backward=message.backward, case_sensitive=message.case_sensitive, hex=message.hex)
 
     def on_find_popup_dismissed(self, message: FindPopup.Dismissed) -> None:
         """Escape: cancel a running search first, else close the popup and focus the editor."""
@@ -882,13 +981,13 @@ class EditorScreen(Screen[None]):
         self._close_popup(self.find_popup)
 
     def _close_popup(self, popup: PopupWidget) -> None:
-        """Hide a popup and give the focus to the editor (`PopupWidget.close()` is not used: it would focus whatever had the focus at `show()` time)."""
+        """Hide a popup and give the focus to the shown widget (`PopupWidget.close()` is not used: it would focus whatever had the focus at `show()` time)."""
         popup.hide()
-        self.document.editor.focus()
+        self.document.focus_shown()
 
     def _popup_offset(self, width: int) -> tuple[int, int]:
-        """The top right of the editor region: a popup covers the first rows of the text, never the menu bar or the status line."""
-        region = self.document.editor.region
+        """The top right of the region of the shown widget: a popup covers its first rows, never the menu bar or the status line."""
+        region = self.document.shown.region
         return (max(region.x, region.right - min(width, region.width)), region.y)
 
     def _all_popups(self) -> tuple[GotoPopup | FindPopup, ...]:
@@ -937,7 +1036,10 @@ class EditorScreen(Screen[None]):
         self._show_search_text(f"Search cancelled{suffix}", final=True)
 
     def on_nova_text_area_search_failed(self, message: NovaTextArea.SearchFailed) -> None:
-        """Show why a search failed."""
+        """Show why a search failed; a document that changed under the running job (a hex edit does not go through the text widget) reads as a cancel."""
+        if isinstance(message.error, SearchStale):
+            self._show_search_text("Search cancelled: text changed", final=True)
+            return
         self._show_search_text(f"Search failed: {message.error}", final=True)
 
 

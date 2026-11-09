@@ -444,11 +444,13 @@ class LazyWrappedDocument(WrappedDocument):
         x = max(0, x)
         y = max(0, y)
         doc = self._lazy
-        count = doc.line_count
+        last = doc.last_reachable_row  # the open row at the end of the scanned part cannot be read: a position below it belongs to the row before
         if not self._width:
-            row = min(y, count - 1)
+            row = min(y, last)
             return row, self._column(row, x)
         row, section = self.row_of_y(y)
+        if row > last:
+            row, section = last, -1
         return row, self.get_target_document_column(row, x, section)
 
     def get_target_document_column(self, line_index: int, x_offset: int, y_offset: int) -> int:

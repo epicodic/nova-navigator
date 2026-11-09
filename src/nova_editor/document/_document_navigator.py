@@ -253,7 +253,14 @@ class DocumentNavigator:
         Returns:
             True when the location is on the last line of the document.
         """
-        return location[0] == self._document.line_count - 1
+        return location[0] >= self.last_row()
+
+    def last_row(self) -> int:
+        """The last row a cursor can stand on: the last row, but not the open row of a lazy document that cannot be resolved yet."""
+        document = self._document
+        if isinstance(document, LazyDocument):
+            return document.last_reachable_row
+        return document.line_count - 1
 
     def is_last_wrapped_line(self, location: Location) -> bool:
         """Check if the given location is on the last wrapped section of the last line.
@@ -563,9 +570,8 @@ class DocumentNavigator:
         Returns:
             The nearest reachable location in the document.
         """
-        document = self._document
         row, column = location
-        clamped_row = clamp(row, 0, document.line_count - 1)
+        clamped_row = clamp(row, 0, self.last_row())
 
         clamped_column = clamp(column, 0, self._line_length(clamped_row, column))
         return clamped_row, clamped_column

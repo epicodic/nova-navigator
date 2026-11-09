@@ -1,4 +1,4 @@
-"""The 18 editor actions: ids, REQ-4 default keys, and that every call builds fresh objects (DEC-20 A2)."""
+"""The 19 editor actions: ids, REQ-4 default keys, and that every call builds fresh objects (DEC-20 A2)."""
 
 from __future__ import annotations
 
@@ -23,14 +23,15 @@ REQ4_DEFAULTS: dict[str, str] = {
     "editor.find_previous": "shift+f3",
     "editor.goto": "ctrl+g",
     "editor.wrap_mode": "f10",
+    "editor.hex_mode": "f4",
     "editor.line_numbers": "f11",
 }
 
 
-def test_there_are_exactly_the_eighteen_actions() -> None:
+def test_there_are_exactly_the_nineteen_actions() -> None:
     ids = [action.id for action in build_editor_actions()]
     assert sorted(i for i in ids if i is not None) == sorted(REQ4_DEFAULTS)
-    assert len(ids) == 18
+    assert len(ids) == 19
 
 
 def test_every_id_starts_with_editor() -> None:
@@ -46,9 +47,9 @@ def test_the_initial_shortcut_equals_the_shortcut() -> None:
     assert all(action.shortcut == action.initial_shortcut for action in build_editor_actions())
 
 
-def test_only_line_numbers_and_wrap_mode_are_checkable() -> None:
+def test_only_the_view_toggles_are_checkable() -> None:
     checkable = {action.id for action in build_editor_actions() if action.checkable}
-    assert checkable == {"editor.line_numbers", "editor.wrap_mode"}
+    assert checkable == {"editor.line_numbers", "editor.wrap_mode", "editor.hex_mode"}
 
 
 def test_every_action_has_a_text_and_an_action_name() -> None:
