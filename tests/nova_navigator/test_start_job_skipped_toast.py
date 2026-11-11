@@ -63,3 +63,19 @@ async def test_canceled_job_with_skips_still_notifies_once() -> None:
     assert job.state == Job.State.CANCELED
     assert app.notify.call_count == 1
     assert "2" in app.notify.call_args.args[0]
+
+
+async def _skip_then_fail_task(ctx: TaskContext) -> None:
+    ctx.report_skipped("a", "broken link")
+    ctx.report_skipped("b", "link loop")
+    raise RuntimeError("boom")
+
+
+@pytest.mark.asyncio
+async def test_failed_job_with_skips_still_notifies_once() -> None:
+    app = _fake_app()
+    job = Job("Copy", _skip_then_fail_task)
+    await NovaNavigator.start_job(app, job)
+    assert job.state == Job.State.FAILED
+    assert app.notify.call_count == 1
+    assert "2" in app.notify.call_args.args[0]

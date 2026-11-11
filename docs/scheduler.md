@@ -320,7 +320,7 @@ It does not trigger the progress callback.
 The skipped items are kept when the job is cancelled.
 Subtasks share the status, so their skips land on the parent job.
 
-When the job completes, the app shows one notification such as `Skipped 3 items: broken link (2), link loop (1)`.
+When the job ends (completed, canceled or failed), the app shows one notification such as `Skipped 3 items: broken link (2), link loop (1)`.
 The notification groups the items by reason, so producers should pass short, stable reasons such as `"broken link"` or `"link loop"`.
 
 The Jobs dialog lists each skipped path with its reason, in report order, under every finished job that has skips.
