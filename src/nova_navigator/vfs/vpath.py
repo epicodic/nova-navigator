@@ -45,23 +45,34 @@ class VPath:
     async def walk(
         self,
         cancel: threading.Event | None = None,
-    ) -> AsyncIterator[tuple[VPath, list[VPath], list[VPath]]]:
-        """Like os.walk, but async. Yields (root, dirs, files) tuples.
+    ) -> AsyncIterator[tuple[VPath, list[VPath], list[VPath], list[VPath]]]:
+        """Like os.walk, but async. Yields (root, dirs, files, links) tuples.
 
-        Each VPath in dirs and files has _stat pre-populated from iterdir.
+        A child that is a symbolic link (``stat.is_symlink``) goes to *links*, whatever it
+        points to (file, directory, broken, loop); it is never followed or descended into,
+        callers decide per operation. Only real directories are recursed into.
+        Each VPath in dirs, files and links has _stat pre-populated from iterdir.
+
+        Raises:
+            NotADirectoryError: if this path is not a directory or is itself a symbolic link.
         """
-        if not self.stat.is_directory:
+        root_stat = self.stat
+        if not root_stat.is_directory or root_stat.is_symlink:
             raise NotADirectoryError(f"{self} is not a directory")
 
         dirs: list[VPath] = []
         files: list[VPath] = []
+        links: list[VPath] = []
         async for child in self._filesystem.iterdir(self, cancel=cancel):
-            if child.stat.is_directory:
+            child_stat = child.stat
+            if child_stat.is_symlink:
+                links.append(child)
+            elif child_stat.is_directory:
                 dirs.append(child)
             else:
                 files.append(child)
 
-        yield self, dirs, files
+        yield self, dirs, files, links
 
         for d in dirs:
             async for item in d.walk(cancel=cancel):

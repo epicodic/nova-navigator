@@ -14,6 +14,17 @@ from ..vfs.types import Stat
 
 _logger = logging.getLogger(__name__)
 
+
+def _is_real_dir(stat: Stat) -> bool:
+    """Return whether *stat* describes a directory that is not a symbolic link (link stat first)."""
+    return stat.is_directory and not stat.is_symlink
+
+
+def _is_unsupported_link(stat: Stat) -> bool:
+    """Return whether *stat* is a link to a directory or a broken/looping link (links are not copied before ACT4)."""
+    return stat.is_symlink and (stat.is_directory or stat.is_broken_symlink)
+
+
 CHUNK_SIZE = 64 * 1024  # 64 KB
 
 _DUMMY_ITEMS = 3
@@ -147,6 +158,10 @@ async def _copy_file_step(
     dst: VPath,
     options: FileCopyOptions,
 ) -> None:
+    if _is_unsupported_link(src.stat):
+        _logger.warning("Skipping link %s: copying links is not supported yet", src.path)
+        ctx.status.update_progress(inc_completed=1)
+        return
     if options.filter is not None and not options.filter.matches(src):
         ctx.status.update_progress(inc_completed=1)
         return
@@ -163,7 +178,7 @@ async def _copy_dir(
 ) -> None:
     file_tasks: list[asyncio.Task[None]] = []
     dir_stats: list[tuple[VPath, Stat]] = []
-    async for src_root, src_dirs, src_files in src_path.walk():
+    async for src_root, src_dirs, src_files, src_links in src_path.walk():
         ctx.status.check_cancelled()
         dst_root = dst_path / src_root.path.relative_to(src_path.path)
         with contextlib.suppress(FileExistsError):
@@ -173,8 +188,8 @@ async def _copy_dir(
         if src_root.path != src_path.path:
             ctx.status.update_progress(inc_completed=1)
         dir_stats.append((dst_root, src_root.stat))
-        ctx.status.update_progress(inc_total=len(src_dirs) + len(src_files))
-        for f in src_files:
+        ctx.status.update_progress(inc_total=len(src_dirs) + len(src_files) + len(src_links))
+        for f in (*src_files, *src_links):
             ctx.status.check_cancelled()
             t = await ctx.subtask(_copy_file_step(ctx, f, dst_root / f.name, options))
             file_tasks.append(t)
@@ -207,12 +222,12 @@ async def copy_files(
     dst_stat = destination.stat_or_none
     dst_is_directory = dst_stat is not None and dst_stat.is_directory
 
-    if len(src_paths) == 1 and not dst_is_directory and not src_paths[0].stat.is_directory:
+    if len(src_paths) == 1 and not dst_is_directory and not _is_real_dir(src_paths[0].stat):
         ctx.status.update_progress(inc_total=1)
         await _copy_file_step(ctx, src_paths[0], destination, options)
         return
 
-    if len(src_paths) == 1 and not dst_is_directory and src_paths[0].stat.is_directory:
+    if len(src_paths) == 1 and not dst_is_directory and _is_real_dir(src_paths[0].stat):
         ctx.status.update_progress(inc_total=1)
         await _copy_dir(ctx, src_paths[0], destination, dst_filesystem, options)
         return
@@ -225,7 +240,7 @@ async def copy_files(
     for src_path in src_paths:
         ctx.status.check_cancelled()
         dst_path = destination / src_path.name
-        if src_path.stat.is_directory:
+        if _is_real_dir(src_path.stat):
             t = await ctx.subtask(_copy_dir(ctx, src_path, dst_path, dst_filesystem, options))
         else:
             t = await ctx.subtask(_copy_file_step(ctx, src_path, dst_path, options))
@@ -247,13 +262,14 @@ async def _move_dir_contents(
     Used when the destination directory already exists (so an atomic rename of
     the whole tree is not possible). Files are processed individually so that
     the overwrite policy is applied at file granularity. Source directories are
-    removed bottom-up after their contents are moved.
+    removed bottom-up after their contents are moved. Links are moved as entries
+    (renamed on the same device).
     """
     with contextlib.suppress(FileExistsError):
         actual_dst.filesystem.mkdir(actual_dst)
     src_dirs: list[VPath] = []
     dir_stats: list[tuple[VPath, Stat]] = []
-    async for src_root, walk_subdirs, src_files in src_path.walk():
+    async for src_root, walk_subdirs, src_files, src_links in src_path.walk():
         ctx.status.check_cancelled()
         dst_root = actual_dst / src_root.path.relative_to(src_path.path)
         with contextlib.suppress(FileExistsError):
@@ -264,8 +280,8 @@ async def _move_dir_contents(
             ctx.status.update_progress(inc_completed=1)
         src_dirs.append(src_root)
         dir_stats.append((dst_root, src_root.stat))
-        ctx.status.update_progress(inc_total=len(walk_subdirs) + len(src_files))
-        for f in src_files:
+        ctx.status.update_progress(inc_total=len(walk_subdirs) + len(src_files) + len(src_links))
+        for f in (*src_files, *src_links):
             ctx.status.check_cancelled()
             ctx.status.set_current_item(f.uri)
             if options.filter is not None and not options.filter.matches(f):
