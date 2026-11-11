@@ -512,3 +512,17 @@ def test_tar_symlink_member_still_symlink(tmp_path: Path) -> None:
     st = TarArchive(tmp_path / "l.tar.gz", mode="r").stats(PurePath("s.txt"))
     assert st.is_symlink is True
     assert st.size == 0
+
+
+def test_tar_dangling_hard_link(tmp_path: Path) -> None:
+    path = tmp_path / "d.tar.gz"
+    with tarfile.open(path, mode="w:gz") as tar:
+        info = tarfile.TarInfo("b.txt")
+        info.type = tarfile.LNKTYPE
+        info.linkname = "missing.txt"
+        tar.addfile(info)
+    archive = TarArchive(path, mode="r")
+    st = archive.stats(PurePath("b.txt"))
+    assert st.is_symlink is False
+    with pytest.raises(FileNotFoundError):
+        archive.read(PurePath("b.txt"))

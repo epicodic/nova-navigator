@@ -446,7 +446,12 @@ async def _erase_path(
     if options.refresh_stat:
         # The panel's stat may be stale (a directory replaced by a link); SSH caches listings per directory, so drop the cache first.
         path.filesystem.refresh(path.parent)
-        await path.fresh_stat()
+        try:
+            await path.fresh_stat()
+        except FileNotFoundError:
+            _logger.debug("erase_path vanished %s", path.path)
+            ctx.status.update_progress(inc_completed=1)
+            return
     stat = path.stat
     if stat.is_symlink:
         # A link of any kind is removed itself; its target is never listed, stat-followed or touched.

@@ -60,6 +60,7 @@ _fs = LocalFilesystem.singleton()
 
 
 def _link_path() -> VPath:
+    """Return a path whose stat marks it as a symlink to a directory."""
     vp = VPath("/home/user/Documents/current", _fs)
     vp._stat = Stat(is_symlink=True, is_directory=True)
     return vp
@@ -282,7 +283,13 @@ _ENTRIES: list[DialogEntry] = [
     DialogEntry(
         "DeleteFilesDialog",
         "Delete confirmation for multiple files.",
-        lambda: DeleteFilesDialog(paths=[VPath("/home/user/Documents/old_report.pdf", _fs), VPath("/home/user/Downloads/archive.zip", _fs), _link_path()]),
+        lambda: DeleteFilesDialog(
+            paths=[
+                VPath("/home/user/Documents/old_report.pdf", _fs),
+                VPath("/home/user/Downloads/archive.zip", _fs),
+                _link_path(),
+            ]
+        ),
     ),
     DialogEntry(
         "KeyCaptureDialog",

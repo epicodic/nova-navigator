@@ -103,7 +103,10 @@ class TarArchive(Archive):
         )
 
     def _resolve_hard_link(self, member: tarfile.TarInfo) -> tarfile.TarInfo | None:
-        """Follow a chain of hard-link members to the regular member holding the data; ``None`` if unresolved or looping."""
+        """Follow hard-link members to the regular member holding the data.
+
+        Returns ``None`` if the chain is unresolved (dangling) or loops.
+        """
         current = member
         for _ in range(_MAX_HARD_LINK_DEPTH):
             if not current.islnk():

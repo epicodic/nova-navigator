@@ -90,7 +90,7 @@ async def test_erase_dir_with_link_to_ancestor(link_fs: Filesystem, tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_erase_self_loop_link_local(link_fs: Filesystem, tmp_path: Path) -> None:
+async def test_erase_self_loop_link(link_fs: Filesystem, tmp_path: Path) -> None:
     a = tmp_path / "a"
     a.symlink_to("a")
     await run_task(lambda ctx: erase_files(ctx, [link_fs.path(a)]))
@@ -137,3 +137,15 @@ async def test_erase_regular_tree_unchanged(link_fs: Filesystem, tmp_path: Path)
     requests = await run_task(lambda ctx: erase_files(ctx, [link_fs.path(tree)]), [Response.YES])
     assert len(requests) == 1
     assert not tree.exists()
+
+
+@pytest.mark.asyncio
+async def test_erase_path_vanished_after_selection_completes(link_fs: Filesystem, tmp_path: Path) -> None:
+    gone = tmp_path / "gone.txt"
+    gone.write_text("x")
+    other = tmp_path / "other.txt"
+    other.write_text("y")
+    selected = [link_fs.path(gone), link_fs.path(other)]
+    gone.unlink()
+    await run_task(lambda ctx: erase_files(ctx, selected))
+    assert not other.exists()
