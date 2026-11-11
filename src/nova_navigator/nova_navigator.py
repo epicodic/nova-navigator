@@ -63,7 +63,7 @@ from nova_navigator.remotes.azure import AZURE_PLUGIN
 from nova_navigator.remotes.remote import RemoteConnector, register_remote_scheme
 from nova_navigator.remotes.ssh import SSH_PLUGIN
 from nova_navigator.runtime_patches import apply_runtime_patches
-from nova_navigator.scheduler import Job, ResponseRequest
+from nova_navigator.scheduler import Job, ResponseRequest, skipped_summary
 from nova_navigator.terminal import Terminal, TerminalPool
 from nova_navigator.usermenu import (
     USER_MENU_FILENAME,
@@ -1449,7 +1449,16 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
 
     async def start_job(self, job: Job) -> None:
         self.job_registry.add_job(job)
-        await job.start(self.request_callback)
+        try:
+            await job.start(self.request_callback)
+        finally:
+            self._notify_skipped(job)
+
+    def _notify_skipped(self, job: Job) -> None:
+        """Show one warning toast listing what *job* skipped, if anything."""
+        text = skipped_summary(job.skipped)
+        if text is not None:
+            self.notify(text, title=job.title, severity="warning", timeout=10)
 
     async def execute_command(self, args: list[str], cwd: PurePath) -> None:
         with self.suspend():

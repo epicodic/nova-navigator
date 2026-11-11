@@ -5,6 +5,7 @@ from typing import Any
 
 from .context import GuiRequestCallback, Progress, TaskCancelled, TaskContext, TaskStatus
 from .scheduler import AsyncTaskScheduler
+from .skipped import SkippedItem
 
 
 class Job:
@@ -66,6 +67,11 @@ class Job:
     @property
     def progress(self) -> Progress:
         return self._status.progress
+
+    @property
+    def skipped(self) -> tuple[SkippedItem, ...]:
+        """Items the task reported as skipped, in report order."""
+        return self._status.skipped
 
     @property
     def error(self) -> str | None:

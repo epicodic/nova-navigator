@@ -8,6 +8,7 @@ from textual.app import App, ComposeResult
 from nova_navigator.dialogs.jobs_dialog import JobListView, JobsDialog, _generate_progress_bar_segments
 from nova_navigator.scheduler import Job
 from nova_navigator.scheduler.context import Progress
+from nova_navigator.scheduler.skipped import SkippedItem
 
 
 def _make_progress(
@@ -31,12 +32,14 @@ def _make_job(
     state: Job.State = Job.State.RUNNING,
     error: str | None = None,
     progress: Progress | None = None,
+    skipped: tuple[SkippedItem, ...] = (),
 ) -> MagicMock:
     job = MagicMock(spec=Job)
     job.title = title
     job.state = state
     job.error = error
     job.progress = progress if progress is not None else _make_progress()
+    job.skipped = skipped
     return job
 
 
@@ -147,6 +150,125 @@ async def test_render_empty_shows_no_jobs_text() -> None:
         await pilot.pause()
         strip = view.render_line(0)
         assert "No jobs" in strip.text
+
+
+# ── skipped section ───────────────────────────────────────────────────────────
+
+
+def _all_lines(view: JobListView) -> list[str]:
+    return [view.render_line(y).text for y in range(view.virtual_size.height)]
+
+
+def _skips(count: int, reason: str = "broken link") -> tuple[SkippedItem, ...]:
+    return tuple(SkippedItem(f"/src/file{i}", reason) for i in range(count))
+
+
+@pytest.mark.asyncio
+async def test_finished_job_renders_each_skipped_path_with_reason_in_order() -> None:
+    skipped = (SkippedItem("/b/second", "link loop"), SkippedItem("/a/first", "broken link"))
+    job = _make_job(state=Job.State.COMPLETED, skipped=skipped)
+    view = JobListView()
+    async with _ListViewApp(view).run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        view.set_jobs([job])
+        await pilot.pause()
+        lines = _all_lines(view)
+        header = next(i for i, line in enumerate(lines) if "Skipped (2):" in line)
+        assert header == 4
+        assert "/b/second" in lines[header + 1]
+        assert "link loop" in lines[header + 1]
+        assert "/a/first" in lines[header + 2]
+        assert "broken link" in lines[header + 2]
+        assert lines[header + 3].startswith("─")
+
+
+@pytest.mark.asyncio
+async def test_job_without_skips_has_no_skipped_section() -> None:
+    job = _make_job(state=Job.State.COMPLETED)
+    view = JobListView()
+    async with _ListViewApp(view).run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        view.set_jobs([job])
+        await pilot.pause()
+        assert not any("Skipped" in line for line in _all_lines(view))
+        assert view.virtual_size.height == JobListView.ITEM_HEIGHT
+
+
+@pytest.mark.asyncio
+async def test_running_job_does_not_show_skipped_section() -> None:
+    job = _make_job(state=Job.State.RUNNING, skipped=_skips(2))
+    view = JobListView()
+    async with _ListViewApp(view).run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        view.set_jobs([job])
+        await pilot.pause()
+        assert not any("Skipped" in line for line in _all_lines(view))
+        assert view.virtual_size.height == JobListView.ITEM_HEIGHT
+
+
+@pytest.mark.asyncio
+async def test_set_jobs_virtual_size_includes_skipped_lines() -> None:
+    jobs = [_make_job(state=Job.State.COMPLETED, skipped=_skips(3)), _make_job(state=Job.State.COMPLETED)]
+    view = JobListView()
+    async with _ListViewApp(view).run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        view.set_jobs(jobs)
+        await pilot.pause()
+        assert view.virtual_size.height == (JobListView.ITEM_HEIGHT + 1 + 3) + JobListView.ITEM_HEIGHT
+
+
+@pytest.mark.asyncio
+async def test_long_skipped_list_is_scrollable_to_last_entry() -> None:
+    job = _make_job(state=Job.State.COMPLETED, skipped=_skips(200))
+    view = JobListView()
+    async with _ListViewApp(view).run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        view.set_jobs([job])
+        await pilot.pause()
+        assert view.virtual_size.height > view.size.height
+        view.scroll_end(animate=False)
+        await pilot.pause()
+        rendered = [view.render_line(y).text for y in range(view.size.height)]
+        assert any("/src/file199" in line for line in rendered)
+
+
+@pytest.mark.asyncio
+async def test_long_skipped_path_is_truncated_left_reason_kept() -> None:
+    long_path = "/very/long/" + "d" * 120 + "/tail_name.txt"
+    job = _make_job(state=Job.State.COMPLETED, skipped=(SkippedItem(long_path, "link loop"),))
+    view = JobListView()
+    async with _ListViewApp(view).run_test(size=(60, 24)) as pilot:
+        await pilot.pause()
+        view.set_jobs([job])
+        await pilot.pause()
+        line = _all_lines(view)[5]
+        assert "…" in line
+        assert "tail_name.txt" in line
+        assert "link loop" in line
+        assert "/very/long/" not in line
+        assert len(line) == view.size.width
+
+
+@pytest.mark.asyncio
+async def test_click_action_button_on_job_after_skipped_section() -> None:
+    first = _make_job(title="First", state=Job.State.COMPLETED, skipped=_skips(3))
+    second = _make_job(title="Second", state=Job.State.COMPLETED)
+    clicked: list[Job] = []
+    view = JobListView(on_action=clicked.append)
+    async with _ListViewApp(view).run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        view.set_jobs([first, second])
+        await pilot.pause()
+        second_top = JobListView.ITEM_HEIGHT + 1 + 3
+        x = view.size.width - JobListView.RIGHT_PADDING - 2
+        await pilot.hover(view, offset=(x, second_top + 2))
+        assert view._hovered_job_index == 1
+        assert not view._hovered_btn
+        await pilot.hover(view, offset=(x, second_top))
+        assert view._hovered_btn
+        await pilot.click(view, offset=(x, second_top))
+        await pilot.pause()
+        assert clicked == [second]
 
 
 # ── action button metadata ────────────────────────────────────────────────────
