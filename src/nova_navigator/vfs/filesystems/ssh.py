@@ -44,30 +44,92 @@ class StatEntry:
     name: str
 
 
-_STAT_COMMAND_ARGS = ["%s", "%a", "%U", "%Y", "%X", "%Z", "%F", "%n"]
+# Listing command contract.  The remote script ``cd``s into the (quoted) directory and runs
+# ``find . -maxdepth 1 -mindepth 1 -exec stat --printf FORMAT -- {} +``.  FORMAT emits eight
+# fields per entry, every field terminated by NUL (the only byte a file name cannot contain
+# besides "/"), so names with commas, newlines or leading/trailing blanks cannot be confused
+# with field or record separators.  Field order: size, octal permissions, owner, mtime, atime,
+# ctime, file type, name (``./name`` as produced by find).
+_STAT_FORMAT = r"%s\0%a\0%U\0%Y\0%X\0%Z\0%F\0%n\0"
+_STAT_FIELD_COUNT = 8
+# Exit codes of the wrapper script when ``cd`` fails: the directory exists (permission problem)
+# or it does not.  Shell-independent, unlike the wording of the ``cd`` error message.
+_CD_FAILED_EXIT = 120
+_CD_MISSING_EXIT = 121
 
-_STAT_COMMAND = f"find . -maxdepth 1 -mindepth 1 -exec stat -c '{','.join(_STAT_COMMAND_ARGS)}' {{}} +"
-_STAT_COMMAND_FOLLOW_LINKS = f"find . -maxdepth 1 -mindepth 1 -exec stat -L -c '{','.join(_STAT_COMMAND_ARGS)}' {{}} +"
+
+def _decode(data: bytes) -> str:
+    """Decode remote bytes like :func:`os.fsdecode` on a UTF-8 system (undecodable bytes become surrogates)."""
+    return data.decode("utf-8", "surrogateescape")
 
 
-def _parse_stat_output(output: str) -> dict[str, StatEntry]:
+def _sftp_path(path: VPath) -> bytes:
+    """Return *path* as the raw bytes SFTP must send (surrogate-escaped names round-trip to the original bytes)."""
+    return os.fsencode(path.path.as_posix())
+
+
+def _quote_path(path: str) -> tuple[str, str]:
+    """Return ``(prelude, word)`` that make a pure-ASCII shell script reproduce *path* exactly.
+
+    *prelude* is a (possibly empty) shell statement list that must run first; *word* is the
+    shell word that then expands to the exact bytes of *path*.  Paths that are valid UTF-8 are
+    plain :func:`shlex.quote`d.  Paths containing undecodable bytes (surrogate escapes) are
+    rebuilt with ``printf`` octal escapes plus a trailing sentinel, which keeps trailing
+    newlines alive through command substitution.
+    """
+    # The strict UTF-8 check and os.fsencode below agree because the filesystem encoding is UTF-8
+    # on the supported platform (Ubuntu); only surrogate escapes fail the strict encode.
+    try:
+        path.encode("utf-8")
+    except UnicodeEncodeError:
+        escaped = "".join(f"\\{byte:03o}" for byte in os.fsencode(path))
+        return f"_p=$(printf '{escaped}x'); _p=${{_p%x}}", '"$_p"'
+    return "", shlex.quote(path)
+
+
+def _build_list_command(path: str, follow_symlinks: bool) -> str:
+    """Build the remote command that lists *path* in ``_STAT_FORMAT``.
+
+    The path is only ever a single quoted argument of ``cd --``; the whole script is quoted
+    again for ``sh -c`` so the login shell of the remote user does not interpret it.
+    """
+    prelude, quoted = _quote_path(path)
+    prelude = f"{prelude}\n" if prelude else ""
+    stat_opts = "-L " if follow_symlinks else ""
+    script = (
+        f"{prelude}cd -- {quoted} 2>/dev/null || {{ [ -d {quoted} ] && exit {_CD_FAILED_EXIT}; exit {_CD_MISSING_EXIT}; }}\n"
+        f"find . -maxdepth 1 -mindepth 1 -exec stat {stat_opts}--printf '{_STAT_FORMAT}' -- {{}} +"
+    )
+    return f"sh -c {shlex.quote(script)}"
+
+
+def _parse_stat_output(output: bytes) -> dict[str, StatEntry]:
+    """Parse NUL-separated ``stat --printf`` output (see ``_STAT_FORMAT``) into entries by name."""
+    fields = output.split(b"\0")
+    if fields.pop():  # a complete stream ends with NUL, so the last element is empty
+        _logger.warning("Dropping truncated trailing field in stat output")
+    if len(fields) % _STAT_FIELD_COUNT:
+        _logger.warning("Dropping incomplete trailing record in stat output")
     entries: dict[str, StatEntry] = {}
-    for line in output.strip().split("\n"):
-        parts = line.split(",")
-        if len(parts) < len(_STAT_COMMAND_ARGS):
-            continue  # malformed line
-        name = ",".join(parts[7:]).removeprefix("./")
-        entry = StatEntry(
-            size=int(parts[0]),
-            permissions=int(parts[1], 8),
-            owner=parts[2],
-            modified_time=float(parts[3]),
-            access_time=float(parts[4]),
-            change_time=float(parts[5]),
-            is_directory=parts[6] == "directory",
-            is_symlink=parts[6] == "symbolic link",
-            name=name,
-        )
+    for start in range(0, len(fields) - _STAT_FIELD_COUNT + 1, _STAT_FIELD_COUNT):
+        size, perms, owner, mtime, atime, ctime, ftype, raw_name = fields[start : start + _STAT_FIELD_COUNT]
+        file_type = _decode(ftype)
+        name = _decode(raw_name).removeprefix("./")
+        try:
+            entry = StatEntry(
+                size=int(size),
+                permissions=int(perms, 8),
+                owner=_decode(owner),
+                modified_time=float(mtime),
+                access_time=float(atime),
+                change_time=float(ctime),
+                is_directory=file_type == "directory",
+                is_symlink=file_type == "symbolic link",
+                name=name,
+            )
+        except ValueError:
+            _logger.warning("Unparsable stat record for %r; ignoring the rest of the output", name)
+            break
         entries[name] = entry
     return entries
 
@@ -122,18 +184,18 @@ class _SftpAtomicWriter:
 
     def __init__(self, filesystem: SSHFilesystem, path: VPath) -> None:
         client = filesystem._sftp_client
-        target = path.path.as_posix()
+        target = _sftp_path(path)
         try:
             mode = client.lstat(target).st_mode
         except FileNotFoundError:
             mode = None
         if mode is not None and stat.S_ISLNK(mode):
-            raise ValueError(f"Cannot atomically replace a symlink: {target}")
+            raise ValueError(f"Cannot atomically replace a symlink: {path}")
         self._filesystem = filesystem
         self._path = path
         self._client = client
         self._target = target
-        self._tmp = (path.path.parent / f".{path.name}.{uuid.uuid4().hex}.nn-tmp").as_posix()
+        self._tmp = os.fsencode((path.path.parent / f".{path.name}.{uuid.uuid4().hex}.nn-tmp").as_posix())
         self._file = client.open(self._tmp, "wx")
         self._file.set_pipelined(True)
         self._done = False
@@ -283,22 +345,22 @@ class SSHFilesystem(Filesystem):
         with self._stat_cache_lock:
             if key in self._stat_cache:
                 return self._stat_cache[key]
-        command = _STAT_COMMAND_FOLLOW_LINKS if follow_symlinks else _STAT_COMMAND
+        command = _build_list_command(path, follow_symlinks)
         try:
             _logger.debug("Running SSH stat command: %s", command)
-            _, stdout, stderr = self._ssh_client.exec_command(f"cd {path} && {command}")
-            output = stdout.read().decode()
-            _logger.debug("stdou: %s", output)
-            stderr_output = stderr.read().decode()
+            _, stdout, stderr = self._ssh_client.exec_command(command)
+            output = stdout.read()
+            stderr_output = stderr.read().decode("utf-8", "replace")
             _logger.debug("stderr: %s", stderr_output)
+            exit_code = stdout.channel.recv_exit_status()
         except paramiko.SSHException as exc:
             raise OSError(str(exc)) from exc
-        if not output:
-            exit_code = stdout.channel.recv_exit_status()
-            if exit_code != 0:
-                err = stderr_output.lower()
-                if "permission denied" in err or "operation not permitted" in err:
-                    raise PermissionError(13, "Permission denied", path)
+        if exit_code == _CD_FAILED_EXIT:
+            raise PermissionError(13, "Permission denied", path)
+        if not output and exit_code != 0:
+            err = stderr_output.lower()
+            if "permission denied" in err or "operation not permitted" in err:
+                raise PermissionError(13, "Permission denied", path)
         result = _parse_stat_output(output)
         with self._stat_cache_lock:
             self._stat_cache[key] = result
@@ -344,7 +406,9 @@ class SSHFilesystem(Filesystem):
         may keep running detached from the closed channel.
         """
         self._assert_vpath(cwd)
-        script = f"cd {shlex.quote(cwd.path.as_posix())} || exit 1\n{command}"
+        prelude, quoted = _quote_path(cwd.path.as_posix())
+        prelude = f"{prelude}\n" if prelude else ""
+        script = f"{prelude}cd -- {quoted} || exit 1\n{command}"
         try:
             stdin, stdout, _ = self._ssh_client.exec_command(f"sh -c {shlex.quote(script)} 2>&1")
         except paramiko.SSHException as exc:
@@ -450,13 +514,13 @@ class SSHFilesystem(Filesystem):
 
     @override
     def read(self, path: VPath) -> StreamReaderLike:
-        f = self._sftp_client.open(path.path.as_posix(), "rb")
+        f = self._sftp_client.open(_sftp_path(path), "rb")
         f.prefetch()
         return f
 
     @override
     def write(self, path: VPath) -> StreamWriterLike:
-        f = self._sftp_client.open(path.path.as_posix(), "wb")
+        f = self._sftp_client.open(_sftp_path(path), "wb")
         f.set_pipelined(True)
         return self._PipelinedWriter(f, lambda: self.refresh(self.parent(path)))
 
@@ -468,33 +532,33 @@ class SSHFilesystem(Filesystem):
     @override
     def remove(self, path: VPath) -> None:
         self._assert_vpath(path)
-        self._sftp_client.remove(path.path.as_posix())
+        self._sftp_client.remove(_sftp_path(path))
         self.refresh(self.parent(path))
 
     @override
     def rename(self, src_path: VPath, dst_path: VPath) -> None:
         self._assert_vpath(src_path)
         self._assert_vpath(dst_path)
-        self._sftp_client.rename(src_path.path.as_posix(), dst_path.path.as_posix())
+        self._sftp_client.rename(_sftp_path(src_path), _sftp_path(dst_path))
         self.refresh(self.parent(src_path))
         self.refresh(self.parent(dst_path))
 
     @override
     def rmdir(self, path: VPath) -> None:
         self._assert_vpath(path)
-        self._sftp_client.rmdir(path.path.as_posix())
+        self._sftp_client.rmdir(_sftp_path(path))
         self.refresh(self.parent(path))
 
     @override
     def mkdir(self, path: VPath) -> None:
         self._assert_vpath(path)
-        self._sftp_client.mkdir(path.path.as_posix())
+        self._sftp_client.mkdir(_sftp_path(path))
         self.refresh(self.parent(path))
 
     @override
     def copy_stat(self, path: VPath, stat: Stat) -> None:
         self._assert_vpath(path)
-        p = path.path.as_posix()
+        p = _sftp_path(path)
         if stat.modified >= 0:
             self._sftp_client.utime(p, (stat.modified, stat.modified))
         if stat.mode >= 0:
@@ -503,7 +567,7 @@ class SSHFilesystem(Filesystem):
     @override
     def readlink(self, path: VPath) -> str:
         self._assert_vpath(path)
-        result = self._sftp_client.readlink(path.path.as_posix())
+        result = self._sftp_client.readlink(_sftp_path(path))
         if result is None:
             raise OSError(f"{path} is not a symbolic link")
         return result

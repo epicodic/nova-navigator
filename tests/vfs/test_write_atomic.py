@@ -167,29 +167,31 @@ class _FakeSftp:
         self._fail_close = fail_close
         self.modes: dict[str, int] = {}
 
-    def open(self, name: str, mode: str) -> _FakeSftpFile:
+    def open(self, name: bytes, mode: str) -> _FakeSftpFile:
         assert mode == "wx"
-        return _FakeSftpFile(self.files, name, fail_close=self._fail_close)
+        return _FakeSftpFile(self.files, os.fsdecode(name), fail_close=self._fail_close)
 
-    def lstat(self, name: str) -> paramiko.SFTPAttributes:
-        if name not in self.files:
-            raise FileNotFoundError(name)
+    def lstat(self, name: bytes) -> paramiko.SFTPAttributes:
+        text = os.fsdecode(name)
+        if text not in self.files:
+            raise FileNotFoundError(text)
         attrs = paramiko.SFTPAttributes()
-        attrs.st_mode = (stat.S_IFLNK if name in self._symlinks else stat.S_IFREG) | 0o640
+        attrs.st_mode = (stat.S_IFLNK if text in self._symlinks else stat.S_IFREG) | 0o640
         return attrs
 
     stat = lstat
 
-    def chmod(self, name: str, mode: int) -> None:
-        self.modes[name] = mode
+    def chmod(self, name: bytes, mode: int) -> None:
+        self.modes[os.fsdecode(name)] = mode
 
-    def posix_rename(self, old: str, new: str) -> None:
+    def posix_rename(self, old_bytes: bytes, new_bytes: bytes) -> None:
+        old, new = os.fsdecode(old_bytes), os.fsdecode(new_bytes)
         if not self._posix:
             raise OSError("posix-rename@openssh.com not supported")
         self.files[new] = self.files.pop(old)
 
-    def remove(self, name: str) -> None:
-        self.files.pop(name, None)
+    def remove(self, name: bytes) -> None:
+        self.files.pop(os.fsdecode(name), None)
 
 
 class _TestSSH(SSHFilesystem):
