@@ -41,6 +41,7 @@ from nova_navigator.scheduler.context import ResponseRequest
 from nova_navigator.vfs.change_detector import ChangeDetector
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_navigator.vfs.local_copy import Baseline, LocalCopy, SourceFingerprint
+from nova_navigator.vfs.types import Stat
 from nova_navigator.vfs.vpath import VPath
 from nova_widgets import (
     Dialog,
@@ -56,6 +57,13 @@ from nova_widgets import (
 from nova_widgets.action import Action as NavAction
 
 _fs = LocalFilesystem.singleton()
+
+
+def _link_path() -> VPath:
+    vp = VPath("/home/user/Documents/current", _fs)
+    vp._stat = Stat(is_symlink=True, is_directory=True)
+    return vp
+
 
 # Absolute path so CSS_PATH resolves regardless of cwd.
 _TCSS = str(Path(__file__).parent.parent / "nova_navigator" / "nn.tcss")
@@ -274,7 +282,7 @@ _ENTRIES: list[DialogEntry] = [
     DialogEntry(
         "DeleteFilesDialog",
         "Delete confirmation for multiple files.",
-        lambda: DeleteFilesDialog(paths=[VPath("/home/user/Documents/old_report.pdf", _fs), VPath("/home/user/Downloads/archive.zip", _fs)]),
+        lambda: DeleteFilesDialog(paths=[VPath("/home/user/Documents/old_report.pdf", _fs), VPath("/home/user/Downloads/archive.zip", _fs), _link_path()]),
     ),
     DialogEntry(
         "KeyCaptureDialog",

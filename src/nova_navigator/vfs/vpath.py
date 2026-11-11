@@ -86,6 +86,11 @@ class VPath:
         return self._stat
 
     @property
+    def cached_stat(self) -> Stat | None:
+        """Return the already cached stat, or ``None`` if there is none. Never performs I/O."""
+        return self._stat
+
+    @property
     def stat_or_none(self) -> Stat | None:
         """Return the stat for this path, or ``None`` if the path does not exist."""
         try:

@@ -1,11 +1,13 @@
 import asyncio
 import threading
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
+from nova_navigator.vfs.types import Stat
 from tests._utils.data import DATA_DIR
 from tests._utils.mock_filesystem import MockFilesystem
 
@@ -198,3 +200,15 @@ async def test_walk_cancel_event_stops_listing(tmp_path: Path) -> None:
     cancel.set()
     results = [item async for item in LocalFilesystem().path(tmp_path).walk(cancel=cancel)]
     assert [(files, dirs, links) for _, dirs, files, links in results] == [([], [], [])]
+
+
+def test_cached_stat_does_no_io() -> None:
+    fs = MagicMock()
+    fs.stat = MagicMock(return_value=Stat(size=1))
+    uncached = VPath("/a", fs)
+    assert uncached.cached_stat is None
+    cached = VPath("/b", fs)
+    stat = Stat(size=5)
+    cached._stat = stat
+    assert cached.cached_stat is stat
+    fs.stat.assert_not_called()
