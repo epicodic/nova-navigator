@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import paramiko
@@ -185,6 +186,15 @@ def test_quote_path_valid_utf8_uses_shlex_quote() -> None:
     assert _quote_path("/data/\u00e4") == ("", shlex.quote("/data/\u00e4"))
 
 
+@pytest.mark.parametrize("name", ["-dash", "--"])
+def test_build_list_command_relative_dash_path_lists(tmp_path: Path, name: str) -> None:
+    (tmp_path / name).mkdir()
+    (tmp_path / name / "inner").write_text("x")
+    command = _build_list_command(name, follow_symlinks=False)
+    result = subprocess.run(shlex.split(command), cwd=tmp_path, capture_output=True, check=True)
+    assert b"inner" in result.stdout
+
+
 def test_build_list_command_non_utf8_path_is_ascii() -> None:
     assert _build_list_command(os.fsdecode(b"/data/bad\xff\n"), follow_symlinks=True).isascii()
 
@@ -318,17 +328,6 @@ def test_dir_stat_decodes_non_utf8_stderr_without_raising() -> None:
     mock_ssh.exec_command.return_value[2].read.return_value = b"stat: bad\xff: Permission denied\n"
     with pytest.raises(PermissionError):
         fs._dir_stat("/restricted", follow_symlinks=False)
-
-
-@pytest.mark.asyncio
-async def test_iterdir_issues_one_exec_per_follow_mode() -> None:
-    fs, mock_ssh, _ = _make_fs()
-    _set_exec_output(mock_ssh, _stat_record("x.txt"))
-    for _ in range(2):
-        assert {vp.name async for vp in fs.iterdir(fs.path("/home/user"))} == {"x.txt"}
-    assert mock_ssh.exec_command.call_count == 2
-    commands = [c.args[0] for c in mock_ssh.exec_command.call_args_list]
-    assert sum("stat -L" in c for c in commands) == 1
 
 
 def test_dir_stat_raises_permission_error_when_cd_fails() -> None:

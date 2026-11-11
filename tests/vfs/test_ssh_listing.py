@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Generator
+from collections.abc import Generator, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,11 +26,6 @@ class _AcceptAnyHostKey(paramiko.MissingHostKeyPolicy):
         return
 
 
-def _write_bytes_named(raw_name: bytes, content: bytes) -> None:
-    with open(raw_name, "wb") as handle:
-        handle.write(content)
-
-
 @pytest.fixture(scope="module")
 def server(tmp_path_factory: pytest.TempPathFactory) -> Generator[StubSSHServer, None, None]:
     server = StubSSHServer(root_dir=tmp_path_factory.mktemp("ssh_listing_root"))
@@ -45,6 +41,26 @@ def fs(server: StubSSHServer) -> Generator[SSHFilesystem, None, None]:
     filesystem = SSHFilesystem(hostname=server.host, port=server.port, username=_LOGIN[0], password=_LOGIN[1], ssh_client=client)
     yield filesystem
     client.close()
+
+
+def _write_bytes_named(raw_name: bytes, content: bytes) -> None:
+    """Create a file by raw byte name (sync helper, so async tests do not open files themselves)."""
+    with open(raw_name, "wb") as handle:
+        handle.write(content)
+
+
+@contextmanager
+def _spy_exec(fs: SSHFilesystem) -> Iterator[list[str]]:
+    """Record every command the filesystem sends over SSH while still running it."""
+    commands: list[str] = []
+    original = fs._ssh_client.exec_command
+
+    def spy(command: str) -> tuple[ChannelStdinFile, ChannelFile, ChannelStderrFile]:
+        commands.append(command)
+        return original(command)
+
+    with patch.object(fs._ssh_client, "exec_command", side_effect=spy):
+        yield commands
 
 
 async def _names(fs: SSHFilesystem, directory: Path) -> set[str]:
@@ -68,22 +84,22 @@ async def test_list_directory_with_hostile_path(fs: SSHFilesystem, tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_injection_directory_does_not_execute(fs: SSHFilesystem, tmp_path: Path) -> None:
-    marker = tmp_path / "pwned"
-    # Positive control: the marker mechanism works through a real command.
-    result = fs.exec_command(f"touch {marker}", VPath(tmp_path, fs))
+async def test_injection_directory_does_not_execute(fs: SSHFilesystem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The stub's shell subprocess inherits our cwd: keep a firing injection out of the repository.
+    monkeypatch.chdir(tmp_path)
+    marker = tmp_path / "pwned_rel"
+
+    # Positive control: the same relative-write mechanism as the injection works through a real command.
+    result = fs.exec_command("touch pwned_rel", VPath(tmp_path, fs))
     assert result.exit_code == 0
     assert marker.exists()
     marker.unlink()
 
-    # No "/" allowed in a name: the injected command writes relative to the shell cwd.
     directory = tmp_path / "x; touch pwned_rel; #"
     directory.mkdir()
     (directory / "inner.txt").write_text("x")
     assert await _names(fs, directory) == {"inner.txt"}
     assert not marker.exists()
-    assert not (tmp_path / "pwned_rel").exists()
-    assert not Path("pwned_rel").exists()
 
 
 @pytest.mark.asyncio
@@ -92,11 +108,16 @@ async def test_entries_with_awkward_names_listed_once(fs: SSHFilesystem, tmp_pat
     for name in names:
         (tmp_path / name).write_text(name)
     _write_bytes_named(os.fsencode(tmp_path) + b"/bad\xff", b"bad")
-    expected = {*names, "bad\udcff"}
+    (tmp_path / "sub\nsub").mkdir()
+    expected_sizes = {**{name: len(name) for name in names}, "bad\udcff": 3}
 
     entries = await _entries(fs, tmp_path)
-    assert set(entries) == expected
-    assert entries["a,b"].stat.size == len("a,b")
+    assert set(entries) == {*expected_sizes, "sub\nsub"}
+    for name, size in expected_sizes.items():
+        assert entries[name].stat.size == size, name
+        assert entries[name].stat.is_directory is False, name
+        assert entries[name].stat.is_executable is False, name
+    assert entries["sub\nsub"].stat.is_directory is True
 
 
 @pytest.mark.asyncio
@@ -124,14 +145,7 @@ async def test_listing_reports_kinds_sizes_and_modes(fs: SSHFilesystem, tmp_path
 @pytest.mark.asyncio
 async def test_sh_wrapper_is_used(fs: SSHFilesystem, tmp_path: Path) -> None:
     (tmp_path / "plain").write_text("")
-    commands: list[str] = []
-    original = fs._ssh_client.exec_command
-
-    def spy(command: str) -> tuple[ChannelStdinFile, ChannelFile, ChannelStderrFile]:
-        commands.append(command)
-        return original(command)
-
-    with patch.object(fs._ssh_client, "exec_command", side_effect=spy):
+    with _spy_exec(fs) as commands:
         assert await _names(fs, tmp_path) == {"plain"}
     assert commands
     assert all(c.startswith("sh -c ") for c in commands)
@@ -140,14 +154,7 @@ async def test_sh_wrapper_is_used(fs: SSHFilesystem, tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_one_exec_per_directory_per_follow_mode(fs: SSHFilesystem, tmp_path: Path) -> None:
     (tmp_path / "f").write_text("")
-    commands: list[str] = []
-    original = fs._ssh_client.exec_command
-
-    def spy(command: str) -> tuple[ChannelStdinFile, ChannelFile, ChannelStderrFile]:
-        commands.append(command)
-        return original(command)
-
-    with patch.object(fs._ssh_client, "exec_command", side_effect=spy):
+    with _spy_exec(fs) as commands:
         await _names(fs, tmp_path)
         assert len(commands) == 2
         assert sum("stat -L" in c for c in commands) == 1

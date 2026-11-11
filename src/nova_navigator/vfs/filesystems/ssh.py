@@ -77,6 +77,8 @@ def _quote_path(path: str) -> tuple[str, str]:
     rebuilt with ``printf`` octal escapes plus a trailing sentinel, which keeps trailing
     newlines alive through command substitution.
     """
+    # The strict UTF-8 check and os.fsencode below agree because the filesystem encoding is UTF-8
+    # on the supported platform (Ubuntu); only surrogate escapes fail the strict encode.
     try:
         path.encode("utf-8")
     except UnicodeEncodeError:
@@ -406,7 +408,7 @@ class SSHFilesystem(Filesystem):
         self._assert_vpath(cwd)
         prelude, quoted = _quote_path(cwd.path.as_posix())
         prelude = f"{prelude}\n" if prelude else ""
-        script = f"{prelude}cd {quoted} || exit 1\n{command}"
+        script = f"{prelude}cd -- {quoted} || exit 1\n{command}"
         try:
             stdin, stdout, _ = self._ssh_client.exec_command(f"sh -c {shlex.quote(script)} 2>&1")
         except paramiko.SSHException as exc:
