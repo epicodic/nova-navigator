@@ -1,6 +1,7 @@
 import time
+from bisect import bisect_right
 from collections.abc import Callable, Sequence
-from typing import ClassVar, Final
+from typing import ClassVar, Final, NamedTuple
 
 from rich.segment import Segment
 from rich.style import Style
@@ -12,7 +13,7 @@ from textual.geometry import Size
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
 
-from nova_navigator.scheduler import Job
+from nova_navigator.scheduler import Job, SkippedItem
 from nova_widgets import Button, PopupWidget
 
 from .job_registry import JobRegistry
@@ -46,6 +47,15 @@ def _generate_progress_bar_segments(ratio: float, width: int) -> tuple[str, str]
     return _BAR * full, _HALF_LEFT + _BAR * empty
 
 
+class _ItemLayout(NamedTuple):
+    """Position of one job inside the virtual list, with its skipped snapshot."""
+
+    job: Job
+    skipped: tuple[SkippedItem, ...]
+    top: int
+    height: int
+
+
 class JobListView(ScrollView, can_focus=False):
     """A virtualised list of job rows. No child widgets — all rendering is done in render_line()."""
 
@@ -61,6 +71,7 @@ class JobListView(ScrollView, can_focus=False):
         "job-list--separator",
         "job-list--muted",
         "job-list--error",
+        "job-list--skipped",
         "job-list--bar-fill",
         "job-list--bar-complete",
         "job-list--bar-muted",
@@ -81,6 +92,7 @@ class JobListView(ScrollView, can_focus=False):
     JobListView .job-list--separator  { color: $panel-lighten-2; }
     JobListView .job-list--muted      { color: $text-muted; }
     JobListView .job-list--error      { color: $error; }
+    JobListView .job-list--skipped    { color: $warning; }
     JobListView .job-list--bar-fill   { color: $primary; }
     JobListView .job-list--bar-complete { color: $success; }
     JobListView .job-list--bar-muted  { color: $primary 20%; }
@@ -89,6 +101,8 @@ class JobListView(ScrollView, can_focus=False):
     """
 
     _jobs: list[Job]
+    _layout: list[_ItemLayout]
+    _tops: list[int]
     _start_times: dict[int, float]
     _on_action: Callable[[Job], None]
     _cached_theme: str
@@ -103,6 +117,8 @@ class JobListView(ScrollView, can_focus=False):
     def __init__(self, on_action: Callable[[Job], None] | None = None) -> None:
         super().__init__()
         self._jobs = []
+        self._layout = []
+        self._tops = []
         self._start_times = {}
         self._on_action = on_action if on_action is not None else (lambda _: None)
         self._cached_theme = ""
@@ -119,7 +135,15 @@ class JobListView(ScrollView, can_focus=False):
         live_ids = {id(j) for j in jobs}
         self._start_times = {k: v for k, v in self._start_times.items() if k in live_ids}
         self._jobs = list(jobs)
-        height = max(1, len(jobs) * self.ITEM_HEIGHT)
+        self._layout = []
+        top = 0
+        for job in self._jobs:
+            skipped = () if job.state in (Job.State.RUNNING, Job.State.INITIALIZED) else tuple(job.skipped)
+            height = self.ITEM_HEIGHT + (1 + len(skipped) if skipped else 0)
+            self._layout.append(_ItemLayout(job, skipped, top, height))
+            top += height
+        self._tops = [item.top for item in self._layout]
+        height = max(1, top)
         self.virtual_size = Size(self.size.width or 80, height)
         self.refresh()
 
@@ -186,16 +210,27 @@ class JobListView(ScrollView, can_focus=False):
                 return Strip([Segment(text, style=self.rich_style)])
             return Strip([Segment(" " * (self.size.width or 80), style=self.rich_style)])
 
-        job_index = logical_y // self.ITEM_HEIGHT
-        y_in_item = logical_y % self.ITEM_HEIGHT
-
-        if job_index >= len(self._jobs):
+        located = self._locate(logical_y)
+        if located is None:
             return Strip([Segment(" " * (self.size.width or 80), style=self.rich_style)])
+        job_index, y_in_item = located
+        return self._render_job_line(self._layout[job_index], job_index, y_in_item)
 
-        job = self._jobs[job_index]
-        return self._render_job_line(job, job_index, y_in_item)
+    def _locate(self, logical_y: int) -> tuple[int, int] | None:
+        """Return (job index, line within the item) for a virtual line, or None past the end."""
+        if logical_y < 0:
+            return None
+        job_index = bisect_right(self._tops, logical_y) - 1
+        if job_index < 0:
+            return None
+        item = self._layout[job_index]
+        y_in_item = logical_y - item.top
+        if y_in_item >= item.height:
+            return None
+        return job_index, y_in_item
 
-    def _render_job_line(self, job: Job, job_index: int, y_in_item: int) -> Strip:
+    def _render_job_line(self, layout: _ItemLayout, job_index: int, y_in_item: int) -> Strip:
+        job = layout.job
         full_width = self.size.width or 80
         width = max(1, full_width - self.RIGHT_PADDING)
         is_hovered = job_index == self._hovered_job_index
@@ -203,13 +238,15 @@ class JobListView(ScrollView, can_focus=False):
         bg_style = styles_map.get(job.state, Style())
         base = self.rich_style + bg_style
 
-        if y_in_item == self.ROW_HEIGHT:  # separator line — always neutral panel bg
+        if y_in_item == layout.height - 1:  # separator line — always neutral panel bg
             sep_base = self.rich_style + self._styles_by_state.get(Job.State.RUNNING, Style())
             sep_style = self.get_component_rich_style("job-list--separator", partial=True)
             strip = Strip([Segment("─" * width, style=sep_base + sep_style)])
             return strip.extend_cell_length(full_width, style=sep_base)
 
-        if y_in_item == 0:
+        if y_in_item > self.ROW_HEIGHT - 1:  # skipped section between the bars and the separator
+            strip = self._render_skipped_line(layout.skipped, y_in_item - self.ROW_HEIGHT, base, width)
+        elif y_in_item == 0:
             strip = self._render_header_line(job, job_index, base, width)
         elif y_in_item == 1:
             strip = self._render_item_line(job, base, width)
@@ -255,6 +292,23 @@ class JobListView(ScrollView, can_focus=False):
         if len(item) > available:
             item = "…" + item[-(available - 1) :]
         text = (indent + item).ljust(width)
+        return Strip([Segment(text, style=base + muted)])
+
+    def _render_skipped_line(self, skipped: tuple[SkippedItem, ...], row: int, base: Style, width: int) -> Strip:
+        """Render the skipped section: row 0 is the header, row n the n-th skipped item."""
+        indent = "  "
+        if row == 0:
+            warn = self.get_component_rich_style("job-list--skipped", partial=True)
+            text = f"Skipped ({len(skipped)}):"[:width].ljust(width)
+            return Strip([Segment(text, style=base + warn)])
+        entry = skipped[row - 1]
+        suffix = f" — {entry.reason}" if entry.reason else ""
+        item_width = max(1, width - len(indent) - len(suffix))
+        item = entry.item
+        if len(item) > item_width:
+            item = "…" + item[-(item_width - 1) :] if item_width > 1 else "…"
+        muted = self.get_component_rich_style("job-list--muted", partial=True)
+        text = (indent + item + suffix)[:width].ljust(width)
         return Strip([Segment(text, style=base + muted)])
 
     def _render_step_bar_line(self, job: Job, base: Style, width: int) -> Strip:
@@ -357,10 +411,10 @@ class JobListView(ScrollView, can_focus=False):
     def _on_mouse_move(self, event: MouseMove) -> None:
         _scroll_x, scroll_y = self.scroll_offset
         logical_y = event.y + scroll_y
-        job_index = logical_y // self.ITEM_HEIGHT
-        y_in_item = logical_y % self.ITEM_HEIGHT
+        located = self._locate(logical_y)
+        job_index, y_in_item = located if located is not None else (None, -1)
         btn_width = 3
-        new_hover = job_index if 0 <= job_index < len(self._jobs) else None
+        new_hover = job_index
         content_right = (self.size.width or 80) - self.RIGHT_PADDING
         new_btn = new_hover is not None and y_in_item == 0 and event.x >= content_right - btn_width
         if new_hover != self._hovered_job_index or new_btn != self._hovered_btn:
