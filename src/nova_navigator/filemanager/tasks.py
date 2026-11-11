@@ -289,6 +289,10 @@ async def _move_dir_contents(
             if options.filter is not None and not options.filter.matches(f):
                 ctx.status.update_progress(inc_completed=1)
                 continue
+            if not same_device and _is_unsupported_link(f.stat):
+                _logger.warning("Skipping link %s: moving links across filesystems is not supported yet", f.path)
+                ctx.status.update_progress(inc_completed=1)
+                continue
             f_dst = dst_root / f.name
             if same_device:
                 f_dst_stat = f_dst.stat_or_none
@@ -339,7 +343,7 @@ async def _move_path(
     ctx.status.set_current_item(src_path.uri)
 
     # Cache is_directory before any rename/remove that might invalidate the path.
-    is_dir = src_path.stat.is_directory
+    is_dir = _is_real_dir(src_path.stat)
 
     dst_stat = dst_path.stat_or_none
     actual_dst = dst_path / src_path.name if (dst_stat is not None and dst_stat.is_directory) else dst_path
@@ -354,7 +358,7 @@ async def _move_path(
 
     if same_device:
         actual_dst_stat = actual_dst.stat_or_none
-        if is_dir and actual_dst_stat is not None and actual_dst_stat.is_directory:
+        if is_dir and actual_dst_stat is not None and _is_real_dir(actual_dst_stat):
             # Destination directory already exists: walk per-file for fine-grained overwrite policy.
             # _move_dir_contents adds total and completed incrementally.
             await _move_dir_contents(ctx, src_path, actual_dst, options, same_device=True)
@@ -374,7 +378,7 @@ async def _move_path(
                         _logger.debug("move_path skip (user declined) %s", actual_dst.path)
                         ctx.status.update_progress(inc_completed=1)
                         return
-                if actual_dst_stat.is_directory:
+                if _is_real_dir(actual_dst_stat):
                     await erase_files(ctx, [actual_dst], EraseFilesOptions(ask_before_erase=False))
                 else:
                     actual_dst.filesystem.remove(actual_dst)
@@ -384,6 +388,8 @@ async def _move_path(
         if is_dir:
             # _move_dir_contents adds total and completed incrementally.
             await _move_dir_contents(ctx, src_path, actual_dst, options, same_device=False)
+        elif _is_unsupported_link(src_path.stat):
+            _logger.warning("Skipping link %s: moving links across filesystems is not supported yet", src_path.path)
         else:
             copied = await copy_file(ctx, src_path, actual_dst, options)
             if copied:
