@@ -8,6 +8,7 @@ from nova_navigator.scheduler.context import (
 )
 from nova_navigator.scheduler.job import Job
 from nova_navigator.scheduler.scheduler import AsyncTaskScheduler
+from nova_navigator.scheduler.skipped import SkippedItem
 
 __all__ = [
     "AsyncTaskScheduler",
@@ -15,6 +16,7 @@ __all__ = [
     "Job",
     "Progress",
     "ResponseRequest",
+    "SkippedItem",
     "TaskCancelled",
     "TaskContext",
     "TaskStatus",

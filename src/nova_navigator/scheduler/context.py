@@ -6,6 +6,8 @@ from typing import Any
 
 from nova_widgets import Response
 
+from .skipped import SkippedItem
+
 
 @dataclass(init=False)
 class ResponseRequest:
@@ -95,10 +97,26 @@ class TaskStatus:
         self._cancel_event = cancel_event
         self._progress_callback = progress_callback
         self._progress = Progress()
+        self._skipped: list[SkippedItem] = []
+        self._skipped_lock = threading.Lock()
 
     @property
     def progress(self) -> Progress:
         return self._progress
+
+    def report_skipped(self, item: str, reason: str) -> None:
+        """Record that *item* was skipped for *reason*; thread-safe and ordered.
+
+        Deliberately does not invoke the progress callback.
+        """
+        with self._skipped_lock:
+            self._skipped.append(SkippedItem(item, reason))
+
+    @property
+    def skipped(self) -> tuple[SkippedItem, ...]:
+        """Snapshot of all skipped items reported so far, in report order."""
+        with self._skipped_lock:
+            return tuple(self._skipped)
 
     @property
     def cancel_event(self) -> threading.Event | None:
@@ -224,6 +242,10 @@ class TaskContext:
     def set_current_item(self, item: str) -> None:
         """Convenience wrapper — delegates to :meth:`TaskStatus.set_current_item`."""
         self._status.set_current_item(item)
+
+    def report_skipped(self, item: str, reason: str) -> None:
+        """Convenience wrapper — delegates to :meth:`TaskStatus.report_skipped`."""
+        self._status.report_skipped(item, reason)
 
     async def subtask[R](self, coro: Coroutine[Any, Any, R]) -> asyncio.Task[R]:
         """Start *coro* as a concurrent asyncio task and yield control so it can begin."""
