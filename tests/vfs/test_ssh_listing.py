@@ -185,10 +185,37 @@ async def test_missing_directory_lists_empty(fs: SSHFilesystem, tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_broken_symlink_listing_still_returns_other_entries(fs: SSHFilesystem, tmp_path: Path) -> None:
+async def test_iterdir_broken_symlink_listed_with_flag(fs: SSHFilesystem, tmp_path: Path) -> None:
     (tmp_path / "ok").write_text("x")
     (tmp_path / "broken").symlink_to("does-not-exist")
-    assert await _names(fs, tmp_path) == {"ok"}
+    entries = {vp.name: vp.stat async for vp in VPath(tmp_path, fs).iterdir()}
+    assert set(entries) == {"ok", "broken"}
+    assert entries["broken"].is_symlink is True
+    assert entries["broken"].is_broken_symlink is True
+    assert entries["broken"].is_directory is False
+    assert entries["ok"].is_symlink is False
+    assert entries["ok"].is_broken_symlink is False
+
+
+@pytest.mark.asyncio
+async def test_iterdir_self_loop_symlink_listed_as_broken(fs: SSHFilesystem, tmp_path: Path) -> None:
+    (tmp_path / "loop").symlink_to("loop")
+    entries = {vp.name: vp.stat async for vp in VPath(tmp_path, fs).iterdir()}
+    assert entries["loop"].is_symlink is True
+    assert entries["loop"].is_broken_symlink is True
+
+
+def test_stat_broken_symlink_ssh(fs: SSHFilesystem, tmp_path: Path) -> None:
+    (tmp_path / "broken").symlink_to("does-not-exist")
+    st = fs.stat(VPath(tmp_path / "broken", fs))
+    assert st.is_symlink is True
+    assert st.is_broken_symlink is True
+    assert st.is_directory is False
+
+
+def test_stat_missing_name_still_raises_ssh(fs: SSHFilesystem, tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        fs.stat(VPath(tmp_path / "nope", fs))
 
 
 @pytest.fixture

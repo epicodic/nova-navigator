@@ -124,6 +124,21 @@ class DeleteFilesDialog(Dialog):
         self.paths = paths
         super().__init__(title="Delete", id=id, buttons=[DefaultButton.YES, DefaultButton.NO])
 
+    @staticmethod
+    def _is_link(path: VPath) -> bool:
+        """Return whether *path* is known to be a link; uses only the cached stat (no I/O on the UI thread)."""
+        stat = path.cached_stat
+        return stat is not None and stat.is_symlink is True
+
     def compose_content(self) -> ComposeResult:
-        file = self.paths[0] if len(self.paths) == 1 else f"{len(self.paths)} files"
-        yield Static(f"Delete {file}?")
+        link_count = sum(1 for path in self.paths if self._is_link(path))
+        if len(self.paths) == 1:
+            if link_count == 1:
+                yield Static(f"Delete link '{self.paths[0]}'?")
+                yield Static("Only the link is deleted; what it points to is not touched.")
+            else:
+                yield Static(f"Delete {self.paths[0]}?")
+        else:
+            yield Static(f"Delete {len(self.paths)} files?")
+            if link_count > 0:
+                yield Static(f"{link_count} of them are links; only the links are deleted, not what they point to.")

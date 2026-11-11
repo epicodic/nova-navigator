@@ -14,6 +14,17 @@ from ..vfs.types import Stat
 
 _logger = logging.getLogger(__name__)
 
+
+def _is_real_dir(stat: Stat) -> bool:
+    """Return whether *stat* describes a directory that is not a symbolic link (link stat first)."""
+    return stat.is_directory and not stat.is_symlink
+
+
+def _is_unsupported_link(stat: Stat) -> bool:
+    """Return whether *stat* is a link to a directory or a broken/looping link (links are not copied before ACT4)."""
+    return stat.is_symlink and (stat.is_directory or stat.is_broken_symlink)
+
+
 CHUNK_SIZE = 64 * 1024  # 64 KB
 
 _DUMMY_ITEMS = 3
@@ -59,6 +70,8 @@ class EraseFilesOptions:
     """Options that control the behaviour of file erase operations."""
 
     ask_before_erase: bool = True
+    refresh_stat: bool = True
+    """Refresh the cached stat of each path before erasing; internal children listings turn it off."""
 
 
 async def copy_file(
@@ -147,6 +160,10 @@ async def _copy_file_step(
     dst: VPath,
     options: FileCopyOptions,
 ) -> None:
+    if _is_unsupported_link(src.stat):
+        _logger.warning("Skipping link %s: copying links is not supported yet", src.path)
+        ctx.status.update_progress(inc_completed=1)
+        return
     if options.filter is not None and not options.filter.matches(src):
         ctx.status.update_progress(inc_completed=1)
         return
@@ -163,7 +180,7 @@ async def _copy_dir(
 ) -> None:
     file_tasks: list[asyncio.Task[None]] = []
     dir_stats: list[tuple[VPath, Stat]] = []
-    async for src_root, src_dirs, src_files in src_path.walk():
+    async for src_root, src_dirs, src_files, src_links in src_path.walk():
         ctx.status.check_cancelled()
         dst_root = dst_path / src_root.path.relative_to(src_path.path)
         with contextlib.suppress(FileExistsError):
@@ -173,8 +190,8 @@ async def _copy_dir(
         if src_root.path != src_path.path:
             ctx.status.update_progress(inc_completed=1)
         dir_stats.append((dst_root, src_root.stat))
-        ctx.status.update_progress(inc_total=len(src_dirs) + len(src_files))
-        for f in src_files:
+        ctx.status.update_progress(inc_total=len(src_dirs) + len(src_files) + len(src_links))
+        for f in (*src_files, *src_links):
             ctx.status.check_cancelled()
             t = await ctx.subtask(_copy_file_step(ctx, f, dst_root / f.name, options))
             file_tasks.append(t)
@@ -207,12 +224,12 @@ async def copy_files(
     dst_stat = destination.stat_or_none
     dst_is_directory = dst_stat is not None and dst_stat.is_directory
 
-    if len(src_paths) == 1 and not dst_is_directory and not src_paths[0].stat.is_directory:
+    if len(src_paths) == 1 and not dst_is_directory and not _is_real_dir(src_paths[0].stat):
         ctx.status.update_progress(inc_total=1)
         await _copy_file_step(ctx, src_paths[0], destination, options)
         return
 
-    if len(src_paths) == 1 and not dst_is_directory and src_paths[0].stat.is_directory:
+    if len(src_paths) == 1 and not dst_is_directory and _is_real_dir(src_paths[0].stat):
         ctx.status.update_progress(inc_total=1)
         await _copy_dir(ctx, src_paths[0], destination, dst_filesystem, options)
         return
@@ -225,7 +242,7 @@ async def copy_files(
     for src_path in src_paths:
         ctx.status.check_cancelled()
         dst_path = destination / src_path.name
-        if src_path.stat.is_directory:
+        if _is_real_dir(src_path.stat):
             t = await ctx.subtask(_copy_dir(ctx, src_path, dst_path, dst_filesystem, options))
         else:
             t = await ctx.subtask(_copy_file_step(ctx, src_path, dst_path, options))
@@ -247,13 +264,14 @@ async def _move_dir_contents(
     Used when the destination directory already exists (so an atomic rename of
     the whole tree is not possible). Files are processed individually so that
     the overwrite policy is applied at file granularity. Source directories are
-    removed bottom-up after their contents are moved.
+    removed bottom-up after their contents are moved. Links are moved as entries
+    (renamed on the same device).
     """
     with contextlib.suppress(FileExistsError):
         actual_dst.filesystem.mkdir(actual_dst)
     src_dirs: list[VPath] = []
     dir_stats: list[tuple[VPath, Stat]] = []
-    async for src_root, walk_subdirs, src_files in src_path.walk():
+    async for src_root, walk_subdirs, src_files, src_links in src_path.walk():
         ctx.status.check_cancelled()
         dst_root = actual_dst / src_root.path.relative_to(src_path.path)
         with contextlib.suppress(FileExistsError):
@@ -264,11 +282,15 @@ async def _move_dir_contents(
             ctx.status.update_progress(inc_completed=1)
         src_dirs.append(src_root)
         dir_stats.append((dst_root, src_root.stat))
-        ctx.status.update_progress(inc_total=len(walk_subdirs) + len(src_files))
-        for f in src_files:
+        ctx.status.update_progress(inc_total=len(walk_subdirs) + len(src_files) + len(src_links))
+        for f in (*src_files, *src_links):
             ctx.status.check_cancelled()
             ctx.status.set_current_item(f.uri)
             if options.filter is not None and not options.filter.matches(f):
+                ctx.status.update_progress(inc_completed=1)
+                continue
+            if not same_device and _is_unsupported_link(f.stat):
+                _logger.warning("Skipping link %s: moving links across filesystems is not supported yet", f.path)
                 ctx.status.update_progress(inc_completed=1)
                 continue
             f_dst = dst_root / f.name
@@ -321,7 +343,7 @@ async def _move_path(
     ctx.status.set_current_item(src_path.uri)
 
     # Cache is_directory before any rename/remove that might invalidate the path.
-    is_dir = src_path.stat.is_directory
+    is_dir = _is_real_dir(src_path.stat)
 
     dst_stat = dst_path.stat_or_none
     actual_dst = dst_path / src_path.name if (dst_stat is not None and dst_stat.is_directory) else dst_path
@@ -336,7 +358,7 @@ async def _move_path(
 
     if same_device:
         actual_dst_stat = actual_dst.stat_or_none
-        if is_dir and actual_dst_stat is not None and actual_dst_stat.is_directory:
+        if is_dir and actual_dst_stat is not None and _is_real_dir(actual_dst_stat):
             # Destination directory already exists: walk per-file for fine-grained overwrite policy.
             # _move_dir_contents adds total and completed incrementally.
             await _move_dir_contents(ctx, src_path, actual_dst, options, same_device=True)
@@ -356,7 +378,7 @@ async def _move_path(
                         _logger.debug("move_path skip (user declined) %s", actual_dst.path)
                         ctx.status.update_progress(inc_completed=1)
                         return
-                if actual_dst_stat.is_directory:
+                if _is_real_dir(actual_dst_stat):
                     await erase_files(ctx, [actual_dst], EraseFilesOptions(ask_before_erase=False))
                 else:
                     actual_dst.filesystem.remove(actual_dst)
@@ -366,6 +388,8 @@ async def _move_path(
         if is_dir:
             # _move_dir_contents adds total and completed incrementally.
             await _move_dir_contents(ctx, src_path, actual_dst, options, same_device=False)
+        elif _is_unsupported_link(src_path.stat):
+            _logger.warning("Skipping link %s: moving links across filesystems is not supported yet", src_path.path)
         else:
             copied = await copy_file(ctx, src_path, actual_dst, options)
             if copied:
@@ -409,15 +433,31 @@ async def _erase_path(
 ) -> None:
     """Erase a single *path*, prompting the user if it is a non-empty directory.
 
-    Files are removed directly. Directories are erased recursively via
-    :func:`erase_files`; if non-empty and *options.ask_before_erase* is set,
-    the user is asked to confirm before deletion proceeds. Increments the
-    overall completed counter by one when done (including when skipped).
+    Links (to files, directories, broken or looping) are removed themselves
+    without being followed or prompted for. Files are removed directly.
+    Real directories are erased recursively via :func:`erase_files`; if
+    non-empty and *options.ask_before_erase* is set, the user is asked to
+    confirm before deletion proceeds. Increments the overall completed
+    counter by one when done (including when skipped).
     """
     ctx.status.check_cancelled()
     ctx.status.set_current_item(path.uri)
     _logger.debug("erase_path %s", path.path)
-    if path.stat.is_directory:
+    if options.refresh_stat:
+        # The panel's stat may be stale (a directory replaced by a link); SSH caches listings per directory, so drop the cache first.
+        path.filesystem.refresh(path.parent)
+        try:
+            await path.fresh_stat()
+        except FileNotFoundError:
+            _logger.debug("erase_path vanished %s", path.path)
+            ctx.status.update_progress(inc_completed=1)
+            return
+    stat = path.stat
+    if stat.is_symlink:
+        # A link of any kind is removed itself; its target is never listed, stat-followed or touched.
+        path.filesystem.remove(path)
+    elif stat.is_directory:
+        path.filesystem.refresh(path)
         children = [child async for child in path.iterdir()]
         if len(children) > 0 and options.ask_before_erase:
             response = await ctx.request_response(
@@ -429,7 +469,7 @@ async def _erase_path(
                 _logger.debug("erase_path skip (user declined) %s", path.path)
                 ctx.status.update_progress(inc_completed=1)
                 return
-        await erase_files(ctx, children, EraseFilesOptions(ask_before_erase=False))
+        await erase_files(ctx, children, EraseFilesOptions(ask_before_erase=False, refresh_stat=False))
         path.filesystem.rmdir(path)
     else:
         path.filesystem.remove(path)

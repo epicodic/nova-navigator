@@ -18,6 +18,7 @@ from nova_navigator.archive.zip_archive import ZipArchive
 from nova_navigator.vfs.filesystems.archive import ArchiveFilesystem
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_navigator.vfs.vpath import VPath
+from tests._utils.tar_fixtures import build_tar_with_links
 
 # ---------------------------------------------------------------------------
 # Archive structure used by all fixtures
@@ -476,3 +477,52 @@ def test_write_through_archive_filesystem_targets_dotslash_prefixed_member(tmp_p
         member = tar.extractfile("./dir/a.txt")
         assert member is not None
         assert member.read() == b"updated"
+
+
+def test_tar_hard_link_stat_not_symlink_and_size(tmp_path: Path) -> None:
+    build_tar_with_links(tmp_path / "l.tar.gz")
+    st = TarArchive(tmp_path / "l.tar.gz", mode="r").stats(PurePath("b.txt"))
+    assert st.is_symlink is False
+    assert st.is_directory is False
+    assert st.size == 5
+
+
+def test_tar_hard_link_read_content(tmp_path: Path) -> None:
+    build_tar_with_links(tmp_path / "l.tar.gz")
+    reader = TarArchive(tmp_path / "l.tar.gz", mode="r").read(PurePath("b.txt"))
+    try:
+        assert reader.read(100) == b"hello"
+    finally:
+        reader.close()
+
+
+def test_tar_hard_link_to_later_member_reads_content(tmp_path: Path) -> None:
+    build_tar_with_links(tmp_path / "l.tar.gz", link_before_target=True)
+    archive = TarArchive(tmp_path / "l.tar.gz", mode="r")
+    assert archive.stats(PurePath("b.txt")).size == 5
+    reader = archive.read(PurePath("b.txt"))
+    try:
+        assert reader.read(100) == b"hello"
+    finally:
+        reader.close()
+
+
+def test_tar_symlink_member_still_symlink(tmp_path: Path) -> None:
+    build_tar_with_links(tmp_path / "l.tar.gz")
+    st = TarArchive(tmp_path / "l.tar.gz", mode="r").stats(PurePath("s.txt"))
+    assert st.is_symlink is True
+    assert st.size == 0
+
+
+def test_tar_dangling_hard_link(tmp_path: Path) -> None:
+    path = tmp_path / "d.tar.gz"
+    with tarfile.open(path, mode="w:gz") as tar:
+        info = tarfile.TarInfo("b.txt")
+        info.type = tarfile.LNKTYPE
+        info.linkname = "missing.txt"
+        tar.addfile(info)
+    archive = TarArchive(path, mode="r")
+    st = archive.stats(PurePath("b.txt"))
+    assert st.is_symlink is False
+    with pytest.raises(FileNotFoundError):
+        archive.read(PurePath("b.txt"))

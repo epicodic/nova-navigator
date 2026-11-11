@@ -15,6 +15,9 @@ def _normalize_member_name(name: str) -> str:
     return name.removeprefix("./")
 
 
+_MAX_HARD_LINK_DEPTH = 16
+
+
 class TarArchive(Archive):
     """A class providing an abstraction for TAR archive files."""
 
@@ -83,14 +86,36 @@ class TarArchive(Archive):
                 )
             raise FileNotFoundError(f"Path '{path}', {path.name} not found in archive '{self._archive_path}'")
 
+        size = member.size
+        is_executable = member.mode & 0o111 != 0
+        if member.islnk():
+            resolved = self._resolve_hard_link(member)
+            if resolved is not None:
+                size = resolved.size
+                is_executable = resolved.mode & 0o111 != 0
         return Stat(
-            size=member.size,
+            size=size,
             modified=member.mtime,
             is_hidden=path.name.startswith("."),
             is_directory=member.isdir(),
-            is_executable=member.mode & 0o111 != 0,
-            is_symlink=member.issym() or member.islnk(),
+            is_executable=is_executable,
+            is_symlink=member.issym(),
         )
+
+    def _resolve_hard_link(self, member: tarfile.TarInfo) -> tarfile.TarInfo | None:
+        """Follow hard-link members to the regular member holding the data.
+
+        Returns ``None`` if the chain is unresolved (dangling) or loops.
+        """
+        current = member
+        for _ in range(_MAX_HARD_LINK_DEPTH):
+            if not current.islnk():
+                return current if current.isreg() else None
+            target = self._find_member(PurePath(_normalize_member_name(current.linkname)))
+            if target is None:
+                return None
+            current = target
+        return None
 
     @override
     def read(self, path: PurePath) -> StreamReaderLike:
@@ -103,6 +128,10 @@ class TarArchive(Archive):
             raise FileNotFoundError(path)
         if member.isdir():
             raise IsADirectoryError(path)
+        if member.islnk():
+            resolved = self._resolve_hard_link(member)
+            if resolved is not None:
+                member = resolved
         try:
             with self._read_lock:
                 stream = self._tar_file.extractfile(member)

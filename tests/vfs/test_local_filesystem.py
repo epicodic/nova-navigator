@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import stat as stat_mod
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -196,6 +198,25 @@ def test_stat_broken_symlink(tmp_path: Path) -> None:
     assert s.is_broken_symlink is True
 
 
+def test_local_stat_self_loop_link_is_broken(tmp_path: Path) -> None:
+    fs = _fs()
+    (tmp_path / "a").symlink_to("a")
+    s = fs.stat(fs.path(tmp_path / "a"))
+    assert s.is_symlink is True
+    assert s.is_broken_symlink is True
+    assert s.is_directory is False
+
+
+@pytest.mark.asyncio
+async def test_local_iterdir_self_loop_link_is_broken(tmp_path: Path) -> None:
+    fs = _fs()
+    (tmp_path / "a").symlink_to("a")
+    (tmp_path / "ok").write_text("x")
+    entries = {vp.name: vp.stat async for vp in fs.path(tmp_path).iterdir()}
+    assert entries["a"].is_symlink is True
+    assert entries["a"].is_broken_symlink is True
+
+
 # ── read ──────────────────────────────────────────────────────────────────────
 
 
@@ -343,3 +364,55 @@ def test_readlink_returns_target(tmp_path: Path) -> None:
     link = tmp_path / "link.txt"
     link.symlink_to(target)
     assert fs.readlink(fs.path(link)) == str(target)
+
+
+# ── links with unreadable targets ─────────────────────────────────────────────
+
+
+@pytest.fixture
+def locked_link(tmp_path: Path) -> Generator[Path, None, None]:
+    if os.geteuid() == 0:
+        pytest.skip("permissions are not enforced for root")
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "target.txt").write_text("secret")
+    link = tmp_path / "link"
+    link.symlink_to(locked / "target.txt")
+    locked.chmod(0)
+    try:
+        yield link
+    finally:
+        locked.chmod(0o700)
+
+
+def test_stat_link_to_unreadable_target_is_broken_symlink(locked_link: Path) -> None:
+    fs = _fs()
+    st = fs.stat(fs.path(str(locked_link)))
+    assert st.is_symlink is True
+    assert st.is_broken_symlink is True
+
+
+def test_iterdir_link_to_unreadable_target_is_broken_symlink(locked_link: Path) -> None:
+    fs = _fs()
+
+    async def collect() -> list[Stat]:
+        return [p.stat async for p in fs.iterdir(fs.path(str(locked_link.parent))) if p.name == "link"]
+
+    stats = asyncio.run(collect())
+    assert len(stats) == 1
+    assert stats[0].is_symlink is True
+    assert stats[0].is_broken_symlink is True
+
+
+def test_stat_unreadable_non_link_still_raises(tmp_path: Path) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("permissions are not enforced for root")
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "f.txt").write_text("x")
+    locked.chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            _fs().stat(_fs().path(str(locked / "f.txt")))
+    finally:
+        locked.chmod(0o700)

@@ -7,6 +7,7 @@ from textual.widgets import Collapsible, Input, Static
 from nova_navigator.dialogs.files_dialog import CopyMoveFilesDialog, DeleteFilesDialog
 from nova_navigator.file_filter import FilenamePatternFilter
 from nova_navigator.vfs.filesystem import VPath
+from nova_navigator.vfs.types import Stat
 
 
 def _make_vpath(name: str, compact: str = "/some/path") -> MagicMock:
@@ -34,7 +35,7 @@ def _make_copy_app(
 
 
 def _make_delete_app(
-    paths: list[MagicMock],
+    paths: list[MagicMock] | list[VPath],
 ) -> tuple[DeleteFilesDialog, type[App[None]]]:
     dialog = DeleteFilesDialog(paths)  # type: ignore
 
@@ -255,3 +256,78 @@ async def test_delete_dialog_multiple_files_message() -> None:
         await pilot.pause()
         # compose_content uses len(paths) — just verify dialog mounts cleanly
         assert dialog.query_one("#YES") is not None
+
+
+def _make_link_vpath(name: str, *, is_symlink: bool = True) -> MagicMock:
+    vp = _make_vpath(name)
+    vp.__str__.return_value = f"/some/path/{name}"
+    vp.cached_stat = Stat(is_symlink=is_symlink, is_directory=True)
+    return vp
+
+
+def _texts(dialog: DeleteFilesDialog) -> list[str]:
+    return [str(s.content) for s in dialog.query(Static)]
+
+
+@pytest.mark.asyncio
+async def test_delete_dialog_link_wording() -> None:
+    dialog, _App = _make_delete_app([_make_link_vpath("lnk")])
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        texts = _texts(dialog)
+        assert any(t.startswith("Delete link '") and "lnk" in t for t in texts)
+        assert any("Only the link is deleted" in t for t in texts)
+
+
+@pytest.mark.asyncio
+async def test_delete_dialog_regular_file_unchanged() -> None:
+    dialog, _App = _make_delete_app([_make_link_vpath("f", is_symlink=False)])
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        texts = _texts(dialog)
+        assert "Delete /some/path/f?" in texts
+        assert not any("link" in t for t in texts)
+
+
+@pytest.mark.asyncio
+async def test_delete_dialog_mixed_selection_mentions_links() -> None:
+    paths = [_make_link_vpath("a"), _make_link_vpath("b"), _make_link_vpath("c", is_symlink=False)]
+    dialog, _App = _make_delete_app(paths)
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        texts = _texts(dialog)
+        assert "Delete 3 files?" in texts
+        assert "2 of them are links; only the links are deleted, not what they point to." in texts
+
+
+@pytest.mark.asyncio
+async def test_delete_dialog_multiple_no_links_unchanged() -> None:
+    dialog, _App = _make_delete_app([_make_vpath("a"), _make_vpath("b")])
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        texts = _texts(dialog)
+        assert "Delete 2 files?" in texts
+        assert not any("links" in t for t in texts)
+
+
+@pytest.mark.asyncio
+async def test_delete_dialog_does_no_filesystem_io() -> None:
+    fs = MagicMock()
+    fs.stat = MagicMock(return_value=Stat())
+    cached_link = VPath("/x/cached", fs)
+    cached_link._stat = Stat(is_symlink=True, is_directory=True)
+    uncached = VPath("/x/uncached", fs)
+
+    link_dialog, link_app = _make_delete_app([cached_link])
+    async with link_app().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        assert any(t.startswith("Delete link '") for t in _texts(link_dialog))
+
+    plain_dialog, plain_app = _make_delete_app([uncached])
+    async with plain_app().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        texts = _texts(plain_dialog)
+        assert not any("link" in t for t in texts)
+        assert any(t.startswith("Delete ") for t in texts)
+
+    fs.stat.assert_not_called()

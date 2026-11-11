@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import logging
 import os
 import signal
@@ -25,6 +26,8 @@ from ..vpath import VPath
 
 logging.getLogger("watchdog").setLevel(logging.WARNING)
 
+_BROKEN_LINK_ERRNOS = frozenset({errno.ENOENT, errno.ELOOP, errno.ENOTDIR})
+_UNREADABLE_LINK_ERRNOS = frozenset({errno.EACCES})
 _EXEC_POLL_INTERVAL = 0.05
 _EXEC_READER_JOIN_TIMEOUT = 1.0
 _EXEC_CHUNK_SIZE = 65536
@@ -76,6 +79,16 @@ def _device_of(path: PurePath) -> int | None:
         except OSError:
             return None
     return None
+
+
+def _is_broken_link_error(exc: OSError, lstat: os.stat_result) -> bool:
+    """Tell whether following a link failed because its target is missing or unreadable.
+
+    An unreadable target (EACCES) only counts when *lstat* is a symlink; otherwise the error is real.
+    """
+    if exc.errno in _BROKEN_LINK_ERRNOS:
+        return True
+    return exc.errno in _UNREADABLE_LINK_ERRNOS and S_ISLNK(lstat.st_mode)
 
 
 class _LocalAtomicWriter:
@@ -242,7 +255,9 @@ class LocalFilesystem(Filesystem):
                     try:
                         fstat = entry.stat(follow_symlinks=True)
                         is_broken_symlink = False
-                    except FileNotFoundError:
+                    except OSError as exc:
+                        if not _is_broken_link_error(exc, lstat):
+                            raise
                         fstat = lstat
                         is_broken_symlink = True
                     is_hidden = entry.name.startswith(".") if os.name != "nt" else bool(lstat.st_file_attributes & 0x2)
@@ -336,7 +351,9 @@ class LocalFilesystem(Filesystem):
         try:
             stat = os.stat(path, follow_symlinks=True)
             is_broken_symlink = False
-        except FileNotFoundError:
+        except OSError as exc:
+            if not _is_broken_link_error(exc, lstat):
+                raise
             stat = lstat
             is_broken_symlink = True
 
