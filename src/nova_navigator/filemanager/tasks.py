@@ -70,6 +70,8 @@ class EraseFilesOptions:
     """Options that control the behaviour of file erase operations."""
 
     ask_before_erase: bool = True
+    refresh_stat: bool = True
+    """Refresh the cached stat of each path before erasing; internal children listings turn it off."""
 
 
 async def copy_file(
@@ -425,15 +427,26 @@ async def _erase_path(
 ) -> None:
     """Erase a single *path*, prompting the user if it is a non-empty directory.
 
-    Files are removed directly. Directories are erased recursively via
-    :func:`erase_files`; if non-empty and *options.ask_before_erase* is set,
-    the user is asked to confirm before deletion proceeds. Increments the
-    overall completed counter by one when done (including when skipped).
+    Links (to files, directories, broken or looping) are removed themselves
+    without being followed or prompted for. Files are removed directly.
+    Real directories are erased recursively via :func:`erase_files`; if
+    non-empty and *options.ask_before_erase* is set, the user is asked to
+    confirm before deletion proceeds. Increments the overall completed
+    counter by one when done (including when skipped).
     """
     ctx.status.check_cancelled()
     ctx.status.set_current_item(path.uri)
     _logger.debug("erase_path %s", path.path)
-    if path.stat.is_directory:
+    if options.refresh_stat:
+        # The panel's stat may be stale (a directory replaced by a link); SSH caches listings per directory, so drop the cache first.
+        path.filesystem.refresh(path.parent)
+        await path.fresh_stat()
+    stat = path.stat
+    if stat.is_symlink:
+        # A link of any kind is removed itself; its target is never listed, stat-followed or touched.
+        path.filesystem.remove(path)
+    elif stat.is_directory:
+        path.filesystem.refresh(path)
         children = [child async for child in path.iterdir()]
         if len(children) > 0 and options.ask_before_erase:
             response = await ctx.request_response(
@@ -445,7 +458,7 @@ async def _erase_path(
                 _logger.debug("erase_path skip (user declined) %s", path.path)
                 ctx.status.update_progress(inc_completed=1)
                 return
-        await erase_files(ctx, children, EraseFilesOptions(ask_before_erase=False))
+        await erase_files(ctx, children, EraseFilesOptions(ask_before_erase=False, refresh_stat=False))
         path.filesystem.rmdir(path)
     else:
         path.filesystem.remove(path)
