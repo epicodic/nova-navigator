@@ -196,6 +196,25 @@ def test_stat_broken_symlink(tmp_path: Path) -> None:
     assert s.is_broken_symlink is True
 
 
+def test_local_stat_self_loop_link_is_broken(tmp_path: Path) -> None:
+    fs = _fs()
+    (tmp_path / "a").symlink_to("a")
+    s = fs.stat(fs.path(tmp_path / "a"))
+    assert s.is_symlink is True
+    assert s.is_broken_symlink is True
+    assert s.is_directory is False
+
+
+@pytest.mark.asyncio
+async def test_local_iterdir_self_loop_link_is_broken(tmp_path: Path) -> None:
+    fs = _fs()
+    (tmp_path / "a").symlink_to("a")
+    (tmp_path / "ok").write_text("x")
+    entries = {vp.name: vp.stat async for vp in fs.path(tmp_path).iterdir()}
+    assert entries["a"].is_symlink is True
+    assert entries["a"].is_broken_symlink is True
+
+
 # ── read ──────────────────────────────────────────────────────────────────────
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import logging
 import os
 import signal
@@ -25,6 +26,7 @@ from ..vpath import VPath
 
 logging.getLogger("watchdog").setLevel(logging.WARNING)
 
+_BROKEN_LINK_ERRNOS = frozenset({errno.ENOENT, errno.ELOOP, errno.ENOTDIR})
 _EXEC_POLL_INTERVAL = 0.05
 _EXEC_READER_JOIN_TIMEOUT = 1.0
 _EXEC_CHUNK_SIZE = 65536
@@ -242,7 +244,9 @@ class LocalFilesystem(Filesystem):
                     try:
                         fstat = entry.stat(follow_symlinks=True)
                         is_broken_symlink = False
-                    except FileNotFoundError:
+                    except OSError as exc:
+                        if exc.errno not in _BROKEN_LINK_ERRNOS:
+                            raise
                         fstat = lstat
                         is_broken_symlink = True
                     is_hidden = entry.name.startswith(".") if os.name != "nt" else bool(lstat.st_file_attributes & 0x2)
@@ -336,7 +340,9 @@ class LocalFilesystem(Filesystem):
         try:
             stat = os.stat(path, follow_symlinks=True)
             is_broken_symlink = False
-        except FileNotFoundError:
+        except OSError as exc:
+            if exc.errno not in _BROKEN_LINK_ERRNOS:
+                raise
             stat = lstat
             is_broken_symlink = True
 

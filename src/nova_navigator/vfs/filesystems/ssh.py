@@ -87,6 +87,20 @@ def _quote_path(path: str) -> tuple[str, str]:
     return "", shlex.quote(path)
 
 
+def _broken_link_stat(name: str, lstat_entry: StatEntry) -> Stat:
+    """Build the ``Stat`` of a link whose target cannot be followed (missing, loop, unreadable)."""
+    return Stat(
+        size=lstat_entry.size or 0,
+        modified=lstat_entry.modified_time or 0,
+        mode=lstat_entry.permissions,
+        is_hidden=name.startswith("."),
+        is_directory=False,
+        is_executable=False,
+        is_symlink=True,
+        is_broken_symlink=True,
+    )
+
+
 def _build_list_command(path: str, follow_symlinks: bool) -> str:
     """Build the remote command that lists *path* in ``_STAT_FORMAT``.
 
@@ -470,6 +484,11 @@ class SSHFilesystem(Filesystem):
                 return
             stat_entry = file_list_stat.get(name)
             if stat_entry is None:
+                if not lstat_entry.is_symlink:
+                    continue
+                vp = path / name
+                vp._stat = _broken_link_stat(name, lstat_entry)
+                yield vp
                 continue
             vp = path / name
             vp._stat = Stat(
@@ -497,7 +516,11 @@ class SSHFilesystem(Filesystem):
 
         stat = file_list_stat.get(path.path.name)
         lstat = file_list_lstat.get(path.path.name)
-        if stat is None or lstat is None:
+        if lstat is None:
+            raise FileNotFoundError(f"No such file or directory: {path.path!r}")
+        if stat is None:
+            if lstat.is_symlink:
+                return _broken_link_stat(path.name, lstat)
             raise FileNotFoundError(f"No such file or directory: {path.path!r}")
 
         is_hidden = path.name.startswith(".")
