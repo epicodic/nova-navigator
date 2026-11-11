@@ -55,6 +55,29 @@ def _terminate_group(process: subprocess.Popen[bytes]) -> None:
         process.wait()
 
 
+def _device_of(path: PurePath) -> int | None:
+    """Return the device ID a rename to or from *path* would act on, or None if undeterminable.
+
+    An existing entry is examined with ``lstat`` so that a symlink counts as the link itself
+    (which is what ``rename`` moves). A missing entry — typically a move target — takes the
+    device of its nearest existing ancestor directory, since that is where it would be created.
+    """
+    try:
+        return os.lstat(path).st_dev
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return None
+    for ancestor in path.parents:
+        try:
+            return os.stat(ancestor).st_dev
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+    return None
+
+
 class _LocalAtomicWriter:
     """Write a sibling temporary file and ``os.replace()`` it over the target."""
 
@@ -181,13 +204,9 @@ class LocalFilesystem(Filesystem):
         self._assert_vpath(path1)
         if not isinstance(path2.filesystem, LocalFilesystem):
             return False
-        # Use os.stat to get device IDs and compare them
-        try:
-            stat1 = os.stat(path1.path)
-            stat2 = os.stat(path2.path)
-            return stat1.st_dev == stat2.st_dev
-        except (FileNotFoundError, OSError):
-            return False
+        dev1 = _device_of(path1.path)
+        dev2 = _device_of(path2.path)
+        return dev1 is not None and dev1 == dev2
 
     @override
     def path(self, p: str | PurePath) -> VPath:

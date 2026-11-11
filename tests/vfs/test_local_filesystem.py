@@ -109,11 +109,33 @@ def test_is_same_device_false_for_different_filesystem_type(tmp_path: Path) -> N
     assert local_fs.is_same_device(path1, path2) is False
 
 
-def test_is_same_device_false_when_file_missing(tmp_path: Path) -> None:
+def test_is_same_device_true_for_missing_destination(tmp_path: Path) -> None:
+    """A not-yet-existing move target is judged by its nearest existing ancestor."""
     fs = _fs()
-    a = fs.path(tmp_path / "missing.txt")
-    b = fs.path(tmp_path / "also_missing.txt")
-    assert fs.is_same_device(a, b) is False
+    src = tmp_path / "a.txt"
+    src.write_text("a")
+    dst = fs.path(tmp_path / "new_dir" / "deeper" / "b.txt")
+    assert fs.is_same_device(fs.path(src), dst) is True
+
+
+def test_is_same_device_uses_symlink_itself_not_target(tmp_path: Path) -> None:
+    """A broken symlink still has a device: the one of the directory holding it."""
+    fs = _fs()
+    link = tmp_path / "dangling"
+    link.symlink_to(tmp_path / "nowhere")
+    other = tmp_path / "x.txt"
+    other.write_text("x")
+    assert fs.is_same_device(fs.path(link), fs.path(other)) is True
+
+
+def test_is_same_device_false_for_different_devices(tmp_path: Path) -> None:
+    fs = _fs()
+    proc = Path("/proc/self")
+    if not proc.exists() or os.stat(proc).st_dev == os.stat(tmp_path).st_dev:
+        pytest.skip("needs /proc on a separate device")
+    f = tmp_path / "a.txt"
+    f.write_text("a")
+    assert fs.is_same_device(fs.path(f), fs.path(proc / "new_name")) is False
 
 
 # ── stat ──────────────────────────────────────────────────────────────────────
