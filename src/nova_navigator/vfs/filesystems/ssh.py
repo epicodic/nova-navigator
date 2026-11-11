@@ -63,16 +63,39 @@ def _decode(data: bytes) -> str:
     return data.decode("utf-8", "surrogateescape")
 
 
+def _sftp_path(path: VPath) -> bytes:
+    """Return *path* as the raw bytes SFTP must send (surrogate-escaped names round-trip to the original bytes)."""
+    return os.fsencode(path.path.as_posix())
+
+
+def _quote_path(path: str) -> tuple[str, str]:
+    """Return ``(prelude, word)`` that make a pure-ASCII shell script reproduce *path* exactly.
+
+    *prelude* is a (possibly empty) shell statement list that must run first; *word* is the
+    shell word that then expands to the exact bytes of *path*.  Paths that are valid UTF-8 are
+    plain :func:`shlex.quote`d.  Paths containing undecodable bytes (surrogate escapes) are
+    rebuilt with ``printf`` octal escapes plus a trailing sentinel, which keeps trailing
+    newlines alive through command substitution.
+    """
+    try:
+        path.encode("utf-8")
+    except UnicodeEncodeError:
+        escaped = "".join(f"\\{byte:03o}" for byte in os.fsencode(path))
+        return f"_p=$(printf '{escaped}x'); _p=${{_p%x}}", '"$_p"'
+    return "", shlex.quote(path)
+
+
 def _build_list_command(path: str, follow_symlinks: bool) -> str:
     """Build the remote command that lists *path* in ``_STAT_FORMAT``.
 
     The path is only ever a single quoted argument of ``cd --``; the whole script is quoted
     again for ``sh -c`` so the login shell of the remote user does not interpret it.
     """
-    quoted = shlex.quote(path)
+    prelude, quoted = _quote_path(path)
+    prelude = f"{prelude}\n" if prelude else ""
     stat_opts = "-L " if follow_symlinks else ""
     script = (
-        f"cd -- {quoted} 2>/dev/null || {{ [ -d {quoted} ] && exit {_CD_FAILED_EXIT}; exit {_CD_MISSING_EXIT}; }}\n"
+        f"{prelude}cd -- {quoted} 2>/dev/null || {{ [ -d {quoted} ] && exit {_CD_FAILED_EXIT}; exit {_CD_MISSING_EXIT}; }}\n"
         f"find . -maxdepth 1 -mindepth 1 -exec stat {stat_opts}--printf '{_STAT_FORMAT}' -- {{}} +"
     )
     return f"sh -c {shlex.quote(script)}"
@@ -159,18 +182,18 @@ class _SftpAtomicWriter:
 
     def __init__(self, filesystem: SSHFilesystem, path: VPath) -> None:
         client = filesystem._sftp_client
-        target = path.path.as_posix()
+        target = _sftp_path(path)
         try:
             mode = client.lstat(target).st_mode
         except FileNotFoundError:
             mode = None
         if mode is not None and stat.S_ISLNK(mode):
-            raise ValueError(f"Cannot atomically replace a symlink: {target}")
+            raise ValueError(f"Cannot atomically replace a symlink: {path}")
         self._filesystem = filesystem
         self._path = path
         self._client = client
         self._target = target
-        self._tmp = (path.path.parent / f".{path.name}.{uuid.uuid4().hex}.nn-tmp").as_posix()
+        self._tmp = os.fsencode((path.path.parent / f".{path.name}.{uuid.uuid4().hex}.nn-tmp").as_posix())
         self._file = client.open(self._tmp, "wx")
         self._file.set_pipelined(True)
         self._done = False
@@ -381,7 +404,9 @@ class SSHFilesystem(Filesystem):
         may keep running detached from the closed channel.
         """
         self._assert_vpath(cwd)
-        script = f"cd {shlex.quote(cwd.path.as_posix())} || exit 1\n{command}"
+        prelude, quoted = _quote_path(cwd.path.as_posix())
+        prelude = f"{prelude}\n" if prelude else ""
+        script = f"{prelude}cd {quoted} || exit 1\n{command}"
         try:
             stdin, stdout, _ = self._ssh_client.exec_command(f"sh -c {shlex.quote(script)} 2>&1")
         except paramiko.SSHException as exc:
@@ -487,13 +512,13 @@ class SSHFilesystem(Filesystem):
 
     @override
     def read(self, path: VPath) -> StreamReaderLike:
-        f = self._sftp_client.open(path.path.as_posix(), "rb")
+        f = self._sftp_client.open(_sftp_path(path), "rb")
         f.prefetch()
         return f
 
     @override
     def write(self, path: VPath) -> StreamWriterLike:
-        f = self._sftp_client.open(path.path.as_posix(), "wb")
+        f = self._sftp_client.open(_sftp_path(path), "wb")
         f.set_pipelined(True)
         return self._PipelinedWriter(f, lambda: self.refresh(self.parent(path)))
 
@@ -505,33 +530,33 @@ class SSHFilesystem(Filesystem):
     @override
     def remove(self, path: VPath) -> None:
         self._assert_vpath(path)
-        self._sftp_client.remove(path.path.as_posix())
+        self._sftp_client.remove(_sftp_path(path))
         self.refresh(self.parent(path))
 
     @override
     def rename(self, src_path: VPath, dst_path: VPath) -> None:
         self._assert_vpath(src_path)
         self._assert_vpath(dst_path)
-        self._sftp_client.rename(src_path.path.as_posix(), dst_path.path.as_posix())
+        self._sftp_client.rename(_sftp_path(src_path), _sftp_path(dst_path))
         self.refresh(self.parent(src_path))
         self.refresh(self.parent(dst_path))
 
     @override
     def rmdir(self, path: VPath) -> None:
         self._assert_vpath(path)
-        self._sftp_client.rmdir(path.path.as_posix())
+        self._sftp_client.rmdir(_sftp_path(path))
         self.refresh(self.parent(path))
 
     @override
     def mkdir(self, path: VPath) -> None:
         self._assert_vpath(path)
-        self._sftp_client.mkdir(path.path.as_posix())
+        self._sftp_client.mkdir(_sftp_path(path))
         self.refresh(self.parent(path))
 
     @override
     def copy_stat(self, path: VPath, stat: Stat) -> None:
         self._assert_vpath(path)
-        p = path.path.as_posix()
+        p = _sftp_path(path)
         if stat.modified >= 0:
             self._sftp_client.utime(p, (stat.modified, stat.modified))
         if stat.mode >= 0:
@@ -540,7 +565,7 @@ class SSHFilesystem(Filesystem):
     @override
     def readlink(self, path: VPath) -> str:
         self._assert_vpath(path)
-        result = self._sftp_client.readlink(path.path.as_posix())
+        result = self._sftp_client.readlink(_sftp_path(path))
         if result is None:
             raise OSError(f"{path} is not a symbolic link")
         return result

@@ -182,3 +182,37 @@ async def test_broken_symlink_listing_still_returns_other_entries(fs: SSHFilesys
     (tmp_path / "ok").write_text("x")
     (tmp_path / "broken").symlink_to("does-not-exist")
     assert await _names(fs, tmp_path) == {"ok"}
+
+
+@pytest.fixture
+def surrogateescape_sftp(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let the in-process stub SFTP server decode non-UTF-8 path bytes like a real OpenSSH server would pass them on."""
+
+    def get_text(self: paramiko.Message) -> str:
+        return self.get_string().decode("utf-8", "surrogateescape")
+
+    monkeypatch.setattr(paramiko.Message, "get_text", get_text)
+
+
+@pytest.mark.usefixtures("surrogateescape_sftp")
+@pytest.mark.asyncio
+async def test_non_utf8_name_round_trips(fs: SSHFilesystem, tmp_path: Path) -> None:
+    raw_dir = os.fsencode(tmp_path)
+    _write_bytes_named(raw_dir + b"/bad\xffname", b"payload")
+    entries = await _entries(fs, tmp_path)
+    vp = entries[os.fsdecode(b"bad\xffname")]
+    assert fs.stat(vp).size == len(b"payload")
+    reader = fs.read(vp)
+    assert reader.read(1024) == b"payload"
+    reader.close()
+    fs.remove(vp)
+    assert not os.path.exists(raw_dir + b"/bad\xffname")
+
+
+@pytest.mark.parametrize("raw_name", [b"dir\xffbad", b"dir\xff\n"])
+@pytest.mark.asyncio
+async def test_list_non_utf8_directory(fs: SSHFilesystem, tmp_path: Path, raw_name: bytes) -> None:
+    raw = os.fsencode(tmp_path) + b"/" + raw_name
+    os.mkdir(raw)
+    _write_bytes_named(raw + b"/inner.txt", b"x")
+    assert await _names(fs, Path(os.fsdecode(raw))) == {"inner.txt"}

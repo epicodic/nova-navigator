@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import os
 import shlex
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import paramiko
 import pytest
 
-from nova_navigator.vfs.filesystems.ssh import SSHFilesystem, _build_list_command, _parse_stat_output
+from nova_navigator.vfs.filesystems.ssh import SSHFilesystem, _build_list_command, _parse_stat_output, _quote_path, _sftp_path
 from nova_navigator.vfs.types import Stat
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -169,6 +170,28 @@ def test_build_list_command_follow_flag(follow: bool) -> None:
     assert ("stat --printf" in script) is (not follow)
     assert "\\0" in script
     assert "-- {}" in script
+
+
+@pytest.mark.parametrize("raw", [b"/data/bad\xffdir", b"/data/nl\n", b"/data/\xff\n\n", b"/data/it's \xfe$x", b"/data/plain"])
+def test_quote_path_is_ascii_and_evaluates_to_exact_bytes(raw: bytes) -> None:
+    prelude, word = _quote_path(os.fsdecode(raw))
+    assert (prelude + word).isascii()
+    result = subprocess.run(["sh", "-c", f"{prelude}\nprintf %s {word}"], capture_output=True, check=True)
+    assert result.stdout == raw
+
+
+def test_quote_path_valid_utf8_uses_shlex_quote() -> None:
+    assert _quote_path("/data/a b") == ("", shlex.quote("/data/a b"))
+    assert _quote_path("/data/\u00e4") == ("", shlex.quote("/data/\u00e4"))
+
+
+def test_build_list_command_non_utf8_path_is_ascii() -> None:
+    assert _build_list_command(os.fsdecode(b"/data/bad\xff\n"), follow_symlinks=True).isascii()
+
+
+def test_sftp_path_encodes_surrogates_back_to_original_bytes() -> None:
+    fs, _, _ = _make_fs()
+    assert _sftp_path(fs.path(os.fsdecode(b"/home/bad\xff"))) == b"/home/bad\xff"
 
 
 # ── __init__ ──────────────────────────────────────────────────────────────────
@@ -397,14 +420,14 @@ def test_read_opens_sftp_file() -> None:
     fs, _, mock_sftp = _make_fs()
     vp = fs.path("/home/user/data.bin")
     fs.read(vp)
-    mock_sftp.open.assert_called_once_with("/home/user/data.bin", "rb")
+    mock_sftp.open.assert_called_once_with(b"/home/user/data.bin", "rb")
 
 
 def test_write_opens_sftp_file() -> None:
     fs, _, mock_sftp = _make_fs()
     vp = fs.path("/home/user/out.bin")
     fs.write(vp)
-    mock_sftp.open.assert_called_once_with("/home/user/out.bin", "wb")
+    mock_sftp.open.assert_called_once_with(b"/home/user/out.bin", "wb")
 
 
 # ── mutating operations ───────────────────────────────────────────────────────
@@ -414,7 +437,7 @@ def test_remove_calls_sftp_remove() -> None:
     fs, _, mock_sftp = _make_fs()
     vp = fs.path("/home/user/file.txt")
     fs.remove(vp)
-    mock_sftp.remove.assert_called_once_with("/home/user/file.txt")
+    mock_sftp.remove.assert_called_once_with(b"/home/user/file.txt")
 
 
 def test_rename_calls_sftp_rename() -> None:
@@ -422,21 +445,21 @@ def test_rename_calls_sftp_rename() -> None:
     src = fs.path("/home/user/old.txt")
     dst = fs.path("/home/user/new.txt")
     fs.rename(src, dst)
-    mock_sftp.rename.assert_called_once_with("/home/user/old.txt", "/home/user/new.txt")
+    mock_sftp.rename.assert_called_once_with(b"/home/user/old.txt", b"/home/user/new.txt")
 
 
 def test_rmdir_calls_sftp_rmdir() -> None:
     fs, _, mock_sftp = _make_fs()
     vp = fs.path("/home/user/emptydir")
     fs.rmdir(vp)
-    mock_sftp.rmdir.assert_called_once_with("/home/user/emptydir")
+    mock_sftp.rmdir.assert_called_once_with(b"/home/user/emptydir")
 
 
 def test_mkdir_calls_sftp_mkdir() -> None:
     fs, _, mock_sftp = _make_fs()
     vp = fs.path("/home/user/newdir")
     fs.mkdir(vp)
-    mock_sftp.mkdir.assert_called_once_with("/home/user/newdir")
+    mock_sftp.mkdir.assert_called_once_with(b"/home/user/newdir")
 
 
 # ── copy_stat ─────────────────────────────────────────────────────────────────
@@ -446,8 +469,8 @@ def test_copy_stat_sets_mtime_and_mode() -> None:
     fs, _, mock_sftp = _make_fs()
     vp = fs.path("/home/user/file.txt")
     fs.copy_stat(vp, Stat(modified=5000.0, mode=0o644))
-    mock_sftp.utime.assert_called_once_with("/home/user/file.txt", (5000.0, 5000.0))
-    mock_sftp.chmod.assert_called_once_with("/home/user/file.txt", 0o644)
+    mock_sftp.utime.assert_called_once_with(b"/home/user/file.txt", (5000.0, 5000.0))
+    mock_sftp.chmod.assert_called_once_with(b"/home/user/file.txt", 0o644)
 
 
 def test_copy_stat_skips_negative_values() -> None:
