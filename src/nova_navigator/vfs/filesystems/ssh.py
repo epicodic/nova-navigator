@@ -44,30 +44,67 @@ class StatEntry:
     name: str
 
 
-_STAT_COMMAND_ARGS = ["%s", "%a", "%U", "%Y", "%X", "%Z", "%F", "%n"]
+# Listing command contract.  The remote script ``cd``s into the (quoted) directory and runs
+# ``find . -maxdepth 1 -mindepth 1 -exec stat --printf FORMAT -- {} +``.  FORMAT emits eight
+# fields per entry, every field terminated by NUL (the only byte a file name cannot contain
+# besides "/"), so names with commas, newlines or leading/trailing blanks cannot be confused
+# with field or record separators.  Field order: size, octal permissions, owner, mtime, atime,
+# ctime, file type, name (``./name`` as produced by find).
+_STAT_FORMAT = r"%s\0%a\0%U\0%Y\0%X\0%Z\0%F\0%n\0"
+_STAT_FIELD_COUNT = 8
+# Exit codes of the wrapper script when ``cd`` fails: the directory exists (permission problem)
+# or it does not.  Shell-independent, unlike the wording of the ``cd`` error message.
+_CD_FAILED_EXIT = 120
+_CD_MISSING_EXIT = 121
 
-_STAT_COMMAND = f"find . -maxdepth 1 -mindepth 1 -exec stat -c '{','.join(_STAT_COMMAND_ARGS)}' {{}} +"
-_STAT_COMMAND_FOLLOW_LINKS = f"find . -maxdepth 1 -mindepth 1 -exec stat -L -c '{','.join(_STAT_COMMAND_ARGS)}' {{}} +"
+
+def _decode(data: bytes) -> str:
+    """Decode remote bytes like :func:`os.fsdecode` on a UTF-8 system (undecodable bytes become surrogates)."""
+    return data.decode("utf-8", "surrogateescape")
 
 
-def _parse_stat_output(output: str) -> dict[str, StatEntry]:
+def _build_list_command(path: str, follow_symlinks: bool) -> str:
+    """Build the remote command that lists *path* in ``_STAT_FORMAT``.
+
+    The path is only ever a single quoted argument of ``cd --``; the whole script is quoted
+    again for ``sh -c`` so the login shell of the remote user does not interpret it.
+    """
+    quoted = shlex.quote(path)
+    stat_opts = "-L " if follow_symlinks else ""
+    script = (
+        f"cd -- {quoted} 2>/dev/null || {{ [ -d {quoted} ] && exit {_CD_FAILED_EXIT}; exit {_CD_MISSING_EXIT}; }}\n"
+        f"find . -maxdepth 1 -mindepth 1 -exec stat {stat_opts}--printf '{_STAT_FORMAT}' -- {{}} +"
+    )
+    return f"sh -c {shlex.quote(script)}"
+
+
+def _parse_stat_output(output: bytes) -> dict[str, StatEntry]:
+    """Parse NUL-separated ``stat --printf`` output (see ``_STAT_FORMAT``) into entries by name."""
+    fields = output.split(b"\0")
+    if fields.pop():  # a complete stream ends with NUL, so the last element is empty
+        _logger.warning("Dropping truncated trailing field in stat output")
+    if len(fields) % _STAT_FIELD_COUNT:
+        _logger.warning("Dropping incomplete trailing record in stat output")
     entries: dict[str, StatEntry] = {}
-    for line in output.strip().split("\n"):
-        parts = line.split(",")
-        if len(parts) < len(_STAT_COMMAND_ARGS):
-            continue  # malformed line
-        name = ",".join(parts[7:]).removeprefix("./")
-        entry = StatEntry(
-            size=int(parts[0]),
-            permissions=int(parts[1], 8),
-            owner=parts[2],
-            modified_time=float(parts[3]),
-            access_time=float(parts[4]),
-            change_time=float(parts[5]),
-            is_directory=parts[6] == "directory",
-            is_symlink=parts[6] == "symbolic link",
-            name=name,
-        )
+    for start in range(0, len(fields) - _STAT_FIELD_COUNT + 1, _STAT_FIELD_COUNT):
+        size, perms, owner, mtime, atime, ctime, ftype, raw_name = fields[start : start + _STAT_FIELD_COUNT]
+        file_type = _decode(ftype)
+        name = _decode(raw_name).removeprefix("./")
+        try:
+            entry = StatEntry(
+                size=int(size),
+                permissions=int(perms, 8),
+                owner=_decode(owner),
+                modified_time=float(mtime),
+                access_time=float(atime),
+                change_time=float(ctime),
+                is_directory=file_type == "directory",
+                is_symlink=file_type == "symbolic link",
+                name=name,
+            )
+        except ValueError:
+            _logger.warning("Unparsable stat record for %r; ignoring the rest of the output", name)
+            break
         entries[name] = entry
     return entries
 
@@ -283,22 +320,22 @@ class SSHFilesystem(Filesystem):
         with self._stat_cache_lock:
             if key in self._stat_cache:
                 return self._stat_cache[key]
-        command = _STAT_COMMAND_FOLLOW_LINKS if follow_symlinks else _STAT_COMMAND
+        command = _build_list_command(path, follow_symlinks)
         try:
             _logger.debug("Running SSH stat command: %s", command)
-            _, stdout, stderr = self._ssh_client.exec_command(f"cd {path} && {command}")
-            output = stdout.read().decode()
-            _logger.debug("stdou: %s", output)
-            stderr_output = stderr.read().decode()
+            _, stdout, stderr = self._ssh_client.exec_command(command)
+            output = stdout.read()
+            stderr_output = stderr.read().decode("utf-8", "replace")
             _logger.debug("stderr: %s", stderr_output)
+            exit_code = stdout.channel.recv_exit_status()
         except paramiko.SSHException as exc:
             raise OSError(str(exc)) from exc
-        if not output:
-            exit_code = stdout.channel.recv_exit_status()
-            if exit_code != 0:
-                err = stderr_output.lower()
-                if "permission denied" in err or "operation not permitted" in err:
-                    raise PermissionError(13, "Permission denied", path)
+        if exit_code == _CD_FAILED_EXIT:
+            raise PermissionError(13, "Permission denied", path)
+        if not output and exit_code != 0:
+            err = stderr_output.lower()
+            if "permission denied" in err or "operation not permitted" in err:
+                raise PermissionError(13, "Permission denied", path)
         result = _parse_stat_output(output)
         with self._stat_cache_lock:
             self._stat_cache[key] = result
