@@ -279,10 +279,31 @@ class Filesystem(ABC):
 
     @abstractmethod
     def readlink(self, path: VPath) -> str:
-        """Return the target of the symbolic link at *path*.
+        """Return the target text of the symbolic link at *path*, exactly as stored.
 
+        Undecodable bytes are surrogate-escaped (``os.fsdecode`` style) so the text round-trips through :meth:`symlink`.
         Raises ``OSError`` if *path* is not a symbolic link.
         """
+
+    @abstractmethod
+    def supports_symlinks(self) -> bool:
+        """Return True if :meth:`symlink` can create symbolic links on this filesystem."""
+
+    @abstractmethod
+    def symlink(self, path: VPath, target: str) -> None:
+        """Create a symbolic link at *path* whose target text is *target*.
+
+        The text is stored unchanged and the target need not exist.
+        Raises ``FileExistsError`` (or ``OSError``) if *path* exists and ``OSError(ENOTSUP)`` if links are unsupported.
+        """
+
+    def real_path(self, path: VPath) -> VPath | None:
+        """Return the canonical path of *path* with every symbolic link resolved, or ``None`` if this filesystem cannot tell.
+
+        Raises ``FileNotFoundError`` or ``OSError`` if the path cannot be resolved (broken or looping link).
+        """
+        self._assert_vpath(path)
+        return None
 
     def unwrap(self) -> Filesystem:
         """Return the concrete filesystem behind any wrapper layers.

@@ -268,6 +268,15 @@ class ArchiveFilesystem(Filesystem):
         self._assert_vpath(path)
         raise OSError(errno.EINVAL, "Not a symbolic link", str(path.path))
 
+    @override
+    def supports_symlinks(self) -> bool:
+        return False
+
+    @override
+    def symlink(self, path: VPath, target: str) -> None:
+        self._assert_vpath(path)
+        raise OSError(errno.ENOTSUP, "Archive does not support symbolic links", str(path.path))
+
     def __eq__(self, value: object) -> bool:
         return isinstance(value, ArchiveFilesystem) and self._identity == value._identity and self._archive_parent == value._archive_parent
 

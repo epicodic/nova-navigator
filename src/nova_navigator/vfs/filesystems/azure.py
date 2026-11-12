@@ -337,6 +337,15 @@ class AzureFilesystem(Filesystem):
         raise OSError(errno.EINVAL, "Not a symbolic link", str(path.path))
 
     @override
+    def supports_symlinks(self) -> bool:
+        return False
+
+    @override
+    def symlink(self, path: VPath, target: str) -> None:
+        self._assert_vpath(path)
+        raise OSError(errno.ENOTSUP, "Azure Blob storage does not support symbolic links", str(path.path))
+
+    @override
     def version_tag(self, path: VPath) -> str | None:
         self._assert_vpath(path)
         try:

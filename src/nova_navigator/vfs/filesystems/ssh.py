@@ -594,3 +594,14 @@ class SSHFilesystem(Filesystem):
         if result is None:
             raise OSError(f"{path} is not a symbolic link")
         return result
+
+    @override
+    def supports_symlinks(self) -> bool:
+        return True
+
+    @override
+    def symlink(self, path: VPath, target: str) -> None:
+        self._assert_vpath(path)
+        # SFTPClient.symlink(source, dest) sends the target text first (the OpenSSH order), then the link path.
+        self._sftp_client.symlink(os.fsencode(target), _sftp_path(path))
+        self.refresh(self.parent(path))
