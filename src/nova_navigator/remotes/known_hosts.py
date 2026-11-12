@@ -16,6 +16,7 @@ import fcntl
 import hashlib
 import logging
 import os
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -24,6 +25,7 @@ from typing import Literal
 
 import paramiko
 from paramiko.hostkeys import HostKeyEntry, HostKeys, InvalidHostKey
+from paramiko.ssh_exception import ConfigParseError
 
 _logger = logging.getLogger(__name__)
 
@@ -246,3 +248,29 @@ def append_host_key(path: Path, name: str, key: paramiko.PKey, *, hashed: bool) 
         return AppendResult.APPENDED
     finally:
         os.close(fd)
+
+
+_MATCH_EXEC = re.compile(r"^[ \t]*match\b(?=.*\bexec\b).*$", re.IGNORECASE | re.MULTILINE)
+_CONFIG_ERRORS = (OSError, ConfigParseError, ValueError)
+
+
+def hash_known_hosts_enabled(hostname: str, config_paths: Sequence[Path]) -> bool:
+    """Return True if the effective ``HashKnownHosts`` for *hostname* is ``yes``.
+
+    *config_paths* are read in order (``~/.ssh/config`` then ``/etc/ssh/ssh_config``); the first file
+    that yields a value decides, as in OpenSSH.  ``Match ... exec`` lines are replaced by ``Host !*``
+    before parsing because ``SSHConfig.lookup`` would run the command through a shell.  ``Include`` is
+    not followed (paramiko limitation).  Nothing else is read from the files.
+    """
+    for path in config_paths:
+        try:
+            text = _MATCH_EXEC.sub("Host !*", path.read_text(encoding="utf-8", errors="replace"))
+            value = paramiko.SSHConfig.from_text(text).lookup(hostname).get("hashknownhosts")
+        except FileNotFoundError:
+            continue
+        except _CONFIG_ERRORS as exc:
+            _logger.info("Ignoring ssh_config %s: %s", path, type(exc).__name__)
+            continue
+        if value is not None:
+            return str(value).strip().lower() == "yes"
+    return False
