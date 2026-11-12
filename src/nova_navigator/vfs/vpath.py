@@ -90,6 +90,12 @@ class VPath:
         """Return the already cached stat, or ``None`` if there is none. Never performs I/O."""
         return self._stat
 
+    def with_stat(self, stat: Stat) -> VPath:
+        """Return a new VPath at the same path and filesystem with *stat* cached; does no I/O."""
+        view = VPath(self._path, self._filesystem)
+        view._stat = stat
+        return view
+
     @property
     def stat_or_none(self) -> Stat | None:
         """Return the stat for this path, or ``None`` if the path does not exist."""

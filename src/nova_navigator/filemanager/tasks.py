@@ -1,7 +1,8 @@
 import asyncio
 import contextlib
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from pathlib import PurePosixPath
 from typing import Literal
 
 from nova_navigator.scheduler import TaskContext
@@ -20,9 +21,21 @@ def _is_real_dir(stat: Stat) -> bool:
     return stat.is_directory and not stat.is_symlink
 
 
-def _is_unsupported_link(stat: Stat) -> bool:
-    """Return whether *stat* is a link to a directory or a broken/looping link (links are not copied before ACT4)."""
-    return stat.is_symlink and (stat.is_directory or stat.is_broken_symlink)
+SKIP_BROKEN_LINK = "broken link"
+SKIP_LINK_LOOP = "link loop"
+SKIP_UNREADABLE_LINK = "unreadable link"
+_MAX_LINK_DEPTH = 16
+
+
+@dataclass(frozen=True)
+class _LinkChain:
+    """Real paths of the directories that hold the links entered on the current descent (outermost first)."""
+
+    positions: tuple[PurePosixPath, ...] = ()
+    depth: int = 0
+
+
+_NO_CHAIN = _LinkChain()
 
 
 CHUNK_SIZE = 64 * 1024  # 64 KB
@@ -74,6 +87,35 @@ class EraseFilesOptions:
     """Refresh the cached stat of each path before erasing; internal children listings turn it off."""
 
 
+async def _overwrite_allowed(ctx: TaskContext, src: VPath, dst: VPath, options: FileCopyOptions, label: str) -> bool:
+    """Apply the overwrite policy to *dst*; return True when the copy may proceed (*dst* absent or may be replaced)."""
+    if options.overwrite == "overwrite":
+        return True
+    dst_stat = dst.stat_or_none
+    if dst_stat is None:
+        return True
+    if options.overwrite == "skip":
+        _logger.debug("%s skip (exists) %s", label, dst.path)
+        return False
+    if options.overwrite == "ask":
+        response = await ctx.request_response(
+            "Overwrite",
+            expected_responses=[Response.YES, Response.NO, Response.ALL, Response.NONE],
+            message=f"File '{dst.name}' already exists. Overwrite?",
+            dialog_type="overwrite",
+            details={
+                "src_name": src.name,
+                "src_size": src.stat.size,
+                "dst_name": dst.name,
+                "dst_size": dst_stat.size,
+            },
+        )
+        if response.is_rejected:
+            _logger.debug("%s skip (user declined) %s", label, dst.path)
+            return False
+    return True
+
+
 async def copy_file(
     ctx: TaskContext,
     src_path: VPath,
@@ -102,28 +144,8 @@ async def copy_file(
         src_stat = src_path.stat
         reader = src_path.filesystem.read(src_path)
 
-        if options.overwrite != "overwrite":
-            dst_stat = dst_path.stat_or_none
-            if dst_stat is not None:
-                if options.overwrite == "skip":
-                    _logger.debug("copy_file skip (exists) %s", dst_path.path)
-                    return False
-                elif options.overwrite == "ask":
-                    response = await ctx.request_response(
-                        "Overwrite",
-                        expected_responses=[Response.YES, Response.NO, Response.ALL, Response.NONE],
-                        message=f"File '{dst_path.name}' already exists. Overwrite?",
-                        dialog_type="overwrite",
-                        details={
-                            "src_name": src_path.name,
-                            "src_size": src_stat.size,
-                            "dst_name": dst_path.name,
-                            "dst_size": dst_stat.size,
-                        },
-                    )
-                    if response.is_rejected:
-                        _logger.debug("copy_file skip (user declined) %s", dst_path.path)
-                        return False
+        if not await _overwrite_allowed(ctx, src_path, dst_path, options, "copy_file"):
+            return False
 
         writer = dst_path.filesystem.write(dst_path)
         ctx.status.set_step_progress(0, src_stat.size)
@@ -160,15 +182,154 @@ async def _copy_file_step(
     dst: VPath,
     options: FileCopyOptions,
 ) -> None:
-    if _is_unsupported_link(src.stat):
-        _logger.warning("Skipping link %s: copying links is not supported yet", src.path)
-        ctx.status.update_progress(inc_completed=1)
-        return
     if options.filter is not None and not options.filter.matches(src):
         ctx.status.update_progress(inc_completed=1)
         return
     await copy_file(ctx, src, dst, options)
     ctx.status.update_progress(inc_completed=1)
+
+
+async def _confirm_link_replace(ctx: TaskContext, link: VPath, dst: VPath, options: FileCopyOptions) -> bool:
+    """Apply the overwrite policy to an existing *dst*; return True when the link may be created (*dst* is then removed)."""
+    if dst.stat_or_none is None:
+        return True
+    if not await _overwrite_allowed(ctx, link, dst, options, "copy_link"):
+        return False
+    dst.filesystem.remove(dst)  # removes a file or link itself, never follows; a real directory makes it raise
+    return True
+
+
+async def _recreate_link(ctx: TaskContext, link: VPath, dst: VPath, options: FileCopyOptions) -> bool:
+    """Create at *dst* a link with the same target text as *link*; never reads or descends into the target."""
+    try:
+        text = link.filesystem.readlink(link)
+    except OSError:
+        _logger.warning("Skipping link %s: its target cannot be read", link.path, exc_info=True)
+        ctx.report_skipped(link.uri, SKIP_UNREADABLE_LINK)
+        return False
+    if not await _confirm_link_replace(ctx, link, dst, options):
+        return False
+    dst.filesystem.symlink(dst, text)
+    return True
+
+
+def _followed_view(link: VPath) -> VPath:
+    """Return a VPath at *link*'s own path whose stat no longer says "link", so ``walk`` may enter it (no resolved-path API)."""
+    return link.with_stat(replace(link.stat, is_symlink=False))
+
+
+def _needs_holder(link: VPath, dst_filesystem: Filesystem) -> bool:
+    """Return True if copying *link* needs the real position of the directory holding it (loop test)."""
+    stat = link.stat
+    return not dst_filesystem.supports_symlinks() and stat.is_directory and not stat.is_broken_symlink
+
+
+class _HolderResolver:
+    """Lazily resolves the real (canonical) position of directories below a walk root; ``None`` when the filesystem cannot tell."""
+
+    def __init__(self, root: VPath) -> None:
+        self._root = root
+        self._real: PurePosixPath | None = None
+        self._resolved = False
+
+    def holder(self, walked: VPath) -> PurePosixPath | None:
+        """Return the real position of *walked* (a directory at or below the walk root), or None if unknown."""
+        if not self._resolved:
+            self._resolved = True
+            try:
+                real = self._root.filesystem.real_path(self._root)
+            except OSError:
+                real = None
+            self._real = None if real is None else real.path
+        if self._real is None:
+            return None
+        return self._real / walked.path.relative_to(self._root.path)
+
+
+def _is_loop(target: PurePosixPath, holder: PurePosixPath | None, chain: _LinkChain) -> bool:
+    """Return True if *target* is a directory already being copied: ancestor-or-self of the holder or of a chain position."""
+    positions = chain.positions if holder is None else (*chain.positions, holder)
+    return any(position == target or position.is_relative_to(target) for position in positions)
+
+
+async def _copy_linked_directory(
+    ctx: TaskContext,
+    link: VPath,
+    dst: VPath,
+    options: FileCopyOptions,
+    chain: _LinkChain,
+    holder: PurePosixPath | None,
+) -> bool:
+    """Copy the directory *link* points to as a tree under *dst* (destination without links), unless it loops."""
+    if chain.depth + 1 > _MAX_LINK_DEPTH:
+        ctx.report_skipped(link.uri, SKIP_LINK_LOOP)
+        return False
+    try:
+        real = link.filesystem.real_path(link)
+    except OSError:
+        ctx.report_skipped(link.uri, SKIP_BROKEN_LINK)
+        return False
+    if real is None:
+        source = _followed_view(link)
+        next_chain = _LinkChain(chain.positions, chain.depth + 1)
+    else:
+        if _is_loop(real.path, holder, chain):
+            ctx.report_skipped(link.uri, SKIP_LINK_LOOP)
+            return False
+        source = real
+        positions = chain.positions if holder is None else (*chain.positions, holder)
+        next_chain = _LinkChain(positions, chain.depth + 1)
+    await _copy_dir(ctx, source, dst, dst.filesystem, options, next_chain, count_root=False)
+    return True
+
+
+async def _copy_link(
+    ctx: TaskContext,
+    link: VPath,
+    dst: VPath,
+    options: FileCopyOptions,
+    chain: _LinkChain = _NO_CHAIN,
+    holder: PurePosixPath | None = None,
+) -> bool:
+    """Copy the symbolic link *link* to *dst*; return True if something was created at the destination.
+
+    One decision point for copy and for cross-device move (REQ-3, REQ-9).
+    A link-capable destination gets a link with the same target text.
+    Never touches the ``completed`` counter: the caller counts the link as one unit of work.
+    """
+    ctx.status.set_current_item(link.uri)
+    if dst.filesystem.supports_symlinks():
+        return await _recreate_link(ctx, link, dst, options)
+    stat = link.stat
+    if stat.is_broken_symlink:
+        ctx.report_skipped(link.uri, SKIP_BROKEN_LINK)
+        return False
+    if not stat.is_directory:
+        return await copy_file(ctx, link, dst, options)
+    return await _copy_linked_directory(ctx, link, dst, options, chain, holder)
+
+
+async def _copy_link_step(
+    ctx: TaskContext,
+    link: VPath,
+    dst: VPath,
+    options: FileCopyOptions,
+    chain: _LinkChain = _NO_CHAIN,
+    holder: PurePosixPath | None = None,
+) -> None:
+    if options.filter is not None and not options.filter.matches(link):
+        ctx.status.update_progress(inc_completed=1)
+        return
+    await _copy_link(ctx, link, dst, options, chain, holder)
+    ctx.status.update_progress(inc_completed=1)
+
+
+async def _copy_leaf_step(ctx: TaskContext, src: VPath, dst: VPath, options: FileCopyOptions) -> None:
+    """Copy a top-level item that is not a real directory: a link recreates/copies as a link, anything else as a file."""
+    if src.stat.is_symlink:
+        await _copy_link_step(ctx, src, dst, options)
+    else:
+        await _copy_file_step(ctx, src, dst, options)
 
 
 async def _copy_dir(
@@ -177,7 +338,10 @@ async def _copy_dir(
     dst_path: VPath,
     dst_filesystem: Filesystem,
     options: FileCopyOptions,
+    chain: _LinkChain = _NO_CHAIN,
+    count_root: bool = True,
 ) -> None:
+    resolver = _HolderResolver(src_path)
     file_tasks: list[asyncio.Task[None]] = []
     dir_stats: list[tuple[VPath, Stat]] = []
     async for src_root, src_dirs, src_files, src_links in src_path.walk():
@@ -191,16 +355,20 @@ async def _copy_dir(
             ctx.status.update_progress(inc_completed=1)
         dir_stats.append((dst_root, src_root.stat))
         ctx.status.update_progress(inc_total=len(src_dirs) + len(src_files) + len(src_links))
-        for f in (*src_files, *src_links):
+        for f in src_files:
             ctx.status.check_cancelled()
-            t = await ctx.subtask(_copy_file_step(ctx, f, dst_root / f.name, options))
-            file_tasks.append(t)
+            file_tasks.append(await ctx.subtask(_copy_file_step(ctx, f, dst_root / f.name, options)))
+        for link in src_links:
+            ctx.status.check_cancelled()
+            holder = resolver.holder(src_root) if _needs_holder(link, dst_filesystem) else None
+            file_tasks.append(await ctx.subtask(_copy_link_step(ctx, link, dst_root / link.name, options, chain, holder)))
     await asyncio.gather(*file_tasks)
     # Apply directory attributes bottom-up so that parent mtime is not disturbed
     # by child directory attribute changes.
     for dst_dir, src_stat in reversed(dir_stats):
         dst_filesystem.copy_stat(dst_dir, src_stat)
-    ctx.status.update_progress(inc_completed=1)
+    if count_root:
+        ctx.status.update_progress(inc_completed=1)
 
 
 async def copy_files(
@@ -226,7 +394,7 @@ async def copy_files(
 
     if len(src_paths) == 1 and not dst_is_directory and not _is_real_dir(src_paths[0].stat):
         ctx.status.update_progress(inc_total=1)
-        await _copy_file_step(ctx, src_paths[0], destination, options)
+        await _copy_leaf_step(ctx, src_paths[0], destination, options)
         return
 
     if len(src_paths) == 1 and not dst_is_directory and _is_real_dir(src_paths[0].stat):
@@ -245,7 +413,7 @@ async def copy_files(
         if _is_real_dir(src_path.stat):
             t = await ctx.subtask(_copy_dir(ctx, src_path, dst_path, dst_filesystem, options))
         else:
-            t = await ctx.subtask(_copy_file_step(ctx, src_path, dst_path, options))
+            t = await ctx.subtask(_copy_leaf_step(ctx, src_path, dst_path, options))
         subtasks.append(t)
 
     await asyncio.gather(*subtasks)
@@ -264,18 +432,20 @@ async def _move_dir_contents(
     Used when the destination directory already exists (so an atomic rename of
     the whole tree is not possible). Files are processed individually so that
     the overwrite policy is applied at file granularity. Source directories are
-    removed bottom-up after their contents are moved. Links are moved as entries
-    (renamed on the same device).
+    removed bottom-up after their contents are moved. Links are renamed on the same device;
+    across filesystems they are copied by ``_copy_link`` and removed from the source only if copied.
     """
     with contextlib.suppress(FileExistsError):
         actual_dst.filesystem.mkdir(actual_dst)
+    resolver = _HolderResolver(src_path)
     src_dirs: list[VPath] = []
     dir_stats: list[tuple[VPath, Stat]] = []
     async for src_root, walk_subdirs, src_files, src_links in src_path.walk():
         ctx.status.check_cancelled()
         dst_root = actual_dst / src_root.path.relative_to(src_path.path)
-        with contextlib.suppress(FileExistsError):
-            actual_dst.filesystem.mkdir(dst_root)
+        if src_root.path != src_path.path:  # the root was created above; SFTP reports an existing directory as a generic failure
+            with contextlib.suppress(FileExistsError):
+                actual_dst.filesystem.mkdir(dst_root)
         # The root directory is already counted by the caller; only subdirectories
         # (src_root != src_path) complete a unit of work when they are entered.
         if src_root.path != src_path.path:
@@ -287,10 +457,6 @@ async def _move_dir_contents(
             ctx.status.check_cancelled()
             ctx.status.set_current_item(f.uri)
             if options.filter is not None and not options.filter.matches(f):
-                ctx.status.update_progress(inc_completed=1)
-                continue
-            if not same_device and _is_unsupported_link(f.stat):
-                _logger.warning("Skipping link %s: moving links across filesystems is not supported yet", f.path)
                 ctx.status.update_progress(inc_completed=1)
                 continue
             f_dst = dst_root / f.name
@@ -312,9 +478,13 @@ async def _move_dir_contents(
                     f_dst.filesystem.remove(f_dst)
                 f.filesystem.rename(f, f_dst)
             else:
-                copied = await copy_file(ctx, f, f_dst, options)
+                if f.stat.is_symlink:
+                    holder = resolver.holder(src_root) if _needs_holder(f, actual_dst.filesystem) else None
+                    copied = await _copy_link(ctx, f, f_dst, options, holder=holder)
+                else:
+                    copied = await copy_file(ctx, f, f_dst, options)
                 if copied:
-                    f.filesystem.remove(f)
+                    f.filesystem.remove(f)  # unlinks a link itself, never follows it
             ctx.status.update_progress(inc_completed=1)
     for d in reversed(src_dirs):
         with contextlib.suppress(OSError):
@@ -336,7 +506,8 @@ async def _move_path(
     If *dst_path* is an existing directory the source is placed inside it under
     its original name; otherwise it is used as the exact destination.
     Same-device moves use an atomic rename after clearing any existing
-    destination. Cross-device moves copy the content then remove the source.
+    destination. Cross-device moves copy the content then remove the source;
+    links are copied by ``_copy_link`` and removed from the source only if copied.
     Increments the overall completed counter by one when done (including skip).
     """
     ctx.status.check_cancelled()
@@ -388,8 +559,9 @@ async def _move_path(
         if is_dir:
             # _move_dir_contents adds total and completed incrementally.
             await _move_dir_contents(ctx, src_path, actual_dst, options, same_device=False)
-        elif _is_unsupported_link(src_path.stat):
-            _logger.warning("Skipping link %s: moving links across filesystems is not supported yet", src_path.path)
+        elif src_path.stat.is_symlink:
+            if await _copy_link(ctx, src_path, actual_dst, options):
+                src_path.filesystem.remove(src_path)
         else:
             copied = await copy_file(ctx, src_path, actual_dst, options)
             if copied:

@@ -507,11 +507,12 @@ def test_tar_hard_link_to_later_member_reads_content(tmp_path: Path) -> None:
         reader.close()
 
 
-def test_tar_symlink_member_still_symlink(tmp_path: Path) -> None:
+def test_tar_symlink_member_reports_followed_target_stat(tmp_path: Path) -> None:
     build_tar_with_links(tmp_path / "l.tar.gz")
     st = TarArchive(tmp_path / "l.tar.gz", mode="r").stats(PurePath("s.txt"))
     assert st.is_symlink is True
-    assert st.size == 0
+    assert st.is_broken_symlink is False
+    assert st.size == 5
 
 
 def test_tar_dangling_hard_link(tmp_path: Path) -> None:

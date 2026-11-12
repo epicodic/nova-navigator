@@ -1,6 +1,8 @@
+import errno
 import tarfile
 from _thread import LockType
-from pathlib import PurePath
+from dataclasses import replace
+from pathlib import PurePath, PurePosixPath
 from threading import Lock
 from typing import override
 
@@ -16,6 +18,7 @@ def _normalize_member_name(name: str) -> str:
 
 
 _MAX_HARD_LINK_DEPTH = 16
+_MAX_SYMLINK_HOPS = 40
 
 
 class TarArchive(Archive):
@@ -86,6 +89,9 @@ class TarArchive(Archive):
                 )
             raise FileNotFoundError(f"Path '{path}', {path.name} not found in archive '{self._archive_path}'")
 
+        if member.issym():
+            return self._symlink_stats(path, member)
+
         size = member.size
         is_executable = member.mode & 0o111 != 0
         if member.islnk():
@@ -99,8 +105,59 @@ class TarArchive(Archive):
             is_hidden=path.name.startswith("."),
             is_directory=member.isdir(),
             is_executable=is_executable,
-            is_symlink=member.issym(),
+            is_symlink=False,
         )
+
+    def _symlink_stats(self, path: PurePath, member: tarfile.TarInfo) -> Stat:
+        """Stat of a symlink member: the followed target's attributes with ``is_symlink`` set (like the local backend)."""
+        is_hidden = path.name.startswith(".")
+        try:
+            resolved = self._resolve_path(path)
+        except FileNotFoundError:
+            return Stat(size=0, modified=member.mtime, is_hidden=is_hidden, is_symlink=True, is_broken_symlink=True)
+        target = self.stats(PurePosixPath("/") / resolved)
+        return replace(target, is_hidden=is_hidden, is_symlink=True)
+
+    def _resolve_path(self, path: PurePath) -> PurePosixPath:
+        """Return *path* relative to the archive root with every symlink member resolved against the archive's members.
+
+        Raises ``FileNotFoundError`` for a missing target, an absolute target, a target escaping the archive root or a loop.
+        """
+        pending = [part for part in path.as_posix().split("/") if part not in ("", ".")]
+        current = PurePosixPath()
+        hops = 0
+        while pending:
+            part = pending.pop(0)
+            if part == "..":
+                if not current.parts:
+                    raise FileNotFoundError(f"Link in '{path}' escapes the archive")
+                current = current.parent
+                continue
+            candidate = current / part
+            member = self._find_member(candidate)
+            if member is not None and member.issym():
+                hops += 1
+                if hops > _MAX_SYMLINK_HOPS:
+                    raise FileNotFoundError(f"Too many levels of symbolic links in '{path}'")
+                if member.linkname.startswith("/"):
+                    raise FileNotFoundError(f"Absolute link target outside the archive: '{member.linkname}'")
+                pending = [p for p in member.linkname.split("/") if p not in ("", ".")] + pending
+                continue
+            current = candidate
+        if current.parts and self._find_member(current) is None and not self.listdir(current):
+            raise FileNotFoundError(f"Path '{path}' not found in archive '{self._archive_path}'")
+        return current
+
+    @override
+    def readlink(self, path: PurePath) -> str:
+        member = self._find_member(path)
+        if member is None or not member.issym():
+            raise OSError(errno.EINVAL, "Not a symbolic link", str(path))
+        return member.linkname
+
+    @override
+    def real_path(self, path: PurePath) -> PurePath | None:
+        return PurePosixPath("/") / self._resolve_path(path)
 
     def _resolve_hard_link(self, member: tarfile.TarInfo) -> tarfile.TarInfo | None:
         """Follow hard-link members to the regular member holding the data.
@@ -126,6 +183,8 @@ class TarArchive(Archive):
             if self.listdir(path):
                 raise IsADirectoryError(path)
             raise FileNotFoundError(path)
+        if member.issym():
+            return self.read(PurePosixPath("/") / self._resolve_path(path))
         if member.isdir():
             raise IsADirectoryError(path)
         if member.islnk():

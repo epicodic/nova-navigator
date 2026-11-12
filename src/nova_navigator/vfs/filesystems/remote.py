@@ -163,6 +163,20 @@ class RemoteFilesystem(Filesystem):
         return self._inner.readlink(self._to_inner(path))
 
     @override
+    def supports_symlinks(self) -> bool:
+        return self._inner.supports_symlinks()
+
+    @override
+    def symlink(self, path: VPath, target: str) -> None:
+        self._inner.symlink(self._to_inner(path), target)
+
+    @override
+    def real_path(self, path: VPath) -> VPath | None:
+        # Explicit override: the __getattr__ fallback would hand the inner filesystem a VPath bound to this wrapper.
+        inner = self._inner.real_path(self._to_inner(path))
+        return None if inner is None else self._from_inner(inner)
+
+    @override
     def write_atomic(self, path: VPath) -> AtomicWriterLike:
         # Explicit override: the __getattr__ fallback would pass a VPath still
         # bound to this wrapper, which fails the inner filesystem's _assert_vpath.

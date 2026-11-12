@@ -455,5 +455,19 @@ class LocalFilesystem(Filesystem):
         return os.readlink(path.path)
 
     @override
+    def supports_symlinks(self) -> bool:
+        return True
+
+    @override
+    def symlink(self, path: VPath, target: str) -> None:
+        self._assert_vpath(path)
+        os.symlink(target, path.path)
+
+    @override
+    def real_path(self, path: VPath) -> VPath | None:
+        self._assert_vpath(path)
+        return VPath(os.path.realpath(path.path, strict=True), self)
+
+    @override
     def refresh(self, path: VPath | None = None) -> None:
         pass  # no caching in LocalFilesystem

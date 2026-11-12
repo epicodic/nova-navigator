@@ -253,7 +253,23 @@ class ArchiveFilesystem(Filesystem):
 
     @override
     def mkdir(self, path: VPath) -> None:
-        raise io.UnsupportedOperation("ArchiveFilesystem does not support creating directories")
+        """Directories are implicit: nothing is stored; the directory appears with the first member written below it."""
+        self._assert_vpath(path)
+        if self.capabilities.read_only or self._backing is None:
+            raise PermissionError(f"Archive is read-only: {self.source.uri}")
+        try:
+            self._archive.stats(path.path)
+        except FileNotFoundError:
+            pass
+        else:
+            raise FileExistsError(errno.EEXIST, "File exists", str(path.path))
+        for ancestor in path.path.parents:
+            try:
+                ancestor_stat = self._archive.stats(ancestor)
+            except FileNotFoundError:
+                continue
+            if not ancestor_stat.is_directory:
+                raise NotADirectoryError(errno.ENOTDIR, "Not a directory", str(ancestor))
 
     @override
     def copy_stat(self, path: VPath, stat: Stat) -> None:
@@ -266,7 +282,22 @@ class ArchiveFilesystem(Filesystem):
     @override
     def readlink(self, path: VPath) -> str:
         self._assert_vpath(path)
-        raise OSError(errno.EINVAL, "Not a symbolic link", str(path.path))
+        return self._archive.readlink(path.path)
+
+    @override
+    def real_path(self, path: VPath) -> VPath | None:
+        self._assert_vpath(path)
+        resolved = self._archive.real_path(path.path)
+        return None if resolved is None else VPath(resolved, self)
+
+    @override
+    def supports_symlinks(self) -> bool:
+        return False
+
+    @override
+    def symlink(self, path: VPath, target: str) -> None:
+        self._assert_vpath(path)
+        raise OSError(errno.ENOTSUP, "Archive does not support symbolic links", str(path.path))
 
     def __eq__(self, value: object) -> bool:
         return isinstance(value, ArchiveFilesystem) and self._identity == value._identity and self._archive_parent == value._archive_parent

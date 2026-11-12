@@ -242,11 +242,10 @@ def tar_fifo_fs(tmp_path: Path) -> ArchiveFilesystem:
     [
         ("mv file.txt moved.txt", "mv"),
         ("rm file.txt", "rm"),
-        ("mkdir newdir", "mkdir"),
     ],
 )
 async def test_structural_mutating_commands_rejected_in_archive(archive_fs: tuple[ArchiveFilesystem, Path], line: str, command_name: str) -> None:
-    """mv, rm, and mkdir change archive structure, which stays unsupported even for a writable archive."""
+    """mv and rm change archive structure, which stays unsupported even for a writable archive."""
     fs, archive_path = archive_fs
     original_bytes = archive_path.read_bytes()
     interp = VfsShellInterpreter(fs, fs.cwd(), cols=80, rows=24)
@@ -263,6 +262,21 @@ async def test_structural_mutating_commands_rejected_in_archive(archive_fs: tupl
     with zipfile.ZipFile(archive_path) as archive:
         assert archive.namelist() == ["file.txt"]
         assert archive.read("file.txt") == b"original"
+
+
+@pytest.mark.asyncio
+async def test_mkdir_is_an_implicit_noop_in_writable_archive(archive_fs: tuple[ArchiveFilesystem, Path]) -> None:
+    """Archive directories are implicit, so mkdir succeeds without changing the archive."""
+    fs, archive_path = archive_fs
+    original_bytes = archive_path.read_bytes()
+    interp = VfsShellInterpreter(fs, fs.cwd(), cols=80, rows=24)
+    errors: list[str] = []
+
+    exit_code = await interp.execute("mkdir newdir", lambda _text: None, errors.append)
+
+    assert exit_code == 0
+    assert errors == []
+    assert archive_path.read_bytes() == original_bytes
 
 
 @pytest.mark.asyncio

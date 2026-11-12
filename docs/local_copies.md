@@ -178,6 +178,8 @@ The watcher of a copy starts its sync jobs from the context of the call that sta
 ### Writable archives
 
 `ArchiveFilesystem.write(member)` (`vfs/filesystems/archive.py`) spools the new content to a private temporary file, then on `close()` rebuilds the archive with that member substituted or appended and commits it through an `ArchiveBacking` (`archive/backing.py`).
+Archive writes keep existing tar symlink members and ZIP link entries unchanged but cannot add links.
+`ArchiveFilesystem.mkdir` is an implicit no-op, so empty directories are not stored.
 `LocalArchiveBacking` commits straight through `Filesystem.write_atomic()` on the archive's own source.
 `CopiedArchiveBacking` wraps a `LocalCopy` of a non-local archive: `prepare_write()` refreshes it if the source changed underneath, and `commit()` replaces the local copy's file and calls its `write_back()`.
 `archive/zip_rebuild.py` rebuilds a ZIP by copying every unchanged entry's bytes verbatim and only patching the changed entry and its central-directory offsets (stored, deflate, and bzip2 are supported for the changed entry); it rejects encrypted entries, multi-volume archives, an unsupported archive prefix, and an ambiguous duplicate member name.

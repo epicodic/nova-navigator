@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from nova_navigator.terminal.vfs_shell.interpreter import VfsShellInterpreter
+from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from tests._utils.mock_filesystem import MockFilesystem
 
 
@@ -44,3 +47,68 @@ async def test_cp_directory_without_r_fails(fs: MockFilesystem) -> None:
     output: list[str] = []
     exit_code = await interp.execute("cp dir dest/copy", output.append, output.append)
     assert exit_code != 0
+
+
+@pytest.mark.asyncio
+async def test_cp_r_recreates_dir_link_and_does_not_descend() -> None:
+    fs = MockFilesystem(
+        {"/outside/keep.txt": b"keep", "/home/user/src/f.txt": b"f"},
+        links={"/home/user/src/out": "/outside", "/home/user/src/up": ".."},
+    )
+    interp = VfsShellInterpreter(fs, fs.cwd(), cols=80, rows=24)
+    output: list[str] = []
+    assert await interp.execute("cp -r src dst", output.append, output.append) == 0
+    assert fs.readlink(fs.path("/home/user/dst/out")) == "/outside"
+    assert fs.readlink(fs.path("/home/user/dst/up")) == ".."
+    assert fs.exists("/home/user/dst/f.txt")
+    assert fs.stat(fs.path("/home/user/dst/out")).is_symlink
+
+
+@pytest.mark.asyncio
+async def test_cp_r_on_filesystem_without_links_copies_file_link_and_skips_directory_link() -> None:
+    fs = MockFilesystem(
+        {"/home/user/src/f.txt": b"f", "/home/user/src/d/g.txt": b"g"},
+        links={"/home/user/src/lf": "f.txt", "/home/user/src/ld": "d"},
+        symlinks=False,
+    )
+    interp = VfsShellInterpreter(fs, fs.cwd(), cols=80, rows=24)
+    output: list[str] = []
+    exit_code = await interp.execute("cp -r src dst", output.append, output.append)
+    assert exit_code != 0
+    assert fs.read(fs.path("/home/user/dst/lf")).read(10) == b"f"
+    assert not fs.exists("/home/user/dst/ld")
+    assert fs.exists("/home/user/dst/d/g.txt")  # the rest of the tree is still copied
+    assert any("skipping link" in text for text in output)
+
+
+@pytest.mark.asyncio
+async def test_cp_without_r_still_copies_link_to_file_as_content() -> None:
+    fs = MockFilesystem({"/home/user/f.txt": b"content"}, links={"/home/user/l": "f.txt"})
+    interp = VfsShellInterpreter(fs, fs.cwd(), cols=80, rows=24)
+    output: list[str] = []
+    assert await interp.execute("cp l copy", output.append, output.append) == 0
+    assert fs.read(fs.path("/home/user/copy")).read(10) == b"content"
+
+
+@pytest.mark.asyncio
+async def test_cp_without_r_omits_directory_link() -> None:
+    fs = MockFilesystem({"/home/user/d/g.txt": b"g"}, links={"/home/user/ld": "d"})
+    interp = VfsShellInterpreter(fs, fs.cwd(), cols=80, rows=24)
+    output: list[str] = []
+    assert await interp.execute("cp ld copy", output.append, output.append) != 0
+    assert any("omitting directory" in text for text in output)
+
+
+@pytest.mark.asyncio
+async def test_cp_r_on_local_filesystem_copies_link_only(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "out").symlink_to(outside, target_is_directory=True)
+    local = LocalFilesystem()
+    interp = VfsShellInterpreter(local, local.path(tmp_path), cols=80, rows=24)
+    output: list[str] = []
+    assert await interp.execute("cp -r src dst", output.append, output.append) == 0
+    assert (tmp_path / "dst" / "out").is_symlink()
+    assert sorted(p.name for p in outside.iterdir()) == ["keep.txt"]

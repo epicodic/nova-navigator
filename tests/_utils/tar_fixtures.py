@@ -33,3 +33,33 @@ def build_tar_with_links(path: Path, *, link_before_target: bool = False) -> Non
         sym.type = tarfile.SYMTYPE
         sym.linkname = "a.txt"
         tar.addfile(sym)
+
+
+def build_tar_with_symlink_tree(path: Path) -> None:
+    """Write a gzip tar with ``real/`` (``real/f.txt`` = ``hello``) and a set of symlink members.
+
+    Members: ``lnk`` -> ``real`` (directory link), ``flnk`` -> ``real/f.txt``, ``real/up`` -> ``..``,
+    ``broken`` -> ``nope``, ``abs`` -> ``/etc/passwd``, ``esc`` -> ``../../x``, ``loop1`` <-> ``loop2``.
+    """
+    content = b"hello"
+    with tarfile.open(path, mode="w:gz") as tar:
+        directory = tarfile.TarInfo("real")
+        directory.type = tarfile.DIRTYPE
+        tar.addfile(directory)
+        regular = tarfile.TarInfo("real/f.txt")
+        regular.size = len(content)
+        tar.addfile(regular, io.BytesIO(content))
+        for name, target in (
+            ("lnk", "real"),
+            ("flnk", "real/f.txt"),
+            ("real/up", ".."),
+            ("broken", "nope"),
+            ("abs", "/etc/passwd"),
+            ("esc", "../../x"),
+            ("loop1", "loop2"),
+            ("loop2", "loop1"),
+        ):
+            sym = tarfile.TarInfo(name)
+            sym.type = tarfile.SYMTYPE
+            sym.linkname = target
+            tar.addfile(sym)

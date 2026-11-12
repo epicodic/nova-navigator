@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from typing import override
 
@@ -25,7 +26,14 @@ class _DirNode:
     modified: float = field(default_factory=time.time)
 
 
-_Node = _FileNode | _DirNode
+@dataclass
+class _LinkNode:
+    target: str
+    modified: float = field(default_factory=time.time)
+
+
+_Node = _FileNode | _DirNode | _LinkNode
+_MAX_HOPS = 40
 
 
 class _Reader:
@@ -100,8 +108,11 @@ class MockFilesystem(Filesystem):
         cwd: str = "/home/user",
         read_errors: dict[str, Exception] | None = None,
         write_errors: dict[str, Exception] | None = None,
+        links: dict[str, str] | None = None,
+        symlinks: bool = True,
     ) -> None:
         self._nodes = {}
+        self._symlinks = symlinks
         self._root_path = PurePosixPath(root)
         self._home_path = PurePosixPath(home)
         self._cwd_path = PurePosixPath(cwd)
@@ -122,6 +133,11 @@ class MockFilesystem(Filesystem):
             else:
                 self._nodes[path] = _FileNode(content=bytearray(content))
 
+        for link_str, target in (links or {}).items():
+            link_path = PurePosixPath(link_str)
+            self._mkdir_p(link_path.parent)
+            self._nodes[link_path] = _LinkNode(target=target)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -132,10 +148,44 @@ class MockFilesystem(Filesystem):
             if ancestor not in self._nodes:
                 self._nodes[ancestor] = _DirNode()
 
+    def _resolve(self, path: PurePosixPath, *, follow_last: bool = True) -> PurePosixPath:
+        """Return *path* with every link component replaced by its target (the last one only if *follow_last*)."""
+        current = PurePosixPath("/")
+        pending = list(path.parts[1:]) if path.anchor else list(path.parts)
+        hops = 0
+        while pending:
+            part = pending.pop(0)
+            if part == "..":
+                current = current.parent
+                continue
+            candidate = current / part
+            node = self._nodes.get(candidate)
+            if isinstance(node, _LinkNode) and (pending or follow_last):
+                hops += 1
+                if hops > _MAX_HOPS:
+                    raise OSError(errno.ELOOP, "Too many levels of symbolic links", str(path))
+                target = PurePosixPath(node.target)
+                if target.is_absolute():
+                    current = PurePosixPath("/")
+                    pending = list(target.parts[1:]) + pending
+                else:
+                    pending = list(target.parts) + pending
+                continue
+            current = candidate
+        return current
+
     def _node(self, path: PurePosixPath) -> _Node:
-        if path not in self._nodes:
+        resolved = self._resolve(path)
+        if resolved not in self._nodes:
             raise FileNotFoundError(f"No such file or directory: '{path}'")
-        return self._nodes[path]
+        return self._nodes[resolved]
+
+    def _raw_node(self, path: PurePosixPath) -> _Node:
+        """Return the node at *path* without following a link in the last component."""
+        resolved = self._resolve(path, follow_last=False)
+        if resolved not in self._nodes:
+            raise FileNotFoundError(f"No such file or directory: '{path}'")
+        return self._nodes[resolved]
 
     def _file_node(self, path: PurePosixPath) -> _FileNode:
         node = self._node(path)
@@ -187,33 +237,40 @@ class MockFilesystem(Filesystem):
     ) -> AsyncIterator[VPath]:
         posix = self._to_posix(path)
         self._dir_node(posix)  # raises if not a directory
-        children = [p for p in self._nodes if p.parent == posix and p != posix]
+        real = self._resolve(posix)
+        children = [p for p in self._nodes if p.parent == real and p != real]
         for p in children:
             if cancel is not None and cancel.is_set():
                 return
-            vp = VPath(p, self)
+            vp = VPath(posix / p.name, self)
             vp._stat = self.stat(vp)
             yield vp
 
     @override
     def stat(self, path: VPath) -> Stat:
         posix = self._to_posix(path)
-        node = self._node(posix)
-        name = posix.name
-        is_hidden = name.startswith(".") and name not in (".", "..")
+        raw = self._raw_node(posix)
+        is_hidden = posix.name.startswith(".") and posix.name not in (".", "..")
+        if isinstance(raw, _LinkNode):
+            try:
+                target = self._node(posix)
+            except OSError:
+                return Stat(
+                    size=len(raw.target),
+                    modified=raw.modified,
+                    is_hidden=is_hidden,
+                    is_symlink=True,
+                    is_broken_symlink=True,
+                )
+            assert not isinstance(target, _LinkNode)
+            return replace(self._stat_of(target, is_hidden), is_symlink=True)
+        return self._stat_of(raw, is_hidden)
+
+    @staticmethod
+    def _stat_of(node: _FileNode | _DirNode, is_hidden: bool) -> Stat:
         if isinstance(node, _FileNode):
-            return Stat(
-                size=len(node.content),
-                modified=node.modified,
-                is_hidden=is_hidden,
-                is_directory=False,
-            )
-        return Stat(
-            size=0,
-            modified=node.modified,
-            is_hidden=is_hidden,
-            is_directory=True,
-        )
+            return Stat(size=len(node.content), modified=node.modified, is_hidden=is_hidden, is_directory=False)
+        return Stat(size=0, modified=node.modified, is_hidden=is_hidden, is_directory=True)
 
     @override
     def parent(self, path: VPath) -> VPath:
@@ -236,7 +293,7 @@ class MockFilesystem(Filesystem):
 
     @override
     def write(self, path: VPath) -> _Writer:
-        posix = self._to_posix(path)
+        posix = self._resolve(self._to_posix(path))
         if posix in self._nodes and isinstance(self._nodes[posix], _DirNode):
             raise IsADirectoryError(f"Is a directory: '{posix}'")
         self._dir_node(posix.parent)  # ensure parent directory exists
@@ -250,16 +307,17 @@ class MockFilesystem(Filesystem):
     @override
     def remove(self, path: VPath) -> None:
         posix = self._to_posix(path)
-        self._file_node(posix)  # raises if directory or missing
-        del self._nodes[posix]
+        if isinstance(self._raw_node(posix), _DirNode):
+            raise IsADirectoryError(f"Is a directory: '{posix}'")
+        del self._nodes[self._resolve(posix, follow_last=False)]
 
     @override
     def rename(self, src_path: VPath, dst_path: VPath) -> None:
-        src_posix = self._to_posix(src_path)
-        dst_posix = self._to_posix(dst_path)
+        src_posix = self._resolve(self._to_posix(src_path), follow_last=False)
+        dst_posix = self._resolve(self._to_posix(dst_path), follow_last=False)
 
         # Verify source exists
-        src_node = self._node(src_posix)
+        src_node = self._raw_node(src_posix)
 
         # Verify destination parent exists and is a directory
         self._dir_node(dst_posix.parent)
@@ -292,8 +350,10 @@ class MockFilesystem(Filesystem):
 
     @override
     def rmdir(self, path: VPath) -> None:
-        posix = self._to_posix(path)
-        self._dir_node(posix)  # raises if not a directory
+        posix = self._resolve(self._to_posix(path), follow_last=False)
+        node = self._raw_node(posix)
+        if not isinstance(node, _DirNode):
+            raise NotADirectoryError(f"Not a directory: '{posix}'")
         children = [p for p in self._nodes if p.parent == posix and p != posix]
         if children:
             raise OSError(f"Directory not empty: '{posix}'")
@@ -303,9 +363,10 @@ class MockFilesystem(Filesystem):
     def mkdir(self, path: VPath) -> None:
         posix = self._to_posix(path)
         self._dir_node(posix.parent)  # raises if parent doesn't exist or isn't a directory
-        if posix in self._nodes:
+        target = self._resolve(posix.parent) / posix.name
+        if target in self._nodes:
             raise FileExistsError(f"File exists: '{posix}'")
-        self._nodes[posix] = _DirNode()
+        self._nodes[target] = _DirNode()
 
     def exists(self, path: str) -> bool:
         """Return True if *path* exists in this filesystem."""
@@ -320,7 +381,33 @@ class MockFilesystem(Filesystem):
 
     @override
     def readlink(self, path: VPath) -> str:
-        raise OSError(f"Not a symbolic link: '{path}'")
+        node = self._raw_node(self._to_posix(path))
+        if isinstance(node, _LinkNode):
+            return node.target
+        raise OSError(errno.EINVAL, f"Not a symbolic link: '{path}'")
+
+    @override
+    def supports_symlinks(self) -> bool:
+        return self._symlinks
+
+    @override
+    def symlink(self, path: VPath, target: str) -> None:
+        posix = self._to_posix(path)
+        if not self._symlinks:
+            raise OSError(errno.ENOTSUP, "MockFilesystem has symbolic links disabled", str(posix))
+        self._dir_node(posix.parent)
+        link_path = self._resolve(posix.parent) / posix.name
+        if link_path in self._nodes:
+            raise FileExistsError(f"File exists: '{posix}'")
+        self._nodes[link_path] = _LinkNode(target=target)
+
+    @override
+    def real_path(self, path: VPath) -> VPath | None:
+        posix = self._to_posix(path)
+        resolved = self._resolve(posix)
+        if resolved not in self._nodes:
+            raise FileNotFoundError(f"No such file or directory: '{posix}'")
+        return VPath(resolved, self)
 
     @override
     def refresh(self, path: VPath | None = None) -> None:

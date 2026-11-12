@@ -1,3 +1,4 @@
+import errno
 from _thread import LockType
 from abc import abstractmethod
 from pathlib import PurePath
@@ -52,6 +53,17 @@ class Archive:
     def read(self, path: PurePath) -> StreamReaderLike:
         """Return a binary stream for a file inside the archive."""
         raise NotImplementedError
+
+    def readlink(self, path: PurePath) -> str:
+        """Return the target text of the symbolic link member at *path*; ``OSError(EINVAL)`` if it is not one."""
+        raise OSError(errno.EINVAL, "Not a symbolic link", str(path))
+
+    def real_path(self, path: PurePath) -> PurePath | None:
+        """Return the canonical member path with symbolic links resolved inside the archive, or ``None`` if unsupported.
+
+        Raises ``FileNotFoundError`` if the path cannot be resolved (broken, looping or escaping link).
+        """
+        return None
 
     @property
     def archive_path(self) -> PurePath:
