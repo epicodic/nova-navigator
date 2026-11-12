@@ -10,10 +10,15 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
+import errno
+import fcntl
 import hashlib
 import logging
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Literal
 
@@ -183,3 +188,61 @@ def read_known_hosts(paths: Sequence[Path]) -> KnownHosts:
         for lineno, raw in enumerate(text.split("\n"), start=1):
             _read_line(result, path, lineno, raw)
     return result
+
+
+class AppendResult(Enum):
+    """Outcome of :func:`append_host_key`."""
+
+    APPENDED = "appended"
+    ALREADY_PRESENT = "already-present"
+
+
+class HostKeyConflictError(Exception):
+    """The file already holds a different key of the same type for the host.
+
+    Attributes:
+        name: The host name (``host`` or ``[host]:port``) the key was to be stored for.
+        stored_key: The conflicting key that is already stored for *name*.
+    """
+
+    def __init__(self, name: str, stored_key: paramiko.PKey) -> None:
+        super().__init__(f"known_hosts already holds a different {stored_key.get_name()} key for {name}")
+        self.name = name
+        self.stored_key = stored_key
+
+
+def append_host_key(path: Path, name: str, key: paramiko.PKey, *, hashed: bool) -> AppendResult:
+    """Append exactly one line for *name*/*key* to *path* without touching existing bytes.
+
+    Creates the parent directory (``0700``) and the file (``0600``, subject to umask) when missing.
+    A key that is already stored for *name* in this file is not stored again.  The write is one
+    ``write()`` on an ``O_APPEND`` descriptor under ``flock``; a final line without a trailing newline gets
+    a separator newline first so the new line cannot fuse with it.
+
+    Raises:
+        HostKeyConflictError: The file holds a different key of the same type for *name*;
+            nothing is written.
+        OSError: The file or directory cannot be created, read or written.
+    """
+    if not path.parent.exists():
+        with contextlib.suppress(FileExistsError):
+            os.mkdir(path.parent, 0o700)
+    fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        stored_keys = read_known_hosts([path]).keys_for(name)
+        if any(_same_key(key, stored) for stored in stored_keys):
+            return AppendResult.ALREADY_PRESENT
+        for stored in stored_keys:
+            if stored.get_name() == key.get_name():
+                raise HostKeyConflictError(name, stored)
+        token = HostKeys.hash_host(name) if hashed else name
+        data = f"{token} {key.get_name()} {key.get_base64()}\n".encode()
+        size = os.fstat(fd).st_size
+        if size > 0 and os.pread(fd, 1, size - 1) != b"\n":
+            data = b"\n" + data
+        if os.write(fd, data) != len(data):
+            raise OSError(errno.EIO, "short write to known_hosts")
+        return AppendResult.APPENDED
+    finally:
+        os.close(fd)
