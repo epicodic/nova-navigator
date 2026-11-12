@@ -38,7 +38,9 @@ class CpCommand(Command):
                 exit_code = 1
                 continue
 
-            if stat.is_directory:
+            if stat.is_symlink and args.recursive:
+                result = self._cp_link(src, dest, src_str, ctx)
+            elif stat.is_directory:
                 if not args.recursive:
                     ctx.write_error(f"cp: -r not specified; omitting directory '{src_str}'\r\n")
                     exit_code = 1
@@ -52,6 +54,22 @@ class CpCommand(Command):
                     exit_code = result
 
         return exit_code
+
+    def _cp_link(self, src: VPath, dest: VPath, src_str: str, ctx: ShellContext) -> int:
+        """Copy the link *src* as a link when the filesystem has links, else copy a file target or skip it."""
+        fs = ctx.filesystem
+        if fs.supports_symlinks():
+            try:
+                fs.symlink(dest, fs.readlink(src))
+            except OSError as e:
+                ctx.write_error(f"cp: cannot create symbolic link '{dest.path}': {e}\r\n")
+                return 1
+            return 0
+        stat = src.stat
+        if not stat.is_directory and not stat.is_broken_symlink:
+            return self._cp_file(src, dest, src_str, ctx)
+        ctx.write_error(f"cp: skipping link '{src_str}': symbolic links are not supported on this filesystem\r\n")
+        return 1
 
     def _cp_file(self, src: VPath, dest: VPath, src_str: str, ctx: ShellContext) -> int:
         """Copy a single file."""
@@ -88,12 +106,15 @@ class CpCommand(Command):
             ctx.write_error(f"cp: cannot create directory '{dest.path}': {e}\r\n")
             return 1
 
+        failed = 0
         try:
             async for entry in ctx.filesystem.iterdir(src):
                 if ctx.is_cancelled():
                     return 130
                 child_dest = ctx.filesystem.path(dest.path / entry.name)
-                if entry.stat.is_directory:
+                if entry.stat.is_symlink:
+                    failed = self._cp_link(entry, child_dest, f"{src_str}/{entry.name}", ctx) or failed
+                elif entry.stat.is_directory:
                     result = await self._cp_tree(entry, child_dest, f"{src_str}/{entry.name}", ctx)
                     if result != 0:
                         return result
@@ -104,4 +125,4 @@ class CpCommand(Command):
         except OSError as e:
             ctx.write_error(f"cp: cannot read '{src_str}': {e}\r\n")
             return 1
-        return 0
+        return failed

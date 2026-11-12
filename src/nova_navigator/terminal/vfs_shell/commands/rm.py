@@ -34,23 +34,31 @@ class RmCommand(Command):
                     exit_code = 1
                 continue
 
-            if stat.is_directory:
+            if stat.is_symlink:
+                # A link of any kind is removed itself; its target is never listed or touched.
+                result = self._rm_file(target, path_str, ctx, force=args.force)
+            elif stat.is_directory:
                 if not args.recursive:
                     ctx.write_error(f"rm: cannot remove '{path_str}': Is a directory\r\n")
                     exit_code = 1
                     continue
                 result = await self._rm_tree(target, path_str, ctx)
-                if result != 0:
-                    exit_code = result
             else:
-                try:
-                    ctx.filesystem.remove(target)
-                except OSError as e:
-                    if not args.force:
-                        ctx.write_error(f"rm: cannot remove '{path_str}': {e}\r\n")
-                        exit_code = 1
+                result = self._rm_file(target, path_str, ctx, force=args.force)
+            if result != 0:
+                exit_code = result
 
         return exit_code
+
+    def _rm_file(self, target: VPath, display_path: str, ctx: ShellContext, *, force: bool) -> int:
+        """Remove a file or a link (a link is never followed)."""
+        try:
+            ctx.filesystem.remove(target)
+        except OSError as e:
+            if not force:
+                ctx.write_error(f"rm: cannot remove '{display_path}': {e}\r\n")
+                return 1
+        return 0
 
     async def _rm_tree(self, path: VPath, display_path: str, ctx: ShellContext) -> int:
         """Recursively remove a directory tree."""
@@ -58,7 +66,9 @@ class RmCommand(Command):
             async for entry in ctx.filesystem.iterdir(path):
                 if ctx.is_cancelled():
                     return 130
-                if entry.stat.is_directory:
+                if entry.stat.is_symlink:
+                    ctx.filesystem.remove(entry)
+                elif entry.stat.is_directory:
                     result = await self._rm_tree(entry, f"{display_path}/{entry.name}", ctx)
                     if result != 0:
                         return result
