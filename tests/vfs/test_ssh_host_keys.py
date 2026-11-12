@@ -26,6 +26,11 @@ from tests._utils.stub_ssh_server import StubSSHServer, make_host_key
 _LOGIN_WORD = "testpass"
 
 
+class _AcceptAnyHostKey(paramiko.MissingHostKeyPolicy):
+    def missing_host_key(self, client: paramiko.SSHClient, hostname: str, key: paramiko.PKey) -> None:
+        return
+
+
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "realhome-guard"))
@@ -300,3 +305,28 @@ def test_conflicting_stored_key_after_authentication_failure_raises_changed_and_
         assert close_count
     finally:
         srv.stop()
+
+
+def test_sftp_setup_failure_closes_the_client_we_created(server: StubSSHServer, locations: KnownHostsLocations, close_count: list[int], monkeypatch: pytest.MonkeyPatch) -> None:
+    def failing_open_sftp(*_args: object) -> paramiko.SFTPClient:
+        raise paramiko.SSHException("sftp subsystem unavailable")
+
+    monkeypatch.setattr(paramiko.SSHClient, "open_sftp", failing_open_sftp)
+    with pytest.raises(paramiko.SSHException, match="sftp subsystem unavailable"):
+        _connect(server, locations, trusted_host_key=server.host_key)
+    assert close_count
+
+
+def test_sftp_setup_failure_leaves_an_injected_client_open(server: StubSSHServer, close_count: list[int], monkeypatch: pytest.MonkeyPatch) -> None:
+    def failing_open_sftp(*_args: object) -> paramiko.SFTPClient:
+        raise paramiko.SSHException("sftp subsystem unavailable")
+
+    monkeypatch.setattr(paramiko.SSHClient, "open_sftp", failing_open_sftp)
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(_AcceptAnyHostKey())
+    try:
+        with pytest.raises(paramiko.SSHException, match="sftp subsystem unavailable"):
+            SSHFilesystem(server.host, server.port, "testuser", None, _LOGIN_WORD, ssh_client=client)
+        assert not close_count
+    finally:
+        client.close()

@@ -65,9 +65,6 @@ async def _connect(
     try:
         return await asyncio.to_thread(SSHFilesystem, host, port, username, identity_file, None, trusted_host_key=trusted_key)
     except UnknownHostKeyError as exc:
-        if trusted_key is not None:
-            _logger.error("Unknown host key for %r after confirmation: %s", name, exc)
-            return await _report_failure(name, exc)
         _logger.warning("Unknown host key for %r: %s %s", name, exc.key_type, exc.fingerprint)
         confirm = MessageBox(unknown_host_message(exc), title=UNKNOWN_TITLE, buttons=[Response.OK, Response.CANCEL], variant="warning")
         if await confirm.run() != Response.OK:
@@ -75,8 +72,7 @@ async def _connect(
         return await _connect(name, host, port, username, identity_file, exc.key)
     except HostKeyError as exc:  # revoked, changed or mismatched: refused, there is no way to accept
         _logger.warning("Host key refused for %r: %s %s %s", name, type(exc).__name__, exc.key_type, exc.fingerprint)
-        title, message = _refusal(exc)
-        await MessageBox(message, title=title, variant="error").run()
+        await _show_refusal(exc)
         return None
     except paramiko.AuthenticationException:
         return await _prompt_credentials(host, port, username, trusted_key)
@@ -103,8 +99,7 @@ async def _prompt_credentials(hostname: str, port: int, username: str | None, tr
     try:
         return await asyncio.to_thread(SSHFilesystem, hostname, port, creds.username or None, None, creds.password or None, trusted_host_key=trusted_key)
     except HostKeyError as exc:
-        title, message = _refusal(exc)
-        await MessageBox(message, title=title, variant="error").run()
+        await _show_refusal(exc)
         return None
     except Exception as exc:
         _logger.exception("SSH password auth failed for %r: %s", hostname, exc)
@@ -152,6 +147,12 @@ def mismatch_message(exc: ConfirmedKeyMismatchError) -> str:
 def save_failure_message(path: Path, error: OSError) -> str:
     """Text of the warning shown when the confirmed host key could not be written."""
     return f"Connected, but the host key could not be saved to {path}: {error}.\nYou will be asked again next time."
+
+
+async def _show_refusal(exc: HostKeyError) -> None:
+    """Show the OK-only error box for a refused host key."""
+    title, message = _refusal(exc)
+    await MessageBox(message, title=title, variant="error").run()
 
 
 def _refusal(exc: HostKeyError) -> tuple[str, str]:

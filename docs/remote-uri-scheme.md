@@ -66,9 +66,11 @@ Paramiko's `load_system_host_keys`, `load_host_keys`, `save_host_keys` and `Auto
 
 Plain, `host,ip`, `[host]:port` and hashed (`|1|salt|hmac`) entries are honoured.
 `@revoked` lines are honoured by key: a revoked key is refused for every host.
-`@cert-authority` lines, unknown markers, unsupported key types, malformed lines and wildcard or negated patterns are ignored.
+Lines that cannot be parsed are ignored: malformed lines, unsupported key types, `@cert-authority` lines and unknown markers.
 Ignored lines are logged with file and line number, never with key material, and are never rewritten.
-A host that is covered only by ignored lines counts as unknown and the user is asked.
+Lines with wildcard or negated host patterns are not detected and not logged.
+They parse as ordinary entries whose host token never equals another host name.
+A host that is covered only by ignored or pattern lines counts as unknown and the user is asked.
 
 ### Flow and messages
 
@@ -112,6 +114,9 @@ A key that is already stored is not appended again.
 - `Include` directives in `ssh_config` are not followed, so a `HashKnownHosts` set only there is missed and a plain line is written.
 - `Match exec` lines are neutralised before the config is parsed, because paramiko would run the command.
 - Wildcard, case-folded and `CheckHostIP` matching are not supported; such hosts are asked about again.
+- Host-key types are not restricted to the stored types.
+  If the server negotiates a different key type than the one stored, the host counts as unknown and the user is asked.
+  A mismatch is detected only when a key of the same type is presented.
 - Paramiko keeps one key per type and host, so a second stored key of the same type is reported as changed.
 - `flock` only serialises Nova Navigator windows; OpenSSH takes no lock.
 

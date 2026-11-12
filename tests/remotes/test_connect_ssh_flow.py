@@ -56,12 +56,15 @@ class _FakeMessageBox:
 
 class _FakeCredentialsDialog:
     runs: ClassVar[int] = 0
+    on_run: ClassVar[Callable[[], None] | None] = None
 
     def __init__(self, hostname: str, username: str = "") -> None:
         self.credentials = Credentials("testuser", "testpass")
 
     async def run(self) -> Response:
         _FakeCredentialsDialog.runs += 1
+        if _FakeCredentialsDialog.on_run is not None:
+            _FakeCredentialsDialog.on_run()
         return Response.OK
 
 
@@ -100,6 +103,7 @@ def flow_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[_Env,
     _FakeMessageBox.answers = []
     _FakeMessageBox.hooks = {}
     _FakeCredentialsDialog.runs = 0
+    _FakeCredentialsDialog.on_run = None
     (tmp_path / "root").mkdir()
     (tmp_path / "home").mkdir(exist_ok=True)
     locations = KnownHostsLocations.under(tmp_path / "home", tmp_path / "etc")
@@ -231,6 +235,28 @@ async def test_conflict_from_another_window_is_shown_as_changed_key(flow_env: _E
     assert "Could not connect" not in box.message
     assert flow_env.known_hosts.read_text() == line
     assert _FakeCredentialsDialog.runs == 0
+
+
+@pytest.mark.asyncio
+async def test_changed_key_on_credentials_retry_shows_error_box_only(flow_env: _Env) -> None:
+    original = flow_env.server.host_key
+    rotated = make_host_key("rsa")
+    stored = key_line(flow_env.name, original) + "\n"
+    flow_env.write_known_hosts(stored)
+    _FakeCredentialsDialog.on_run = lambda: flow_env.server.set_host_key(rotated)
+
+    assert await connect_ssh(flow_env.connection) is None
+
+    assert _FakeCredentialsDialog.runs == 1
+    assert len(flow_env.boxes) == 1
+    box = flow_env.boxes[0]
+    assert box.title == "Host Key Changed"
+    assert box.variant == "error"
+    assert box.buttons is None
+    assert fingerprint(rotated) in box.message
+    assert fingerprint(original) in box.message
+    assert "Could not connect" not in box.message
+    assert flow_env.known_hosts.read_text() == stored
 
 
 @pytest.mark.skipif(os.getuid() == 0, reason="root ignores directory permissions")

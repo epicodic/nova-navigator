@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from pathlib import Path
 
 import paramiko
 import pytest
 
+from nova_navigator.remotes.known_hosts import KnownHostsLocations
 from nova_navigator.vfs.filesystems.ssh import SSHFilesystem
 from tests._utils.stub_ssh_server import StubSSHServer
 
@@ -16,6 +18,14 @@ _LOGIN = ("testuser", "testpass")
 class _AcceptAnyHostKey(paramiko.MissingHostKeyPolicy):
     def missing_host_key(self, client: paramiko.SSHClient, hostname: str, key: paramiko.PKey) -> None:
         return
+
+
+@pytest.fixture(autouse=True)
+def isolated_ssh_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every vfs test away from the real ``~/.ssh``, ``/etc/ssh`` and the user's ssh-agent."""
+    locations = KnownHostsLocations.under(tmp_path / "isolated-home", tmp_path / "isolated-etc")
+    monkeypatch.setattr(KnownHostsLocations, "default", classmethod(lambda _cls: locations))
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
 
 
 @pytest.fixture(scope="module")

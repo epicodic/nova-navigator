@@ -416,7 +416,12 @@ class SSHFilesystem(Filesystem):
                 ssh_client.connect(hostname, port=port, username=username, key_filename=key_filename, password=password)
             except paramiko.BadHostKeyException as exc:
                 raise ChangedHostKeyError(host_key_name(hostname, port), exc.key, exc.expected_key) from exc
-        self._sftp_client = self._ssh_client.open_sftp()
+        try:
+            self._sftp_client = self._ssh_client.open_sftp()
+        except BaseException:
+            if ssh_client is None:  # an injected client belongs to the caller
+                self._ssh_client.close()
+            raise
         self._stat_cache: dict[tuple[str, bool], dict[str, StatEntry]] = {}
         self._stat_cache_lock = threading.Lock()
         self._hostname = hostname
