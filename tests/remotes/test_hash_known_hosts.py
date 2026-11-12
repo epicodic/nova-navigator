@@ -65,13 +65,26 @@ def test_include_is_not_followed(tmp_path: Path) -> None:
         'Match=exec "touch {marker}"',
         'Match exec "touch {marker}"\r',
         'Match "exec" "touch {marker}"',
+        'Match e"xec" "touch {marker}"',
+        "Match exe''c \"touch {marker}\"",
+        'Match ex\\ec "touch {marker}"',
+        'Host a\nMatch e"xec" "touch {marker}"',
+        "Match host",
+        "Match frobnicate x",
+        'Match "unterminated',
     ],
 )
-def test_match_exec_never_runs_and_block_does_not_apply(tmp_path: Path, match_line: str) -> None:
-    marker = tmp_path / "ran"
+def test_match_exec_never_runs_and_block_does_not_apply(tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, match_line: str) -> None:
+    # tmp_path contains the test name (and so the text "exec"); keep the marker path free of it.
+    marker = tmp_path_factory.mktemp("m") / "ran"
     config = _cfg(tmp_path, "c", match_line.format(marker=marker) + "\n  HashKnownHosts yes\n")
     assert hash_known_hosts_enabled("h.example", [config]) is False
     assert not marker.exists()
+
+
+def test_match_all_still_works(tmp_path: Path) -> None:
+    config = _cfg(tmp_path, "c", "Match all\n  HashKnownHosts yes\n")
+    assert hash_known_hosts_enabled("h.example", [config]) is True
 
 
 def test_match_host_still_works(tmp_path: Path) -> None:

@@ -16,6 +16,7 @@ import fcntl
 import hashlib
 import logging
 import os
+import shlex
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -252,16 +253,47 @@ def append_host_key(path: Path, name: str, key: paramiko.PKey, *, hashed: bool) 
 _CONFIG_ERRORS = (OSError, ConfigParseError, ValueError)
 
 
-def _neutralise_match_exec(text: str) -> str:
-    """Replace every ``Match`` line mentioning ``exec`` by ``Host !*``, keeping the line count.
+_MATCH_KEYWORDS_WITH_ARGUMENT = frozenset({"host", "originalhost", "user", "localuser"})
+_MATCH_KEYWORDS_WITHOUT_ARGUMENT = frozenset({"all", "canonical", "final"})
 
-    Lines are split on newline characters only and judged with ``str.strip()``, exactly like paramiko does, so no
-    leading Unicode whitespace can hide a command from this check.
+
+def _is_safe_match_line(line: str) -> bool:
+    """Return True if *line* is a ``Match`` line made only of keywords that never run a command.
+
+    Paramiko reads the line as ``key[=| ]value`` and then runs ``shlex.split`` on the value, so quoting and escaping
+    (``e"xec"``, ``exe''c``, backslash escapes) still yield the keyword ``exec``.  A substring check therefore cannot work;
+    this is an allowlist built on the same ``shlex`` tokenisation.  Anything unknown, a keyword without its
+    argument, a tokenisation error or ``Match=...`` (whose first token is not ``match``) is not safe.
+    """
+    try:
+        tokens = shlex.split(line.strip())
+    except ValueError:
+        return False
+    if not tokens or tokens[0].lower() != "match":
+        return False
+    rest = iter(tokens[1:])
+    for token in rest:
+        keyword = token.lower().removeprefix("!")
+        if keyword in _MATCH_KEYWORDS_WITH_ARGUMENT:
+            if next(rest, None) is None:
+                return False
+        elif keyword not in _MATCH_KEYWORDS_WITHOUT_ARGUMENT:
+            return False
+    return True
+
+
+def _neutralise_match_exec(text: str) -> str:
+    """Replace every ``Match`` line that is not made of known-safe keywords by ``Host !*``, keeping the line count.
+
+    Only ``host``, ``originalhost``, ``user``, ``localuser``, ``all``, ``canonical`` and ``final`` are kept; in
+    particular ``exec`` (which paramiko runs through a shell) never survives, however it is quoted.  Lines are split
+    on newline characters only and judged with ``str.strip()``, exactly like paramiko does, so no leading Unicode
+    whitespace can hide a command from this check.
     """
     lines = []
     for line in text.split("\n"):
-        folded = line.strip().lower()
-        lines.append("Host !*" if folded.startswith("match") and "exec" in folded else line)
+        is_match = line.strip().lower().startswith("match")
+        lines.append("Host !*" if is_match and not _is_safe_match_line(line) else line)
     return "\n".join(lines)
 
 
@@ -269,8 +301,8 @@ def hash_known_hosts_enabled(hostname: str, config_paths: Sequence[Path]) -> boo
     """Return True if the effective ``HashKnownHosts`` for *hostname* is ``yes``.
 
     *config_paths* are read in order (``~/.ssh/config`` then ``/etc/ssh/ssh_config``); the first file
-    that yields a value decides, as in OpenSSH.  ``Match ... exec`` lines are replaced by ``Host !*``
-    before parsing because ``SSHConfig.lookup`` would run the command through a shell.  ``Include`` is
+    that yields a value decides, as in OpenSSH.  ``Match`` lines other than known-safe keywords are replaced by
+    ``Host !*`` before parsing because ``SSHConfig.lookup`` would run an ``exec`` command through a shell.  ``Include`` is
     not followed (paramiko limitation).  Nothing else is read from the files.
     """
     for path in config_paths:

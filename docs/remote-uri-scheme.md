@@ -112,7 +112,7 @@ A key that is already stored is not appended again.
 ### Limits
 
 - `Include` directives in `ssh_config` are not followed, so a `HashKnownHosts` set only there is missed and a plain line is written.
-- `Match exec` lines are neutralised before the config is parsed, because paramiko would run the command.
+- Every `Match` line other than `Match host/originalhost/user/localuser/all/canonical/final` forms (including `Match exec`, however quoted) is treated as not matching and never executed: it is replaced before the config is parsed, because paramiko would run an `exec` command.
 - Wildcard, case-folded and `CheckHostIP` matching are not supported; such hosts are asked about again.
 - Host-key types are not restricted to the stored types.
   If the server negotiates a different key type than the one stored, the host counts as unknown and the user is asked.

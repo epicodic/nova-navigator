@@ -314,7 +314,7 @@ def test_sftp_setup_failure_closes_the_client_we_created(server: StubSSHServer, 
     monkeypatch.setattr(paramiko.SSHClient, "open_sftp", failing_open_sftp)
     with pytest.raises(paramiko.SSHException, match="sftp subsystem unavailable"):
         _connect(server, locations, trusted_host_key=server.host_key)
-    assert close_count
+    assert close_count == [1]
 
 
 def test_sftp_setup_failure_leaves_an_injected_client_open(server: StubSSHServer, close_count: list[int], monkeypatch: pytest.MonkeyPatch) -> None:
