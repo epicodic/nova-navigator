@@ -1,5 +1,6 @@
 """Move must not follow links when it replaces an existing destination."""
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -132,3 +133,33 @@ async def test_move_cross_device_file_link_moves_as_file(tmp_path: Path, monkeyp
     assert (dst / "l").read_text() == "content"
     assert not (dst / "l").is_symlink()
     assert not (src / "l").is_symlink()
+
+
+def _tree(tmp_path: Path) -> tuple[Path, Path, Path]:
+    src = tmp_path / "src"
+    (src / "d").mkdir(parents=True)
+    (src / "f.txt").write_text("x")
+    (src / "d" / "g.txt").write_text("g")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep")
+    dst = tmp_path / "dst"
+    dst.mkdir()
+    return src, outside, dst
+
+
+def _listing(root: Path) -> list[str]:
+    return sorted(str(p.relative_to(root)) for p in root.rglob("*"))
+
+
+@pytest.mark.asyncio
+async def test_move_same_device_dir_with_inner_link_renames_link(tmp_path: Path) -> None:
+    src, outside, dst = _tree(tmp_path)
+    (src / "out").symlink_to(outside, target_is_directory=True)
+    (dst / "src").mkdir()
+    before = _listing(outside)
+    fs = LocalFilesystem()
+    options = FileCopyOptions(overwrite="overwrite")
+    await asyncio.wait_for(run_task(lambda ctx: move_files(ctx, [fs.path(src)], fs.path(dst), options)), timeout=20)
+    assert (dst / "src" / "out").is_symlink()
+    assert _listing(outside) == before

@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import logging
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Literal
 
 from nova_navigator.scheduler import TaskContext
@@ -24,6 +25,22 @@ def _is_unsupported_link(stat: Stat) -> bool:
     """Return whether *stat* is a link to a directory or a broken/looping link (links are not copied before ACT4)."""
     return stat.is_symlink and (stat.is_directory or stat.is_broken_symlink)
 
+
+SKIP_BROKEN_LINK = "broken link"
+SKIP_LINK_LOOP = "link loop"
+SKIP_UNREADABLE_LINK = "unreadable link"
+_MAX_LINK_DEPTH = 16
+
+
+@dataclass(frozen=True)
+class _LinkChain:
+    """Real paths of the directories that hold the links entered on the current descent (outermost first)."""
+
+    positions: tuple[PurePosixPath, ...] = ()
+    depth: int = 0
+
+
+_NO_CHAIN = _LinkChain()
 
 CHUNK_SIZE = 64 * 1024  # 64 KB
 
@@ -160,15 +177,95 @@ async def _copy_file_step(
     dst: VPath,
     options: FileCopyOptions,
 ) -> None:
-    if _is_unsupported_link(src.stat):
-        _logger.warning("Skipping link %s: copying links is not supported yet", src.path)
-        ctx.status.update_progress(inc_completed=1)
-        return
     if options.filter is not None and not options.filter.matches(src):
         ctx.status.update_progress(inc_completed=1)
         return
     await copy_file(ctx, src, dst, options)
     ctx.status.update_progress(inc_completed=1)
+
+
+async def _confirm_link_replace(ctx: TaskContext, link: VPath, dst: VPath, options: FileCopyOptions) -> bool:
+    """Apply the overwrite policy to an existing *dst*; return True when the link may be created (*dst* is then removed)."""
+    dst_stat = dst.stat_or_none
+    if dst_stat is None:
+        return True
+    if options.overwrite == "skip":
+        _logger.debug("copy_link skip (exists) %s", dst.path)
+        return False
+    if options.overwrite == "ask":
+        response = await ctx.request_response(
+            "Overwrite",
+            expected_responses=[Response.YES, Response.NO, Response.ALL, Response.NONE],
+            message=f"File '{dst.name}' already exists. Overwrite?",
+            dialog_type="overwrite",
+            details={
+                "src_name": link.name,
+                "src_size": link.stat.size,
+                "dst_name": dst.name,
+                "dst_size": dst_stat.size,
+            },
+        )
+        if response.is_rejected:
+            _logger.debug("copy_link skip (user declined) %s", dst.path)
+            return False
+    dst.filesystem.remove(dst)  # removes a file or link itself, never follows; a real directory makes it raise
+    return True
+
+
+async def _recreate_link(ctx: TaskContext, link: VPath, dst: VPath, options: FileCopyOptions) -> bool:
+    """Create at *dst* a link with the same target text as *link*; never reads or descends into the target."""
+    try:
+        text = link.filesystem.readlink(link)
+    except OSError:
+        _logger.warning("Skipping link %s: its target cannot be read", link.path, exc_info=True)
+        ctx.report_skipped(link.uri, SKIP_UNREADABLE_LINK)
+        return False
+    if not await _confirm_link_replace(ctx, link, dst, options):
+        return False
+    dst.filesystem.symlink(dst, text)
+    return True
+
+
+async def _copy_link(
+    ctx: TaskContext,
+    link: VPath,
+    dst: VPath,
+    options: FileCopyOptions,
+) -> bool:
+    """Copy the symbolic link *link* to *dst*; return True if something was created at the destination.
+
+    One decision point for copy and for cross-device move (REQ-3, REQ-9).
+    A link-capable destination gets a link with the same target text.
+    Never touches the ``completed`` counter: the caller counts the link as one unit of work.
+    """
+    ctx.status.set_current_item(link.uri)
+    if dst.filesystem.supports_symlinks():
+        return await _recreate_link(ctx, link, dst, options)
+    if _is_unsupported_link(link.stat):
+        _logger.warning("Skipping link %s: copying links to this destination is not supported yet", link.path)
+        return False
+    return await copy_file(ctx, link, dst, options)
+
+
+async def _copy_link_step(
+    ctx: TaskContext,
+    link: VPath,
+    dst: VPath,
+    options: FileCopyOptions,
+) -> None:
+    if options.filter is not None and not options.filter.matches(link):
+        ctx.status.update_progress(inc_completed=1)
+        return
+    await _copy_link(ctx, link, dst, options)
+    ctx.status.update_progress(inc_completed=1)
+
+
+async def _copy_leaf_step(ctx: TaskContext, src: VPath, dst: VPath, options: FileCopyOptions) -> None:
+    """Copy a top-level item that is not a real directory: a link recreates/copies as a link, anything else as a file."""
+    if src.stat.is_symlink:
+        await _copy_link_step(ctx, src, dst, options)
+    else:
+        await _copy_file_step(ctx, src, dst, options)
 
 
 async def _copy_dir(
@@ -177,6 +274,7 @@ async def _copy_dir(
     dst_path: VPath,
     dst_filesystem: Filesystem,
     options: FileCopyOptions,
+    count_root: bool = True,
 ) -> None:
     file_tasks: list[asyncio.Task[None]] = []
     dir_stats: list[tuple[VPath, Stat]] = []
@@ -191,16 +289,19 @@ async def _copy_dir(
             ctx.status.update_progress(inc_completed=1)
         dir_stats.append((dst_root, src_root.stat))
         ctx.status.update_progress(inc_total=len(src_dirs) + len(src_files) + len(src_links))
-        for f in (*src_files, *src_links):
+        for f in src_files:
             ctx.status.check_cancelled()
-            t = await ctx.subtask(_copy_file_step(ctx, f, dst_root / f.name, options))
-            file_tasks.append(t)
+            file_tasks.append(await ctx.subtask(_copy_file_step(ctx, f, dst_root / f.name, options)))
+        for link in src_links:
+            ctx.status.check_cancelled()
+            file_tasks.append(await ctx.subtask(_copy_link_step(ctx, link, dst_root / link.name, options)))
     await asyncio.gather(*file_tasks)
     # Apply directory attributes bottom-up so that parent mtime is not disturbed
     # by child directory attribute changes.
     for dst_dir, src_stat in reversed(dir_stats):
         dst_filesystem.copy_stat(dst_dir, src_stat)
-    ctx.status.update_progress(inc_completed=1)
+    if count_root:
+        ctx.status.update_progress(inc_completed=1)
 
 
 async def copy_files(
@@ -226,7 +327,7 @@ async def copy_files(
 
     if len(src_paths) == 1 and not dst_is_directory and not _is_real_dir(src_paths[0].stat):
         ctx.status.update_progress(inc_total=1)
-        await _copy_file_step(ctx, src_paths[0], destination, options)
+        await _copy_leaf_step(ctx, src_paths[0], destination, options)
         return
 
     if len(src_paths) == 1 and not dst_is_directory and _is_real_dir(src_paths[0].stat):
@@ -245,7 +346,7 @@ async def copy_files(
         if _is_real_dir(src_path.stat):
             t = await ctx.subtask(_copy_dir(ctx, src_path, dst_path, dst_filesystem, options))
         else:
-            t = await ctx.subtask(_copy_file_step(ctx, src_path, dst_path, options))
+            t = await ctx.subtask(_copy_leaf_step(ctx, src_path, dst_path, options))
         subtasks.append(t)
 
     await asyncio.gather(*subtasks)
