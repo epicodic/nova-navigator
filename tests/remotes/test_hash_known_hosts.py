@@ -51,7 +51,22 @@ def test_include_is_not_followed(tmp_path: Path) -> None:
     assert hash_known_hosts_enabled("h.example", [main]) is False  # documented limitation
 
 
-@pytest.mark.parametrize("match_line", ['Match exec "touch {marker}"', 'Match host h.example exec "touch {marker}"', "  match   EXEC 'touch {marker}'"])
+@pytest.mark.parametrize(
+    "match_line",
+    [
+        'Match exec "touch {marker}"',
+        'Match host h.example exec "touch {marker}"',
+        "  match   EXEC 'touch {marker}'",
+        '\x0cMatch exec "touch {marker}"',
+        '\x0bMatch exec "touch {marker}"',
+        '\u00a0Match exec "touch {marker}"',
+        '\u2003Match exec "touch {marker}"',
+        '\rMatch exec "touch {marker}"',
+        'Match=exec "touch {marker}"',
+        'Match exec "touch {marker}"\r',
+        'Match "exec" "touch {marker}"',
+    ],
+)
 def test_match_exec_never_runs_and_block_does_not_apply(tmp_path: Path, match_line: str) -> None:
     marker = tmp_path / "ran"
     config = _cfg(tmp_path, "c", match_line.format(marker=marker) + "\n  HashKnownHosts yes\n")

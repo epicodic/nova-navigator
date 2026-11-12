@@ -16,7 +16,6 @@ import fcntl
 import hashlib
 import logging
 import os
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -250,8 +249,20 @@ def append_host_key(path: Path, name: str, key: paramiko.PKey, *, hashed: bool) 
         os.close(fd)
 
 
-_MATCH_EXEC = re.compile(r"^[ \t]*match\b(?=.*\bexec\b).*$", re.IGNORECASE | re.MULTILINE)
 _CONFIG_ERRORS = (OSError, ConfigParseError, ValueError)
+
+
+def _neutralise_match_exec(text: str) -> str:
+    """Replace every ``Match`` line mentioning ``exec`` by ``Host !*``, keeping the line count.
+
+    Lines are split on newline characters only and judged with ``str.strip()``, exactly like paramiko does, so no
+    leading Unicode whitespace can hide a command from this check.
+    """
+    lines = []
+    for line in text.split("\n"):
+        folded = line.strip().lower()
+        lines.append("Host !*" if folded.startswith("match") and "exec" in folded else line)
+    return "\n".join(lines)
 
 
 def hash_known_hosts_enabled(hostname: str, config_paths: Sequence[Path]) -> bool:
@@ -264,7 +275,7 @@ def hash_known_hosts_enabled(hostname: str, config_paths: Sequence[Path]) -> boo
     """
     for path in config_paths:
         try:
-            text = _MATCH_EXEC.sub("Host !*", path.read_text(encoding="utf-8", errors="replace"))
+            text = _neutralise_match_exec(path.read_text(encoding="utf-8", errors="replace"))
             value = paramiko.SSHConfig.from_text(text).lookup(hostname).get("hashknownhosts")
         except FileNotFoundError:
             continue
