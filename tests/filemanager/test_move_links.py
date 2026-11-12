@@ -1,15 +1,18 @@
 """Move must not follow links when it replaces an existing destination."""
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
 
 from nova_navigator.filemanager.tasks import FileCopyOptions, move_files
+from nova_navigator.vfs.filesystem import Filesystem
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_navigator.vfs.vpath import VPath
+from tests._utils.mock_filesystem import MockFilesystem
 
-from .common import make_status, run_task
+from .common import make_status, read_all, run_task
 
 
 @pytest.mark.asyncio
@@ -83,7 +86,7 @@ async def test_move_dir_link_same_device_renames_link_only(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
-async def test_move_cross_device_dir_link_skipped_source_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_move_cross_device_dir_with_outside_link_recreates_link(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _force_cross_device(monkeypatch)
     outside = _outside(tmp_path)
     src = tmp_path / "src"
@@ -95,16 +98,14 @@ async def test_move_cross_device_dir_link_skipped_source_kept(tmp_path: Path, mo
     status = make_status()
     await run_task(lambda ctx: move_files(ctx, [fs.path(src / "s")], fs.path(dst), FileCopyOptions(overwrite="overwrite")), status=status)
     assert (dst / "f.txt").read_text() == "f"
-    assert not (dst / "out").exists()
-    assert not (dst / "out").is_symlink()
-    assert (src / "s" / "out").is_symlink()
-    assert not (src / "s" / "f.txt").exists()
+    assert os.readlink(dst / "out") == str(outside)
+    assert not (src / "s").exists()
     _assert_outside_unchanged(outside)
     assert status.progress.completed == status.progress.total
 
 
 @pytest.mark.asyncio
-async def test_move_cross_device_selected_dir_link_skipped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_move_cross_device_selected_dir_link_recreated_and_source_link_removed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _force_cross_device(monkeypatch)
     outside = _outside(tmp_path)
     src = tmp_path / "src"
@@ -114,25 +115,90 @@ async def test_move_cross_device_selected_dir_link_skipped(tmp_path: Path, monke
     dst.mkdir()
     fs = LocalFilesystem()
     await run_task(lambda ctx: move_files(ctx, [fs.path(src / "lnk")], fs.path(dst), FileCopyOptions(overwrite="overwrite")))
-    assert (src / "lnk").is_symlink()
-    assert list(dst.iterdir()) == []
+    assert os.readlink(dst / "lnk") == str(outside)
+    assert not (src / "lnk").is_symlink()
     _assert_outside_unchanged(outside)
 
 
 @pytest.mark.asyncio
-async def test_move_cross_device_file_link_moves_as_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_move_cross_device_file_link_moves_as_link(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _force_cross_device(monkeypatch)
     src = tmp_path / "src"
     src.mkdir()
     (src / "f.txt").write_text("content")
-    (src / "l").symlink_to(src / "f.txt")
+    (src / "l").symlink_to("f.txt")
     dst = tmp_path / "dst"
     dst.mkdir()
     fs = LocalFilesystem()
     await run_task(lambda ctx: move_files(ctx, [fs.path(src / "l")], fs.path(dst), FileCopyOptions(overwrite="overwrite")))
-    assert (dst / "l").read_text() == "content"
-    assert not (dst / "l").is_symlink()
+    assert os.readlink(dst / "l") == "f.txt"
     assert not (src / "l").is_symlink()
+    assert (src / "f.txt").read_text() == "content"
+
+
+@pytest.mark.asyncio
+async def test_move_cross_device_skipped_link_stays_at_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _force_cross_device(monkeypatch)
+    src = tmp_path / "src"
+    (src / "s").mkdir(parents=True)
+    (src / "s" / "f.txt").write_text("f")
+    (src / "s" / "broken").symlink_to("nope")
+    fs = LocalFilesystem()
+    dst_fs = MockFilesystem(symlinks=False)
+    status = make_status()
+    await run_task(lambda ctx: move_files(ctx, [fs.path(src / "s")], dst_fs.path("/home/user/dst"), FileCopyOptions(overwrite="overwrite")), status=status)
+    assert read_all(dst_fs, "/home/user/dst/f.txt") == b"f"
+    assert not dst_fs.exists("/home/user/dst/broken")
+    assert (src / "s" / "broken").is_symlink()  # skipped link stays
+    assert not (src / "s" / "f.txt").exists()
+    assert [(s.item, s.reason) for s in status.skipped] == [(fs.path(src / "s" / "broken").uri, "broken link")]
+    assert status.progress.completed == status.progress.total
+
+
+@pytest.mark.asyncio
+async def test_move_cross_device_dir_link_to_nonlink_destination_copies_tree_and_removes_only_link(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _force_cross_device(monkeypatch)
+    outside = _outside(tmp_path)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "lnk").symlink_to(outside, target_is_directory=True)
+    fs = LocalFilesystem()
+    dst_fs = MockFilesystem(symlinks=False)
+    await run_task(lambda ctx: move_files(ctx, [fs.path(src / "lnk")], dst_fs.path("/home/user"), FileCopyOptions(overwrite="overwrite")))
+    assert read_all(dst_fs, "/home/user/lnk/keep.txt") == b"keep"
+    assert not (src / "lnk").is_symlink()
+    _assert_outside_unchanged(outside)
+
+
+@pytest.mark.asyncio
+async def test_move_cross_device_declined_overwrite_keeps_source_link(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _force_cross_device(monkeypatch)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "l").symlink_to("f.txt")
+    dst = tmp_path / "dst"
+    dst.mkdir()
+    (dst / "l").write_text("old")
+    fs = LocalFilesystem()
+    await run_task(lambda ctx: move_files(ctx, [fs.path(src / "l")], fs.path(dst), FileCopyOptions(overwrite="skip")))
+    assert (src / "l").is_symlink()
+    assert (dst / "l").read_text() == "old"
+
+
+@pytest.mark.asyncio
+async def test_move_local_to_ssh_dir_with_outside_link_recreates_link(link_fs: Filesystem, tmp_path: Path) -> None:
+    outside = _outside(tmp_path)
+    src = tmp_path / "src"
+    (src / "s").mkdir(parents=True)
+    (src / "s" / "f.txt").write_text("f")
+    (src / "s" / "out").symlink_to(outside, target_is_directory=True)
+    dst = tmp_path / "dst"
+    dst.mkdir()
+    local = LocalFilesystem()
+    await run_task(lambda ctx: move_files(ctx, [local.path(src / "s")], link_fs.path(dst), FileCopyOptions(overwrite="overwrite")))
+    assert os.readlink(dst / "s" / "out") == str(outside)
+    assert not (src / "s").exists()
+    _assert_outside_unchanged(outside)
 
 
 def _tree(tmp_path: Path) -> tuple[Path, Path, Path]:

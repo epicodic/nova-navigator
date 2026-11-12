@@ -21,11 +21,6 @@ def _is_real_dir(stat: Stat) -> bool:
     return stat.is_directory and not stat.is_symlink
 
 
-def _is_unsupported_link(stat: Stat) -> bool:
-    """Return whether *stat* is a link to a directory or a broken/looping link (links are not copied before ACT4)."""
-    return stat.is_symlink and (stat.is_directory or stat.is_broken_symlink)
-
-
 SKIP_BROKEN_LINK = "broken link"
 SKIP_LINK_LOOP = "link loop"
 SKIP_UNREADABLE_LINK = "unreadable link"
@@ -448,18 +443,20 @@ async def _move_dir_contents(
     Used when the destination directory already exists (so an atomic rename of
     the whole tree is not possible). Files are processed individually so that
     the overwrite policy is applied at file granularity. Source directories are
-    removed bottom-up after their contents are moved. Links are moved as entries
-    (renamed on the same device).
+    removed bottom-up after their contents are moved. Links are renamed on the same device;
+    across filesystems they are copied by ``_copy_link`` and removed from the source only if copied.
     """
     with contextlib.suppress(FileExistsError):
         actual_dst.filesystem.mkdir(actual_dst)
+    resolver = _HolderResolver(src_path)
     src_dirs: list[VPath] = []
     dir_stats: list[tuple[VPath, Stat]] = []
     async for src_root, walk_subdirs, src_files, src_links in src_path.walk():
         ctx.status.check_cancelled()
         dst_root = actual_dst / src_root.path.relative_to(src_path.path)
-        with contextlib.suppress(FileExistsError):
-            actual_dst.filesystem.mkdir(dst_root)
+        if src_root.path != src_path.path:  # the root was created above; SFTP reports an existing directory as a generic failure
+            with contextlib.suppress(FileExistsError):
+                actual_dst.filesystem.mkdir(dst_root)
         # The root directory is already counted by the caller; only subdirectories
         # (src_root != src_path) complete a unit of work when they are entered.
         if src_root.path != src_path.path:
@@ -471,10 +468,6 @@ async def _move_dir_contents(
             ctx.status.check_cancelled()
             ctx.status.set_current_item(f.uri)
             if options.filter is not None and not options.filter.matches(f):
-                ctx.status.update_progress(inc_completed=1)
-                continue
-            if not same_device and _is_unsupported_link(f.stat):
-                _logger.warning("Skipping link %s: moving links across filesystems is not supported yet", f.path)
                 ctx.status.update_progress(inc_completed=1)
                 continue
             f_dst = dst_root / f.name
@@ -496,9 +489,13 @@ async def _move_dir_contents(
                     f_dst.filesystem.remove(f_dst)
                 f.filesystem.rename(f, f_dst)
             else:
-                copied = await copy_file(ctx, f, f_dst, options)
+                if f.stat.is_symlink:
+                    holder = resolver.holder(src_root) if _needs_holder(f, actual_dst.filesystem) else None
+                    copied = await _copy_link(ctx, f, f_dst, options, holder=holder)
+                else:
+                    copied = await copy_file(ctx, f, f_dst, options)
                 if copied:
-                    f.filesystem.remove(f)
+                    f.filesystem.remove(f)  # unlinks a link itself, never follows it
             ctx.status.update_progress(inc_completed=1)
     for d in reversed(src_dirs):
         with contextlib.suppress(OSError):
@@ -520,7 +517,8 @@ async def _move_path(
     If *dst_path* is an existing directory the source is placed inside it under
     its original name; otherwise it is used as the exact destination.
     Same-device moves use an atomic rename after clearing any existing
-    destination. Cross-device moves copy the content then remove the source.
+    destination. Cross-device moves copy the content then remove the source;
+    links are copied by ``_copy_link`` and removed from the source only if copied.
     Increments the overall completed counter by one when done (including skip).
     """
     ctx.status.check_cancelled()
@@ -572,8 +570,9 @@ async def _move_path(
         if is_dir:
             # _move_dir_contents adds total and completed incrementally.
             await _move_dir_contents(ctx, src_path, actual_dst, options, same_device=False)
-        elif _is_unsupported_link(src_path.stat):
-            _logger.warning("Skipping link %s: moving links across filesystems is not supported yet", src_path.path)
+        elif src_path.stat.is_symlink:
+            if await _copy_link(ctx, src_path, actual_dst, options):
+                src_path.filesystem.remove(src_path)
         else:
             copied = await copy_file(ctx, src_path, actual_dst, options)
             if copied:
