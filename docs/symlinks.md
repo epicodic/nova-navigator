@@ -66,7 +66,8 @@ Each descent carries a chain of the resolved directory positions that were enter
 A directory link is a loop if its resolved target is an ancestor of, or equal to, the directory that holds it or any chain position.
 The check uses `real_path`.
 This rule detects loops along the current descent, not across the whole copy.
-It is a candidate wording for a revision (rev 2) of ADR-2, which is not edited here.
+A link whose target is already being copied higher up in the same descent is skipped as a loop.
+A target that appears only in a sibling branch is copied normally.
 
 `_MAX_LINK_DEPTH = 16` is a backstop for the nesting of link-entered directories.
 When `real_path` returns `None`, the link is walked through a followed view and only the depth guard protects the copy.
@@ -89,6 +90,7 @@ See `docs/scheduler.md` for the reporting API.
 A move across devices copies a link with `_copy_link` and then removes the source link, but only if it was copied.
 A skipped link stays in the source.
 Its parent directory then cannot be removed and stays too.
+A directory link is removed from the source once its tree copy has started, even if the overwrite policy skipped some of the children.
 The target of a directory link is only read, never touched.
 Moves on the same device rename the link itself.
 
@@ -103,7 +105,8 @@ ZIP never reports links; an entry with a link mode reads as a file holding the t
 Archives have no link support as a destination.
 Writes keep existing members unchanged but cannot add links.
 `ArchiveFilesystem.mkdir` is an implicit no-op, because directories only appear with the first member below them.
-It raises only `FileExistsError` or `NotADirectoryError`.
+It raises `PermissionError` for a read-only archive, `FileExistsError` for an existing path and `NotADirectoryError` if an ancestor is a file.
+Otherwise it does nothing.
 Empty directories are therefore not stored in an archive.
 The modification time of a link is not preserved.
 
