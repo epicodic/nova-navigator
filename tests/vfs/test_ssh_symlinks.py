@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from nova_navigator.vfs.filesystems.ssh import SSHFilesystem
+from nova_navigator.vfs.types import ExecResult
 from nova_navigator.vfs.vpath import VPath
 
 
@@ -104,3 +105,43 @@ def test_ssh_symlink_creates_non_utf8_target_bytes_unchanged(ssh_stub_fs: SSHFil
     raw_target = b"bad\xfftarget"
     ssh_stub_fs.symlink(VPath(tmp_path / "l", ssh_stub_fs), os.fsdecode(raw_target))
     assert os.readlink(os.fsencode(tmp_path / "l")) == raw_target
+
+
+def test_ssh_readlink_fallback_truncated_hex_raises_oserror(ssh_stub_fs: SSHFilesystem, tmp_path: Path) -> None:
+    os.symlink(b"t", os.fsencode(tmp_path / "l"))
+
+    def undecodable(_path: bytes) -> str:
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "x")
+
+    def truncated(_command: str, _cwd: VPath) -> ExecResult:
+        return ExecResult(exit_code=0, output=" 7")
+
+    with (
+        patch.object(ssh_stub_fs._sftp_client, "readlink", undecodable),
+        patch.object(ssh_stub_fs, "exec_command", truncated),
+        pytest.raises(OSError, match="truncated"),
+    ):
+        ssh_stub_fs.readlink(VPath(tmp_path / "l", ssh_stub_fs))
+
+
+@pytest.mark.usefixtures("stub_surrogateescape")
+def test_ssh_readlink_fallback_quotes_awkward_link_path(ssh_stub_fs: SSHFilesystem, tmp_path: Path) -> None:
+    raw_name = b"sp ace'quote\xff"
+    link = tmp_path / os.fsdecode(raw_name)
+    os.symlink(b"target", os.fsencode(link))
+    scripts: list[str] = []
+    real_exec = ssh_stub_fs.exec_command
+
+    def recording(command: str, cwd: VPath) -> ExecResult:
+        scripts.append(command)
+        return real_exec(command, cwd)
+
+    def undecodable(_path: bytes) -> str:
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "x")
+
+    with patch.object(ssh_stub_fs._sftp_client, "readlink", undecodable), patch.object(ssh_stub_fs, "exec_command", recording):
+        assert ssh_stub_fs.readlink(VPath(link, ssh_stub_fs)) == "target"
+    assert len(scripts) == 1
+    assert scripts[0].isascii()
+    assert "readlink -n -- " in scripts[0]
+    assert raw_name.decode("latin-1") not in scripts[0]

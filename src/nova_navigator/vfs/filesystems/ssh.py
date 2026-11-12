@@ -611,7 +611,11 @@ class SSHFilesystem(Filesystem):
         result = self.exec_command(script, self.root())
         if result.exit_code != 0:
             raise OSError(f"{path} is not a symbolic link")
-        return _decode(bytes.fromhex(result.output))
+        try:
+            raw = bytes.fromhex(result.output)
+        except ValueError as exc:
+            raise OSError(f"{path}: link target reply was truncated or malformed") from exc
+        return _decode(raw)
 
     @override
     def real_path(self, path: VPath) -> VPath | None:
