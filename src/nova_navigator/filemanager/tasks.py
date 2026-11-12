@@ -1,7 +1,7 @@
 import asyncio
 import contextlib
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 from typing import Literal
 
@@ -41,6 +41,7 @@ class _LinkChain:
 
 
 _NO_CHAIN = _LinkChain()
+
 
 CHUNK_SIZE = 64 * 1024  # 64 KB
 
@@ -226,11 +227,85 @@ async def _recreate_link(ctx: TaskContext, link: VPath, dst: VPath, options: Fil
     return True
 
 
+def _followed_view(link: VPath) -> VPath:
+    """Return a VPath at *link*'s own path whose stat no longer says "link", so ``walk`` may enter it (no resolved-path API)."""
+    view = VPath(link.path, link.filesystem)
+    view._stat = replace(link.stat, is_symlink=False)
+    return view
+
+
+def _needs_holder(link: VPath, dst_filesystem: Filesystem) -> bool:
+    """Return True if copying *link* needs the real position of the directory holding it (loop test)."""
+    stat = link.stat
+    return not dst_filesystem.supports_symlinks() and stat.is_directory and not stat.is_broken_symlink
+
+
+class _HolderResolver:
+    """Lazily resolves the real (canonical) position of directories below a walk root; ``None`` when the filesystem cannot tell."""
+
+    def __init__(self, root: VPath) -> None:
+        self._root = root
+        self._real: PurePosixPath | None = None
+        self._resolved = False
+
+    def holder(self, walked: VPath) -> PurePosixPath | None:
+        """Return the real position of *walked* (a directory at or below the walk root), or None if unknown."""
+        if not self._resolved:
+            self._resolved = True
+            try:
+                real = self._root.filesystem.real_path(self._root)
+            except OSError:
+                real = None
+            self._real = None if real is None else real.path
+        if self._real is None:
+            return None
+        return self._real / walked.path.relative_to(self._root.path)
+
+
+def _is_loop(target: PurePosixPath, holder: PurePosixPath | None, chain: _LinkChain) -> bool:
+    """Return True if *target* is a directory already being copied: ancestor-or-self of the holder or of a chain position."""
+    positions = chain.positions if holder is None else (*chain.positions, holder)
+    return any(position == target or position.is_relative_to(target) for position in positions)
+
+
+async def _copy_linked_directory(
+    ctx: TaskContext,
+    link: VPath,
+    dst: VPath,
+    options: FileCopyOptions,
+    chain: _LinkChain,
+    holder: PurePosixPath | None,
+) -> bool:
+    """Copy the directory *link* points to as a tree under *dst* (destination without links), unless it loops."""
+    if chain.depth + 1 > _MAX_LINK_DEPTH:
+        ctx.report_skipped(link.uri, SKIP_LINK_LOOP)
+        return False
+    try:
+        real = link.filesystem.real_path(link)
+    except OSError:
+        ctx.report_skipped(link.uri, SKIP_BROKEN_LINK)
+        return False
+    if real is None:
+        source = _followed_view(link)
+        next_chain = _LinkChain(chain.positions, chain.depth + 1)
+    else:
+        if _is_loop(real.path, holder, chain):
+            ctx.report_skipped(link.uri, SKIP_LINK_LOOP)
+            return False
+        source = real
+        positions = chain.positions if holder is None else (*chain.positions, holder)
+        next_chain = _LinkChain(positions, chain.depth + 1)
+    await _copy_dir(ctx, source, dst, dst.filesystem, options, next_chain, count_root=False)
+    return True
+
+
 async def _copy_link(
     ctx: TaskContext,
     link: VPath,
     dst: VPath,
     options: FileCopyOptions,
+    chain: _LinkChain = _NO_CHAIN,
+    holder: PurePosixPath | None = None,
 ) -> bool:
     """Copy the symbolic link *link* to *dst*; return True if something was created at the destination.
 
@@ -241,10 +316,13 @@ async def _copy_link(
     ctx.status.set_current_item(link.uri)
     if dst.filesystem.supports_symlinks():
         return await _recreate_link(ctx, link, dst, options)
-    if _is_unsupported_link(link.stat):
-        _logger.warning("Skipping link %s: copying links to this destination is not supported yet", link.path)
+    stat = link.stat
+    if stat.is_broken_symlink:
+        ctx.report_skipped(link.uri, SKIP_BROKEN_LINK)
         return False
-    return await copy_file(ctx, link, dst, options)
+    if not stat.is_directory:
+        return await copy_file(ctx, link, dst, options)
+    return await _copy_linked_directory(ctx, link, dst, options, chain, holder)
 
 
 async def _copy_link_step(
@@ -252,11 +330,13 @@ async def _copy_link_step(
     link: VPath,
     dst: VPath,
     options: FileCopyOptions,
+    chain: _LinkChain = _NO_CHAIN,
+    holder: PurePosixPath | None = None,
 ) -> None:
     if options.filter is not None and not options.filter.matches(link):
         ctx.status.update_progress(inc_completed=1)
         return
-    await _copy_link(ctx, link, dst, options)
+    await _copy_link(ctx, link, dst, options, chain, holder)
     ctx.status.update_progress(inc_completed=1)
 
 
@@ -274,8 +354,10 @@ async def _copy_dir(
     dst_path: VPath,
     dst_filesystem: Filesystem,
     options: FileCopyOptions,
+    chain: _LinkChain = _NO_CHAIN,
     count_root: bool = True,
 ) -> None:
+    resolver = _HolderResolver(src_path)
     file_tasks: list[asyncio.Task[None]] = []
     dir_stats: list[tuple[VPath, Stat]] = []
     async for src_root, src_dirs, src_files, src_links in src_path.walk():
@@ -294,7 +376,8 @@ async def _copy_dir(
             file_tasks.append(await ctx.subtask(_copy_file_step(ctx, f, dst_root / f.name, options)))
         for link in src_links:
             ctx.status.check_cancelled()
-            file_tasks.append(await ctx.subtask(_copy_link_step(ctx, link, dst_root / link.name, options)))
+            holder = resolver.holder(src_root) if _needs_holder(link, dst_filesystem) else None
+            file_tasks.append(await ctx.subtask(_copy_link_step(ctx, link, dst_root / link.name, options, chain, holder)))
     await asyncio.gather(*file_tasks)
     # Apply directory attributes bottom-up so that parent mtime is not disturbed
     # by child directory attribute changes.
