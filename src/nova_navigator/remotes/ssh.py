@@ -48,7 +48,7 @@ async def connect_ssh(conn: RemoteConnection) -> SSHFilesystem | None:
         if await confirm.run() != Response.OK:
             return None
         try:
-            fs = await asyncio.to_thread(SSHFilesystem, ssh.host, port, username, ssh.identity_file, password, accept_host_key=True)
+            fs = await asyncio.to_thread(SSHFilesystem, ssh.host, port, username, ssh.identity_file, password, trusted_host_key=exc.key)
         except paramiko.AuthenticationException:
             fs = await _prompt_credentials(ssh.host, port, username)
         except Exception as exc2:

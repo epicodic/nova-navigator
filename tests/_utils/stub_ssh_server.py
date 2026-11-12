@@ -30,8 +30,16 @@ from pathlib import Path
 from typing import IO
 
 import paramiko
-from paramiko.common import AUTH_SUCCESSFUL, OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED, OPEN_SUCCEEDED
+from paramiko.common import AUTH_FAILED, AUTH_SUCCESSFUL, OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED, OPEN_SUCCEEDED
 from paramiko.sftp import SFTP_FAILURE, SFTP_OK
+
+
+def make_host_key(kind: str = "rsa") -> paramiko.PKey:
+    """Generate a server host key (``"rsa"`` or ``"ecdsa"``)."""
+    if kind == "ecdsa":
+        return paramiko.ECDSAKey.generate()
+    return paramiko.RSAKey.generate(bits=2048)
+
 
 # ---------------------------------------------------------------------------
 # SFTP handle
@@ -223,8 +231,9 @@ class StubSFTPServerInterface(paramiko.SFTPServerInterface):
 class StubSSHServerInterface(paramiko.ServerInterface):
     """SSH ServerInterface: accepts all auth, handles exec and sftp channels."""
 
-    def __init__(self, exec_delay: float = 0.0) -> None:
+    def __init__(self, exec_delay: float = 0.0, reject_publickey: bool = False) -> None:
         self._exec_delay = exec_delay
+        self._reject_publickey = reject_publickey
         self._pty_rows: int = 24
         self._pty_cols: int = 80
         self._pty_master_fd: int = -1
@@ -234,8 +243,8 @@ class StubSSHServerInterface(paramiko.ServerInterface):
         return AUTH_SUCCESSFUL
 
     def check_auth_publickey(self, username: str, key: paramiko.PKey) -> int:
-        """Accept any public key."""
-        return AUTH_SUCCESSFUL
+        """Accept any public key unless the server was told to reject them."""
+        return AUTH_FAILED if self._reject_publickey else AUTH_SUCCESSFUL
 
     def get_allowed_auths(self, username: str) -> str:
         """Advertise both password and publickey auth methods."""
@@ -350,11 +359,18 @@ class StubSSHServer:
             response, to simulate network/server latency in tests.
     """
 
-    def __init__(self, root_dir: Path, exec_delay: float = 0.0) -> None:
+    def __init__(
+        self,
+        root_dir: Path,
+        exec_delay: float = 0.0,
+        host_key: paramiko.PKey | None = None,
+        reject_publickey: bool = False,
+    ) -> None:
         self.root_dir = root_dir
         self._exec_delay = exec_delay
+        self._reject_publickey = reject_publickey
         self.host = "127.0.0.1"
-        self._host_key: paramiko.RSAKey = paramiko.RSAKey.generate(bits=2048)
+        self._host_key: paramiko.PKey = host_key if host_key is not None else paramiko.RSAKey.generate(bits=2048)
         self._transports: list[paramiko.Transport] = []
         self._lock: threading.Lock = threading.Lock()
         self._sock: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -365,9 +381,14 @@ class StubSSHServer:
         self._thread: threading.Thread = threading.Thread(target=self._accept_loop, daemon=True, name="stub-ssh-accept")
 
     @property
-    def host_key(self) -> paramiko.RSAKey:
-        """Return the server's RSA host key (for adding to a client's known hosts)."""
+    def host_key(self) -> paramiko.PKey:
+        """Return the server's host key (for adding to a client's known hosts)."""
         return self._host_key
+
+    def set_host_key(self, key: paramiko.PKey) -> None:
+        """Present *key* to connections made from now on."""
+        with self._lock:
+            self._host_key = key
 
     def start(self) -> None:
         """Start the accept loop in a daemon thread."""
@@ -396,9 +417,11 @@ class StubSSHServer:
 
     def _run_transport(self, conn: socket.socket) -> None:
         transport = paramiko.Transport(conn)
-        transport.add_server_key(self._host_key)
+        with self._lock:
+            host_key = self._host_key
+        transport.add_server_key(host_key)
         transport.set_subsystem_handler("sftp", paramiko.SFTPServer, StubSFTPServerInterface, self.root_dir)
-        server_iface = StubSSHServerInterface(exec_delay=self._exec_delay)
+        server_iface = StubSSHServerInterface(exec_delay=self._exec_delay, reject_publickey=self._reject_publickey)
         with self._lock:
             self._transports.append(transport)
         event = threading.Event()
