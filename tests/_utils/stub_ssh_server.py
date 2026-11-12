@@ -183,10 +183,10 @@ class StubSFTPServerInterface(paramiko.SFTPServerInterface):
             return paramiko.SFTPServer.convert_errno(exc.errno or _errno.EIO)
 
     def canonicalize(self, path: str) -> str:
-        """Return normalised absolute path; '.' resolves to root_dir."""
+        """Return the absolute path with symbolic links resolved (OpenSSH's SSH_FXP_REALPATH does); '.' resolves to root_dir."""
         if path == ".":
             return str(self._root)
-        return os.path.normpath(path)
+        return os.path.realpath(path)
 
     def chattr(self, path: str, attr: paramiko.SFTPAttributes) -> int:  # type: ignore[override]
         """Apply utime / chmod from *attr* to *path*."""

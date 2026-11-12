@@ -590,10 +590,39 @@ class SSHFilesystem(Filesystem):
     @override
     def readlink(self, path: VPath) -> str:
         self._assert_vpath(path)
-        result = self._sftp_client.readlink(_sftp_path(path))
+        try:
+            result = self._sftp_client.readlink(_sftp_path(path))
+        except UnicodeDecodeError:
+            # paramiko decodes the reply strictly as UTF-8; read the raw bytes through the shell instead.
+            return self._readlink_bytes(path)
         if result is None:
             raise OSError(f"{path} is not a symbolic link")
         return result
+
+    def _readlink_bytes(self, path: VPath) -> str:
+        """Read a link target that SFTP cannot decode, via ``readlink -n`` printed as hex.
+
+        ``exec_command`` output is decoded with ``errors="replace"``, which would destroy the bytes, so the script prints hex.
+        The trailing ``x`` keeps a trailing newline of the target alive through command substitution.
+        """
+        prelude, quoted = _quote_path(path.path.as_posix())
+        prelude = f"{prelude}\n" if prelude else ""
+        script = f'{prelude}t=$(readlink -n -- {quoted} && printf x) || exit 1\nprintf %s "${{t%x}}" | od -An -v -tx1'
+        result = self.exec_command(script, self.root())
+        if result.exit_code != 0:
+            raise OSError(f"{path} is not a symbolic link")
+        return _decode(bytes.fromhex(result.output))
+
+    @override
+    def real_path(self, path: VPath) -> VPath | None:
+        self._assert_vpath(path)
+        try:
+            resolved = self._sftp_client.normalize(_sftp_path(path))
+        except UnicodeDecodeError:
+            return None  # a non-UTF-8 path cannot be read back; callers rely on the copy depth guard
+        except (paramiko.SSHException, paramiko.SFTPError) as exc:
+            raise OSError(str(exc)) from exc
+        return VPath(resolved, self)
 
     @override
     def supports_symlinks(self) -> bool:
