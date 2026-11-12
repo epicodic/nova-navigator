@@ -11,7 +11,15 @@ from unittest.mock import MagicMock, patch
 import paramiko
 import pytest
 
-from nova_navigator.vfs.filesystems.ssh import SSHFilesystem, _build_list_command, _parse_stat_output, _quote_path, _sftp_path
+from nova_navigator.remotes.known_hosts import KnownHostsLocations
+from nova_navigator.vfs.filesystems.ssh import (
+    SSHFilesystem,
+    _build_list_command,
+    _CaptureUnknownHostPolicy,
+    _parse_stat_output,
+    _quote_path,
+    _sftp_path,
+)
 from nova_navigator.vfs.types import Stat
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -215,13 +223,19 @@ def test_init_with_injected_client() -> None:
     assert fs._sftp_client is mock_sftp
 
 
-def test_init_creates_new_client_when_none_provided() -> None:
+def test_init_creates_new_client_when_none_provided(tmp_path: Path) -> None:
     mock_ssh = MagicMock(spec=paramiko.SSHClient)
     mock_sftp = MagicMock(spec=paramiko.SFTPClient)
     mock_ssh.open_sftp.return_value = mock_sftp
     with patch("nova_navigator.vfs.filesystems.ssh.paramiko.SSHClient", return_value=mock_ssh):
-        SSHFilesystem("remotehost", port=2222)
-    mock_ssh.load_system_host_keys.assert_called_once()
+        SSHFilesystem("remotehost", port=2222, known_hosts=KnownHostsLocations.under(tmp_path / "h", tmp_path / "e"))
+    mock_ssh.load_system_host_keys.assert_not_called()
+    mock_ssh.load_host_keys.assert_not_called()
+    mock_ssh.save_host_keys.assert_not_called()
+    mock_ssh.get_host_keys.assert_called()
+    policy = mock_ssh.set_missing_host_key_policy.call_args.args[0]
+    assert isinstance(policy, _CaptureUnknownHostPolicy)
+    assert not isinstance(policy, paramiko.AutoAddPolicy)
     mock_ssh.connect.assert_called_once_with("remotehost", port=2222, username=None, key_filename=None, password=None)
 
 

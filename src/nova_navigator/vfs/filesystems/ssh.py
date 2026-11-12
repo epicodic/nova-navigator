@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import contextlib
-import hashlib
 import logging
 import os
 import shlex
@@ -13,10 +11,22 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from pathlib import PurePath
+from pathlib import Path, PurePath
 from typing import override
 
 import paramiko
+
+from nova_navigator.remotes.known_hosts import (
+    HostKeyConflictError,
+    KnownHosts,
+    KnownHostsLocations,
+    append_host_key,
+    fingerprint,
+    hash_known_hosts_enabled,
+    host_key_name,
+    key_type_name,
+    read_known_hosts,
+)
 
 from ..filesystem import AtomicWriterLike, Filesystem, FilesystemCapabilities, Stat, StreamReaderLike, StreamWriterLike
 from ..tail_buffer import TailBuffer
@@ -148,42 +158,132 @@ def _parse_stat_output(output: bytes) -> dict[str, StatEntry]:
     return entries
 
 
-_KEY_TYPE_NAMES: dict[str, str] = {
-    "ssh-rsa": "RSA",
-    "ssh-dss": "DSA",
-    "ssh-ed25519": "ED25519",
-    "ssh-ed448": "ED448",
-    "ecdsa-sha2-nistp256": "ECDSA-256",
-    "ecdsa-sha2-nistp384": "ECDSA-384",
-    "ecdsa-sha2-nistp521": "ECDSA-521",
-}
+class HostKeyError(Exception):
+    """Base class of the host-key refusals; carries the host name and the presented key."""
 
-
-class UnknownHostKeyError(Exception):
-    """Raised when the server's host key is not in known_hosts."""
-
-    def __init__(self, hostname: str, key: paramiko.PKey) -> None:
-        super().__init__(f"Server {hostname!r} not found in known_hosts")
+    def __init__(self, hostname: str, key: paramiko.PKey, message: str) -> None:
+        super().__init__(message)
         self.hostname = hostname
         self.key = key
 
     @property
     def fingerprint(self) -> str:
-        """SHA-256 fingerprint of the host key in OpenSSH display format."""
-        digest = hashlib.sha256(self.key.asbytes()).digest()
-        return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
+        """SHA-256 fingerprint of the presented key in OpenSSH display format."""
+        return fingerprint(self.key)
 
     @property
     def key_type(self) -> str:
         """Normalised key-type name, e.g. ``'ED25519'`` or ``'RSA'``."""
-        return _KEY_TYPE_NAMES.get(self.key.get_name(), self.key.get_name().upper())
+        return key_type_name(self.key)
+
+
+class UnknownHostKeyError(HostKeyError):
+    """Raised when the server's host key is not in known_hosts."""
+
+    def __init__(self, hostname: str, key: paramiko.PKey) -> None:
+        super().__init__(hostname, key, f"Server {hostname!r} not found in known_hosts")
+
+
+class RevokedHostKeyError(HostKeyError):
+    """Raised when the presented key is listed on an ``@revoked`` line."""
+
+    def __init__(self, hostname: str, key: paramiko.PKey) -> None:
+        super().__init__(hostname, key, f"Host key of {hostname!r} is revoked")
+
+
+class ChangedHostKeyError(HostKeyError):
+    """Raised when the presented key differs from the stored one (``expected_key``)."""
+
+    def __init__(self, hostname: str, key: paramiko.PKey, expected_key: paramiko.PKey) -> None:
+        super().__init__(hostname, key, f"Host key of {hostname!r} has changed")
+        self.expected_key = expected_key
+
+
+class ConfirmedKeyMismatchError(HostKeyError):
+    """Raised when the server presents another key than the one the user confirmed (``confirmed_key``)."""
+
+    def __init__(self, hostname: str, key: paramiko.PKey, confirmed_key: paramiko.PKey) -> None:
+        super().__init__(hostname, key, f"Server {hostname!r} presented a different key than the one confirmed")
+        self.confirmed_key = confirmed_key
 
 
 class _CaptureUnknownHostPolicy(paramiko.MissingHostKeyPolicy):
-    """Host-key policy that raises :class:`UnknownHostKeyError` for unknown hosts."""
+    """First-attempt policy: refuse a revoked key, otherwise raise :class:`UnknownHostKeyError`."""
+
+    def __init__(self, known_hosts: KnownHosts) -> None:
+        self._known_hosts = known_hosts
 
     def missing_host_key(self, client: paramiko.SSHClient, hostname: str, key: paramiko.PKey) -> None:
+        if self._known_hosts.is_revoked(key):
+            raise RevokedHostKeyError(hostname, key)
         raise UnknownHostKeyError(hostname, key)
+
+
+def _translate_bad_host_key(exc: paramiko.BadHostKeyException, name: str, known_hosts: KnownHosts | None, confirmed_key: paramiko.PKey | None) -> HostKeyError:
+    """Map paramiko's ``BadHostKeyException``: revoked wins, then confirmation mismatch, else changed key."""
+    if known_hosts is not None and known_hosts.is_revoked(exc.key):
+        return RevokedHostKeyError(name, exc.key)
+    if confirmed_key is not None:
+        return ConfirmedKeyMismatchError(name, exc.key, confirmed_key)
+    return ChangedHostKeyError(name, exc.key, exc.expected_key)
+
+
+def _store_confirmed_key(client: paramiko.SSHClient, locations: KnownHostsLocations, hostname: str, name: str, key: paramiko.PKey) -> OSError | None:
+    """Append *key* once the host key was verified; return the ``OSError`` instead of raising (DEC-17 Q3).
+
+    Raises:
+        ChangedHostKeyError: known_hosts already holds a different key of the same type for the host
+            (another window stored it meanwhile); nothing is stored and *client* is closed (DEC-19).
+    """
+    try:
+        hashed = hash_known_hosts_enabled(hostname, [locations.user_config, locations.system_config])
+        append_host_key(locations.user_known_hosts, name, key, hashed=hashed)
+    except HostKeyConflictError as exc:
+        client.close()
+        raise ChangedHostKeyError(name, key, exc.stored_key) from exc
+    except OSError as exc:
+        _logger.warning("Could not save host key for %s to %s: %s", name, locations.user_known_hosts, exc)
+        return exc
+    return None
+
+
+def _connect_checked(
+    hostname: str,
+    port: int,
+    username: str | None,
+    key_filename: str | None,
+    password: str | None,
+    trusted_host_key: paramiko.PKey | None,
+    locations: KnownHostsLocations,
+) -> tuple[paramiko.SSHClient, OSError | None]:
+    """Connect with ``known_hosts`` verification; returns the client and a save error (if any)."""
+    known_hosts = read_known_hosts([locations.user_known_hosts, locations.system_known_hosts])
+    name = host_key_name(hostname, port)
+    client = paramiko.SSHClient()
+    if trusted_host_key is None:
+        known_hosts.apply_to(client.get_host_keys(), name)
+        client.set_missing_host_key_policy(_CaptureUnknownHostPolicy(known_hosts))
+    else:
+        if known_hosts.is_revoked(trusted_host_key):
+            raise RevokedHostKeyError(name, trusted_host_key)
+        client.get_host_keys().add(name, trusted_host_key.get_name(), trusted_host_key)
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    try:
+        client.connect(hostname, port=port, username=username, key_filename=key_filename, password=password)
+    except paramiko.BadHostKeyException as exc:
+        client.close()
+        raise _translate_bad_host_key(exc, name, known_hosts, trusted_host_key) from exc
+    except paramiko.AuthenticationException:
+        # paramiko verifies the host key before it authenticates (client.py:454-483), so the confirmed key is verified here.
+        if trusted_host_key is not None:
+            _store_confirmed_key(client, locations, hostname, name, trusted_host_key)
+        client.close()
+        raise
+    except BaseException:
+        client.close()
+        raise
+    save_error = _store_confirmed_key(client, locations, hostname, name, trusted_host_key) if trusted_host_key is not None else None
+    return client, save_error
 
 
 class _SftpAtomicWriter:
@@ -279,7 +379,8 @@ class SSHFilesystem(Filesystem):
         key_filename: str | None = None,
         password: str | None = None,
         ssh_client: paramiko.SSHClient | None = None,
-        accept_host_key: bool = False,
+        trusted_host_key: paramiko.PKey | None = None,
+        known_hosts: KnownHostsLocations | None = None,
     ) -> None:
         """Connect to *hostname*:*port* over SSH, reusing *ssh_client* if provided.
 
@@ -289,28 +390,38 @@ class SSHFilesystem(Filesystem):
             username: Remote username, or ``None`` to use the local username.
             key_filename: Path to private key file, or ``None`` for default discovery.
             password: Password for password-based or key passphrase authentication.
-            ssh_client: Pre-configured :class:`paramiko.SSHClient` to reuse.
-            accept_host_key: If ``True``, accept and persist unknown host keys to
-                ``~/.ssh/known_hosts``.  If ``False`` (default), raise
-                :class:`UnknownHostKeyError` for unknown hosts.
+            ssh_client: Pre-configured :class:`paramiko.SSHClient` to reuse; skips all host-key handling here.
+            trusted_host_key: The host key the user confirmed after an :class:`UnknownHostKeyError`.
+                Only this exact key is trusted for the connection and, once verified, appended to
+                ``~/.ssh/known_hosts``.  ``None`` (default) trusts only keys already in known_hosts.
+            known_hosts: Locations of the known_hosts and ssh_config files (default: the real ones).
+
+        Raises:
+            UnknownHostKeyError: The host key is not in known_hosts.
+            ChangedHostKeyError: The host key differs from the stored one, or known_hosts holds a
+                different key of the same type than *trusted_host_key*.
+            RevokedHostKeyError: The host key is listed as revoked.
+            ConfirmedKeyMismatchError: The server presented another key than *trusted_host_key*.
         """
+        self.host_key_save_error: OSError | None = None
+        self.host_key_save_path: Path | None = None
         if ssh_client is None:
-            self._ssh_client = paramiko.SSHClient()
-            self._ssh_client.load_system_host_keys()
-            if accept_host_key:
-                known_hosts = os.path.expanduser("~/.ssh/known_hosts")
-                if os.path.exists(known_hosts):
-                    self._ssh_client.load_host_keys(known_hosts)
-                self._ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            else:
-                self._ssh_client.set_missing_host_key_policy(_CaptureUnknownHostPolicy())
+            locations = known_hosts if known_hosts is not None else KnownHostsLocations.default()
+            self._ssh_client, self.host_key_save_error = _connect_checked(hostname, port, username, key_filename, password, trusted_host_key, locations)
+            if self.host_key_save_error is not None:
+                self.host_key_save_path = locations.user_known_hosts
         else:
             self._ssh_client = ssh_client
-
-        self._ssh_client.connect(hostname, port=port, username=username, key_filename=key_filename, password=password)
-        if accept_host_key and ssh_client is None:
-            self._ssh_client.save_host_keys(os.path.expanduser("~/.ssh/known_hosts"))
-        self._sftp_client = self._ssh_client.open_sftp()
+            try:
+                ssh_client.connect(hostname, port=port, username=username, key_filename=key_filename, password=password)
+            except paramiko.BadHostKeyException as exc:
+                raise ChangedHostKeyError(host_key_name(hostname, port), exc.key, exc.expected_key) from exc
+        try:
+            self._sftp_client = self._ssh_client.open_sftp()
+        except BaseException:
+            if ssh_client is None:  # an injected client belongs to the caller
+                self._ssh_client.close()
+            raise
         self._stat_cache: dict[tuple[str, bool], dict[str, StatEntry]] = {}
         self._stat_cache_lock = threading.Lock()
         self._hostname = hostname
