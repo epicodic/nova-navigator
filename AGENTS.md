@@ -89,6 +89,7 @@ Key documents in `docs/` — read every one whose topic overlaps with your task:
 | `docs/user_menu.md` | User menu (F2) config and behaviour — read before touching `usermenu/` |
 | `docs/commands.md` | Command execution service — read before touching `commands/` or `Filesystem.exec_command` |
 | `docs/local_copies.md` | Local copies of non-local files — read before touching `vfs/local_copy.py`, `vfs/change_detector.py`, `local_copies/`, or archive writes |
+| `docs/symlinks.md` | Symbolic links in the VFS and in copy/move — read before touching `Filesystem.readlink/symlink/real_path`, link handling in `filemanager/tasks.py`, or `terminal/vfs_shell/commands/{rm,cp}.py` |
 
 ---
 

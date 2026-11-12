@@ -67,6 +67,8 @@ If `name` is not found, a `ValueError` is raised with a clear message.
   No changes to the parser are required — `URIComponent(scheme="remote", netloc="prod-server", path="/etc/hosts")` is produced naturally.
 - A new `RemoteFilesystem` (or a factory in `vfs/filesystems/`) resolves the netloc against `RemoteConfig` and instantiates the correct `Filesystem` subclass based on `RemoteConnection`'s protocol type.
   This is the single place that maps saved connection types to filesystem implementations.
+- `RemoteFilesystem` forwards `supports_symlinks`, `symlink` and `real_path` explicitly.
+  The `__getattr__` fallback does not re-bind `VPath` arguments.
 - The netloc for `remote://` is always a plain name (no `@`, no `:`).
   Validation should reject names containing those characters early.
 - Bookmark URIs using `remote://` remain stable even if the underlying host, credentials, or protocol change — only `remotes.toml` needs updating.
