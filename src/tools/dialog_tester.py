@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import paramiko
 from rich.console import Console
 from textual import work
 from textual.app import App, ComposeResult
@@ -36,10 +37,12 @@ from nova_navigator.dialogs.settings_dialog import SettingsDialog
 from nova_navigator.dialogs.user_menu_input_dialog import InputField, UserMenuInputDialog
 from nova_navigator.local_copies import CopyEntry, CopyStatus, LocalCopyManager
 from nova_navigator.nova_navigator_core import NovaNavigatorCore
+from nova_navigator.remotes.ssh import changed_host_message, revoked_host_message
 from nova_navigator.scheduler import Job
 from nova_navigator.scheduler.context import ResponseRequest
 from nova_navigator.vfs.change_detector import ChangeDetector
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
+from nova_navigator.vfs.filesystems.ssh import ChangedHostKeyError, RevokedHostKeyError
 from nova_navigator.vfs.local_copy import Baseline, LocalCopy, SourceFingerprint
 from nova_navigator.vfs.types import Stat
 from nova_navigator.vfs.vpath import VPath
@@ -203,6 +206,24 @@ _ENTRIES: list[DialogEntry] = [
             "The authenticity of host 'example.com' can't be established.\nED25519 key fingerprint is SHA256:abc123xyz\n\nAdd to known hosts?",
             title="Unknown Host",
             buttons=[Response.OK, Response.CANCEL],
+        ),
+    ),
+    DialogEntry(
+        "MessageBox (changed host key)",
+        "Changed host key warning — OK only, with presented and stored fingerprints.",
+        lambda: MessageBox(
+            changed_host_message(ChangedHostKeyError("example.com", paramiko.ECDSAKey.generate(), paramiko.ECDSAKey.generate())),
+            title="Host Key Changed",
+            variant="error",
+        ),
+    ),
+    DialogEntry(
+        "MessageBox (revoked host key)",
+        "Revoked host key refusal — OK only, no accept option.",
+        lambda: MessageBox(
+            revoked_host_message(RevokedHostKeyError("example.com", paramiko.ECDSAKey.generate())),
+            title="Revoked Host Key",
+            variant="error",
         ),
     ),
     DialogEntry(
