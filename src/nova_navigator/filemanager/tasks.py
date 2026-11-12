@@ -87,6 +87,35 @@ class EraseFilesOptions:
     """Refresh the cached stat of each path before erasing; internal children listings turn it off."""
 
 
+async def _overwrite_allowed(ctx: TaskContext, src: VPath, dst: VPath, options: FileCopyOptions, label: str) -> bool:
+    """Apply the overwrite policy to *dst*; return True when the copy may proceed (*dst* absent or may be replaced)."""
+    if options.overwrite == "overwrite":
+        return True
+    dst_stat = dst.stat_or_none
+    if dst_stat is None:
+        return True
+    if options.overwrite == "skip":
+        _logger.debug("%s skip (exists) %s", label, dst.path)
+        return False
+    if options.overwrite == "ask":
+        response = await ctx.request_response(
+            "Overwrite",
+            expected_responses=[Response.YES, Response.NO, Response.ALL, Response.NONE],
+            message=f"File '{dst.name}' already exists. Overwrite?",
+            dialog_type="overwrite",
+            details={
+                "src_name": src.name,
+                "src_size": src.stat.size,
+                "dst_name": dst.name,
+                "dst_size": dst_stat.size,
+            },
+        )
+        if response.is_rejected:
+            _logger.debug("%s skip (user declined) %s", label, dst.path)
+            return False
+    return True
+
+
 async def copy_file(
     ctx: TaskContext,
     src_path: VPath,
@@ -115,28 +144,8 @@ async def copy_file(
         src_stat = src_path.stat
         reader = src_path.filesystem.read(src_path)
 
-        if options.overwrite != "overwrite":
-            dst_stat = dst_path.stat_or_none
-            if dst_stat is not None:
-                if options.overwrite == "skip":
-                    _logger.debug("copy_file skip (exists) %s", dst_path.path)
-                    return False
-                elif options.overwrite == "ask":
-                    response = await ctx.request_response(
-                        "Overwrite",
-                        expected_responses=[Response.YES, Response.NO, Response.ALL, Response.NONE],
-                        message=f"File '{dst_path.name}' already exists. Overwrite?",
-                        dialog_type="overwrite",
-                        details={
-                            "src_name": src_path.name,
-                            "src_size": src_stat.size,
-                            "dst_name": dst_path.name,
-                            "dst_size": dst_stat.size,
-                        },
-                    )
-                    if response.is_rejected:
-                        _logger.debug("copy_file skip (user declined) %s", dst_path.path)
-                        return False
+        if not await _overwrite_allowed(ctx, src_path, dst_path, options, "copy_file"):
+            return False
 
         writer = dst_path.filesystem.write(dst_path)
         ctx.status.set_step_progress(0, src_stat.size)
@@ -182,28 +191,10 @@ async def _copy_file_step(
 
 async def _confirm_link_replace(ctx: TaskContext, link: VPath, dst: VPath, options: FileCopyOptions) -> bool:
     """Apply the overwrite policy to an existing *dst*; return True when the link may be created (*dst* is then removed)."""
-    dst_stat = dst.stat_or_none
-    if dst_stat is None:
+    if dst.stat_or_none is None:
         return True
-    if options.overwrite == "skip":
-        _logger.debug("copy_link skip (exists) %s", dst.path)
+    if not await _overwrite_allowed(ctx, link, dst, options, "copy_link"):
         return False
-    if options.overwrite == "ask":
-        response = await ctx.request_response(
-            "Overwrite",
-            expected_responses=[Response.YES, Response.NO, Response.ALL, Response.NONE],
-            message=f"File '{dst.name}' already exists. Overwrite?",
-            dialog_type="overwrite",
-            details={
-                "src_name": link.name,
-                "src_size": link.stat.size,
-                "dst_name": dst.name,
-                "dst_size": dst_stat.size,
-            },
-        )
-        if response.is_rejected:
-            _logger.debug("copy_link skip (user declined) %s", dst.path)
-            return False
     dst.filesystem.remove(dst)  # removes a file or link itself, never follows; a real directory makes it raise
     return True
 
@@ -224,9 +215,7 @@ async def _recreate_link(ctx: TaskContext, link: VPath, dst: VPath, options: Fil
 
 def _followed_view(link: VPath) -> VPath:
     """Return a VPath at *link*'s own path whose stat no longer says "link", so ``walk`` may enter it (no resolved-path API)."""
-    view = VPath(link.path, link.filesystem)
-    view._stat = replace(link.stat, is_symlink=False)
-    return view
+    return link.with_stat(replace(link.stat, is_symlink=False))
 
 
 def _needs_holder(link: VPath, dst_filesystem: Filesystem) -> bool:

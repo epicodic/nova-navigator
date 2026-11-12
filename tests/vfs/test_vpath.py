@@ -212,3 +212,16 @@ def test_cached_stat_does_no_io() -> None:
     cached._stat = stat
     assert cached.cached_stat is stat
     fs.stat.assert_not_called()
+
+
+def test_with_stat_returns_new_vpath_with_cached_stat_and_does_no_io() -> None:
+    fs = MagicMock()
+    original = VPath("/a", fs)
+    stat = Stat(size=5)
+    view = original.with_stat(stat)
+    assert view is not original
+    assert view.path == original.path
+    assert view.filesystem is fs
+    assert view.cached_stat is stat
+    assert original.cached_stat is None
+    fs.stat.assert_not_called()
