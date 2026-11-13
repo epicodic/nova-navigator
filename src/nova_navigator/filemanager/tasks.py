@@ -232,7 +232,10 @@ async def _copy_file_step(
 
 
 async def _confirm_link_replace(ctx: TaskContext, link: VPath, dst: VPath, options: FileCopyOptions) -> bool:
-    """Apply the overwrite policy to an existing *dst*; return True when the link may be created (*dst* is then removed)."""
+    """Apply the overwrite policy to an existing *dst*.
+
+    Return True when the link may be created; *dst* is then removed.
+    """
     if dst.stat_or_none is None:
         return True
     if not await _overwrite_allowed(ctx, link, dst, options, "copy_link"):
@@ -256,7 +259,10 @@ async def _recreate_link(ctx: TaskContext, link: VPath, dst: VPath, options: Fil
 
 
 def _followed_view(link: VPath) -> VPath:
-    """Return a VPath at *link*'s own path whose stat no longer says "link", so ``walk`` may enter it (no resolved-path API)."""
+    """Return a VPath at *link*'s own path whose stat no longer says "link".
+
+    The stat change lets ``walk`` enter it (there is no resolved-path API).
+    """
     return link.with_stat(replace(link.stat, is_symlink=False))
 
 
@@ -268,7 +274,10 @@ def _needs_holder(link: VPath, dst_filesystem: Filesystem, options: FileCopyOpti
 
 
 class _HolderResolver:
-    """Lazily resolves the real (canonical) position of directories below a walk root; ``None`` when the filesystem cannot tell."""
+    """Lazily resolves the real (canonical) position of directories below a walk root.
+
+    ``None`` when the filesystem cannot tell.
+    """
 
     def __init__(self, root: VPath) -> None:
         self._root = root
@@ -290,7 +299,10 @@ class _HolderResolver:
 
 
 def _is_loop(target: PurePosixPath, holder: PurePosixPath | None, chain: _LinkChain) -> bool:
-    """Return True if *target* is a directory already being copied: ancestor-or-self of the holder or of a chain position."""
+    """Return True if *target* is a directory already being copied.
+
+    That is, it is an ancestor-or-self of the holder or of a chain position.
+    """
     positions = chain.positions if holder is None else (*chain.positions, holder)
     return any(position == target or position.is_relative_to(target) for position in positions)
 
@@ -343,8 +355,9 @@ async def _follow_link(
     chain: _LinkChain,
     holder: PurePosixPath | None,
 ) -> bool:
-    """Copy what *link* points to under *dst*: a file as content, a directory as a tree; broken and looping links are skipped.
+    """Copy what *link* points to under *dst*.
 
+    A file is copied as content and a directory as a tree; broken and looping links are skipped.
     A target that vanished after the link was listed (for example moved earlier in the same move) is a broken link too.
     """
     stat = link.stat
@@ -399,7 +412,10 @@ async def _copy_link_step(
 
 
 async def _copy_leaf_step(ctx: TaskContext, src: VPath, dst: VPath, options: FileCopyOptions) -> None:
-    """Copy a top-level item that is not a real directory: a link recreates/copies as a link, anything else as a file."""
+    """Copy a top-level item that is not a real directory.
+
+    A link recreates or copies as a link; anything else is copied as a file.
+    """
     if src.stat.is_symlink:
         await _copy_link_step(ctx, src, dst, options)
     else:
@@ -451,7 +467,8 @@ async def _copy_dir(
         for link in src_links:
             ctx.status.check_cancelled()
             holder = resolver.holder(src_root) if _needs_holder(link, dst_filesystem, options) else None
-            file_tasks.append(await ctx.subtask(_copy_link_step(ctx, link, dst_root / link.name, options, chain, holder)))
+            link_step = _copy_link_step(ctx, link, dst_root / link.name, options, chain, holder)
+            file_tasks.append(await ctx.subtask(link_step))
     await asyncio.gather(*file_tasks)
     # Apply directory attributes bottom-up so that parent mtime is not disturbed
     # by child directory attribute changes.
@@ -742,7 +759,8 @@ async def _erase_path(
     ctx.status.set_current_item(path.uri)
     _logger.debug("erase_path %s", path.path)
     if options.refresh_stat:
-        # The panel's stat may be stale (a directory replaced by a link); SSH caches listings per directory, so drop the cache first.
+        # The panel's stat may be stale (a directory replaced by a link).
+        # SSH caches listings per directory, so drop the cache first.
         path.filesystem.refresh(path.parent)
         try:
             await path.fresh_stat()
