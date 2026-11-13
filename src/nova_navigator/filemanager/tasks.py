@@ -116,6 +116,44 @@ async def _overwrite_allowed(ctx: TaskContext, src: VPath, dst: VPath, options: 
     return True
 
 
+DirOutcome = Literal["created", "merged", "skipped"]
+
+
+def _fresh_stat_or_none(filesystem: Filesystem, path: VPath) -> Stat | None:
+    """Return a fresh stat of *path* (dropping the cached parent listing first), or None if it does not exist."""
+    filesystem.refresh(path.parent)
+    try:
+        return filesystem.stat(path)
+    except FileNotFoundError:
+        return None
+
+
+async def _ensure_directory(ctx: TaskContext, src: VPath, dst: VPath, options: FileCopyOptions) -> DirOutcome:
+    """Make *dst* a usable real directory for the folder *src* (REQ-6, REQ-7).
+
+    One decision point for copy and both move paths.
+    Missing: create it ("created").
+    A real folder (checked link-first): reuse it without a question ("merged").
+    A file or a link of any kind: apply the overwrite policy. "skipped" leaves the entry untouched;
+    otherwise the entry itself is removed (never followed) and the folder is created.
+    """
+    filesystem = dst.filesystem
+    stat = _fresh_stat_or_none(filesystem, dst)
+    if stat is not None and _is_real_dir(stat):
+        filesystem.refresh(dst)
+        return "merged"
+    if stat is not None:
+        if not await _overwrite_allowed(ctx, src, dst.with_stat(stat), options, "ensure_directory"):
+            return "skipped"
+        filesystem.remove(dst)
+    try:
+        filesystem.mkdir(dst)
+    except FileExistsError:
+        filesystem.refresh(dst)
+        return "merged"
+    return "created"
+
+
 async def copy_file(
     ctx: TaskContext,
     src_path: VPath,
@@ -279,8 +317,7 @@ async def _copy_linked_directory(
         source = real
         positions = chain.positions if holder is None else (*chain.positions, holder)
         next_chain = _LinkChain(positions, chain.depth + 1)
-    await _copy_dir(ctx, source, dst, dst.filesystem, options, next_chain, count_root=False)
-    return True
+    return await _copy_dir(ctx, source, dst, dst.filesystem, options, next_chain, count_root=False)
 
 
 async def _copy_link(
@@ -340,20 +377,36 @@ async def _copy_dir(
     options: FileCopyOptions,
     chain: _LinkChain = _NO_CHAIN,
     count_root: bool = True,
-) -> None:
+) -> bool:
+    """Copy the folder *src_path* into *dst_path*.
+
+    Return False only when the root was skipped by the overwrite policy.
+    """
+    root_outcome = await _ensure_directory(ctx, src_path, dst_path, options)
+    if root_outcome == "skipped":
+        if count_root:
+            ctx.status.update_progress(inc_completed=1)
+        return False
     resolver = _HolderResolver(src_path)
     file_tasks: list[asyncio.Task[None]] = []
-    dir_stats: list[tuple[VPath, Stat]] = []
+    dir_stats: list[tuple[VPath, Stat]] = []  # only folders this copy created get the source attributes
+    skipped_roots: list[PurePosixPath] = []
     async for src_root, src_dirs, src_files, src_links in src_path.walk():
         ctx.status.check_cancelled()
+        if any(src_root.path.is_relative_to(skipped) for skipped in skipped_roots):
+            continue
         dst_root = dst_path / src_root.path.relative_to(src_path.path)
-        with contextlib.suppress(FileExistsError):
-            dst_filesystem.mkdir(dst_root)
-        # The root directory is already counted by the caller; only subdirectories
-        # (src_root != src_path) complete a unit of work when they are entered.
-        if src_root.path != src_path.path:
+        if src_root.path == src_path.path:
+            outcome = root_outcome
+        else:
+            outcome = await _ensure_directory(ctx, src_root, dst_root, options)
+            # A subfolder completes a unit of work when it is entered, also when the overwrite policy skips it.
             ctx.status.update_progress(inc_completed=1)
-        dir_stats.append((dst_root, src_root.stat))
+            if outcome == "skipped":
+                skipped_roots.append(src_root.path)
+                continue
+        if outcome == "created":
+            dir_stats.append((dst_root, src_root.stat))
         ctx.status.update_progress(inc_total=len(src_dirs) + len(src_files) + len(src_links))
         for f in src_files:
             ctx.status.check_cancelled()
@@ -369,6 +422,22 @@ async def _copy_dir(
         dst_filesystem.copy_stat(dst_dir, src_stat)
     if count_root:
         ctx.status.update_progress(inc_completed=1)
+    return True
+
+
+async def _copy_dir_step(
+    ctx: TaskContext,
+    src_path: VPath,
+    dst_path: VPath,
+    dst_filesystem: Filesystem,
+    options: FileCopyOptions,
+) -> None:
+    """Run ``_copy_dir`` as a subtask body.
+
+    Exists so ``ctx.subtask`` gets a coroutine that returns None, matching ``list[asyncio.Task[None]]``.
+    The bool from ``_copy_dir`` is discarded here.
+    """
+    await _copy_dir(ctx, src_path, dst_path, dst_filesystem, options)
 
 
 async def copy_files(
@@ -411,12 +480,51 @@ async def copy_files(
         ctx.status.check_cancelled()
         dst_path = destination / src_path.name
         if _is_real_dir(src_path.stat):
-            t = await ctx.subtask(_copy_dir(ctx, src_path, dst_path, dst_filesystem, options))
+            t = await ctx.subtask(_copy_dir_step(ctx, src_path, dst_path, dst_filesystem, options))
         else:
             t = await ctx.subtask(_copy_leaf_step(ctx, src_path, dst_path, options))
         subtasks.append(t)
 
     await asyncio.gather(*subtasks)
+
+
+async def _move_entry(
+    ctx: TaskContext,
+    src_root: VPath,
+    f: VPath,
+    f_dst: VPath,
+    options: FileCopyOptions,
+    resolver: _HolderResolver,
+    *,
+    same_device: bool,
+) -> None:
+    """Move one file or link *f* of the folder *src_root* to *f_dst*; the caller counts it as completed."""
+    ctx.status.set_current_item(f.uri)
+    if options.filter is not None and not options.filter.matches(f):
+        return
+    if same_device:
+        f_dst_stat = f_dst.stat_or_none
+        if f_dst_stat is not None:
+            if options.overwrite == "skip":
+                return
+            if options.overwrite == "ask":
+                response = await ctx.request_response(
+                    "Overwrite",
+                    expected_responses=[Response.YES, Response.NO, Response.ALL, Response.NONE],
+                    message=f"File '{f_dst.path}' already exists. Overwrite?",
+                )
+                if response.is_rejected:
+                    return
+            f_dst.filesystem.remove(f_dst)
+        f.filesystem.rename(f, f_dst)
+        return
+    if f.stat.is_symlink:
+        holder = resolver.holder(src_root) if _needs_holder(f, f_dst.filesystem) else None
+        copied = await _copy_link(ctx, f, f_dst, options, holder=holder)
+    else:
+        copied = await copy_file(ctx, f, f_dst, options)
+    if copied:
+        f.filesystem.remove(f)  # unlinks a link itself, never follows it
 
 
 async def _move_dir_contents(
@@ -429,62 +537,43 @@ async def _move_dir_contents(
 ) -> None:
     """Walk *src_path* and move each file into the mirrored path under *actual_dst*.
 
-    Used when the destination directory already exists (so an atomic rename of
-    the whole tree is not possible). Files are processed individually so that
-    the overwrite policy is applied at file granularity. Source directories are
-    removed bottom-up after their contents are moved. Links are renamed on the same device;
+    Used when the destination directory may already exist (so an atomic rename of
+    the whole tree is not possible). Every folder goes through ``_ensure_directory``;
+    a folder the overwrite policy skips stays in the source together with its subtree.
+    Files are processed individually so that the overwrite policy is applied at file
+    granularity. Source directories are removed bottom-up after their contents are moved,
+    except the skipped ones. Links are renamed on the same device;
     across filesystems they are copied by ``_copy_link`` and removed from the source only if copied.
     """
-    with contextlib.suppress(FileExistsError):
-        actual_dst.filesystem.mkdir(actual_dst)
+    root_outcome = await _ensure_directory(ctx, src_path, actual_dst, options)
+    if root_outcome == "skipped":
+        return
     resolver = _HolderResolver(src_path)
     src_dirs: list[VPath] = []
-    dir_stats: list[tuple[VPath, Stat]] = []
+    dir_stats: list[tuple[VPath, Stat]] = []  # only folders this move created get the source attributes
+    skipped_roots: list[PurePosixPath] = []
     async for src_root, walk_subdirs, src_files, src_links in src_path.walk():
         ctx.status.check_cancelled()
+        if any(src_root.path.is_relative_to(skipped) for skipped in skipped_roots):
+            continue
         dst_root = actual_dst / src_root.path.relative_to(src_path.path)
-        if src_root.path != src_path.path:  # the root was created above; SFTP reports an existing directory as a generic failure
-            with contextlib.suppress(FileExistsError):
-                actual_dst.filesystem.mkdir(dst_root)
-        # The root directory is already counted by the caller; only subdirectories
-        # (src_root != src_path) complete a unit of work when they are entered.
-        if src_root.path != src_path.path:
+        if src_root.path == src_path.path:
+            outcome = root_outcome
+        else:
+            outcome = await _ensure_directory(ctx, src_root, dst_root, options)
+            # The root is counted by the caller; a subfolder completes a unit of work when it is entered,
+            # also when the overwrite policy skips it.
             ctx.status.update_progress(inc_completed=1)
+            if outcome == "skipped":
+                skipped_roots.append(src_root.path)
+                continue
+        if outcome == "created":
+            dir_stats.append((dst_root, src_root.stat))
         src_dirs.append(src_root)
-        dir_stats.append((dst_root, src_root.stat))
         ctx.status.update_progress(inc_total=len(walk_subdirs) + len(src_files) + len(src_links))
         for f in (*src_files, *src_links):
             ctx.status.check_cancelled()
-            ctx.status.set_current_item(f.uri)
-            if options.filter is not None and not options.filter.matches(f):
-                ctx.status.update_progress(inc_completed=1)
-                continue
-            f_dst = dst_root / f.name
-            if same_device:
-                f_dst_stat = f_dst.stat_or_none
-                if f_dst_stat is not None:
-                    if options.overwrite == "skip":
-                        ctx.status.update_progress(inc_completed=1)
-                        continue
-                    if options.overwrite == "ask":
-                        response = await ctx.request_response(
-                            "Overwrite",
-                            expected_responses=[Response.YES, Response.NO, Response.ALL, Response.NONE],
-                            message=f"File '{f_dst.path}' already exists. Overwrite?",
-                        )
-                        if response.is_rejected:
-                            ctx.status.update_progress(inc_completed=1)
-                            continue
-                    f_dst.filesystem.remove(f_dst)
-                f.filesystem.rename(f, f_dst)
-            else:
-                if f.stat.is_symlink:
-                    holder = resolver.holder(src_root) if _needs_holder(f, actual_dst.filesystem) else None
-                    copied = await _copy_link(ctx, f, f_dst, options, holder=holder)
-                else:
-                    copied = await copy_file(ctx, f, f_dst, options)
-                if copied:
-                    f.filesystem.remove(f)  # unlinks a link itself, never follows it
+            await _move_entry(ctx, src_root, f, dst_root / f.name, options, resolver, same_device=same_device)
             ctx.status.update_progress(inc_completed=1)
     for d in reversed(src_dirs):
         with contextlib.suppress(OSError):
@@ -516,7 +605,7 @@ async def _move_path(
     # Cache is_directory before any rename/remove that might invalidate the path.
     is_dir = _is_real_dir(src_path.stat)
 
-    dst_stat = dst_path.stat_or_none
+    dst_stat = _fresh_stat_or_none(dst_path.filesystem, dst_path)
     actual_dst = dst_path / src_path.name if (dst_stat is not None and dst_stat.is_directory) else dst_path
 
     same_device = src_path.filesystem.is_same_device(src_path, actual_dst)
@@ -528,7 +617,7 @@ async def _move_path(
         return
 
     if same_device:
-        actual_dst_stat = actual_dst.stat_or_none
+        actual_dst_stat = _fresh_stat_or_none(actual_dst.filesystem, actual_dst)
         if is_dir and actual_dst_stat is not None and _is_real_dir(actual_dst_stat):
             # Destination directory already exists: walk per-file for fine-grained overwrite policy.
             # _move_dir_contents adds total and completed incrementally.

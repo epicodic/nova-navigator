@@ -57,6 +57,41 @@ An existing destination follows the overwrite policy of file copies (`skip`, `as
 Overwriting removes the old entry itself and never follows it.
 `readlink` runs before the overwrite check, so an unreadable link never removes an existing destination.
 
+## Copy and move into existing folders
+
+`_ensure_directory` in `filemanager/tasks.py` is the one place that makes a destination folder usable.
+Copy and the cross-device move call it for the root and then for every subfolder, before that folder's contents are handled.
+A same-device move into a missing destination is a plain rename and never calls it.
+A same-device move onto an existing real folder also calls it for the root and every subfolder, so the root destination is stat'ed in `_move_path` and again in `_ensure_directory`.
+Each call stats the destination first, after refreshing the parent listing.
+
+It returns one of three outcomes.
+
+- `created`: nothing is at the destination, so the folder is created.
+  Only folders created this way get the source mode and mtime through `copy_stat`.
+- `merged`: the destination is a real folder, so it is reused without a question.
+  Its own mode and mtime are kept.
+  If `mkdir` finds the path present after all, the folder counts as merged too.
+- `skipped`: the overwrite policy kept the existing entry.
+
+The check is link-first, as for every entry.
+A link to a folder is not a real folder.
+A file or a link of any kind at the destination goes through the overwrite policy.
+
+- `skip`: the entry is left alone and nothing from that folder is copied.
+- `ask`: the user is asked once for that entry.
+  The `ALL` and `NONE` answers are shared with file prompts, because the scheduler caches them under the `Overwrite` title.
+- `overwrite`: the entry itself is removed, never followed, and then the folder is created.
+
+A skipped folder counts as completed work and is not reported as skipped.
+Its contents are not copied and add nothing to the progress totals.
+
+A move leaves a skipped source folder in place, together with its contents.
+A source folder is removed only after its contents were moved, so a folder that still holds a skipped entry stays.
+
+A top-level destination that is a link to a folder counts as an existing directory.
+The source goes inside it under its own name, and the link is not replaced.
+
 ## Loop detection
 
 Loops only matter when a directory link is copied as a tree.
@@ -90,7 +125,7 @@ See `docs/scheduler.md` for the reporting API.
 A move across devices copies a link with `_copy_link` and then removes the source link, but only if it was copied.
 A skipped link stays in the source.
 Its parent directory then cannot be removed and stays too.
-A directory link is removed from the source once its tree copy has started, even if the overwrite policy skipped some of the children.
+A directory link is removed from the source once its tree copy has finished, except when the destination folder itself was skipped.
 The target of a directory link is only read, never touched.
 Moves on the same device rename the link itself.
 
@@ -116,6 +151,12 @@ Link targets that SFTP cannot decode as UTF-8 are read through a shell fallback.
 The fallback runs `readlink -n` and prints the bytes with `od`, so the host needs both tools.
 The path in the script is built with `_quote_path`, so it stays pure ASCII.
 A non-UTF-8 path makes `real_path` return `None`.
+
+`SSHFilesystem.mkdir` raises `FileExistsError` for an existing path.
+SFTP reports an existing path as a generic failure, so `mkdir` runs `lstat` after the failed call.
+A dangling link counts as existing.
+SSH is never on the same device, so `is_same_device` is always false and every move to or from SSH is copy-based.
+This is verified against the stub server only.
 
 The modification time of a link is not preserved, because `utime` and `chmod` follow links.
 Each `stat_or_none` costs one directory listing, so large trees cost O(n) listings.

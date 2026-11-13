@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import logging
 import os
 import shlex
@@ -686,7 +687,17 @@ class SSHFilesystem(Filesystem):
     @override
     def mkdir(self, path: VPath) -> None:
         self._assert_vpath(path)
-        self._sftp_client.mkdir(_sftp_path(path))
+        p = _sftp_path(path)
+        try:
+            self._sftp_client.mkdir(p)
+        except OSError as exc:
+            # SFTP reports an existing path as a generic failure; the Filesystem contract wants FileExistsError.
+            # lstat does not follow links, so a dangling link also counts as existing.
+            try:
+                self._sftp_client.lstat(p)
+            except OSError:
+                raise exc from None
+            raise FileExistsError(errno.EEXIST, "File exists", str(path.path)) from None
         self.refresh(self.parent(path))
 
     @override
