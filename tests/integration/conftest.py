@@ -14,7 +14,8 @@ set_panels(ctx)
 auto_confirm_copy_dialog(filename=None)
     Return a mock ``CopyMoveFilesDialog`` that immediately confirms ("OK").
     Pass *filename* to simulate the user editing the destination filename
-    (only relevant for single-file copies).
+    (only relevant for single-file copies).  Pass *follow_links* and
+    *stable_symlinks* to simulate the link options; they default to ``False``.
 
 auto_cancel_dialog()
     Return a mock dialog that immediately cancels.
@@ -154,15 +155,24 @@ async def poll_until(
 # ---------------------------------------------------------------------------
 
 
-def auto_confirm_copy_dialog(filename: str | None = None) -> MagicMock:
+def auto_confirm_copy_dialog(
+    filename: str | None = None,
+    follow_links: bool = False,
+    stable_symlinks: bool = False,
+) -> MagicMock:
     """Mock CopyMoveFilesDialog that immediately returns Response.OK.
 
     Args:
         filename: Simulated edited filename; ``None`` means no rename.
+        follow_links: Simulated "follow links" option value.
+        stable_symlinks: Simulated "stable symlinks" option value.
     """
     dialog = MagicMock()
     dialog.run = AsyncMock(return_value=Response.OK)
     dialog.filename = filename
+    dialog.follow_links = follow_links
+    dialog.stable_symlinks = stable_symlinks
+    dialog.file_filter = None
     return dialog
 
 
