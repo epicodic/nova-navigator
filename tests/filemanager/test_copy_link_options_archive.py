@@ -27,7 +27,11 @@ def _zip_destination(tmp_path: Path) -> tuple[Path, ArchiveFilesystem]:
     with zipfile.ZipFile(archive, "w") as z:
         z.writestr("keep.txt", b"keep")
     local = LocalFilesystem.singleton()
-    return archive, ArchiveFilesystem(local.path(tmp_path), LocalArchiveBacking(local.path(archive)), work_dir=tmp_path / "work")
+    return archive, ArchiveFilesystem(
+        local.path(tmp_path),
+        LocalArchiveBacking(local.path(archive)),
+        work_dir=tmp_path / "work",
+    )
 
 
 def _names(archive: Path) -> set[str]:
@@ -49,7 +53,10 @@ async def test_follow_tree_with_links_into_zip_same_as_default(tmp_path: Path, o
     archive, afs = _zip_destination(tmp_path)
     local = LocalFilesystem()
     status = make_status()
-    await asyncio.wait_for(run_task(lambda ctx: copy_files(ctx, [local.path(src)], afs.path("/"), options), status=status), timeout=60)
+    await asyncio.wait_for(
+        run_task(lambda ctx: copy_files(ctx, [local.path(src)], afs.path("/"), options), status=status),
+        timeout=60,
+    )
     assert _names(archive) == {"src/f.txt", "src/sub/g.txt", "src/lf", "src/ld/g.txt"}
     assert sorted(reasons(status)) == ["broken link", "link loop", "link loop"]
     assert status.progress.completed == status.progress.total
@@ -79,7 +86,12 @@ async def test_follow_tar_source_links_to_local(tmp_path: Path, options: FileCop
     out.mkdir()
     status = make_status()
     await run_task(
-        lambda ctx: copy_files(ctx, [tfs.path("/lnk"), tfs.path("/flnk"), tfs.path("/broken")], LocalFilesystem().path(out), options),
+        lambda ctx: copy_files(
+            ctx,
+            [tfs.path("/lnk"), tfs.path("/flnk"), tfs.path("/broken")],
+            LocalFilesystem().path(out),
+            options,
+        ),
         status=status,
     )
     assert out.is_dir()
@@ -104,7 +116,12 @@ async def test_stable_into_zip_has_no_effect_links_are_followed(tmp_path: Path) 
     status = make_status()
     await asyncio.wait_for(
         run_task(
-            lambda ctx: copy_files(ctx, [LocalFilesystem().path(src)], afs.path("/"), FileCopyOptions(stable_symlinks=True)),
+            lambda ctx: copy_files(
+                ctx,
+                [LocalFilesystem().path(src)],
+                afs.path("/"),
+                FileCopyOptions(stable_symlinks=True),
+            ),
             status=status,
         ),
         timeout=60,

@@ -24,8 +24,11 @@ _STABLE = FileCopyOptions(stable_symlinks=True)
 
 
 def _layout(tmp_path: Path) -> tuple[Path, Path, Path]:
-    """a/b/proj/data.txt, a/b/proj/doc/{l -> ../../shared/x, inside -> ../data.txt, ab -> <abs shared/x>, br -> ../../shared/missing};
-    a/b/shared/x='sx'; c/ empty. Returns (proj, shared_x, c)."""
+    """Build a/b/proj/data.txt, a/b/shared/x='sx' and an empty c/, plus the links below.
+
+    proj/doc/l -> ../../shared/x, doc/inside -> ../data.txt, doc/ab -> <abs shared/x>, doc/br -> ../../shared/missing.
+    Returns (proj, shared_x, c).
+    """
     proj = tmp_path / "a" / "b" / "proj"
     doc = proj / "doc"
     doc.mkdir(parents=True)
@@ -103,7 +106,10 @@ async def test_stable_broken_link_stays_broken_at_same_target_path(link_fs: File
 
 
 @pytest.mark.asyncio
-async def test_stable_different_filesystems_text_unchanged(fs_pair: tuple[Filesystem, Filesystem], tmp_path: Path) -> None:
+async def test_stable_rewrites_only_between_equal_filesystems(
+    fs_pair: tuple[Filesystem, Filesystem],
+    tmp_path: Path,
+) -> None:
     proj, shared_x, c = _layout(tmp_path)
     status = await copy_between(fs_pair, [proj], c, _STABLE)
     if fs_pair[0] == fs_pair[1]:
@@ -160,7 +166,11 @@ async def test_follow_on_never_calls_rule(link_fs: Filesystem, tmp_path: Path, m
 
 
 @pytest.mark.asyncio
-async def test_stable_off_never_calls_rule(link_fs: Filesystem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_stable_off_never_calls_rule(
+    link_fs: Filesystem,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     proj, _shared_x, c = _layout(tmp_path)
     monkeypatch.setattr(tasks_module, "stable_link_target", _boom)
     status = await copy_between((link_fs, link_fs), [proj], c)
@@ -177,7 +187,11 @@ def test_stable_text_keeps_text_when_paths_not_absolute(caplog: pytest.LogCaptur
 
 
 @pytest.mark.asyncio
-async def test_move_cross_device_stable_rewrites_outside_link_and_removes_source(link_fs: Filesystem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_move_cross_device_stable_rewrites_outside_link_and_removes_source(
+    link_fs: Filesystem,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     force_cross_device(monkeypatch)
     proj, shared_x, c = _layout(tmp_path)
     status = await move_between((link_fs, link_fs), [proj], c, _STABLE)
@@ -190,7 +204,11 @@ async def test_move_cross_device_stable_rewrites_outside_link_and_removes_source
 
 
 @pytest.mark.asyncio
-async def test_move_cross_device_stable_selected_link_rewritten(link_fs: Filesystem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_move_cross_device_stable_selected_link_rewritten(
+    link_fs: Filesystem,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     force_cross_device(monkeypatch)
     proj, shared_x, c = _layout(tmp_path)
     status = await move_between((link_fs, link_fs), [proj / "doc" / "l"], c, _STABLE)
@@ -200,10 +218,16 @@ async def test_move_cross_device_stable_selected_link_rewritten(link_fs: Filesys
 
 
 @pytest.mark.asyncio
-async def test_move_cross_device_stable_different_filesystems_unchanged(fs_pair: tuple[Filesystem, Filesystem], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_move_cross_device_stable_rewrites_only_between_equal_filesystems(
+    fs_pair: tuple[Filesystem, Filesystem],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     force_cross_device(monkeypatch)
-    proj, _shared_x, c = _layout(tmp_path)
+    proj, shared_x, c = _layout(tmp_path)
     status = await move_between(fs_pair, [proj], c, _STABLE)
     if fs_pair[0] != fs_pair[1]:
         assert os.readlink(c / "proj" / "doc" / "l") == "../../shared/x"
+    else:
+        assert os.readlink(c / "proj" / "doc" / "l") == os.path.relpath(shared_x, c / "proj" / "doc")
     assert status.progress.completed == status.progress.total

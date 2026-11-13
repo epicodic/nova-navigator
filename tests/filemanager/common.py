@@ -53,7 +53,9 @@ async def run_task(
     async def gui_callback(request: ResponseRequest, future: asyncio.Future[Response]) -> None:
         requests.append(request)
         if not pending:
-            raise AssertionError(f"Task yielded an unexpected ResponseRequest {request.title!r} but no responses remain in the list")
+            raise AssertionError(
+                f"Task yielded an unexpected ResponseRequest {request.title!r} but no responses remain in the list",
+            )
         future.set_result(pending.pop(0))
 
     await AsyncTaskScheduler.execute(gui_callback, task_fn, status)
@@ -103,7 +105,7 @@ async def move_between(
 
 
 def force_cross_device(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make LocalFilesystem report "different device" so moves copy instead of renaming (as test_move_links.py:36-40)."""
+    """Report "different device" for LocalFilesystem so moves copy instead of renaming (test_move_links.py:36-40)."""
 
     def is_same_device(_self: LocalFilesystem, _a: VPath, _b: VPath) -> bool:
         return False

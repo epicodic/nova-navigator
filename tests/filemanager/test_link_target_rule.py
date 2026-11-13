@@ -16,22 +16,42 @@ def test_options_default_values() -> None:
 
 
 def test_rule_req4_example() -> None:
-    result = stable_link_target("../../shared/x", PurePosixPath("/a/b/proj/doc/l"), PurePosixPath("/c/proj/doc/l"), PurePosixPath("/a/b/proj"))
+    result = stable_link_target(
+        "../../shared/x",
+        PurePosixPath("/a/b/proj/doc/l"),
+        PurePosixPath("/c/proj/doc/l"),
+        PurePosixPath("/a/b/proj"),
+    )
     assert result == "../../../a/b/shared/x"
 
 
 def test_rule_inside_unchanged() -> None:
-    result = stable_link_target("../data.txt", PurePosixPath("/a/b/proj/doc/l"), PurePosixPath("/c/proj/doc/l"), PurePosixPath("/a/b/proj"))
+    result = stable_link_target(
+        "../data.txt",
+        PurePosixPath("/a/b/proj/doc/l"),
+        PurePosixPath("/c/proj/doc/l"),
+        PurePosixPath("/a/b/proj"),
+    )
     assert result == "../data.txt"
 
 
 def test_rule_target_equal_root_unchanged() -> None:
-    result = stable_link_target("..", PurePosixPath("/a/b/proj/doc/l"), PurePosixPath("/c/proj/doc/l"), PurePosixPath("/a/b/proj"))
+    result = stable_link_target(
+        "..",
+        PurePosixPath("/a/b/proj/doc/l"),
+        PurePosixPath("/c/proj/doc/l"),
+        PurePosixPath("/a/b/proj"),
+    )
     assert result == ".."
 
 
 def test_rule_sibling_with_same_prefix_is_outside() -> None:
-    result = stable_link_target("../../proj2/x", PurePosixPath("/a/b/proj/doc/l"), PurePosixPath("/c/proj/doc/l"), PurePosixPath("/a/b/proj"))
+    result = stable_link_target(
+        "../../proj2/x",
+        PurePosixPath("/a/b/proj/doc/l"),
+        PurePosixPath("/c/proj/doc/l"),
+        PurePosixPath("/a/b/proj"),
+    )
     assert result == "../../../a/b/proj2/x"
 
 
@@ -78,6 +98,10 @@ def test_rule_double_slash_prefix_collapsed() -> None:
         (PurePosixPath("/a/l"), PurePosixPath("/c/l"), PurePosixPath("a")),
     ],
 )
-def test_rule_relative_input_raises(source_link: PurePosixPath, new_link: PurePosixPath, root: PurePosixPath | None) -> None:
+def test_rule_relative_input_raises(
+    source_link: PurePosixPath,
+    new_link: PurePosixPath,
+    root: PurePosixPath | None,
+) -> None:
     with pytest.raises(ValueError, match="absolute paths required"):
         stable_link_target("x", source_link, new_link, root)

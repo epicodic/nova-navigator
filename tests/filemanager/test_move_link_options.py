@@ -67,17 +67,29 @@ async def _scenario_dir_link(pair: tuple[Filesystem, Filesystem], base: Path, mo
 
 
 @pytest.mark.asyncio
-async def test_move_follow_file_link_copies_content_removes_link_keeps_target(fs_pair: tuple[Filesystem, Filesystem], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_move_follow_file_link_copies_content_removes_link_keeps_target(
+    fs_pair: tuple[Filesystem, Filesystem],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     await _scenario_file_link(fs_pair, tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_move_follow_dir_link_copies_tree_removes_link_keeps_target(fs_pair: tuple[Filesystem, Filesystem], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_move_follow_dir_link_copies_tree_removes_link_keeps_target(
+    fs_pair: tuple[Filesystem, Filesystem],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     await _scenario_dir_link(fs_pair, tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_move_follow_broken_link_stays_with_parent_folder(fs_pair: tuple[Filesystem, Filesystem], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_move_follow_broken_link_stays_with_parent_folder(
+    fs_pair: tuple[Filesystem, Filesystem],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     force_cross_device(monkeypatch)
     src = tmp_path / "src"
     _write_tree(src, "d/f.txt", "f")
@@ -94,7 +106,11 @@ async def test_move_follow_broken_link_stays_with_parent_folder(fs_pair: tuple[F
 
 
 @pytest.mark.asyncio
-async def test_move_follow_loop_link_stays_with_parent_folder(fs_pair: tuple[Filesystem, Filesystem], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_move_follow_loop_link_stays_with_parent_folder(
+    fs_pair: tuple[Filesystem, Filesystem],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     force_cross_device(monkeypatch)
     src = tmp_path / "src"
     _write_tree(src, "d/f.txt", "f")
@@ -111,7 +127,11 @@ async def test_move_follow_loop_link_stays_with_parent_folder(fs_pair: tuple[Fil
 
 
 @pytest.mark.asyncio
-async def test_move_follow_declined_overwrite_keeps_link(fs_pair: tuple[Filesystem, Filesystem], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_move_follow_declined_overwrite_keeps_link(
+    fs_pair: tuple[Filesystem, Filesystem],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     force_cross_device(monkeypatch)
     src = tmp_path / "src"
     _write_tree(src, "t.txt", "new")
@@ -124,7 +144,11 @@ async def test_move_follow_declined_overwrite_keeps_link(fs_pair: tuple[Filesyst
 
 
 @pytest.mark.asyncio
-async def test_move_follow_target_moved_earlier_in_same_move_is_skipped_not_failed(fs_pair: tuple[Filesystem, Filesystem], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_move_follow_target_moved_earlier_in_same_move_is_skipped_not_failed(
+    fs_pair: tuple[Filesystem, Filesystem],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # DEC-7a: files of a folder are moved before its links; the link's stat was listed earlier and still says
     # "file link", so the copy fails with FileNotFoundError, which _follow_link turns into a broken-link skip.
     force_cross_device(monkeypatch)
@@ -142,7 +166,11 @@ async def test_move_follow_target_moved_earlier_in_same_move_is_skipped_not_fail
 
 
 @pytest.mark.asyncio
-async def test_move_follow_ssh_same_connection(link_fs: Filesystem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_move_follow_ssh_same_connection(
+    link_fs: Filesystem,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     await _scenario_file_link((link_fs, link_fs), tmp_path / "file", monkeypatch)
     await _scenario_dir_link((link_fs, link_fs), tmp_path / "dir", monkeypatch)
 
@@ -191,3 +219,18 @@ async def test_move_same_device_relative_link_inside_renamed_folder_unchanged_te
     await move_between((local, local), [proj], dst2, _FOLLOW_STABLE)
     assert os.readlink(dst2 / "proj" / "l") == "../shared/x"
     assert not (dst2 / "proj" / "l").exists()
+
+
+@pytest.mark.asyncio
+async def test_move_same_device_stable_selected_link_text_unchanged(tmp_path: Path) -> None:
+    local = LocalFilesystem()
+    _write_tree(tmp_path, "shared/x", "x")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "l").symlink_to("../shared/x")
+    dst = tmp_path / "dst"
+    dst.mkdir()
+    status = await move_between((local, local), [proj / "l"], dst, FileCopyOptions(stable_symlinks=True))
+    assert os.readlink(dst / "l") == "../shared/x"
+    assert not os.path.lexists(proj / "l")
+    assert reasons(status) == []

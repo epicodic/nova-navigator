@@ -32,7 +32,10 @@ def _build(tmp_path: Path) -> tuple[Path, Path]:
 
 
 @pytest.mark.asyncio
-async def test_follow_file_link_copies_content_no_link_created(fs_pair: tuple[Filesystem, Filesystem], tmp_path: Path) -> None:
+async def test_follow_file_link_copies_content_no_link_created(
+    fs_pair: tuple[Filesystem, Filesystem],
+    tmp_path: Path,
+) -> None:
     src, dst = _build(tmp_path)
     status = await copy_between(fs_pair, [src / "file_link"], dst, _FOLLOW)
     copied = dst / "file_link"
@@ -44,7 +47,10 @@ async def test_follow_file_link_copies_content_no_link_created(fs_pair: tuple[Fi
 
 
 @pytest.mark.asyncio
-async def test_follow_dir_link_copies_tree_under_link_name(fs_pair: tuple[Filesystem, Filesystem], tmp_path: Path) -> None:
+async def test_follow_dir_link_copies_tree_under_link_name(
+    fs_pair: tuple[Filesystem, Filesystem],
+    tmp_path: Path,
+) -> None:
     src, dst = _build(tmp_path)
     status = await copy_between(fs_pair, [src / "dir_link"], dst, _FOLLOW)
     copied = dst / "dir_link"
@@ -56,7 +62,10 @@ async def test_follow_dir_link_copies_tree_under_link_name(fs_pair: tuple[Filesy
 
 
 @pytest.mark.asyncio
-async def test_follow_broken_link_creates_nothing_and_reports(fs_pair: tuple[Filesystem, Filesystem], tmp_path: Path) -> None:
+async def test_follow_broken_link_creates_nothing_and_reports(
+    fs_pair: tuple[Filesystem, Filesystem],
+    tmp_path: Path,
+) -> None:
     src, dst = _build(tmp_path)
     status = await copy_between(fs_pair, [src / "broken"], dst, _FOLLOW)
     assert not os.path.lexists(dst / "broken")
@@ -87,7 +96,10 @@ async def test_follow_link_to_holding_directory_is_loop(fs_pair: tuple[Filesyste
 
 
 @pytest.mark.asyncio
-async def test_follow_link_to_ancestor_is_loop_and_rest_completes(fs_pair: tuple[Filesystem, Filesystem], tmp_path: Path) -> None:
+async def test_follow_link_to_ancestor_is_loop_and_rest_completes(
+    fs_pair: tuple[Filesystem, Filesystem],
+    tmp_path: Path,
+) -> None:
     (tmp_path / "src" / "d").mkdir(parents=True)
     (tmp_path / "src" / "f.txt").write_text("f")
     (tmp_path / "src" / "d" / "up").symlink_to("..", target_is_directory=True)
@@ -99,7 +111,10 @@ async def test_follow_link_to_ancestor_is_loop_and_rest_completes(fs_pair: tuple
 
 
 @pytest.mark.asyncio
-async def test_follow_link_to_directory_being_copied_higher_up_is_loop(fs_pair: tuple[Filesystem, Filesystem], tmp_path: Path) -> None:
+async def test_follow_link_to_directory_being_copied_higher_up_is_loop(
+    fs_pair: tuple[Filesystem, Filesystem],
+    tmp_path: Path,
+) -> None:
     for name in ("a", "b"):
         (tmp_path / "src" / name).mkdir(parents=True)
         (tmp_path / "src" / name / f"{name}.txt").write_text(name)
@@ -116,7 +131,10 @@ async def test_follow_link_to_directory_being_copied_higher_up_is_loop(fs_pair: 
 
 
 @pytest.mark.asyncio
-async def test_follow_two_links_to_same_directory_both_copied(fs_pair: tuple[Filesystem, Filesystem], tmp_path: Path) -> None:
+async def test_follow_two_links_to_same_directory_both_copied(
+    fs_pair: tuple[Filesystem, Filesystem],
+    tmp_path: Path,
+) -> None:
     (tmp_path / "src" / "b").mkdir(parents=True)
     (tmp_path / "src" / "b" / "f.txt").write_text("f")
     (tmp_path / "src" / "x").symlink_to("b", target_is_directory=True)
@@ -129,7 +147,10 @@ async def test_follow_two_links_to_same_directory_both_copied(fs_pair: tuple[Fil
 
 
 @pytest.mark.asyncio
-async def test_follow_inner_links_of_followed_tree_are_followed(fs_pair: tuple[Filesystem, Filesystem], tmp_path: Path) -> None:
+async def test_follow_inner_links_of_followed_tree_are_followed(
+    fs_pair: tuple[Filesystem, Filesystem],
+    tmp_path: Path,
+) -> None:
     (tmp_path / "src" / "tree").mkdir(parents=True)
     (tmp_path / "src" / "f.txt").write_text("x")
     (tmp_path / "src" / "tree" / "h.txt").write_text("h")
@@ -158,7 +179,10 @@ async def test_follow_inner_broken_and_loop_reported(fs_pair: tuple[Filesystem, 
 
 
 @pytest.mark.asyncio
-async def test_follow_selected_folder_with_links_follows_all(fs_pair: tuple[Filesystem, Filesystem], tmp_path: Path) -> None:
+async def test_follow_selected_folder_with_links_follows_all(
+    fs_pair: tuple[Filesystem, Filesystem],
+    tmp_path: Path,
+) -> None:
     src, dst = _build(tmp_path)
     status = await copy_between(fs_pair, [src], dst, _FOLLOW)
     copied = dst / "src"
@@ -178,7 +202,13 @@ async def test_follow_loop_depth_guard_when_real_path_unavailable(tmp_path: Path
     dst = tmp_path / "dst"
     dst.mkdir()
     status = make_status()
-    await asyncio.wait_for(run_task(lambda ctx: copy_files(ctx, [src_fs.path("/src")], LocalFilesystem().path(dst), _FOLLOW), status=status), timeout=20)
+    await asyncio.wait_for(
+        run_task(
+            lambda ctx: copy_files(ctx, [src_fs.path("/src")], LocalFilesystem().path(dst), _FOLLOW),
+            status=status,
+        ),
+        timeout=20,
+    )
     assert (dst / "src" / "d" / "g.txt").exists()
     assert reasons(status) == ["link loop"]
 
@@ -202,7 +232,12 @@ async def test_follow_dir_link_onto_existing_destination_link_replaces_link_not_
     (outside / "keep.txt").write_text("keep")
     (dst / "dir_link").symlink_to(outside, target_is_directory=True)
     local = LocalFilesystem()
-    await copy_between((local, local), [src / "dir_link"], dst, FileCopyOptions(follow_links=True, overwrite="overwrite"))
+    await copy_between(
+        (local, local),
+        [src / "dir_link"],
+        dst,
+        FileCopyOptions(follow_links=True, overwrite="overwrite"),
+    )
     assert (dst / "dir_link").is_dir()
     assert not (dst / "dir_link").is_symlink()
     assert sorted(p.name for p in outside.iterdir()) == ["keep.txt"]
@@ -268,3 +303,12 @@ async def test_follow_unrelated_file_not_found_is_not_swallowed(tmp_path: Path) 
     with pytest.raises(FileNotFoundError):
         await copy_between((local, dst_fs), [tmp_path / "src" / "l"], tmp_path / "dst" / "l", _FOLLOW)
     assert (tmp_path / "src" / "t.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_follow_file_copy_keeps_target_mode(tmp_path: Path) -> None:
+    src, dst = _build(tmp_path)
+    os.chmod(src / "f.txt", 0o600)
+    local = LocalFilesystem.singleton()
+    await copy_between((local, local), [src / "file_link"], dst, _FOLLOW)
+    assert os.stat(dst / "file_link").st_mode & 0o777 == 0o600

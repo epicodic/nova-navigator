@@ -146,6 +146,10 @@ Moves on the same device rename the link itself.
 - `stable_symlinks` rewrites the target text of a recreated relative link whose target lies outside the copied item.
   It has no effect when `follow_links` is on.
 
+A followed file keeps the permission bits of its target, not those of the link, which are always `0o777` on Linux.
+When `real_path` returns `None`, the link's own bits are used instead.
+A followed directory tree in that case also gets the link's bits.
+
 The stable rule is lexical: no link is resolved while it runs.
 It is implemented by `stable_link_target` in `filemanager/link_target.py`.
 
@@ -168,8 +172,10 @@ A rewritten target can then reach a different file than the original link did.
 - Separately opened connections are never equal, so the text is copied unchanged between them.
 - Two `RemoteFilesystem` instances are equal when their inner filesystems are equal, whatever their remote names.
 
-A move that renames a folder on the same device does not apply the stable rule.
-A relative link inside that folder whose target lies outside it may point elsewhere after the rename.
+A move on the same device does not apply the stable rule.
+Every link is renamed as it is, whether it is selected or inside a folder that is moved entry by entry.
+A relative link whose target lies outside the moved item can therefore point elsewhere, or dangle, after the move.
+This is the same limitation as a folder rename.
 
 When `real_path` returns `None` for a followed directory link, the tree is walked through a followed view and the loop test is skipped.
 Only the depth guard `_MAX_LINK_DEPTH = 16` then limits the descent, so a loop directory is entered up to 16 times before the link is skipped as `"link loop"`.

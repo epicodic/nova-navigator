@@ -250,7 +250,11 @@ def _stable_text(link: VPath, dst: VPath, text: str, source_root: PurePosixPath 
     try:
         return stable_link_target(text, link.path, dst.path, source_root)
     except ValueError:
-        _logger.warning("Stable symlinks: keeping the target text of %s (path is not absolute)", link.path, exc_info=True)
+        _logger.warning(
+            "Stable symlinks: keeping the target text of %s (path is not absolute)",
+            link.path,
+            exc_info=True,
+        )
         return text
 
 
@@ -366,6 +370,21 @@ async def _link_target_missing(link: VPath) -> bool:
     return stat.is_broken_symlink
 
 
+def _target_mode_view(link: VPath) -> VPath:
+    """Return *link* carrying the permission bits of its target instead of the link's own (``0o777``).
+
+    Falls back to *link* itself when the filesystem cannot resolve the target.
+    """
+    try:
+        real = link.filesystem.real_path(link)
+        if real is None:
+            return link
+        target = link.filesystem.stat(real)
+    except OSError:
+        return link
+    return link.with_stat(replace(link.stat, mode=target.mode))
+
+
 async def _follow_link(
     ctx: TaskContext,
     link: VPath,
@@ -377,7 +396,9 @@ async def _follow_link(
     """Copy what *link* points to under *dst*.
 
     A file is copied as content and a directory as a tree; broken and looping links are skipped.
-    A target that vanished after the link was listed (for example moved earlier in the same move) is a broken link too.
+    A file target that vanished after the link was listed (for example moved earlier in the same move) is also
+    reported as broken.
+    A vanished directory target is caught only when ``real_path`` resolves it; see docs/symlinks.md.
     """
     stat = link.stat
     if stat.is_broken_symlink:
@@ -386,7 +407,8 @@ async def _follow_link(
     if stat.is_directory:
         return await _copy_linked_directory(ctx, link, dst, options, chain, holder)
     try:
-        return await copy_file(ctx, link, dst, options)
+        source = _target_mode_view(link) if options.follow_links else link
+        return await copy_file(ctx, source, dst, options)
     except FileNotFoundError:
         if await _link_target_missing(link):
             ctx.report_skipped(link.uri, SKIP_BROKEN_LINK)
@@ -490,7 +512,15 @@ async def _copy_dir(
         for link in src_links:
             ctx.status.check_cancelled()
             holder = resolver.holder(src_root) if _needs_holder(link, dst_filesystem, options) else None
-            link_step = _copy_link_step(ctx, link, dst_root / link.name, options, chain, holder, source_root=src_path.path)
+            link_step = _copy_link_step(
+                ctx,
+                link,
+                dst_root / link.name,
+                options,
+                chain,
+                holder,
+                source_root=src_path.path,
+            )
             file_tasks.append(await ctx.subtask(link_step))
     await asyncio.gather(*file_tasks)
     # Apply directory attributes bottom-up so that parent mtime is not disturbed
@@ -654,7 +684,16 @@ async def _move_dir_contents(
         ctx.status.update_progress(inc_total=len(walk_subdirs) + len(src_files) + len(src_links))
         for f in (*src_files, *src_links):
             ctx.status.check_cancelled()
-            await _move_entry(ctx, src_root, f, dst_root / f.name, options, resolver, same_device=same_device, item_root=src_path.path)
+            await _move_entry(
+                ctx,
+                src_root,
+                f,
+                dst_root / f.name,
+                options,
+                resolver,
+                same_device=same_device,
+                item_root=src_path.path,
+            )
             ctx.status.update_progress(inc_completed=1)
     for d in reversed(src_dirs):
         with contextlib.suppress(OSError):
