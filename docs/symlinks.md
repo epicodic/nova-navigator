@@ -125,7 +125,7 @@ See `docs/scheduler.md` for the reporting API.
 A move across devices copies a link with `_copy_link` and then removes the source link, but only if it was copied.
 A skipped link stays in the source.
 Its parent directory then cannot be removed and stays too.
-A directory link is removed from the source once its tree copy has started, except when the destination folder itself was skipped.
+A directory link is removed from the source once its tree copy has finished, except when the destination folder itself was skipped.
 The target of a directory link is only read, never touched.
 Moves on the same device rename the link itself.
 

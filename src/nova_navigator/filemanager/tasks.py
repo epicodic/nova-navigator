@@ -129,8 +129,9 @@ def _fresh_stat_or_none(filesystem: Filesystem, path: VPath) -> Stat | None:
 
 
 async def _ensure_directory(ctx: TaskContext, src: VPath, dst: VPath, options: FileCopyOptions) -> DirOutcome:
-    """Make *dst* a usable real directory for the folder *src*; one decision point for copy and both move paths (REQ-6, REQ-7).
+    """Make *dst* a usable real directory for the folder *src* (REQ-6, REQ-7).
 
+    One decision point for copy and both move paths.
     Missing: create it ("created").
     A real folder (checked link-first): reuse it without a question ("merged").
     A file or a link of any kind: apply the overwrite policy. "skipped" leaves the entry untouched;
@@ -377,7 +378,10 @@ async def _copy_dir(
     chain: _LinkChain = _NO_CHAIN,
     count_root: bool = True,
 ) -> bool:
-    """Copy the folder *src_path* into *dst_path*; return False only when the root was skipped by the overwrite policy."""
+    """Copy the folder *src_path* into *dst_path*.
+
+    Return False only when the root was skipped by the overwrite policy.
+    """
     root_outcome = await _ensure_directory(ctx, src_path, dst_path, options)
     if root_outcome == "skipped":
         if count_root:
@@ -428,6 +432,11 @@ async def _copy_dir_step(
     dst_filesystem: Filesystem,
     options: FileCopyOptions,
 ) -> None:
+    """Run ``_copy_dir`` as a subtask body.
+
+    Exists so ``ctx.subtask`` gets a coroutine that returns None, matching ``list[asyncio.Task[None]]``.
+    The bool from ``_copy_dir`` is discarded here.
+    """
     await _copy_dir(ctx, src_path, dst_path, dst_filesystem, options)
 
 

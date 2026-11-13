@@ -181,11 +181,30 @@ async def test_copy_created_folder_gets_source_mode(tmp_path: Path) -> None:
     os.chmod(src / "d", 0o700)
     sub_mode = stat_module.S_IRWXU | stat_module.S_IXGRP | stat_module.S_IXOTH  # 0o711
     os.chmod(src / "d" / "sub", sub_mode)
+    # Whole-second mtimes stay exact through Stat.modified (a float), so st_mtime_ns can be compared.
+    os.utime(src / "d", ns=(1_500_000_000 * 10**9, 1_500_000_000 * 10**9))
+    os.utime(src / "d" / "sub", ns=(1_400_000_000 * 10**9, 1_400_000_000 * 10**9))
     dst = tmp_path / "dst"
     dst.mkdir()
     status, _ = await _copy(src / "d", dst, LocalFilesystem(), "skip")
     assert stat_module.S_IMODE((dst / "d").stat().st_mode) == 0o700
     assert stat_module.S_IMODE((dst / "d" / "sub").stat().st_mode) == sub_mode
+    assert (dst / "d").stat().st_mtime_ns == (src / "d").stat().st_mtime_ns
+    assert (dst / "d" / "sub").stat().st_mtime_ns == (src / "d" / "sub").stat().st_mtime_ns
+    assert status.progress.completed == status.progress.total
+
+
+@pytest.mark.asyncio
+async def test_copy_merge_empty_source_folder_keeps_existing_mtime(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    (src / "d").mkdir(parents=True)
+    dst = tmp_path / "dst"
+    (dst / "d").mkdir(parents=True)
+    os.utime(src / "d", ns=(1_500_000_000 * 10**9, 1_500_000_000 * 10**9))
+    os.utime(dst / "d", ns=(1_300_000_000 * 10**9, 1_300_000_000 * 10**9))
+    status, requests = await _copy(src / "d", dst, LocalFilesystem(), "skip")
+    assert requests == []
+    assert (dst / "d").stat().st_mtime_ns == 1_300_000_000 * 10**9
     assert status.progress.completed == status.progress.total
 
 
@@ -340,7 +359,7 @@ async def test_copy_dir_returns_false_only_when_root_skipped(tmp_path: Path, roo
     assert results == [expected]
 
 
-# Commit 3: moves merge into existing folders through the same ensure-directory step.
+# Moves merge into existing folders through the same ensure-directory step.
 
 
 def _force_cross_device(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -551,7 +570,10 @@ async def test_move_same_device_merge_ask_asks_only_for_files(tmp_path: Path) ->
     src, dst = _tree(tmp_path)
     status, requests = await _move(src / "d", dst, LocalFilesystem(), "ask", [Response.NO, Response.YES])
     assert [r.title for r in requests] == ["Overwrite", "Overwrite"]
-    assert all(r.message.endswith("already exists. Overwrite?") for r in requests)
+    assert sorted(r.message for r in requests) == [
+        f"File '{dst / 'd' / 'a.txt'}' already exists. Overwrite?",
+        f"File '{dst / 'd' / 'sub' / 'c.txt'}' already exists. Overwrite?",
+    ]
     assert (dst / "d" / "b.txt").read_bytes() == b"new-b.txt"
     kept_old = [(dst / "d" / "a.txt").read_bytes() == b"old-a.txt", (dst / "d" / "sub" / "c.txt").read_bytes() == b"old-c.txt"]
     assert kept_old.count(True) == 1
@@ -592,6 +614,27 @@ async def test_move_merge_does_not_touch_attributes_of_existing_folder(
     os.chmod(dst / "d", existing_mode)
     status, _ = await _move(src / "d", dst, LocalFilesystem(), "overwrite")
     assert stat_module.S_IMODE((dst / "d").stat().st_mode) == existing_mode
+    assert status.progress.completed == status.progress.total
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cross_device", [True, False], ids=["cross-device", "same-device"])
+async def test_move_merge_empty_source_folder_keeps_existing_mtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cross_device: bool,
+) -> None:
+    if cross_device:
+        _force_cross_device(monkeypatch)
+    src = tmp_path / "src"
+    (src / "d").mkdir(parents=True)
+    dst = tmp_path / "dst"
+    (dst / "d").mkdir(parents=True)
+    os.utime(src / "d", ns=(1_500_000_000 * 10**9, 1_500_000_000 * 10**9))
+    os.utime(dst / "d", ns=(1_300_000_000 * 10**9, 1_300_000_000 * 10**9))
+    status, requests = await _move(src / "d", dst, LocalFilesystem(), "skip")
+    assert requests == []
+    assert (dst / "d").stat().st_mtime_ns == 1_300_000_000 * 10**9
     assert status.progress.completed == status.progress.total
 
 

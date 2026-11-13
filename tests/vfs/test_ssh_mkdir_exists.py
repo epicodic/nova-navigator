@@ -32,7 +32,7 @@ def test_ssh_mkdir_existing_link_to_directory_raises_file_exists(ssh_stub_fs: SS
         ssh_stub_fs.mkdir(VPath(tmp_path / "lnk", ssh_stub_fs))
 
 
-def test_ssh_mkdir_missing_parent_still_raises_not_found_style_error(ssh_stub_fs: SSHFilesystem, tmp_path: Path) -> None:
+def test_ssh_mkdir_missing_parent_raises_file_not_found(ssh_stub_fs: SSHFilesystem, tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         ssh_stub_fs.mkdir(VPath(tmp_path / "no_such_parent" / "child", ssh_stub_fs))
 
