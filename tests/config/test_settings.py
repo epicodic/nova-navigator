@@ -176,7 +176,9 @@ def test_copy_move_save_keeps_comments_and_other_content(tmp_path: Path, monkeyp
 
     monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
     settings_file = tmp_path / "settings.toml"
-    settings_file.write_text("# user note\n[general]\n# keep me\nshow_hidden_files = true\n[network]\nssh_timeout = 77\n")
+    settings_file.write_text(
+        "# user note\n[general]\n# keep me\nshow_hidden_files = true\n[network]\nssh_timeout = 77\n",
+    )
 
     instance = Settings.load()
     instance.copy_move.follow_links = True

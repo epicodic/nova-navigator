@@ -213,7 +213,10 @@ async def test_saved_states_reach_dialog_after_reload(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
-async def test_save_failure_still_returns_job(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+async def test_save_failure_still_returns_job(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     def _fail(_self: Settings) -> None:
         raise OSError("disk full")
 
