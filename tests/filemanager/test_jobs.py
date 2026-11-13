@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from nova_navigator.config import loader
+from nova_navigator.config.global_config import conf_
+from nova_navigator.config.settings import Settings
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
+from nova_navigator.filemanager.tasks import FileCopyOptions
 from nova_navigator.scheduler import Job
 from nova_navigator.vfs import VPath
 from nova_widgets import Response
@@ -21,10 +27,18 @@ def _vpath(name: str) -> MagicMock:
     return vp
 
 
-def _mock_copy_dialog(result: Response, filename: str | None = None) -> MagicMock:
+def _mock_copy_dialog(
+    result: Response,
+    filename: str | None = None,
+    follow_links: bool = False,
+    stable_symlinks: bool = False,
+) -> MagicMock:
     dialog = MagicMock()
     dialog.run = AsyncMock(return_value=result)
     dialog.filename = filename
+    dialog.file_filter = None
+    dialog.follow_links = follow_links
+    dialog.stable_symlinks = stable_symlinks
     return dialog
 
 
@@ -32,6 +46,26 @@ def _mock_delete_dialog(result: Response) -> MagicMock:
     dialog = MagicMock()
     dialog.run = AsyncMock(return_value=result)
     return dialog
+
+
+@pytest.fixture(autouse=True)
+def _settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give `conf_` a Settings object backed by a temp config dir, since jobs.py reads and saves it."""
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+    settings = Settings.load()
+    monkeypatch.setattr(conf_, "settings", settings, raising=False)
+
+
+async def _run_job(move: bool, dialog: MagicMock) -> tuple[Job | None, MagicMock, MagicMock]:
+    """Run copy_or_move_files_job with a patched dialog and Job; return (result, dialog_cls, job_cls)."""
+    with (
+        patch("nova_navigator.filemanager.jobs.CopyMoveFilesDialog", return_value=dialog) as dialog_cls,
+        patch("nova_navigator.filemanager.jobs.Job") as job_cls,
+    ):
+        src = cast("list[VPath]", [_vpath("a.txt")])
+        dst = cast("VPath", _vpath("dest"))
+        result = await copy_or_move_files_job(src, dst, move=move)
+    return result, dialog_cls, job_cls
 
 
 # ── copy_or_move_files_job ────────────────────────────────────────────────────
@@ -102,6 +136,89 @@ async def test_move_job_returns_none_when_user_cancels() -> None:
     with patch("nova_navigator.filemanager.jobs.CopyMoveFilesDialog", return_value=_mock_copy_dialog(Response.CANCEL)):
         result = await copy_or_move_files_job(src, dst, move=True)  # type: ignore
     assert result is None
+
+
+# ── link options ──────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_dialog_opens_off_without_saved_state() -> None:
+    _, dialog_cls, _ = await _run_job(False, _mock_copy_dialog(Response.CANCEL))
+    kwargs = dialog_cls.call_args.kwargs
+    assert kwargs["follow_links"] is False
+    assert kwargs["stable_symlinks"] is False
+
+
+@pytest.mark.asyncio
+async def test_ok_with_both_off_builds_default_link_options() -> None:
+    _, _, job_cls = await _run_job(False, _mock_copy_dialog(Response.OK))
+    options = job_cls.call_args.args[4]
+    assert isinstance(options, FileCopyOptions)
+    assert options.follow_links is False
+    assert options.stable_symlinks is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("move", [False, True])
+async def test_ok_passes_chosen_link_options_to_job(move: bool) -> None:
+    dialog = _mock_copy_dialog(Response.OK, follow_links=True, stable_symlinks=True)
+    result, _, job_cls = await _run_job(move, dialog)
+    assert result is job_cls.return_value
+    assert job_cls.call_args.args[0] == ("Move Files" if move else "Copy Files")
+    options = job_cls.call_args.args[4]
+    assert options.follow_links is True
+    assert options.stable_symlinks is True
+
+
+@pytest.mark.asyncio
+async def test_ok_saves_chosen_states_to_settings_file() -> None:
+    await _run_job(False, _mock_copy_dialog(Response.OK, follow_links=True, stable_symlinks=False))
+    reloaded = Settings.load()
+    assert reloaded.copy_move.follow_links is True
+    assert reloaded.copy_move.stable_symlinks is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("move", [False, True])
+async def test_cancel_starts_no_job_and_saves_nothing(move: bool, tmp_path: Path) -> None:
+    before = (tmp_path / "settings.toml").read_text()
+    dialog = _mock_copy_dialog(Response.CANCEL, follow_links=True, stable_symlinks=True)
+    result, _, job_cls = await _run_job(move, dialog)
+    assert result is None
+    job_cls.assert_not_called()
+    assert (tmp_path / "settings.toml").read_text() == before
+    assert conf_.settings.copy_move.follow_links is False
+    assert conf_.settings.copy_move.stable_symlinks is False
+
+
+@pytest.mark.asyncio
+async def test_copy_and_move_share_one_saved_pair() -> None:
+    await _run_job(False, _mock_copy_dialog(Response.OK, follow_links=True, stable_symlinks=False))
+    _, dialog_cls, _ = await _run_job(True, _mock_copy_dialog(Response.CANCEL))
+    kwargs = dialog_cls.call_args.kwargs
+    assert kwargs["move"] is True
+    assert kwargs["follow_links"] is True
+    assert kwargs["stable_symlinks"] is False
+
+
+@pytest.mark.asyncio
+async def test_saved_states_reach_dialog_after_reload(monkeypatch: pytest.MonkeyPatch) -> None:
+    await _run_job(False, _mock_copy_dialog(Response.OK, follow_links=False, stable_symlinks=True))
+    monkeypatch.setattr(conf_, "settings", Settings.load(), raising=False)  # simulates a restart
+    _, dialog_cls, _ = await _run_job(False, _mock_copy_dialog(Response.CANCEL))
+    kwargs = dialog_cls.call_args.kwargs
+    assert kwargs["follow_links"] is False
+    assert kwargs["stable_symlinks"] is True
+
+
+@pytest.mark.asyncio
+async def test_save_failure_still_returns_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fail(_self: Settings) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Settings, "save", _fail)
+    result, _, job_cls = await _run_job(False, _mock_copy_dialog(Response.OK, follow_links=True))
+    assert result is job_cls.return_value
 
 
 # ── delete_files_job ──────────────────────────────────────────────────────────
