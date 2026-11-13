@@ -260,10 +260,11 @@ def _followed_view(link: VPath) -> VPath:
     return link.with_stat(replace(link.stat, is_symlink=False))
 
 
-def _needs_holder(link: VPath, dst_filesystem: Filesystem) -> bool:
+def _needs_holder(link: VPath, dst_filesystem: Filesystem, options: FileCopyOptions) -> bool:
     """Return True if copying *link* needs the real position of the directory holding it (loop test)."""
     stat = link.stat
-    return not dst_filesystem.supports_symlinks() and stat.is_directory and not stat.is_broken_symlink
+    follows = options.follow_links or not dst_filesystem.supports_symlinks()
+    return follows and stat.is_directory and not stat.is_broken_symlink
 
 
 class _HolderResolver:
@@ -324,6 +325,43 @@ async def _copy_linked_directory(
     return await _copy_dir(ctx, source, dst, dst.filesystem, options, next_chain, count_root=False)
 
 
+async def _link_target_missing(link: VPath) -> bool:
+    """Return True if the target of *link* no longer exists (fresh stat, parent listing dropped first)."""
+    link.filesystem.refresh(link.parent)
+    try:
+        stat = await link.fresh_stat()
+    except FileNotFoundError:
+        return True
+    return stat.is_broken_symlink
+
+
+async def _follow_link(
+    ctx: TaskContext,
+    link: VPath,
+    dst: VPath,
+    options: FileCopyOptions,
+    chain: _LinkChain,
+    holder: PurePosixPath | None,
+) -> bool:
+    """Copy what *link* points to under *dst*: a file as content, a directory as a tree; broken and looping links are skipped.
+
+    A target that vanished after the link was listed (for example moved earlier in the same move) is a broken link too.
+    """
+    stat = link.stat
+    if stat.is_broken_symlink:
+        ctx.report_skipped(link.uri, SKIP_BROKEN_LINK)
+        return False
+    if stat.is_directory:
+        return await _copy_linked_directory(ctx, link, dst, options, chain, holder)
+    try:
+        return await copy_file(ctx, link, dst, options)
+    except FileNotFoundError:
+        if await _link_target_missing(link):
+            ctx.report_skipped(link.uri, SKIP_BROKEN_LINK)
+            return False
+        raise
+
+
 async def _copy_link(
     ctx: TaskContext,
     link: VPath,
@@ -335,19 +373,14 @@ async def _copy_link(
     """Copy the symbolic link *link* to *dst*; return True if something was created at the destination.
 
     One decision point for copy and for cross-device move (REQ-3, REQ-9).
-    A link-capable destination gets a link with the same target text.
+    ``follow_links`` selects the follow path for every destination.
+    Otherwise a link-capable destination gets a link with the same target text.
     Never touches the ``completed`` counter: the caller counts the link as one unit of work.
     """
     ctx.status.set_current_item(link.uri)
-    if dst.filesystem.supports_symlinks():
+    if not options.follow_links and dst.filesystem.supports_symlinks():
         return await _recreate_link(ctx, link, dst, options)
-    stat = link.stat
-    if stat.is_broken_symlink:
-        ctx.report_skipped(link.uri, SKIP_BROKEN_LINK)
-        return False
-    if not stat.is_directory:
-        return await copy_file(ctx, link, dst, options)
-    return await _copy_linked_directory(ctx, link, dst, options, chain, holder)
+    return await _follow_link(ctx, link, dst, options, chain, holder)
 
 
 async def _copy_link_step(
@@ -417,7 +450,7 @@ async def _copy_dir(
             file_tasks.append(await ctx.subtask(_copy_file_step(ctx, f, dst_root / f.name, options)))
         for link in src_links:
             ctx.status.check_cancelled()
-            holder = resolver.holder(src_root) if _needs_holder(link, dst_filesystem) else None
+            holder = resolver.holder(src_root) if _needs_holder(link, dst_filesystem, options) else None
             file_tasks.append(await ctx.subtask(_copy_link_step(ctx, link, dst_root / link.name, options, chain, holder)))
     await asyncio.gather(*file_tasks)
     # Apply directory attributes bottom-up so that parent mtime is not disturbed
@@ -523,7 +556,7 @@ async def _move_entry(
         f.filesystem.rename(f, f_dst)
         return
     if f.stat.is_symlink:
-        holder = resolver.holder(src_root) if _needs_holder(f, f_dst.filesystem) else None
+        holder = resolver.holder(src_root) if _needs_holder(f, f_dst.filesystem, options) else None
         copied = await _copy_link(ctx, f, f_dst, options, holder=holder)
     else:
         copied = await copy_file(ctx, f, f_dst, options)

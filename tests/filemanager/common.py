@@ -1,8 +1,11 @@
 import asyncio
 import threading
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 
+from nova_navigator.filemanager.tasks import FileCopyOptions, copy_files
 from nova_navigator.scheduler import AsyncTaskScheduler, ResponseRequest, TaskContext, TaskStatus
+from nova_navigator.vfs.filesystem import Filesystem
 from nova_widgets import Response
 from tests._utils.mock_filesystem import MockFilesystem
 
@@ -51,3 +54,29 @@ async def run_task(
 
     await AsyncTaskScheduler.execute(gui_callback, task_fn, status)
     return requests
+
+
+async def copy_between(
+    fs_pair: tuple[Filesystem, Filesystem],
+    sources: list[Path],
+    destination: Path,
+    options: FileCopyOptions | None = None,
+    responses: list[Response] | None = None,
+) -> TaskStatus:
+    """Copy *sources* (viewed through ``fs_pair[0]``) into *destination* (viewed through ``fs_pair[1]``)."""
+    src_fs, dst_fs = fs_pair
+    status = make_status()
+    await asyncio.wait_for(
+        run_task(
+            lambda ctx: copy_files(ctx, [src_fs.path(s) for s in sources], dst_fs.path(destination), options),
+            responses,
+            status,
+        ),
+        timeout=20,
+    )
+    return status
+
+
+def reasons(status: TaskStatus) -> list[str]:
+    """Return the skip reasons recorded on *status*, in report order."""
+    return [skipped.reason for skipped in status.skipped]
