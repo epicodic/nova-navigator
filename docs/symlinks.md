@@ -237,3 +237,13 @@ Elsewhere it copies a file target and skips directory and broken links with a me
 The rest of the tree is still copied.
 `cp` without `-r` keeps copying a link to a file as content and omits a link to a directory.
 `mv`, `ls`, `glob` and `cd` are unchanged.
+
+## Copy and Move dialog options
+
+The Copy and the Move dialog show the checkboxes "Follow links" and "Stable symlinks".
+They set `FileCopyOptions.follow_links` and `FileCopyOptions.stable_symlinks` of the started job.
+Both are off when no state was saved.
+Confirming the dialog with OK saves both states in the `[copy_move]` section of `settings.toml`; Cancel saves nothing.
+Copy and Move share the one saved pair, and the Settings dialog shows it in the tab "Copy Move".
+The dialog itself reads and writes no files.
+`copy_or_move_files_job` in `filemanager/jobs.py` passes the saved states in and saves the chosen ones.

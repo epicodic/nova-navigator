@@ -14,7 +14,8 @@ set_panels(ctx)
 auto_confirm_copy_dialog(filename=None)
     Return a mock ``CopyMoveFilesDialog`` that immediately confirms ("OK").
     Pass *filename* to simulate the user editing the destination filename
-    (only relevant for single-file copies).
+    (only relevant for single-file copies).  Pass *follow_links* and
+    *stable_symlinks* to simulate the link options; they default to ``False``.
 
 auto_cancel_dialog()
     Return a mock dialog that immediately cancels.
@@ -34,6 +35,7 @@ import pytest
 import pytest_asyncio
 from textual.pilot import Pilot
 
+from nova_navigator.config import loader
 from nova_navigator.nova_navigator import MainScreen, NovaNavigator
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
@@ -81,7 +83,7 @@ class AppCtx:
 
 
 @pytest_asyncio.fixture
-async def app_ctx(tmp_path: Path, headed: bool) -> object:  # yields AppCtx
+async def app_ctx(tmp_path: Path, headed: bool, monkeypatch: pytest.MonkeyPatch) -> object:  # yields AppCtx
     """Launch NovaNavigator and yield an AppCtx with empty src/dst dirs.
 
     Pass ``--headed`` on the pytest command line to render the app live in the
@@ -95,9 +97,12 @@ async def app_ctx(tmp_path: Path, headed: bool) -> object:  # yields AppCtx
     dst.mkdir()
 
     # Use an empty temporary config dir so the test is not affected by the
-    # developer's personal keybindings.toml (which may remap keys).
+    # developer's personal keybindings.toml (which may remap keys).  The same
+    # directory also isolates settings.toml, so tests never read or write the
+    # developer's real ~/.config/nova-navigator.
     empty_config = tmp_path / "config"
     empty_config.mkdir()
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", empty_config)
 
     app = NovaNavigator(config_dir=empty_config)
     async with app.run_test(size=(120, 40), headless=not headed) as pilot:
@@ -154,15 +159,24 @@ async def poll_until(
 # ---------------------------------------------------------------------------
 
 
-def auto_confirm_copy_dialog(filename: str | None = None) -> MagicMock:
+def auto_confirm_copy_dialog(
+    filename: str | None = None,
+    follow_links: bool = False,
+    stable_symlinks: bool = False,
+) -> MagicMock:
     """Mock CopyMoveFilesDialog that immediately returns Response.OK.
 
     Args:
         filename: Simulated edited filename; ``None`` means no rename.
+        follow_links: Simulated "follow links" option value.
+        stable_symlinks: Simulated "stable symlinks" option value.
     """
     dialog = MagicMock()
     dialog.run = AsyncMock(return_value=Response.OK)
     dialog.filename = filename
+    dialog.follow_links = follow_links
+    dialog.stable_symlinks = stable_symlinks
+    dialog.file_filter = None
     return dialog
 
 

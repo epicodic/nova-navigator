@@ -118,3 +118,90 @@ def test_settings_ui_nerd_font_round_trips_toml(tmp_path: Path, monkeypatch: pyt
 
     reloaded = Settings.load()
     assert reloaded.general.use_nerd_font is NerdFontMode.YES
+
+
+def test_copy_move_settings_default_off() -> None:
+    from nova_navigator.config.settings import Settings
+
+    s = Settings()
+    assert s.copy_move.follow_links is False
+    assert s.copy_move.stable_symlinks is False
+
+
+def test_copy_move_settings_section_comment_in_new_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+    from nova_navigator.config.settings import Settings
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    Settings.load()
+    content = (tmp_path / "settings.toml").read_text()
+    assert "[copy_move]" in content
+    assert "Copy and move settings" in content
+    assert "follow_links = false" in content
+    assert "stable_symlinks = false" in content
+
+
+def test_copy_move_missing_section_loads_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+    from nova_navigator.config.settings import Settings
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+    (tmp_path / "settings.toml").write_text("[general]\nshow_hidden_files = true\n")
+
+    instance = Settings.load()
+    assert instance.copy_move.follow_links is False
+    assert instance.copy_move.stable_symlinks is False
+
+
+def test_copy_move_missing_key_loads_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+    from nova_navigator.config.settings import Settings
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+    (tmp_path / "settings.toml").write_text("[copy_move]\nfollow_links = true\n")
+
+    instance = Settings.load()
+    assert instance.copy_move.follow_links is True
+    assert instance.copy_move.stable_symlinks is False
+
+
+def test_copy_move_save_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+    from nova_navigator.config.settings import Settings
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    instance = Settings.load()
+    instance.copy_move.follow_links = True
+    instance.copy_move.stable_symlinks = True
+    instance.save()
+
+    reloaded = Settings.load()
+    assert reloaded.copy_move.follow_links is True
+    assert reloaded.copy_move.stable_symlinks is True
+
+
+def test_copy_move_save_keeps_comments_and_other_content(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+    from nova_navigator.config.settings import Settings
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+    settings_file = tmp_path / "settings.toml"
+    settings_file.write_text(
+        "# user note\n[general]\n# keep me\nshow_hidden_files = true\n[network]\nssh_timeout = 77\n",
+    )
+
+    instance = Settings.load()
+    instance.copy_move.follow_links = True
+    instance.save()
+
+    content = settings_file.read_text()
+    assert "# user note" in content
+    assert "# keep me" in content
+    assert "ssh_timeout = 77" in content
+    assert "show_hidden_files = true" in content
+    reloaded = Settings.load()
+    assert reloaded.copy_move.follow_links is True
+    assert reloaded.copy_move.stable_symlinks is False
+    assert reloaded.network.ssh_timeout == 77

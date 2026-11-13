@@ -1,3 +1,4 @@
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -8,6 +9,7 @@ from nova_navigator.dialogs.files_dialog import CopyMoveFilesDialog, DeleteFiles
 from nova_navigator.file_filter import FilenamePatternFilter
 from nova_navigator.vfs.filesystem import VPath
 from nova_navigator.vfs.types import Stat
+from nova_widgets import Checkbox
 
 
 def _make_vpath(name: str, compact: str = "/some/path") -> MagicMock:
@@ -21,8 +23,16 @@ def _make_copy_app(
     sources: list[MagicMock],
     dest: MagicMock,
     move: bool = False,
+    follow_links: bool = False,
+    stable_symlinks: bool = False,
 ) -> tuple[CopyMoveFilesDialog, type[App[None]]]:
-    dialog = CopyMoveFilesDialog(sources, dest, move=move)  # type: ignore
+    dialog = CopyMoveFilesDialog(
+        cast("list[VPath]", sources),
+        cast("VPath", dest),
+        move=move,
+        follow_links=follow_links,
+        stable_symlinks=stable_symlinks,
+    )
 
     class _App(App[None]):
         def compose(self) -> ComposeResult:
@@ -189,6 +199,152 @@ async def test_ok_button_captures_filename() -> None:
         await pilot.click(ok_btn)
         await pilot.pause()
         assert dialog.filename == "via_button.txt"
+
+
+# ── link option checkboxes ────────────────────────────────────────────────────
+
+
+def _link_boxes(dialog: CopyMoveFilesDialog) -> tuple[Checkbox, Checkbox]:
+    return dialog.query_one("#follow_links", Checkbox), dialog.query_one("#stable_symlinks", Checkbox)
+
+
+async def _assert_boxes_shown(count: int, move: bool) -> None:
+    src = [_make_vpath(f"f{i}.txt") for i in range(count)]
+    dialog, _App = _make_copy_app(src, _make_vpath("dest", "/dest"), move=move)
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        follow, stable = _link_boxes(dialog)
+        assert str(follow.label) == "Follow links"
+        assert str(stable.label) == "Stable symlinks"
+
+
+@pytest.mark.asyncio
+async def test_copy_dialog_shows_link_checkboxes_single_source() -> None:
+    await _assert_boxes_shown(1, move=False)
+
+
+@pytest.mark.asyncio
+async def test_copy_dialog_shows_link_checkboxes_multiple_sources() -> None:
+    await _assert_boxes_shown(3, move=False)
+
+
+@pytest.mark.asyncio
+async def test_move_dialog_shows_link_checkboxes_single_source() -> None:
+    await _assert_boxes_shown(1, move=True)
+
+
+@pytest.mark.asyncio
+async def test_move_dialog_shows_link_checkboxes_multiple_sources() -> None:
+    await _assert_boxes_shown(3, move=True)
+
+
+@pytest.mark.asyncio
+async def test_link_checkboxes_off_by_default() -> None:
+    dialog, _App = _make_copy_app([_make_vpath("a.txt")], _make_vpath("dest", "/dest"))
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        follow, stable = _link_boxes(dialog)
+        assert follow.value is False
+        assert stable.value is False
+        assert dialog.follow_links is False
+        assert dialog.stable_symlinks is False
+
+
+@pytest.mark.asyncio
+async def test_link_checkboxes_open_with_given_states() -> None:
+    dialog, _App = _make_copy_app(
+        [_make_vpath("a.txt")],
+        _make_vpath("dest", "/dest"),
+        follow_links=True,
+        stable_symlinks=False,
+    )
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        follow, stable = _link_boxes(dialog)
+        assert follow.value is True
+        assert stable.value is False
+
+
+@pytest.mark.asyncio
+async def test_link_checkboxes_toggle_independently() -> None:
+    dialog, _App = _make_copy_app([_make_vpath("a.txt")], _make_vpath("dest", "/dest"))
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        follow, stable = _link_boxes(dialog)
+        follow.toggle()
+        await pilot.pause()
+        assert follow.value is True
+        assert stable.value is False
+
+
+@pytest.mark.asyncio
+async def test_space_toggles_focused_link_checkbox() -> None:
+    dialog, _App = _make_copy_app([_make_vpath("a.txt"), _make_vpath("b.txt")], _make_vpath("dest", "/dest"))
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        follow, stable = _link_boxes(dialog)
+        stable.focus()
+        await pilot.pause()
+        await pilot.press("space")
+        await pilot.pause()
+        assert stable.value is True
+        assert follow.value is False
+
+
+@pytest.mark.asyncio
+async def test_tab_reaches_both_link_checkboxes() -> None:
+    dialog, _App = _make_copy_app([_make_vpath("a.txt"), _make_vpath("b.txt")], _make_vpath("dest", "/dest"))
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        reached: set[str] = set()
+        for _ in range(8):
+            await pilot.press("tab")
+            await pilot.pause()
+            focused = dialog.focused
+            if focused is not None and focused.id in ("follow_links", "stable_symlinks"):
+                reached.add(focused.id)
+        assert reached == {"follow_links", "stable_symlinks"}
+
+
+@pytest.mark.asyncio
+async def test_accept_captures_link_states() -> None:
+    dialog, _App = _make_copy_app([_make_vpath("file.txt")], _make_vpath("dest", "/dest"))
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        follow, stable = _link_boxes(dialog)
+        follow.value = True
+        stable.value = True
+        await pilot.press("enter")
+        await pilot.pause()
+        assert dialog.follow_links is True
+        assert dialog.stable_symlinks is True
+
+
+@pytest.mark.asyncio
+async def test_ok_button_captures_link_states() -> None:
+    dialog, _App = _make_copy_app([_make_vpath("file.txt")], _make_vpath("dest", "/dest"))
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        follow, _stable = _link_boxes(dialog)
+        follow.value = True
+        await pilot.click(dialog.query_one("#OK"))
+        await pilot.pause()
+        assert dialog.follow_links is True
+        assert dialog.stable_symlinks is False
+
+
+@pytest.mark.asyncio
+async def test_cancel_keeps_initial_link_states() -> None:
+    dialog, _App = _make_copy_app([_make_vpath("file.txt")], _make_vpath("dest", "/dest"), follow_links=True)
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        follow, stable = _link_boxes(dialog)
+        follow.value = False
+        stable.value = True
+        await pilot.press("escape")
+        await pilot.pause()
+        assert dialog.follow_links is True
+        assert dialog.stable_symlinks is False
 
 
 # ── DeleteFilesDialog ─────────────────────────────────────────────────────────

@@ -143,6 +143,12 @@ def _fmt(_dialog: Any, result: Response | None) -> str:
     return f"Result: {result}"
 
 
+def _copy_move_result(dialog: CopyMoveFilesDialog, result: Response | None) -> str:
+    head = f"Result: {result}  filename={dialog.filename!r}  file_filter={dialog.file_filter!r}"
+    links = f"follow_links={dialog.follow_links!r}  stable_symlinks={dialog.stable_symlinks!r}"
+    return f"{head}  {links}"
+
+
 @dataclass
 class DialogEntry:
     name: str
@@ -288,8 +294,9 @@ _ENTRIES: list[DialogEntry] = [
             source_paths=[VPath("/home/user/Documents/report.pdf", _fs), VPath("/home/user/Documents/notes.txt", _fs)],
             destination_path=VPath("/home/user/Downloads", _fs),
             move=False,
+            follow_links=True,
         ),
-        result_fn=lambda d, r: f"Result: {r}  filename={d.filename!r}  file_filter={d.file_filter!r}",
+        result_fn=_copy_move_result,
     ),
     DialogEntry(
         "CopyMoveFilesDialog (move)",
@@ -298,8 +305,9 @@ _ENTRIES: list[DialogEntry] = [
             source_paths=[VPath("/home/user/Documents/report.pdf", _fs)],
             destination_path=VPath("/home/user/Downloads", _fs),
             move=True,
+            stable_symlinks=True,
         ),
-        result_fn=lambda d, r: f"Result: {r}  filename={d.filename!r}  file_filter={d.file_filter!r}",
+        result_fn=_copy_move_result,
     ),
     DialogEntry(
         "DeleteFilesDialog",

@@ -52,6 +52,20 @@ class TerminalSettings(BaseModel):
 
 
 @dataclass
+class CopyMoveSettings(BaseModel):
+    """Copy and move settings."""
+
+    follow_links: bool = field_comment(
+        False,
+        "Copy the target of a link instead of recreating the link. Saved when the Copy or Move dialog is confirmed.",
+    )
+    stable_symlinks: bool = field_comment(
+        False,
+        "Rewrite relative link targets leaving the copied item so the copy still resolves. Saved on Copy or Move OK.",
+    )
+
+
+@dataclass
 class Settings(BaseModel, ModelConfig):
     """Application settings."""
 
@@ -59,3 +73,4 @@ class Settings(BaseModel, ModelConfig):
     general: GeneralSettings = field(default_factory=GeneralSettings)
     network: NetworkSettings = field(default_factory=NetworkSettings)
     terminal: TerminalSettings = field(default_factory=TerminalSettings)
+    copy_move: CopyMoveSettings = field(default_factory=CopyMoveSettings)
