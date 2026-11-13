@@ -154,6 +154,18 @@ def test_copy_move_missing_section_loads_off(tmp_path: Path, monkeypatch: pytest
     assert instance.copy_move.stable_symlinks is False
 
 
+def test_copy_move_missing_key_loads_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+    from nova_navigator.config.settings import Settings
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+    (tmp_path / "settings.toml").write_text("[copy_move]\nfollow_links = true\n")
+
+    instance = Settings.load()
+    assert instance.copy_move.follow_links is True
+    assert instance.copy_move.stable_symlinks is False
+
+
 def test_copy_move_save_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from nova_navigator.config import loader
     from nova_navigator.config.settings import Settings
