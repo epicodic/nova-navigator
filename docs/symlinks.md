@@ -43,19 +43,23 @@ They call `Filesystem.remove` on the link itself.
 
 `_copy_link` in `filemanager/tasks.py` is the single place that decides what to do with a link.
 Copy and both cross-device move paths call it.
+The first row that matches decides.
 
-| Destination | Link kind | Action |
-|---|---|---|
-| supports links | any kind | create a link with the same target text; the target is never read or entered |
-| no links | broken | create nothing and report `"broken link"` |
-| no links | file target | copy the target content as a file |
-| no links | directory target | copy the target tree under the link name, unless it loops |
+| Condition | Action |
+|---|---|
+| `follow_links` is on | follow the target for every destination: copy the file content, or the directory tree; a broken or looping link is skipped |
+| `follow_links` is off, destination supports links | create a link with the same target text; the target is never read or entered |
+| `follow_links` is off, destination has no links | follow the target, as in the first row |
+
+`stable_symlinks` only changes the second row.
+When it is on and `link.filesystem == dst.filesystem`, the text comes from `stable_link_target` instead.
+With `follow_links` on, `stable_symlinks` has no effect.
 
 Filters apply to a link by its name, like a file.
 A link that a filter excludes counts as completed and is not reported.
 An existing destination follows the overwrite policy of file copies (`skip`, `ask` or `overwrite`).
-Overwriting removes the old entry itself and never follows it.
-`readlink` runs before the overwrite check, so an unreadable link never removes an existing destination.
+On the link-creating path, overwriting removes the old entry itself and never follows it.
+`readlink` runs before the overwrite check there, so an unreadable link never removes an existing destination.
 
 ## Copy and move into existing folders
 
@@ -94,8 +98,9 @@ The source goes inside it under its own name, and the link is not replaced.
 
 ## Loop detection
 
-Loops only matter when a directory link is copied as a tree.
-A link-capable destination never walks through links.
+Loops only matter when a directory link is followed and copied as a tree.
+The holder is computed whenever links are followed, that is when `follow_links` is on or the destination has no links (`_needs_holder`).
+Without `follow_links`, a link-capable destination never walks through links, so no holder is computed.
 
 Each descent carries a chain of the resolved directory positions that were entered through links.
 A directory link is a loop if its resolved target is an ancestor of, or equal to, the directory that holds it or any chain position.
@@ -112,7 +117,7 @@ When `real_path` returns `None`, the link is walked through a followed view and 
 A link that is left out is reported with `TaskContext.report_skipped(link.uri, reason)`.
 There are three exact reasons.
 
-- `"broken link"`: the target does not exist and the destination has no links.
+- `"broken link"`: the target does not exist, or no longer exists when the link is processed (for example moved earlier in the same move), and links are followed or the destination has no links.
 - `"link loop"`: the directory link loops, or the depth guard was hit.
 - `"unreadable link"`: `readlink` failed on the source.
 
@@ -122,12 +127,65 @@ See `docs/scheduler.md` for the reporting API.
 
 ## Cross-device move
 
-A move across devices copies a link with `_copy_link` and then removes the source link, but only if it was copied.
+A move across devices copies each link with `_copy_link` and removes the source link only if it was copied.
+Both link options apply to the copied part.
 A skipped link stays in the source.
 Its parent directory then cannot be removed and stays too.
 A directory link is removed from the source once its tree copy has finished, except when the destination folder itself was skipped.
 The target of a directory link is only read, never touched.
+With `follow_links` on, or when the destination has no links, a link whose target was already moved earlier in the same move is skipped as `"broken link"`.
+The target was moved because it was selected, not through the link.
+A link-capable destination without `follow_links` recreates such a link instead, so nothing is skipped.
 Moves on the same device rename the link itself.
+
+## Link options
+
+`FileCopyOptions` has two link options, both off by default.
+
+- `follow_links` copies what a link points to, a file as content and a directory as a tree, instead of recreating the link.
+- `stable_symlinks` rewrites the target text of a recreated relative link whose target lies outside the copied item.
+  It has no effect when `follow_links` is on.
+
+The stable rule is lexical: no link is resolved while it runs.
+It is implemented by `stable_link_target` in `filemanager/link_target.py`.
+
+- A target is inside when it is at or below the copied item.
+  When the selected item is itself a link, there is no copied folder, so every relative target counts as outside.
+- An absolute or empty target text is kept unchanged.
+- A relative target outside the copied item becomes the path from the directory of the new link to the same target path.
+- A trailing slash in the text is kept.
+- `..` above `/` is clamped to `/`.
+- If the source link, the new link or the copied item is not absolute, a relative target keeps its text, and `_stable_text` logs a warning.
+
+Because `..` is applied to the text, `linkdir/../x` is read as `x`, even when `linkdir` is a link to another directory.
+A rewritten target can then reach a different file than the original link did.
+
+"Same filesystem" means `==` between the two filesystem objects.
+
+- The rule applies only when `link.filesystem == dst.filesystem`; otherwise the text is copied unchanged.
+- All `LocalFilesystem` instances are equal.
+- Two `SSHFilesystem` instances are equal when they share one SSH client, so one connection.
+- Separately opened connections are never equal, so the text is copied unchanged between them.
+- Two `RemoteFilesystem` instances are equal when their inner filesystems are equal, whatever their remote names.
+
+A move that renames a folder on the same device does not apply the stable rule.
+A relative link inside that folder whose target lies outside it may point elsewhere after the rename.
+
+When `real_path` returns `None` for a followed directory link, the tree is walked through a followed view and the loop test is skipped.
+Only the depth guard `_MAX_LINK_DEPTH = 16` then limits the descent, so a loop directory is entered up to 16 times before the link is skipped as `"link loop"`.
+A pure cycle `l -> l` is reported as `"broken link"`.
+
+A followed directory target that vanished while `real_path` returns `None` is not caught as a broken link.
+`_copy_linked_directory` catches only an `OSError` from `real_path`, so the followed view is walked.
+The destination folder created by `_ensure_directory` stays, and the error from listing the vanished folder is raised, which fails the job.
+This is an accepted limitation.
+
+With both options off and a destination without links, a link whose target vanished between the listing and its processing is now skipped as `"broken link"`.
+Before this change such a link failed the job.
+This is a changed edge case.
+
+A followed file is written with the normal file write, so an existing link at the destination is written through.
+The write follows that link and overwrites its target.
 
 ## Archives
 
