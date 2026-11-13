@@ -1,0 +1,339 @@
+"""Copy merges a source folder into an existing real folder and treats a file or link at its name by the overwrite policy (REQ-6, REQ-7)."""
+
+import asyncio
+import os
+import shutil
+import stat as stat_module
+from pathlib import Path
+
+import pytest
+
+from nova_navigator.filemanager.tasks import FileCopyOptions, OverwritePolicy, _copy_dir, copy_files
+from nova_navigator.scheduler import ResponseRequest, TaskContext, TaskStatus
+from nova_navigator.vfs.filesystem import Filesystem
+from nova_navigator.vfs.filesystems.local import LocalFilesystem
+from nova_widgets import Response
+
+from .common import make_status, run_task
+
+
+def _tree(tmp_path: Path, *, collide: bool = True) -> tuple[Path, Path]:
+    """Build the source and destination trees; return (src, dst) with the folder under test at src/d and dst/d.
+
+    src/d holds a.txt, b.txt, sub/c.txt and sub/deep/e.txt with new content.
+    dst/d holds keep.txt and sub/keep2.txt. With *collide*, dst/d/a.txt and dst/d/sub/c.txt exist with old content.
+    """
+    src = tmp_path / "src"
+    (src / "d" / "sub" / "deep").mkdir(parents=True)
+    (src / "d" / "a.txt").write_bytes(b"new-a.txt")
+    (src / "d" / "b.txt").write_bytes(b"new-b.txt")
+    (src / "d" / "sub" / "c.txt").write_bytes(b"new-c.txt")
+    (src / "d" / "sub" / "deep" / "e.txt").write_bytes(b"new-e.txt")
+    dst = tmp_path / "dst"
+    (dst / "d" / "sub").mkdir(parents=True)
+    (dst / "d" / "keep.txt").write_bytes(b"keep")
+    (dst / "d" / "sub" / "keep2.txt").write_bytes(b"keep")
+    if collide:
+        (dst / "d" / "a.txt").write_bytes(b"old-a.txt")
+        (dst / "d" / "sub" / "c.txt").write_bytes(b"old-c.txt")
+    return src, dst
+
+
+def _outside(tmp_path: Path) -> Path:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_bytes(b"keep")
+    return outside
+
+
+def _assert_outside_unchanged(outside: Path) -> None:
+    assert sorted(p.name for p in outside.iterdir()) == ["keep.txt"]
+    assert (outside / "keep.txt").read_bytes() == b"keep"
+
+
+def _reasons(status: TaskStatus) -> list[str]:
+    return [skipped.reason for skipped in status.skipped]
+
+
+async def _copy(
+    src_folder: Path,
+    destination: Path,
+    fs: Filesystem,
+    policy: OverwritePolicy,
+    responses: list[Response] | None = None,
+) -> tuple[TaskStatus, list[ResponseRequest]]:
+    status = make_status()
+    requests = await asyncio.wait_for(
+        run_task(
+            lambda ctx: copy_files(ctx, [LocalFilesystem().path(src_folder)], fs.path(destination), FileCopyOptions(overwrite=policy)),
+            responses,
+            status,
+        ),
+        timeout=20,
+    )
+    return status, requests
+
+
+# REQ-6: existing folders are merged without a question about the folder itself.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("policy", ["skip", "overwrite"])
+async def test_copy_merge_existing_folder_applies_policy_to_files_only(link_fs: Filesystem, tmp_path: Path, policy: OverwritePolicy) -> None:
+    src, dst = _tree(tmp_path)
+    status, requests = await _copy(src / "d", dst, link_fs, policy)
+    d = dst / "d"
+    assert requests == []
+    assert (d / "b.txt").read_bytes() == b"new-b.txt"
+    assert (d / "sub" / "deep" / "e.txt").read_bytes() == b"new-e.txt"
+    assert (d / "keep.txt").read_bytes() == b"keep"
+    assert (d / "sub" / "keep2.txt").read_bytes() == b"keep"
+    replaced = policy == "overwrite"
+    assert (d / "a.txt").read_bytes() == (b"new-a.txt" if replaced else b"old-a.txt")
+    assert (d / "sub" / "c.txt").read_bytes() == (b"new-c.txt" if replaced else b"old-c.txt")
+    assert status.progress.completed == status.progress.total
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("answers", "replaced"),
+    [([Response.NO, Response.NO], 0), ([Response.YES, Response.YES], 2), ([Response.YES, Response.NO], 1)],
+    ids=["no-no", "yes-yes", "yes-no"],
+)
+async def test_copy_merge_ask_answers_per_file(link_fs: Filesystem, tmp_path: Path, answers: list[Response], replaced: int) -> None:
+    src, dst = _tree(tmp_path)
+    status, requests = await _copy(src / "d", dst, link_fs, "ask", answers)
+    d = dst / "d"
+    assert [r.title for r in requests] == ["Overwrite", "Overwrite"]
+    assert sorted(r.message for r in requests) == [
+        "File 'a.txt' already exists. Overwrite?",
+        "File 'c.txt' already exists. Overwrite?",
+    ]
+    new_count = sum(
+        [(d / "a.txt").read_bytes() == b"new-a.txt", (d / "sub" / "c.txt").read_bytes() == b"new-c.txt"],
+    )
+    assert new_count == replaced
+    assert (d / "b.txt").read_bytes() == b"new-b.txt"
+    assert status.progress.completed == status.progress.total
+
+
+@pytest.mark.asyncio
+async def test_copy_merge_asks_nothing_when_only_folders_collide(link_fs: Filesystem, tmp_path: Path) -> None:
+    src, dst = _tree(tmp_path, collide=False)
+    status, requests = await _copy(src / "d", dst, link_fs, "ask")
+    assert requests == []
+    assert (dst / "d" / "a.txt").read_bytes() == b"new-a.txt"
+    assert (dst / "d" / "sub" / "deep" / "e.txt").read_bytes() == b"new-e.txt"
+    assert (dst / "d" / "keep.txt").read_bytes() == b"keep"
+    assert status.progress.completed == status.progress.total
+
+
+@pytest.mark.asyncio
+async def test_copy_merge_subfolders_merge_at_depth(link_fs: Filesystem, tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    levels = ["d", "d/l1", "d/l1/l2", "d/l1/l2/l3"]
+    for depth, level in enumerate(levels):
+        (src / level).mkdir(parents=True, exist_ok=True)
+        (src / level / f"new-{depth}.txt").write_bytes(b"new")
+        (dst / level).mkdir(parents=True, exist_ok=True)
+        (dst / level / f"keep-{depth}.txt").write_bytes(b"keep")
+    status, requests = await _copy(src / "d", dst, link_fs, "overwrite")
+    assert requests == []
+    for depth, level in enumerate(levels):
+        assert (dst / level / f"new-{depth}.txt").read_bytes() == b"new"
+        assert (dst / level / f"keep-{depth}.txt").read_bytes() == b"keep"
+    assert status.progress.completed == status.progress.total
+
+
+@pytest.mark.asyncio
+async def test_copy_merge_existing_empty_folder(link_fs: Filesystem, tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    (src / "d" / "sub").mkdir(parents=True)
+    (src / "d" / "g.txt").write_bytes(b"g")
+    (src / "d" / "sub" / "f.txt").write_bytes(b"f")
+    dst = tmp_path / "dst"
+    (dst / "d").mkdir(parents=True)
+    status, requests = await _copy(src / "d", dst, link_fs, "skip")
+    assert requests == []
+    assert (dst / "d" / "g.txt").read_bytes() == b"g"
+    assert (dst / "d" / "sub" / "f.txt").read_bytes() == b"f"
+    assert status.progress.completed == status.progress.total
+
+
+@pytest.mark.asyncio
+async def test_copy_merge_does_not_touch_attributes_of_existing_folder(tmp_path: Path) -> None:
+    src, dst = _tree(tmp_path)
+    os.chmod(src / "d", 0o700)
+    existing_mode = stat_module.S_IRWXU | stat_module.S_IRGRP | stat_module.S_IXGRP  # 0o750
+    os.chmod(dst / "d", existing_mode)
+    status, _ = await _copy(src / "d", dst, LocalFilesystem(), "overwrite")
+    assert stat_module.S_IMODE((dst / "d").stat().st_mode) == existing_mode
+    assert status.progress.completed == status.progress.total
+
+
+@pytest.mark.asyncio
+async def test_copy_created_folder_gets_source_mode(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    (src / "d" / "sub").mkdir(parents=True)
+    (src / "d" / "sub" / "f.txt").write_bytes(b"f")
+    os.chmod(src / "d", 0o700)
+    sub_mode = stat_module.S_IRWXU | stat_module.S_IXGRP | stat_module.S_IXOTH  # 0o711
+    os.chmod(src / "d" / "sub", sub_mode)
+    dst = tmp_path / "dst"
+    dst.mkdir()
+    status, _ = await _copy(src / "d", dst, LocalFilesystem(), "skip")
+    assert stat_module.S_IMODE((dst / "d").stat().st_mode) == 0o700
+    assert stat_module.S_IMODE((dst / "d" / "sub").stat().st_mode) == sub_mode
+    assert status.progress.completed == status.progress.total
+
+
+# REQ-7: a file or a link (to anything) at the folder's name goes through the overwrite policy.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("policy", "answers", "asks", "replaced"),
+    [("skip", [], 0, False), ("ask", [Response.NO], 1, False), ("ask", [Response.YES], 1, True), ("overwrite", [], 0, True)],
+    ids=["skip", "ask-no", "ask-yes", "overwrite"],
+)
+async def test_copy_folder_over_file_policy(
+    link_fs: Filesystem,
+    tmp_path: Path,
+    policy: OverwritePolicy,
+    answers: list[Response],
+    asks: int,
+    replaced: bool,
+) -> None:
+    src, dst = _tree(tmp_path)
+    shutil.rmtree(dst / "d")
+    (dst / "d").write_bytes(b"old-d")
+    status, requests = await _copy(src / "d", dst, link_fs, policy, answers)
+    assert len(requests) == asks
+    assert _reasons(status) == []
+    if replaced:
+        assert (dst / "d").is_dir()
+        assert not (dst / "d").is_symlink()
+        assert (dst / "d" / "a.txt").read_bytes() == b"new-a.txt"
+        assert (dst / "d" / "sub" / "deep" / "e.txt").read_bytes() == b"new-e.txt"
+    else:
+        assert (dst / "d").read_bytes() == b"old-d"
+    assert status.progress.completed == status.progress.total
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("policy", "answers", "asks", "replaced"),
+    [("skip", [], 0, False), ("ask", [Response.NO], 1, False), ("ask", [Response.YES], 1, True), ("overwrite", [], 0, True)],
+    ids=["skip", "ask-no", "ask-yes", "overwrite"],
+)
+async def test_copy_folder_over_link_to_folder_never_writes_through(
+    link_fs: Filesystem,
+    tmp_path: Path,
+    policy: OverwritePolicy,
+    answers: list[Response],
+    asks: int,
+    replaced: bool,
+) -> None:
+    src, dst = _tree(tmp_path)
+    outside = _outside(tmp_path)
+    shutil.rmtree(dst / "d")
+    (dst / "d").symlink_to(outside, target_is_directory=True)
+    status, requests = await _copy(src / "d", dst, link_fs, policy, answers)
+    assert len(requests) == asks
+    _assert_outside_unchanged(outside)
+    if replaced:
+        assert (dst / "d").is_dir()
+        assert not (dst / "d").is_symlink()
+        assert (dst / "d" / "a.txt").read_bytes() == b"new-a.txt"
+    else:
+        assert (dst / "d").is_symlink()
+    assert status.progress.completed == status.progress.total
+
+
+@pytest.mark.asyncio
+async def test_copy_folder_over_broken_link_overwrite_replaces_link(link_fs: Filesystem, tmp_path: Path) -> None:
+    src, dst = _tree(tmp_path)
+    shutil.rmtree(dst / "d")
+    (dst / "d").symlink_to(tmp_path / "missing", target_is_directory=True)
+    status, requests = await _copy(src / "d", dst, link_fs, "overwrite")
+    assert requests == []
+    assert (dst / "d").is_dir()
+    assert not (dst / "d").is_symlink()
+    assert (dst / "d" / "a.txt").read_bytes() == b"new-a.txt"
+    assert not (tmp_path / "missing").exists()
+    assert status.progress.completed == status.progress.total
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("policy", ["skip", "overwrite"])
+async def test_copy_nested_folder_over_link_to_folder_at_depth(link_fs: Filesystem, tmp_path: Path, policy: OverwritePolicy) -> None:
+    src, dst = _tree(tmp_path)
+    outside = _outside(tmp_path)
+    shutil.rmtree(dst / "d" / "sub")
+    (dst / "d" / "sub").symlink_to(outside, target_is_directory=True)
+    status, requests = await _copy(src / "d", dst, link_fs, policy)
+    assert requests == []
+    _assert_outside_unchanged(outside)
+    assert (dst / "d" / "b.txt").read_bytes() == b"new-b.txt"
+    assert (dst / "d" / "keep.txt").read_bytes() == b"keep"
+    if policy == "skip":
+        assert (dst / "d" / "sub").is_symlink()
+    else:
+        assert not (dst / "d" / "sub").is_symlink()
+        assert (dst / "d" / "sub" / "c.txt").read_bytes() == b"new-c.txt"
+        assert (dst / "d" / "sub" / "deep" / "e.txt").read_bytes() == b"new-e.txt"
+    assert status.progress.completed == status.progress.total
+
+
+@pytest.mark.asyncio
+async def test_copy_nested_folder_over_file_at_depth_ask_once_per_entry(link_fs: Filesystem, tmp_path: Path) -> None:
+    src, dst = _tree(tmp_path, collide=False)
+    (dst / "d" / "sub" / "c.txt").write_bytes(b"old-c.txt")
+    (dst / "d" / "sub" / "deep").write_bytes(b"old-deep")
+    status, requests = await _copy(src / "d", dst, link_fs, "ask", [Response.YES, Response.YES])
+    assert len(requests) == 2
+    assert (dst / "d" / "sub" / "c.txt").read_bytes() == b"new-c.txt"
+    assert (dst / "d" / "sub" / "deep" / "e.txt").read_bytes() == b"new-e.txt"
+    assert status.progress.completed == status.progress.total
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("where", ["root", "nested"])
+async def test_copy_skipped_folder_counts_as_completed(link_fs: Filesystem, tmp_path: Path, where: str) -> None:
+    src, dst = _tree(tmp_path)
+    target = dst / "d" if where == "root" else dst / "d" / "sub"
+    shutil.rmtree(target)
+    target.write_bytes(b"old")
+    status, requests = await _copy(src / "d", dst, link_fs, "skip")
+    assert requests == []
+    assert _reasons(status) == []
+    assert status.progress.completed == status.progress.total
+
+
+@pytest.mark.asyncio
+async def test_copy_single_folder_to_renamed_destination_over_file(link_fs: Filesystem, tmp_path: Path) -> None:
+    src, dst = _tree(tmp_path)
+    (dst / "newname").write_bytes(b"old")
+    status, requests = await _copy(src / "d", dst / "newname", link_fs, "overwrite")
+    assert requests == []
+    assert (dst / "newname" / "a.txt").read_bytes() == b"new-a.txt"
+    assert (dst / "newname" / "sub" / "deep" / "e.txt").read_bytes() == b"new-e.txt"
+    assert status.progress.completed == status.progress.total
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("root_kind", "expected"), [("file", False), ("folder", True)], ids=["skipped-root", "merged-root"])
+async def test_copy_dir_returns_false_only_when_root_skipped(tmp_path: Path, root_kind: str, expected: bool) -> None:
+    src, dst = _tree(tmp_path)
+    if root_kind == "file":
+        shutil.rmtree(dst / "d")
+        (dst / "d").write_bytes(b"old")
+    fs = LocalFilesystem()
+    results: list[bool] = []
+
+    async def task(ctx: TaskContext) -> None:
+        results.append(await _copy_dir(ctx, fs.path(src / "d"), fs.path(dst / "d"), fs, FileCopyOptions(overwrite="skip")))
+
+    await run_task(task, status=make_status())
+    assert results == [expected]
