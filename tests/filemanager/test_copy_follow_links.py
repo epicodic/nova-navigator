@@ -222,7 +222,7 @@ async def test_follow_file_link_target_vanished_is_skipped_as_broken(tmp_path: P
     results: list[bool] = []
 
     async def task(ctx: TaskContext) -> None:
-        results.append(await _copy_link(ctx, link, fs.path(tmp_path / "dst" / "l"), _FOLLOW))
+        results.append(await _copy_link(ctx, link, fs.path(tmp_path / "dst" / "l"), _FOLLOW, source_root=None))
 
     await run_task(task, status=status)
     assert results == [False]
@@ -244,7 +244,7 @@ async def test_follow_dir_link_target_vanished_is_skipped_as_broken(tmp_path: Pa
     results: list[bool] = []
 
     async def task(ctx: TaskContext) -> None:
-        results.append(await _copy_link(ctx, link, fs.path(tmp_path / "dst" / "ld"), _FOLLOW))
+        results.append(await _copy_link(ctx, link, fs.path(tmp_path / "dst" / "ld"), _FOLLOW, source_root=None))
 
     await run_task(task, status=status)
     assert results == [False]

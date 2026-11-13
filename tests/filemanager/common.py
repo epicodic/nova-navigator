@@ -3,9 +3,13 @@ import threading
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from nova_navigator.filemanager.tasks import FileCopyOptions, copy_files
+import pytest
+
+from nova_navigator.filemanager.tasks import FileCopyOptions, copy_files, move_files
 from nova_navigator.scheduler import AsyncTaskScheduler, ResponseRequest, TaskContext, TaskStatus
 from nova_navigator.vfs.filesystem import Filesystem
+from nova_navigator.vfs.filesystems.local import LocalFilesystem
+from nova_navigator.vfs.vpath import VPath
 from nova_widgets import Response
 from tests._utils.mock_filesystem import MockFilesystem
 
@@ -75,6 +79,36 @@ async def copy_between(
         timeout=20,
     )
     return status
+
+
+async def move_between(
+    fs_pair: tuple[Filesystem, Filesystem],
+    sources: list[Path],
+    destination: Path,
+    options: FileCopyOptions | None = None,
+    responses: list[Response] | None = None,
+) -> TaskStatus:
+    """As ``copy_between`` but runs ``move_files``."""
+    src_fs, dst_fs = fs_pair
+    status = make_status()
+    await asyncio.wait_for(
+        run_task(
+            lambda ctx: move_files(ctx, [src_fs.path(s) for s in sources], dst_fs.path(destination), options),
+            responses,
+            status,
+        ),
+        timeout=20,
+    )
+    return status
+
+
+def force_cross_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make LocalFilesystem report "different device" so moves copy instead of renaming (as test_move_links.py:36-40)."""
+
+    def is_same_device(_self: LocalFilesystem, _a: VPath, _b: VPath) -> bool:
+        return False
+
+    monkeypatch.setattr(LocalFilesystem, "is_same_device", is_same_device)
 
 
 def reasons(status: TaskStatus) -> list[str]:

@@ -12,6 +12,7 @@ from ..file_filter import FileFilter
 from ..vfs import VPath
 from ..vfs.filesystem import Filesystem
 from ..vfs.types import Stat
+from .link_target import stable_link_target
 
 _logger = logging.getLogger(__name__)
 
@@ -244,7 +245,23 @@ async def _confirm_link_replace(ctx: TaskContext, link: VPath, dst: VPath, optio
     return True
 
 
-async def _recreate_link(ctx: TaskContext, link: VPath, dst: VPath, options: FileCopyOptions) -> bool:
+def _stable_text(link: VPath, dst: VPath, text: str, source_root: PurePosixPath | None) -> str:
+    """Apply the stable-symlink rule; a path the rule rejects (not absolute) keeps the text unchanged."""
+    try:
+        return stable_link_target(text, link.path, dst.path, source_root)
+    except ValueError:
+        _logger.warning("Stable symlinks: keeping the target text of %s (path is not absolute)", link.path, exc_info=True)
+        return text
+
+
+async def _recreate_link(
+    ctx: TaskContext,
+    link: VPath,
+    dst: VPath,
+    options: FileCopyOptions,
+    *,
+    source_root: PurePosixPath | None,
+) -> bool:
     """Create at *dst* a link with the same target text as *link*; never reads or descends into the target."""
     try:
         text = link.filesystem.readlink(link)
@@ -252,6 +269,8 @@ async def _recreate_link(ctx: TaskContext, link: VPath, dst: VPath, options: Fil
         _logger.warning("Skipping link %s: its target cannot be read", link.path, exc_info=True)
         ctx.report_skipped(link.uri, SKIP_UNREADABLE_LINK)
         return False
+    if options.stable_symlinks and link.filesystem == dst.filesystem:
+        text = _stable_text(link, dst, text, source_root)
     if not await _confirm_link_replace(ctx, link, dst, options):
         return False
     dst.filesystem.symlink(dst, text)
@@ -382,6 +401,8 @@ async def _copy_link(
     options: FileCopyOptions,
     chain: _LinkChain = _NO_CHAIN,
     holder: PurePosixPath | None = None,
+    *,
+    source_root: PurePosixPath | None,
 ) -> bool:
     """Copy the symbolic link *link* to *dst*; return True if something was created at the destination.
 
@@ -392,7 +413,7 @@ async def _copy_link(
     """
     ctx.status.set_current_item(link.uri)
     if not options.follow_links and dst.filesystem.supports_symlinks():
-        return await _recreate_link(ctx, link, dst, options)
+        return await _recreate_link(ctx, link, dst, options, source_root=source_root)
     return await _follow_link(ctx, link, dst, options, chain, holder)
 
 
@@ -403,11 +424,13 @@ async def _copy_link_step(
     options: FileCopyOptions,
     chain: _LinkChain = _NO_CHAIN,
     holder: PurePosixPath | None = None,
+    *,
+    source_root: PurePosixPath | None,
 ) -> None:
     if options.filter is not None and not options.filter.matches(link):
         ctx.status.update_progress(inc_completed=1)
         return
-    await _copy_link(ctx, link, dst, options, chain, holder)
+    await _copy_link(ctx, link, dst, options, chain, holder, source_root=source_root)
     ctx.status.update_progress(inc_completed=1)
 
 
@@ -417,7 +440,7 @@ async def _copy_leaf_step(ctx: TaskContext, src: VPath, dst: VPath, options: Fil
     A link recreates or copies as a link; anything else is copied as a file.
     """
     if src.stat.is_symlink:
-        await _copy_link_step(ctx, src, dst, options)
+        await _copy_link_step(ctx, src, dst, options, source_root=None)
     else:
         await _copy_file_step(ctx, src, dst, options)
 
@@ -467,7 +490,7 @@ async def _copy_dir(
         for link in src_links:
             ctx.status.check_cancelled()
             holder = resolver.holder(src_root) if _needs_holder(link, dst_filesystem, options) else None
-            link_step = _copy_link_step(ctx, link, dst_root / link.name, options, chain, holder)
+            link_step = _copy_link_step(ctx, link, dst_root / link.name, options, chain, holder, source_root=src_path.path)
             file_tasks.append(await ctx.subtask(link_step))
     await asyncio.gather(*file_tasks)
     # Apply directory attributes bottom-up so that parent mtime is not disturbed
@@ -551,8 +574,12 @@ async def _move_entry(
     resolver: _HolderResolver,
     *,
     same_device: bool,
+    item_root: PurePosixPath,
 ) -> None:
-    """Move one file or link *f* of the folder *src_root* to *f_dst*; the caller counts it as completed."""
+    """Move one file or link *f* of the folder *src_root* to *f_dst*; the caller counts it as completed.
+
+    *item_root* is the selected item the link belongs to (the stable-symlink boundary).
+    """
     ctx.status.set_current_item(f.uri)
     if options.filter is not None and not options.filter.matches(f):
         return
@@ -574,7 +601,7 @@ async def _move_entry(
         return
     if f.stat.is_symlink:
         holder = resolver.holder(src_root) if _needs_holder(f, f_dst.filesystem, options) else None
-        copied = await _copy_link(ctx, f, f_dst, options, holder=holder)
+        copied = await _copy_link(ctx, f, f_dst, options, holder=holder, source_root=item_root)
     else:
         copied = await copy_file(ctx, f, f_dst, options)
     if copied:
@@ -627,7 +654,7 @@ async def _move_dir_contents(
         ctx.status.update_progress(inc_total=len(walk_subdirs) + len(src_files) + len(src_links))
         for f in (*src_files, *src_links):
             ctx.status.check_cancelled()
-            await _move_entry(ctx, src_root, f, dst_root / f.name, options, resolver, same_device=same_device)
+            await _move_entry(ctx, src_root, f, dst_root / f.name, options, resolver, same_device=same_device, item_root=src_path.path)
             ctx.status.update_progress(inc_completed=1)
     for d in reversed(src_dirs):
         with contextlib.suppress(OSError):
@@ -703,7 +730,7 @@ async def _move_path(
             # _move_dir_contents adds total and completed incrementally.
             await _move_dir_contents(ctx, src_path, actual_dst, options, same_device=False)
         elif src_path.stat.is_symlink:
-            if await _copy_link(ctx, src_path, actual_dst, options):
+            if await _copy_link(ctx, src_path, actual_dst, options, source_root=None):
                 src_path.filesystem.remove(src_path)
         else:
             copied = await copy_file(ctx, src_path, actual_dst, options)

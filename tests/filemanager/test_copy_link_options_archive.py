@@ -88,3 +88,26 @@ async def test_follow_tar_source_links_to_local(tmp_path: Path, options: FileCop
     assert not (out / "flnk").is_symlink()
     assert not any(p.is_symlink() for p in out.rglob("*"))
     assert sorted(reasons(status)) == ["broken link", "link loop"]
+
+
+@pytest.mark.asyncio
+async def test_stable_into_zip_has_no_effect_links_are_followed(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    (src / "sub").mkdir(parents=True)
+    (src / "f.txt").write_text("x")
+    (src / "sub" / "g.txt").write_text("g")
+    (src / "sub" / "up").symlink_to("..", target_is_directory=True)
+    (src / "lf").symlink_to("f.txt")
+    (src / "ld").symlink_to("sub", target_is_directory=True)
+    (src / "broken").symlink_to("nope")
+    archive, afs = _zip_destination(tmp_path)
+    status = make_status()
+    await asyncio.wait_for(
+        run_task(
+            lambda ctx: copy_files(ctx, [LocalFilesystem().path(src)], afs.path("/"), FileCopyOptions(stable_symlinks=True)),
+            status=status,
+        ),
+        timeout=60,
+    )
+    assert _names(archive) == {"src/f.txt", "src/sub/g.txt", "src/lf", "src/ld/g.txt"}
+    assert status.progress.completed == status.progress.total
