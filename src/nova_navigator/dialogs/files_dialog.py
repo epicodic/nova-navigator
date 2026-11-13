@@ -5,7 +5,7 @@ from textual.widgets import Collapsible, Static
 
 from nova_navigator.file_filter import FileFilter, FilenamePatternFilter
 from nova_navigator.vfs.filesystem import VPath
-from nova_widgets import DefaultButton, Dialog, Input
+from nova_widgets import Checkbox, DefaultButton, Dialog, Input
 
 from ..widgets import NoSelectListView
 
@@ -15,6 +15,8 @@ class CopyMoveFilesDialog(Dialog):
     MAX_DISPLAYED_FILES = 10
 
     filename: str | None = None  # set to the entered filename when OK is confirmed
+    follow_links: bool = False  # initial state; after OK it holds the chosen state
+    stable_symlinks: bool = False  # initial state; after OK it holds the chosen state
 
     DEFAULT_CSS = """
     CopyMoveFilesDialog {
@@ -48,11 +50,15 @@ class CopyMoveFilesDialog(Dialog):
         source_paths: list[VPath],
         destination_path: VPath,
         move: bool,
+        follow_links: bool = False,
+        stable_symlinks: bool = False,
         id: str | None = None,
     ) -> None:
         self.source_paths = source_paths
         self.destination_path = destination_path
         self.move = move
+        self.follow_links = follow_links
+        self.stable_symlinks = stable_symlinks
         super().__init__(title="Move" if move else "Copy", id=id, buttons=[DefaultButton.OK, DefaultButton.CANCEL])
 
     def compose_content(self) -> ComposeResult:
@@ -70,6 +76,10 @@ class CopyMoveFilesDialog(Dialog):
             yield Static("")  # Spacer
             yield Static("Filename:")
             yield Input(value=self.source_paths[0].name, placeholder="Enter filename", id="filename_input")
+
+        yield Static("")  # Spacer
+        yield Checkbox("Follow links", self.follow_links, id="follow_links")
+        yield Checkbox("Stable symlinks", self.stable_symlinks, id="stable_symlinks")
 
         yield Collapsible(
             Static("Pattern:"),
@@ -102,8 +112,17 @@ class CopyMoveFilesDialog(Dialog):
             value = inp.value.strip()
             self.filename = value if value else self.source_paths[0].name
 
+    def _capture_link_options(self) -> None:
+        """Read the two link checkboxes and store their states before dismissing."""
+        try:
+            self.follow_links = self.query_one("#follow_links", Checkbox).value
+            self.stable_symlinks = self.query_one("#stable_symlinks", Checkbox).value
+        except NoMatches:
+            return
+
     def action_accept_dialog(self) -> None:
         self._capture_filename()
+        self._capture_link_options()
         super().action_accept_dialog()
 
     def _on_mount(self, event: events.Mount) -> None:
