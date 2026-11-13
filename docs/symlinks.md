@@ -60,8 +60,10 @@ Overwriting removes the old entry itself and never follows it.
 ## Copy and move into existing folders
 
 `_ensure_directory` in `filemanager/tasks.py` is the one place that makes a destination folder usable.
-Copy and both move paths call it once for each source folder, before its contents are handled.
-It stats the destination first, after refreshing the parent listing, so each destination folder costs one extra stat.
+Copy and the cross-device move call it for the root and then for every subfolder, before that folder's contents are handled.
+A same-device move into a missing destination is a plain rename and never calls it.
+A same-device move onto an existing real folder also calls it for the root and every subfolder, so the root destination is stat'ed in `_move_path` and again in `_ensure_directory`.
+Each call stats the destination first, after refreshing the parent listing.
 
 It returns one of three outcomes.
 
