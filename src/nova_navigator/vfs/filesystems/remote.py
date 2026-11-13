@@ -37,6 +37,13 @@ class RemoteFilesystem(Filesystem):
     def __repr__(self) -> str:
         return f"RemoteFilesystem({self._remote_name!r}, {self._inner!r})"
 
+    def __eq__(self, value: object) -> bool:
+        """Equal when both wrap equal inner filesystems (the same connection), whatever the remote name."""
+        return isinstance(value, RemoteFilesystem) and self._inner == value._inner
+
+    def __hash__(self) -> int:
+        return hash(self._inner)
+
     @override
     def unwrap(self) -> Filesystem:
         return self._inner.unwrap()
