@@ -35,6 +35,7 @@ import pytest
 import pytest_asyncio
 from textual.pilot import Pilot
 
+from nova_navigator.config import loader
 from nova_navigator.nova_navigator import MainScreen, NovaNavigator
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem
@@ -82,7 +83,7 @@ class AppCtx:
 
 
 @pytest_asyncio.fixture
-async def app_ctx(tmp_path: Path, headed: bool) -> object:  # yields AppCtx
+async def app_ctx(tmp_path: Path, headed: bool, monkeypatch: pytest.MonkeyPatch) -> object:  # yields AppCtx
     """Launch NovaNavigator and yield an AppCtx with empty src/dst dirs.
 
     Pass ``--headed`` on the pytest command line to render the app live in the
@@ -96,9 +97,12 @@ async def app_ctx(tmp_path: Path, headed: bool) -> object:  # yields AppCtx
     dst.mkdir()
 
     # Use an empty temporary config dir so the test is not affected by the
-    # developer's personal keybindings.toml (which may remap keys).
+    # developer's personal keybindings.toml (which may remap keys).  The same
+    # directory also isolates settings.toml, so tests never read or write the
+    # developer's real ~/.config/nova-navigator.
     empty_config = tmp_path / "config"
     empty_config.mkdir()
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", empty_config)
 
     app = NovaNavigator(config_dir=empty_config)
     async with app.run_test(size=(120, 40), headless=not headed) as pilot:

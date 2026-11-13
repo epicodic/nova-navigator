@@ -7,10 +7,12 @@ that the actual copy operation reaches the filesystem correctly.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from nova_navigator.config import loader
 from nova_widgets import Response
 from tests.integration.conftest import (
     AppCtx,
@@ -166,3 +168,13 @@ async def test_copy_skips_existing_file_when_user_declines_overwrite(app_ctx: Ap
         await app_ctx.pilot.pause(delay=0.5)
 
     assert (app_ctx.dst_dir / "file.txt").read_text() == "old content"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_app_ctx_settings_dir_is_isolated(app_ctx: AppCtx) -> None:
+    """The app_ctx fixture must not read or write the developer's real settings directory."""
+    real_dir = Path.home() / ".config" / "nova-navigator"
+    settings_dir = loader._APP_CONFIG_DIR
+    assert settings_dir != real_dir
+    assert settings_dir.is_relative_to(app_ctx.src_dir.parent)

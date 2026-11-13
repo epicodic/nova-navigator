@@ -38,6 +38,7 @@ import pytest
 import pytest_asyncio
 from textual.pilot import Pilot
 
+from nova_navigator.config import loader
 from nova_navigator.nova_navigator import MainScreen, NovaNavigator
 from nova_navigator.vfs import VPath
 from nova_navigator.vfs.filesystems import LocalFilesystem, SSHFilesystem
@@ -95,6 +96,7 @@ async def ssh_app_ctx(
     tmp_path: Path,
     ssh_server: StubSSHServer,
     headed: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> object:  # yields SshAppCtx
     """Launch NovaNavigator with a local left panel and SSH right panel.
 
@@ -119,8 +121,10 @@ async def ssh_app_ctx(
         )
     )
 
-    app = NovaNavigator(config_dir=tmp_path / "config")
+    # Isolate settings.toml too: the app must never read or write the real ~/.config/nova-navigator.
     (tmp_path / "config").mkdir()
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path / "config")
+    app = NovaNavigator(config_dir=tmp_path / "config")
     async with app.run_test(size=(120, 40), headless=not headed) as pilot:
         await pilot.pause()
         screen = app._main_screen
@@ -140,6 +144,7 @@ async def slow_ssh_app_ctx(
     tmp_path: Path,
     slow_ssh_server: StubSSHServer,
     headed: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> object:  # yields SshAppCtx
     """Like ssh_app_ctx but connected to the slow_ssh_server (300 ms exec delay)."""
     local_dir = tmp_path / "local"
@@ -160,8 +165,10 @@ async def slow_ssh_app_ctx(
         )
     )
 
-    app = NovaNavigator(config_dir=tmp_path / "config")
+    # Isolate settings.toml too: the app must never read or write the real ~/.config/nova-navigator.
     (tmp_path / "config").mkdir()
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path / "config")
+    app = NovaNavigator(config_dir=tmp_path / "config")
     async with app.run_test(size=(120, 40), headless=not headed) as pilot:
         await pilot.pause()
         screen = app._main_screen
