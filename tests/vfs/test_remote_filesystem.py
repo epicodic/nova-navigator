@@ -212,3 +212,37 @@ def test_capabilities_delegated() -> None:
 def test_repr_includes_name() -> None:
     _, fs = _make("staging")
     assert "staging" in repr(fs)
+
+
+# ---------------------------------------------------------------------------
+# Equality — wrappers around one connection are interchangeable
+# ---------------------------------------------------------------------------
+
+
+def test_two_wrappers_around_same_inner_are_equal() -> None:
+    inner = MockFilesystem()
+    a = RemoteFilesystem("a", inner)
+    b = RemoteFilesystem("b", inner)
+    assert a == b
+    assert hash(a) == hash(b)
+    assert VPath("/x", a) == VPath("/x", b)
+
+
+def test_wrappers_around_different_inner_are_not_equal() -> None:
+    _, a = _make("prod")
+    _, b = _make("prod")
+    assert a != b
+
+
+def test_wrapper_is_not_equal_to_its_inner() -> None:
+    inner, fs = _make()
+    assert fs != inner
+    assert inner != fs
+
+
+def test_wrapper_is_usable_as_dict_key_and_assert_vpath_accepts_equal_wrapper() -> None:
+    inner = MockFilesystem()
+    a = RemoteFilesystem("a", inner)
+    b = RemoteFilesystem("b", inner)
+    assert {a: 1}[b] == 1
+    a._assert_vpath(VPath("/x", b))

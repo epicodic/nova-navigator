@@ -13,6 +13,8 @@ import pytest
 import nova_navigator.filemanager.tasks as tasks_module
 from nova_navigator.filemanager.tasks import FileCopyOptions, _stable_text
 from nova_navigator.vfs.filesystem import Filesystem
+from nova_navigator.vfs.filesystems.local import LocalFilesystem
+from nova_navigator.vfs.filesystems.remote import RemoteFilesystem
 from nova_navigator.vfs.vpath import VPath
 from tests._utils.mock_filesystem import MockFilesystem
 
@@ -109,6 +111,16 @@ async def test_stable_different_filesystems_text_unchanged(fs_pair: tuple[Filesy
     else:
         expected = "../../shared/x"
     assert os.readlink(c / "proj" / "doc" / "l") == expected
+    assert status.progress.completed == status.progress.total
+
+
+@pytest.mark.asyncio
+async def test_stable_between_two_wrappers_of_one_filesystem_rewrites(tmp_path: Path) -> None:
+    local = LocalFilesystem.singleton()
+    pair: tuple[Filesystem, Filesystem] = (RemoteFilesystem("a", local), RemoteFilesystem("b", local))
+    proj, shared_x, c = _layout(tmp_path)
+    status = await copy_between(pair, [proj], c, _STABLE)
+    assert os.readlink(c / "proj" / "doc" / "l") == os.path.relpath(shared_x, c / "proj" / "doc")
     assert status.progress.completed == status.progress.total
 
 
