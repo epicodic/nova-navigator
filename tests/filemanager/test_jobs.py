@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -212,13 +213,16 @@ async def test_saved_states_reach_dialog_after_reload(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
-async def test_save_failure_still_returns_job(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_save_failure_still_returns_job(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     def _fail(_self: Settings) -> None:
         raise OSError("disk full")
 
     monkeypatch.setattr(Settings, "save", _fail)
-    result, _, job_cls = await _run_job(False, _mock_copy_dialog(Response.OK, follow_links=True))
+    with caplog.at_level(logging.WARNING, logger="nova_navigator.filemanager.jobs"):
+        result, _, job_cls = await _run_job(False, _mock_copy_dialog(Response.OK, follow_links=True))
     assert result is job_cls.return_value
+    assert any(r.levelno == logging.WARNING and "copy/move settings" in r.getMessage() for r in caplog.records)
+    assert conf_.settings.copy_move.follow_links is True
 
 
 # ── delete_files_job ──────────────────────────────────────────────────────────

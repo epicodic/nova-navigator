@@ -114,11 +114,8 @@ class CopyMoveFilesDialog(Dialog):
 
     def _capture_link_options(self) -> None:
         """Read the two link checkboxes and store their states before dismissing."""
-        try:
-            self.follow_links = self.query_one("#follow_links", Checkbox).value
-            self.stable_symlinks = self.query_one("#stable_symlinks", Checkbox).value
-        except NoMatches:
-            return
+        self.follow_links = self.query_one("#follow_links", Checkbox).value
+        self.stable_symlinks = self.query_one("#stable_symlinks", Checkbox).value
 
     def action_accept_dialog(self) -> None:
         self._capture_filename()

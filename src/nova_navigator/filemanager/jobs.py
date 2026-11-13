@@ -38,6 +38,8 @@ async def copy_or_move_files_job(src_paths: list[VPath], dst_path: VPath, move: 
         return None
 
     # The pair of link options is shared by Copy and Move and saved only when the dialog is confirmed.
+    # Re-read the settings so a replaced settings object (e.g. reloaded while the dialog was open) is not stale.
+    copy_move = conf_.settings.copy_move
     copy_move.follow_links = dialog.follow_links
     copy_move.stable_symlinks = dialog.stable_symlinks
     try:
