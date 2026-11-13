@@ -76,6 +76,10 @@ class FileCopyOptions:
 
     overwrite: OverwritePolicy = "ask"
     filter: FileFilter | None = None
+    follow_links: bool = False
+    """Copy a link's target (file content or directory tree) instead of recreating the link (REQ-3)."""
+    stable_symlinks: bool = False
+    """Rewrite relative link targets that point outside the copied item when the link is recreated (REQ-4)."""
 
 
 @dataclass
