@@ -68,16 +68,59 @@ def _render_frame_source(console: Console, frame: types.FrameType, lineno: int) 
         pass
 
 
+SECRET_NAME_PARTS: tuple[str, ...] = (
+    "password",
+    "passwd",
+    "passphrase",
+    "secret",
+    "token",
+    "credential",
+    "private_key",
+    "pkey",
+    "api_key",
+    "auth",
+)
+"""Case-insensitive substrings that mark a local variable name as holding a secret."""
+
+SECRET_TYPE_NAMES: frozenset[str] = frozenset(
+    {
+        "nova_navigator.dialogs.credentials_dialog.Credentials",
+        "paramiko.pkey.PKey",
+    }
+)
+"""Fully qualified classes whose instances (and subclass instances) are secrets under any name.
+
+Matched by name instead of ``isinstance`` so this module imports neither the dialogs package nor paramiko.
+"""
+
+REDACTED = "<redacted>"
+
+
+def is_secret_local(name: str, value: object) -> bool:
+    """Return whether a frame local must not be written to a crash report."""
+    lowered = str(name).lower()
+    if any(part in lowered for part in SECRET_NAME_PARTS):
+        return True
+    return any(f"{cls.__module__}.{cls.__qualname__}" in SECRET_TYPE_NAMES for cls in type(value).__mro__)
+
+
+def format_local(name: str, value: object) -> str:
+    """Return the crash report text for a frame local: ``REDACTED``, its ``repr`` or ``<repr failed>``."""
+    if is_secret_local(name, value):
+        return REDACTED
+    try:
+        return repr(value)
+    except Exception:  # noqa: BLE001
+        return "<repr failed>"
+
+
 def _render_frame_locals(console: Console, frame: types.FrameType) -> None:
     local_items = list(frame.f_locals.items())
     if not local_items:
         return
     console.print()
     for k, v in local_items:
-        try:
-            r = repr(v)
-        except Exception:  # noqa: BLE001
-            r = "<repr failed>"
+        r = format_local(k, v)
         key_text = Text()
         key_text.append(f"    {k}", style="bold magenta")
         key_text.append(" = ", style="dim")
