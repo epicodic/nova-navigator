@@ -58,7 +58,7 @@ class _Attempt:
     locations: KnownHostsLocations
     config: SshConfig
     trusted: dict[str, paramiko.PKey] = field(default_factory=dict)
-    credentials: dict[int, tuple[str | None, str | None]] = field(default_factory=dict)
+    credentials: dict[int, tuple[str | None, str | None]] = field(default_factory=dict, repr=False)
 
 
 def _connect_timeout() -> float:

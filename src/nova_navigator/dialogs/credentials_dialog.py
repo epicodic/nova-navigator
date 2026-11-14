@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal
@@ -16,7 +16,7 @@ class Credentials:
     """Username/password pair returned by :class:`CredentialsDialog`."""
 
     username: str
-    password: str
+    password: str = field(repr=False)
 
 
 class CredentialsDialog(Dialog):
