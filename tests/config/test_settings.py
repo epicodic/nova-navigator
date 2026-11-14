@@ -12,7 +12,7 @@ def test_settings_default_construction() -> None:
     assert s.general.show_hidden_files is False
     assert s.general.confirm_delete is True
     assert s.network.ssh_timeout == 30
-    assert s.network.proxy == ""
+    assert not hasattr(s.network, "proxy")
     assert s.terminal.scrollback_lines == 1000
 
 
@@ -77,6 +77,55 @@ def test_settings_save_preserves_user_comment(tmp_path: Path, monkeypatch: pytes
     content = settings_file.read_text()
     assert "# user note" in content
     assert "true" in content
+
+
+def test_settings_new_file_has_no_proxy_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    from nova_navigator.config.settings import Settings
+
+    Settings.load()
+    assert "proxy" not in (tmp_path / "settings.toml").read_text()
+
+
+def test_settings_with_legacy_proxy_key_loads_and_save_keeps_other_settings_and_comments(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    from nova_navigator.config.settings import Settings
+
+    settings_file = tmp_path / "settings.toml"
+    settings_file.write_text(
+        "# user note\n[general]\n# keep me\nshow_hidden_files = true\nconfirm_delete = false\n[network]\nssh_timeout = 77\nproxy = 'http://proxy:3128'\n[terminal]\nscrollback_lines = 4000\n"
+    )
+
+    s = Settings.load()
+    assert s.network.ssh_timeout == 77
+    assert not hasattr(s.network, "proxy")
+    s.general.use_binary_sizes = True
+    s.save()
+
+    content = settings_file.read_text()
+    for expected in (
+        "# user note",
+        "# keep me",
+        "ssh_timeout = 77",
+        "show_hidden_files = true",
+        "confirm_delete = false",
+        "scrollback_lines = 4000",
+        "use_binary_sizes = true",
+    ):
+        assert expected in content
+
+    reloaded = Settings.load()
+    assert reloaded.network.ssh_timeout == 77
+    assert reloaded.general.show_hidden_files is True
+    assert reloaded.general.confirm_delete is False
+    assert reloaded.general.use_binary_sizes is True
+    assert reloaded.terminal.scrollback_lines == 4000
 
 
 def test_general_settings_default_key_display_style() -> None:

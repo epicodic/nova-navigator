@@ -41,7 +41,6 @@ class NetworkSettings(BaseModel):
     """Network settings."""
 
     ssh_timeout: int = field_comment(30, "SSH connection timeout in seconds.")
-    proxy: str = field_comment("", "HTTP proxy URL, e.g. http://proxy:3128. Leave empty to disable.")
 
 
 @dataclass
