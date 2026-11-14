@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import shlex
 import socket
@@ -14,6 +15,7 @@ import pytest
 
 from nova_navigator.remotes.known_hosts import KnownHostsLocations
 from nova_navigator.vfs.filesystems.ssh import (
+    _PROBE_COMMAND,
     SSHFilesystem,
     _build_list_command,
     _CaptureUnknownHostPolicy,
@@ -41,12 +43,16 @@ def _stat_record(
     return b"".join(f.encode() + b"\0" for f in fields) + os.fsencode(name) + b"\0"
 
 
-def _make_fs(cwd: str = "/home/user") -> tuple[SSHFilesystem, MagicMock, MagicMock]:
-    """Return (fs, mock_ssh, mock_sftp) with no real network activity."""
+def _make_fs(cwd: str = "/home/user", login_dir: str | None = "/home/user") -> tuple[SSHFilesystem, MagicMock, MagicMock]:
+    """Return (fs, mock_ssh, mock_sftp) with no real network activity; ``login_dir=None`` makes ``normalize`` fail."""
     mock_ssh = MagicMock(spec=paramiko.SSHClient)
     mock_sftp = MagicMock(spec=paramiko.SFTPClient)
     mock_ssh.open_sftp.return_value = mock_sftp
     mock_sftp.getcwd.return_value = cwd
+    if login_dir is None:
+        mock_sftp.normalize.side_effect = OSError("no realpath")
+    else:
+        mock_sftp.normalize.return_value = login_dir
     fs = SSHFilesystem("localhost", ssh_client=mock_ssh)
     return fs, mock_ssh, mock_sftp
 
@@ -56,7 +62,19 @@ def _set_exec_output(mock_ssh: MagicMock, output: bytes) -> None:
     stdout = MagicMock()
     stdout.read.return_value = output
     stdout.channel.recv_exit_status.return_value = 0
-    mock_ssh.exec_command.return_value = (MagicMock(), stdout, MagicMock())
+    stderr = MagicMock()
+    stderr.read.return_value = b""
+    mock_ssh.exec_command.return_value = (MagicMock(), stdout, stderr)
+
+
+def _exec_result(stdout: bytes = b"", exit_code: int = 0, stderr: str = "") -> tuple[MagicMock, MagicMock, MagicMock]:
+    """One ``exec_command`` result: (stdin, stdout, stderr) with the given output, exit status and stderr text."""
+    out = MagicMock()
+    out.read.return_value = stdout
+    out.channel.recv_exit_status.return_value = exit_code
+    err = MagicMock()
+    err.read.return_value = stderr.encode()
+    return MagicMock(), out, err
 
 
 def _set_exec_error(mock_ssh: MagicMock, exit_code: int, stderr_text: str) -> None:
@@ -170,7 +188,7 @@ def test_build_list_command_quotes_path(path: str) -> None:
     outer = shlex.split(command)
     assert outer[:2] == ["sh", "-c"]
     assert len(outer) == 3
-    assert shlex.split(outer[2])[:3] == ["cd", "--", path]
+    assert shlex.split(outer[2].removeprefix("LC_ALL=C; export LC_ALL\n"))[:3] == ["cd", "--", path]
 
 
 @pytest.mark.parametrize("follow", [True, False])
@@ -299,9 +317,15 @@ def test_root_returns_slash() -> None:
     assert str(fs.root().path) == "/"
 
 
-def test_home_returns_home() -> None:
-    fs, _, _ = _make_fs()
-    assert str(fs.home().path) == "/home"
+def test_home_is_the_login_directory() -> None:
+    fs, _, mock_sftp = _make_fs(login_dir="/srv/users/alice")
+    assert str(fs.home().path) == "/srv/users/alice"
+    mock_sftp.normalize.assert_called_once_with(".")
+
+
+def test_home_falls_back_to_root_without_a_login_directory() -> None:
+    fs, _, _ = _make_fs(login_dir=None)
+    assert str(fs.home().path) == "/"
 
 
 def test_parent_returns_parent_path() -> None:
@@ -356,12 +380,187 @@ def test_dir_stat_raises_permission_error_when_cd_fails() -> None:
         fs._dir_stat("/restricted", follow_symlinks=False)
 
 
-def test_dir_stat_returns_empty_for_empty_directory() -> None:
-    """A non-zero exit with no 'permission denied' in stderr is an empty dir (glob no-match)."""
+def test_dir_stat_exit_zero_with_empty_output_is_an_empty_directory() -> None:
     fs, mock_ssh, _ = _make_fs()
-    _set_exec_error(mock_ssh, exit_code=1, stderr_text="zsh: no matches found: *(D)\n")
-    result = fs._dir_stat("/home/user/empty", follow_symlinks=False)
-    assert result == {}
+    mock_ssh.exec_command.return_value = _exec_result()
+    assert fs._dir_stat("/home/user/empty", follow_symlinks=False) == {}
+    assert mock_ssh.exec_command.call_count == 1  # no probe: an empty listing proves nothing about the tools
+    assert fs._listing_via_sftp is False
+
+
+def test_dir_stat_exit_zero_with_empty_output_and_error_text_is_unexplained_and_probes() -> None:
+    fs, mock_ssh, _ = _make_fs()
+    mock_ssh.exec_command.side_effect = [_exec_result(exit_code=0, stderr="stat: unrecognized option: printf\n"), _exec_result(exit_code=0)]
+    entry = _parse_stat_output(_stat_record("x"))["x"]
+    with patch.object(fs, "_sftp_dir_stat", return_value={"x": entry}) as sftp_listing:
+        assert fs._dir_stat("/d", follow_symlinks=False) == {"x": entry}
+    sftp_listing.assert_called_once_with("/d", False)
+    assert mock_ssh.exec_command.call_args_list[1].args == (_PROBE_COMMAND,)
+    assert fs._listing_via_sftp is True
+
+
+def test_dir_stat_exit_zero_with_empty_output_and_blank_stderr_is_an_empty_directory() -> None:
+    fs, mock_ssh, _ = _make_fs()
+    mock_ssh.exec_command.return_value = _exec_result(exit_code=0, stderr="\n  \n")
+    assert fs._dir_stat("/d", follow_symlinks=False) == {}
+    assert mock_ssh.exec_command.call_count == 1
+
+
+def test_dir_stat_unexplained_failure_on_a_gnu_host_raises_oserror_and_is_not_cached() -> None:
+    fs, mock_ssh, _ = _make_fs()
+    probe_ok = _exec_result(_stat_record("/", ftype="directory"))
+    mock_ssh.exec_command.side_effect = [_exec_result(exit_code=1, stderr="boom\nsecond line\n"), probe_ok]
+    with pytest.raises(OSError, match="boom") as info:
+        fs._dir_stat("/d", follow_symlinks=False)
+    assert info.value.errno == errno.EIO
+    assert mock_ssh.exec_command.call_args_list[1].args == (_PROBE_COMMAND,)
+    assert fs._listing_via_sftp is False
+    assert ("/d", False) not in fs._stat_cache
+
+
+def test_dir_stat_after_gnu_success_does_not_probe_again() -> None:
+    fs, mock_ssh, _ = _make_fs()
+    mock_ssh.exec_command.side_effect = [_exec_result(_stat_record("a.txt")), _exec_result(exit_code=1, stderr="odd")]
+    assert set(fs._dir_stat("/ok", follow_symlinks=False)) == {"a.txt"}
+    with pytest.raises(OSError, match="odd"):
+        fs._dir_stat("/bad", follow_symlinks=False)
+    assert mock_ssh.exec_command.call_count == 2
+
+
+def test_dir_stat_switches_to_sftp_once_when_the_probe_fails() -> None:
+    fs, mock_ssh, _ = _make_fs()
+    mock_ssh.exec_command.side_effect = [_exec_result(exit_code=1, stderr="stat: illegal option -- -\n"), _exec_result(exit_code=1, stderr="stat: illegal option -- -\n")]
+    entry = _parse_stat_output(_stat_record("x"))["x"]
+    with patch.object(fs, "_sftp_dir_stat", return_value={"x": entry}) as sftp_listing:
+        assert fs._dir_stat("/d", follow_symlinks=False) == {"x": entry}
+        sftp_listing.assert_called_once_with("/d", False)
+        assert fs._listing_via_sftp is True
+        assert fs._dir_stat("/e", follow_symlinks=True) == {"x": entry}
+    assert mock_ssh.exec_command.call_count == 2  # the list command and the probe; nothing after the switch
+    assert sftp_listing.call_count == 2
+
+
+@pytest.mark.parametrize("probe_stdout", [b"", b"garbage"])
+def test_dir_stat_probe_needs_exit_zero_and_one_parsable_record(probe_stdout: bytes) -> None:
+    fs, mock_ssh, _ = _make_fs()
+    mock_ssh.exec_command.side_effect = [_exec_result(exit_code=1), _exec_result(probe_stdout, exit_code=0)]
+    with patch.object(fs, "_sftp_dir_stat", return_value={}):
+        fs._dir_stat("/d", follow_symlinks=False)
+    assert fs._listing_via_sftp is True
+
+
+def test_dir_stat_probe_refused_on_a_live_transport_switches_to_sftp() -> None:
+    """DEC-32: the list command fails unexplained and the probe's exec request is refused on a live transport."""
+    fs, mock_ssh, _ = _make_fs()
+    mock_ssh.get_transport.return_value.is_active.return_value = True
+    mock_ssh.exec_command.side_effect = [_exec_result(exit_code=1, stderr="odd\n"), paramiko.SSHException("Channel closed.")]
+    with patch.object(fs, "_sftp_dir_stat", return_value={}) as sftp_listing:
+        fs._dir_stat("/d", follow_symlinks=False)
+    sftp_listing.assert_called_once_with("/d", False)
+    assert fs._listing_via_sftp is True
+
+
+_DANGLING = "stat: cannot statx './a': No such file or directory\nstat: cannot statx './b': Too many levels of symbolic links\n"
+
+
+def test_dir_stat_only_dangling_link_errors_list_empty_without_a_probe() -> None:
+    fs, mock_ssh, _ = _make_fs()
+    mock_ssh.exec_command.side_effect = [_exec_result(exit_code=1, stderr=_DANGLING)]
+    assert fs._dir_stat("/d", follow_symlinks=True) == {}
+    assert mock_ssh.exec_command.call_count == 1
+    assert fs._listing_via_sftp is False
+    assert fs._stat_cache[("/d", True)] == {}
+
+
+def test_dir_stat_dangling_link_errors_beside_a_permission_error_raise() -> None:
+    fs, mock_ssh, _ = _make_fs()
+    stderr = "stat: cannot statx './a': No such file or directory\nstat: cannot statx './b': Permission denied\n"
+    mock_ssh.exec_command.side_effect = [_exec_result(exit_code=1, stderr=stderr)]
+    with pytest.raises(PermissionError):
+        fs._dir_stat("/d", follow_symlinks=True)
+    assert ("/d", True) not in fs._stat_cache
+
+
+def test_dir_stat_dangling_link_errors_beside_another_error_raise() -> None:
+    fs, mock_ssh, _ = _make_fs()
+    stderr = "stat: cannot statx './a': No such file or directory\nfind: something else broke\n"
+    mock_ssh.exec_command.side_effect = [_exec_result(exit_code=1, stderr=stderr), _exec_result(_stat_record("/", ftype="directory"))]
+    with pytest.raises(OSError, match="cannot statx") as info:
+        fs._dir_stat("/d", follow_symlinks=True)
+    assert info.value.errno == errno.EIO
+    assert ("/d", True) not in fs._stat_cache
+
+
+def test_dir_stat_dangling_link_errors_without_follow_are_not_special() -> None:
+    fs, mock_ssh, _ = _make_fs()
+    mock_ssh.exec_command.side_effect = [_exec_result(exit_code=1, stderr=_DANGLING), _exec_result(_stat_record("/", ftype="directory"))]
+    with pytest.raises(OSError, match="No such file"):
+        fs._dir_stat("/d", follow_symlinks=False)
+
+
+@pytest.mark.parametrize("follow", [True, False])
+def test_listing_and_probe_commands_run_in_the_c_locale(follow: bool) -> None:
+    assert "LC_ALL=C; export LC_ALL\n" in shlex.split(_build_list_command("/d", follow))[2]
+    assert "LC_ALL=C; export LC_ALL\n" in shlex.split(_PROBE_COMMAND)[2]
+    assert "LC_ALL=C; export LC_ALL\n" in shlex.split(_build_list_command("/d\xff", follow))[2]
+
+
+def test_dir_stat_exit_minus_one_without_output_probes_and_switches() -> None:
+    """A server that accepts the exec request and then closes the channel without an exit status (an SFTP-only account)."""
+    fs, mock_ssh, _ = _make_fs()
+    mock_ssh.exec_command.side_effect = [_exec_result(exit_code=-1), _exec_result(exit_code=-1)]
+    with patch.object(fs, "_sftp_dir_stat", return_value={}):
+        fs._dir_stat("/d", follow_symlinks=False)
+    assert fs._listing_via_sftp is True
+
+
+def test_dir_stat_unparsable_stdout_is_not_an_empty_listing() -> None:
+    fs, mock_ssh, _ = _make_fs()
+    mock_ssh.exec_command.side_effect = [_exec_result(b"usage: stat [-f] file", exit_code=1), _exec_result(exit_code=1)]
+    with patch.object(fs, "_sftp_dir_stat", return_value={}) as sftp_listing:
+        fs._dir_stat("/d", follow_symlinks=False)
+    sftp_listing.assert_called_once_with("/d", False)
+
+
+def test_dir_stat_probe_transport_error_is_oserror_and_does_not_switch() -> None:
+    fs, mock_ssh, _ = _make_fs()
+    mock_ssh.get_transport.return_value.is_active.return_value = False
+    mock_ssh.exec_command.side_effect = [_exec_result(exit_code=1), paramiko.SSHException("gone")]
+    with pytest.raises(OSError, match="gone"):
+        fs._dir_stat("/d", follow_symlinks=False)
+    assert fs._listing_via_sftp is False
+
+
+def test_dir_stat_refused_exec_on_a_live_transport_switches_to_sftp_without_probe() -> None:
+    """DEC-32: a refused exec request (SFTP-only account) counts as GNU tools unavailable."""
+    fs, mock_ssh, _ = _make_fs()
+    mock_ssh.exec_command.side_effect = paramiko.SSHException("Channel closed.")
+    mock_ssh.get_transport.return_value.is_active.return_value = True
+    with patch.object(fs, "_sftp_dir_stat", return_value={}) as sftp_listing:
+        fs._dir_stat("/d", follow_symlinks=False)
+    sftp_listing.assert_called_once_with("/d", False)
+    assert fs._listing_via_sftp is True
+    assert mock_ssh.exec_command.call_count == 1
+
+
+@pytest.mark.parametrize("transport_is_none", [False, True])
+def test_dir_stat_exec_error_on_a_dead_transport_is_oserror_and_does_not_switch(transport_is_none: bool) -> None:
+    fs, mock_ssh, _ = _make_fs()
+    mock_ssh.exec_command.side_effect = paramiko.SSHException("Channel closed.")
+    if transport_is_none:
+        mock_ssh.get_transport.return_value = None
+    else:
+        mock_ssh.get_transport.return_value.is_active.return_value = False
+    with pytest.raises(OSError, match="Channel closed"):
+        fs._dir_stat("/d", follow_symlinks=False)
+    assert fs._listing_via_sftp is False
+
+
+def test_dir_stat_exit_121_is_still_an_empty_listing() -> None:
+    fs, mock_ssh, _ = _make_fs()
+    mock_ssh.exec_command.return_value = _exec_result(exit_code=121)
+    assert fs._dir_stat("/missing", follow_symlinks=False) == {}
+    assert mock_ssh.exec_command.call_count == 1
 
 
 @pytest.mark.asyncio

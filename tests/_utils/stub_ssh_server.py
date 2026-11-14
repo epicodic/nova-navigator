@@ -21,15 +21,17 @@ import errno as _errno
 import fcntl
 import os
 import pty
+import shutil
 import socket
 import struct
 import subprocess
+import tempfile
 import termios
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+from typing import IO, Literal
 
 import paramiko
 from paramiko.common import (
@@ -47,6 +49,34 @@ def make_host_key(kind: str = "rsa") -> paramiko.PKey:
     if kind == "ecdsa":
         return paramiko.ECDSAKey.generate()
     return paramiko.RSAKey.generate(bits=2048)
+
+
+type NonGnuMode = Literal["illegal-option", "missing", "silent-failure"]
+
+# A `stat` that cannot print a format, as on BSD, macOS or BusyBox; find itself stays in place, so an empty directory
+# still lists with exit 0 and a non-empty one fails with empty stdout (the shape a real non-GNU remote has).
+_STAT_SHIMS: dict[str, str] = {
+    "illegal-option": '#!/bin/sh\necho "stat: illegal option -- -" >&2\nexit 1\n',
+    "missing": '#!/bin/sh\necho "stat: command not found" >&2\nexit 127\n',
+    # A BusyBox-style `find` that reports the failed `stat` on stderr but still exits 0: exit 0, empty stdout, error text.
+    "silent-failure": '#!/bin/sh\necho "stat: unrecognized option: printf" >&2\nexit 0\n',
+}
+
+
+class _RawName(str):
+    """A file name that goes over the wire as its original bytes (undecodable bytes are surrogate escapes in the str)."""
+
+    __slots__ = ()
+
+    def encode(self, encoding: str = "utf-8", errors: str = "strict") -> bytes:
+        return os.fsencode(str(self))
+
+
+class _RawNameAttributes(paramiko.SFTPAttributes):
+    """Directory entry attributes whose long-name line survives surrogate-escaped names."""
+
+    def asbytes(self) -> bytes:
+        return str(self).encode("utf-8", "surrogateescape")
 
 
 # ---------------------------------------------------------------------------
@@ -110,8 +140,8 @@ class StubSFTPServerInterface(paramiko.SFTPServerInterface):
                     s = os.lstat(fp)
                 except OSError:
                     continue
-                attr = paramiko.SFTPAttributes.from_stat(s)
-                attr.filename = name
+                attr = _RawNameAttributes.from_stat(s)
+                attr.filename = _RawName(name)
                 entries.append(attr)
             return entries
         except OSError as exc:
@@ -257,8 +287,12 @@ class StubSSHServerInterface(paramiko.ServerInterface):
         auth_log: list[AuthRecord] | None = None,
         forwarded: list[tuple[str, int]] | None = None,
         hang_sftp: bool = False,
+        exec_env: dict[str, str] | None = None,
+        refuse_exec: bool = False,
     ) -> None:
         self._exec_delay = exec_delay
+        self._exec_env = exec_env
+        self._refuse_exec = refuse_exec
         self._reject_publickey = reject_publickey
         self._forward_map = forward_map
         self._auth_log: list[AuthRecord] = auth_log if auth_log is not None else []
@@ -312,12 +346,14 @@ class StubSSHServerInterface(paramiko.ServerInterface):
         return super().check_channel_subsystem_request(channel, name)
 
     def check_channel_exec_request(self, channel: paramiko.Channel, command: bytes) -> bool:
-        """Execute *command* via zsh and pipe stdout/stderr back through the channel."""
+        """Execute *command* via zsh and pipe stdout/stderr back through the channel (or refuse the request)."""
+        if self._refuse_exec:
+            return False
 
         def _run() -> None:
             if self._exec_delay > 0:
                 time.sleep(self._exec_delay)
-            result = subprocess.run(["zsh", "-c", command.decode()], capture_output=True, check=False)
+            result = subprocess.run(["zsh", "-c", command.decode()], capture_output=True, check=False, env=self._exec_env)
             channel.sendall(result.stdout)
             if result.stderr:
                 channel.sendall_stderr(result.stderr)
@@ -439,6 +475,8 @@ class StubSSHServer:
             for the sftp subsystem's canonicalize('.') call.
         exec_delay: Artificial delay (seconds) added before each exec_command
             response, to simulate network/server latency in tests.
+        non_gnu: Puts a failing ``stat`` first on PATH of exec commands (``illegal-option``, ``missing`` or ``silent-failure``).
+        refuse_exec: Rejects every exec request (as an SFTP-only account does); SFTP keeps working.
     """
 
     def __init__(
@@ -450,10 +488,21 @@ class StubSSHServer:
         *,
         forward_map: dict[tuple[str, int], tuple[str, int]] | None = None,
         hang_sftp: bool = False,
+        non_gnu: NonGnuMode | None = None,
+        refuse_exec: bool = False,
     ) -> None:
         self.root_dir = root_dir
         self._forward_map = forward_map
         self._hang_sftp = hang_sftp
+        self._refuse_exec = refuse_exec
+        self._shim_dir: Path | None = None
+        self._exec_env: dict[str, str] | None = None
+        if non_gnu is not None:
+            self._shim_dir = Path(tempfile.mkdtemp(prefix="stub-ssh-shim-"))
+            shim = self._shim_dir / "stat"
+            shim.write_text(_STAT_SHIMS[non_gnu])
+            shim.chmod(0o755)
+            self._exec_env = {**os.environ, "PATH": f"{self._shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
         self.auth_log: list[AuthRecord] = []
         self.forwarded: list[tuple[str, int]] = []
         self._exec_delay = exec_delay
@@ -490,6 +539,8 @@ class StubSSHServer:
             for transport in list(self._transports):
                 transport.close()
             self._transports.clear()
+        if self._shim_dir is not None:
+            shutil.rmtree(self._shim_dir, ignore_errors=True)
 
     # -- internal ------------------------------------------------------------
 
@@ -517,6 +568,8 @@ class StubSSHServer:
             auth_log=self.auth_log,
             forwarded=self.forwarded,
             hang_sftp=self._hang_sftp,
+            exec_env=self._exec_env,
+            refuse_exec=self._refuse_exec,
         )
         with self._lock:
             self._transports.append(transport)

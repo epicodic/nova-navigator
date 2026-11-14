@@ -15,9 +15,10 @@ import uuid
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePath
-from typing import Self, cast, override
+from typing import Protocol, Self, cast, override
 
 import paramiko
+from paramiko.sftp import CMD_CLOSE, CMD_HANDLE, CMD_NAME, CMD_OPENDIR, CMD_READDIR
 
 from nova_navigator.remotes.known_hosts import (
     HostKeyConflictError,
@@ -45,7 +46,7 @@ _EXEC_CHUNK_SIZE = 65536
 
 @dataclass
 class StatEntry:
-    """Raw stat data parsed from a remote ``stat`` command for a single file."""
+    """Raw stat data of one directory entry, parsed from a remote ``stat`` command or read over SFTP."""
 
     size: int
     permissions: int
@@ -115,6 +116,11 @@ def _broken_link_stat(name: str, lstat_entry: StatEntry) -> Stat:
     )
 
 
+# The remote tools run with the C locale so that their stderr wording (matched below) does not depend on the remote user's language.
+# File names are raw bytes in every locale, so the stdout of ``stat --printf`` does not change.
+_C_LOCALE = "LC_ALL=C; export LC_ALL"
+
+
 def _build_list_command(path: str, follow_symlinks: bool) -> str:
     """Build the remote command that lists *path* in ``_STAT_FORMAT``.
 
@@ -122,13 +128,41 @@ def _build_list_command(path: str, follow_symlinks: bool) -> str:
     again for ``sh -c`` so the login shell of the remote user does not interpret it.
     """
     prelude, quoted = _quote_path(path)
-    prelude = f"{prelude}\n" if prelude else ""
+    prelude = f"{_C_LOCALE}\n{prelude}\n" if prelude else f"{_C_LOCALE}\n"
     stat_opts = "-L " if follow_symlinks else ""
     script = (
         f"{prelude}cd -- {quoted} 2>/dev/null || {{ [ -d {quoted} ] && exit {_CD_FAILED_EXIT}; exit {_CD_MISSING_EXIT}; }}\n"
         f"find . -maxdepth 1 -mindepth 1 -exec stat {stat_opts}--printf '{_STAT_FORMAT}' -- {{}} +"
     )
     return f"sh -c {shlex.quote(script)}"
+
+
+# Capability probe, run only after an unexplained listing failure: the production pipeline on "/" (always present and statable).
+_PROBE_SCRIPT = f"{_C_LOCALE}\nfind / -maxdepth 0 -exec stat --printf '{_STAT_FORMAT}' -- {{}} +"
+_PROBE_COMMAND = f"sh -c {shlex.quote(_PROBE_SCRIPT)}"
+_NO_ERROR_TEXT = "listing command failed"
+
+
+@dataclass(frozen=True)
+class _CommandRun:
+    """Outcome of one remote command."""
+
+    stdout: bytes
+    stderr: str
+    exit_code: int
+
+
+_DANGLING_LINK_ERRORS = ("no such file or directory", "too many levels of symbolic links")
+
+
+def _only_dangling_link_errors(stderr: str) -> bool:
+    """True when every non-empty line of *stderr* reports a link that ``stat -L`` could not follow."""
+    lines = [line.lower() for line in stderr.splitlines() if line.strip()]
+    return bool(lines) and all(any(text in line for text in _DANGLING_LINK_ERRORS) for line in lines)
+
+
+class _ExecRefusedError(OSError):
+    """The server refused the exec request on a live transport (an SFTP-only account)."""
 
 
 def _parse_stat_output(output: bytes) -> dict[str, StatEntry]:
@@ -159,6 +193,102 @@ def _parse_stat_output(output: bytes) -> dict[str, StatEntry]:
             _logger.warning("Unparsable stat record for %r; ignoring the rest of the output", name)
             break
         entries[name] = entry
+    return entries
+
+
+# SFTP attribute flags (draft-ietf-secsh-filexfer-02, section 5); paramiko's own FLAG_EXTENDED is mis-spelled in its source.
+_ATTR_FLAG_SIZE = 0x1
+_ATTR_FLAG_UIDGID = 0x2
+_ATTR_FLAG_PERMISSIONS = 0x4
+_ATTR_FLAG_ACMODTIME = 0x8
+_ATTR_FLAG_EXTENDED = 0x80000000
+
+
+class _RawSftp(Protocol):
+    """The request channel of ``paramiko.SFTPClient`` that the directory reader needs (it is not part of the paramiko stubs)."""
+
+    def _request(self, t: int, *args: object) -> tuple[int, paramiko.Message]: ...
+
+
+@dataclass(frozen=True)
+class _SftpAttrs:
+    """The attributes of an SFTP directory entry that a listing uses (``None`` when the server omitted them)."""
+
+    size: int | None
+    mode: int | None
+    atime: int | None
+    mtime: int | None
+
+
+def _read_attrs(msg: paramiko.Message) -> _SftpAttrs:
+    """Read one SFTP ``ATTRS`` structure from *msg*, consuming exactly its bytes."""
+    flags = msg.get_int()
+    size = msg.get_int64() if flags & _ATTR_FLAG_SIZE else None
+    if flags & _ATTR_FLAG_UIDGID:
+        msg.get_int()
+        msg.get_int()
+    mode = msg.get_int() if flags & _ATTR_FLAG_PERMISSIONS else None
+    atime = mtime = None
+    if flags & _ATTR_FLAG_ACMODTIME:
+        atime = msg.get_int()
+        mtime = msg.get_int()
+    if flags & _ATTR_FLAG_EXTENDED:
+        for _ in range(msg.get_int()):
+            msg.get_string()
+            msg.get_string()
+    return _SftpAttrs(size, mode, atime, mtime)
+
+
+def _attrs_of(attrs: paramiko.SFTPAttributes) -> _SftpAttrs:
+    """Convert the result of ``SFTPClient.stat`` to :class:`_SftpAttrs`."""
+    return _SftpAttrs(attrs.st_size, attrs.st_mode, attrs.st_atime, attrs.st_mtime)
+
+
+def _entry_from_attrs(name: str, attrs: _SftpAttrs) -> StatEntry:
+    """Map SFTP attributes to a :class:`StatEntry`; owner and change time do not exist in SFTP (they never reach ``Stat``)."""
+    mode = attrs.mode if attrs.mode is not None else 0
+    return StatEntry(
+        size=attrs.size or 0,
+        permissions=stat.S_IMODE(mode),
+        owner="",
+        modified_time=float(attrs.mtime or 0),
+        access_time=float(attrs.atime or 0),
+        change_time=0.0,
+        is_directory=stat.S_ISDIR(mode),
+        is_symlink=stat.S_ISLNK(mode),
+        name=name,
+    )
+
+
+def _sftp_readdir(sftp: _RawSftp, path: bytes) -> list[tuple[bytes, _SftpAttrs]]:
+    """List *path* with OPENDIR/READDIR/CLOSE, returning the raw byte names without ``.`` and ``..``.
+
+    ``SFTPClient.listdir_attr`` decodes names strictly and leaks the server handle when that fails;
+    this loop keeps names as bytes and always closes the handle.
+    Server status replies surface as the ``OSError`` subclasses of ``SFTPClient._convert_status``.
+    """
+    reply, msg = sftp._request(CMD_OPENDIR, path)
+    if reply != CMD_HANDLE:
+        raise paramiko.SFTPError("Expected handle")
+    handle = msg.get_binary()
+    entries: list[tuple[bytes, _SftpAttrs]] = []
+    try:
+        while True:
+            try:
+                reply, msg = sftp._request(CMD_READDIR, handle)
+            except EOFError:
+                break
+            if reply != CMD_NAME:
+                raise paramiko.SFTPError("Expected name response")
+            for _ in range(msg.get_int()):
+                name = msg.get_string()
+                msg.get_string()  # the long name line
+                attrs = _read_attrs(msg)
+                if name not in {b".", b".."}:
+                    entries.append((name, attrs))
+    finally:
+        with contextlib.suppress(*_CLOSE_ERRORS):
+            sftp._request(CMD_CLOSE, handle)
     return entries
 
 
@@ -395,6 +525,7 @@ class _Connected:
     clients: list[paramiko.SSHClient]
     sftp: paramiko.SFTPClient
     save_error: OSError | None
+    login_dir: str
 
 
 def _store_confirmed_key(client: paramiko.SSHClient, locations: KnownHostsLocations, ssh_config: SshConfig, alias: str, name: str, key: paramiko.PKey) -> OSError | None:
@@ -512,9 +643,26 @@ def _hop_login(ctx: _RouteContext, route: Sequence[SshHop], index: int) -> tuple
     return hop.user, password, (list(hop.identity_files) or None)
 
 
+def _login_directory(sftp: paramiko.SFTPClient) -> str:
+    """Return the directory the SFTP session starts in, or ``"/"`` when the server cannot tell.
+
+    OpenSSH resolves ``.`` to the working directory of the session, which is the user's home,
+    ``/`` under a chroot or the ``-d`` directory of ``internal-sftp``.
+    """
+    try:
+        resolved = sftp.normalize(".")
+    except (OSError, paramiko.SSHException, paramiko.SFTPError, EOFError, UnicodeDecodeError) as exc:
+        _logger.warning("Cannot determine the SSH login directory (%s); using /", exc)
+        return "/"
+    if not isinstance(resolved, str) or not resolved.startswith("/"):
+        _logger.warning("Unusable SSH login directory %r; using /", resolved)
+        return "/"
+    return resolved
+
+
 def _connect_hop(
     route: Sequence[SshHop], index: int, ctx: _RouteContext, previous: paramiko.SSHClient | None, *, open_sftp: bool
-) -> tuple[paramiko.SSHClient, paramiko.SFTPClient | None, OSError | None]:
+) -> tuple[paramiko.SSHClient, paramiko.SFTPClient | None, str | None, OSError | None]:
     hop = route[index]
     username, password, key_filename = _hop_login(ctx, route, index)
     trusted = ctx.trusted_host_keys.get(host_key_name(hop.hostname, hop.port))
@@ -526,6 +674,7 @@ def _connect_hop(
             client, save_error = _connect_checked(hop.hostname, hop.port, username, key_filename, password, trusted, ctx.locations, link=link, ssh_config=ctx.ssh_config, alias=hop.alias)
             try:
                 sftp = client.open_sftp() if open_sftp else None
+                login_dir = _login_directory(sftp) if sftp is not None else None
                 if not deadline.finish():  # the watchdog fired in the last step: the hop is not usable
                     if sftp is not None:
                         _run_closer(sftp.close)
@@ -542,7 +691,7 @@ def _connect_hop(
             if translated is exc:
                 raise
             raise translated from exc
-    return client, sftp, save_error
+    return client, sftp, login_dir, save_error
 
 
 def _close_reversed(clients: Sequence[paramiko.SSHClient]) -> None:
@@ -555,10 +704,13 @@ def _connect_route(route: Sequence[SshHop], ctx: _RouteContext) -> _Connected:
     opened: list[paramiko.SSHClient] = []
     save_error: OSError | None = None
     sftp: paramiko.SFTPClient | None = None
+    login_dir = "/"
     try:
         for index in range(len(route)):
             last = index == len(route) - 1
-            client, sftp, error = _connect_hop(route, index, ctx, opened[-1] if opened else None, open_sftp=last)
+            client, sftp, hop_login_dir, error = _connect_hop(route, index, ctx, opened[-1] if opened else None, open_sftp=last)
+            if hop_login_dir is not None:
+                login_dir = hop_login_dir
             opened.append(client)
             if error is not None and save_error is None:
                 save_error = error
@@ -569,7 +721,7 @@ def _connect_route(route: Sequence[SshHop], ctx: _RouteContext) -> _Connected:
     except BaseException:
         _close_reversed(opened)
         raise
-    return _Connected(opened, sftp, save_error)
+    return _Connected(opened, sftp, save_error, login_dir)
 
 
 class _SftpAtomicWriter:
@@ -721,6 +873,7 @@ class SSHFilesystem(Filesystem):
             self._ssh_client = connected.clients[-1]
             self._hop_clients = connected.clients[:-1]
             self._sftp_client = connected.sftp
+            self._login_dir = connected.login_dir
             self.host_key_save_error = connected.save_error
             if connected.save_error is not None:
                 self.host_key_save_path = locations.user_known_hosts
@@ -731,8 +884,16 @@ class SSHFilesystem(Filesystem):
             except paramiko.BadHostKeyException as exc:
                 raise ChangedHostKeyError(host_key_name(hostname, port), exc.key, exc.expected_key) from exc
             self._sftp_client = ssh_client.open_sftp()  # an injected client belongs to the caller
+            # The login directory never changes for a connection; home() must not do I/O (it runs on the Textual thread).
+            self._login_dir = _login_directory(self._sftp_client)
         self._stat_cache: dict[tuple[str, bool], dict[str, StatEntry]] = {}
         self._stat_cache_lock = threading.Lock()
+        # Listing method of this connection: the GNU command first, SFTP for the rest of the connection once the remote
+        # proved to lack GNU find or stat or refused the exec request (ADR-7, DEC-32).
+        # _gnu_confirmed: GNU produced a listing, so never probe again.
+        self._listing_lock = threading.Lock()
+        self._listing_via_sftp = False
+        self._gnu_confirmed = False
         self._hostname = hostname
         self._port = port
         self._username = username
@@ -778,34 +939,160 @@ class SSHFilesystem(Filesystem):
 
     @override
     def home(self) -> VPath:
-        # TODO
-        return VPath("/home", self)
+        return VPath(self._login_dir, self)
 
-    def _dir_stat(self, path: str, follow_symlinks: bool) -> dict[str, StatEntry]:
-        key = (path, follow_symlinks)
-        with self._stat_cache_lock:
-            if key in self._stat_cache:
-                return self._stat_cache[key]
-        command = _build_list_command(path, follow_symlinks)
+    def _run_command(self, command: str) -> _CommandRun:
+        """Run *command*; a refused exec request on a live transport raises ``_ExecRefusedError``, other SSH errors ``OSError``."""
+        _logger.debug("Running SSH stat command: %s", command)
         try:
-            _logger.debug("Running SSH stat command: %s", command)
             _, stdout, stderr = self._ssh_client.exec_command(command)
+        except paramiko.SSHException as exc:
+            transport = self._ssh_client.get_transport()
+            if transport is not None and transport.is_active():
+                raise _ExecRefusedError(str(exc)) from exc
+            raise OSError(str(exc)) from exc
+        try:
             output = stdout.read()
             stderr_output = stderr.read().decode("utf-8", "replace")
             _logger.debug("stderr: %s", stderr_output)
             exit_code = stdout.channel.recv_exit_status()
         except paramiko.SSHException as exc:
             raise OSError(str(exc)) from exc
-        if exit_code == _CD_FAILED_EXIT:
-            raise PermissionError(13, "Permission denied", path)
-        if not output and exit_code != 0:
-            err = stderr_output.lower()
-            if "permission denied" in err or "operation not permitted" in err:
-                raise PermissionError(13, "Permission denied", path)
-        result = _parse_stat_output(output)
+        return _CommandRun(output, stderr_output, exit_code)
+
+    def _cache_listing(self, key: tuple[str, bool], result: dict[str, StatEntry]) -> dict[str, StatEntry]:
         with self._stat_cache_lock:
             self._stat_cache[key] = result
         return result
+
+    def _dir_stat(self, path: str, follow_symlinks: bool) -> dict[str, StatEntry]:
+        key = (path, follow_symlinks)
+        with self._stat_cache_lock:
+            if key in self._stat_cache:
+                return self._stat_cache[key]
+        if self._listing_via_sftp:
+            return self._sftp_dir_stat(path, follow_symlinks)
+        try:
+            run = self._run_command(_build_list_command(path, follow_symlinks))
+        except _ExecRefusedError as exc:
+            # The exec itself cannot run, so no probe is needed (DEC-32).
+            return self._switch_to_sftp(path, follow_symlinks, str(exc))
+        if run.exit_code == _CD_FAILED_EXIT:
+            raise PermissionError(13, "Permission denied", path)
+        if run.exit_code == _CD_MISSING_EXIT:
+            return self._cache_listing(key, {})
+        if run.stdout:
+            result = _parse_stat_output(run.stdout)
+            if result:
+                self._gnu_confirmed = True
+                return self._cache_listing(key, result)
+        elif run.exit_code == 0:
+            if run.stderr.strip():
+                # A BusyBox-style find can exit 0 with empty stdout although stat failed: not an empty directory.
+                return self._after_unexplained_failure(path, follow_symlinks, run)
+            # Genuinely empty.  This decides nothing about the tools: a non-GNU host also exits 0 for an empty directory.
+            return self._cache_listing(key, {})
+        else:
+            err = run.stderr.lower()
+            if "permission denied" in err or "operation not permitted" in err:
+                raise PermissionError(13, "Permission denied", path)
+        return self._after_unexplained_failure(path, follow_symlinks, run)
+
+    def _after_unexplained_failure(self, path: str, follow_symlinks: bool, run: _CommandRun) -> dict[str, StatEntry]:
+        """Handle a failed GNU listing that is neither a permission nor a missing-directory failure.
+
+        On a host where GNU works (confirmed earlier or by the probe) the failure is real and raised.
+        Otherwise the host lacks GNU find or stat and the connection lists through SFTP from now on.
+        """
+        message = next(iter(run.stderr.strip().splitlines()), _NO_ERROR_TEXT)
+        if follow_symlinks and _only_dangling_link_errors(run.stderr):
+            # Only GNU ``stat -L`` words its failures like this, so no probe is needed.
+            # A directory of only links it cannot follow has no followed entries.
+            return self._cache_listing((path, follow_symlinks), {})
+        try:
+            gnu_works = self._gnu_confirmed or self._gnu_probe_succeeds()
+        except _ExecRefusedError as exc:
+            # The transport is alive but refuses exec: list through SFTP (DEC-32).
+            return self._switch_to_sftp(path, follow_symlinks, str(exc))
+        if gnu_works:
+            raise OSError(errno.EIO, message, path)
+        return self._switch_to_sftp(path, follow_symlinks, message)
+
+    def _switch_to_sftp(self, path: str, follow_symlinks: bool, reason: str) -> dict[str, StatEntry]:
+        with self._listing_lock:
+            first = not self._listing_via_sftp
+            self._listing_via_sftp = True
+        if first:
+            _logger.info("Listing SSH directories through SFTP: GNU find or stat unavailable (%s)", reason)
+        return self._sftp_dir_stat(path, follow_symlinks)
+
+    def _gnu_probe_succeeds(self) -> bool:
+        """Run the probe; a transport error raises ``OSError`` (a broken connection must not demote the listing method)."""
+        run = self._run_command(_PROBE_COMMAND)
+        works = run.exit_code == 0 and len(_parse_stat_output(run.stdout)) == 1
+        if works:
+            self._gnu_confirmed = True
+        return works
+
+    def _store_listing(self, path: str, lstat_entries: dict[str, StatEntry], follow_entries: dict[str, StatEntry], follow_symlinks: bool) -> dict[str, StatEntry]:
+        """Cache both passes of one listing and return the requested one."""
+        with self._stat_cache_lock:
+            self._stat_cache[(path, False)] = lstat_entries
+            self._stat_cache[(path, True)] = follow_entries
+        return follow_entries if follow_symlinks else lstat_entries
+
+    def _sftp_link_target(self, link_path: bytes, name: str) -> StatEntry | None:
+        """Return the followed entry of a symlink, or ``None`` when it cannot be followed (missing, loop, unreadable)."""
+        try:
+            attrs = self._sftp_client.stat(link_path)
+        except OSError:
+            return None
+        except paramiko.SSHException as exc:
+            raise OSError(str(exc)) from exc
+        return _entry_from_attrs(name, _attrs_of(attrs))
+
+    def _sftp_is_not_a_directory(self, raw_path: bytes) -> bool:
+        """True when *raw_path* exists and is not a directory (the generic failure of OPENDIR on a file)."""
+        try:
+            attrs = self._sftp_client.stat(raw_path)
+        except (OSError, paramiko.SSHException):
+            return False
+        return attrs.st_mode is not None and not stat.S_ISDIR(attrs.st_mode)
+
+    def _sftp_dir_stat(self, path: str, follow_symlinks: bool) -> dict[str, StatEntry]:
+        """List *path* through SFTP, filling the cache for both follow modes in one pass.
+
+        Round-trips: one OPENDIR, one READDIR per packet, one CLOSE and one ``stat`` per symlink.
+        A missing path and a path that is not a directory list as empty, like the GNU command.
+        """
+        raw_path = os.fsencode(path)
+        try:
+            raw_entries = _sftp_readdir(cast("_RawSftp", self._sftp_client), raw_path)
+        except PermissionError as exc:
+            raise PermissionError(13, "Permission denied", path) from exc
+        except FileNotFoundError:
+            return self._store_listing(path, {}, {}, follow_symlinks)
+        except (paramiko.SSHException, paramiko.SFTPError) as exc:
+            # SFTPError (a protocol violation such as an unexpected reply type) is neither an SSHException nor an OSError.
+            raise OSError(str(exc)) from exc
+        except OSError:
+            if self._sftp_is_not_a_directory(raw_path):
+                return self._store_listing(path, {}, {}, follow_symlinks)
+            raise
+        lstat_entries: dict[str, StatEntry] = {}
+        follow_entries: dict[str, StatEntry] = {}
+        prefix = raw_path.rstrip(b"/") + b"/"
+        for raw_name, attrs in raw_entries:
+            name = _decode(raw_name)
+            entry = _entry_from_attrs(name, attrs)
+            lstat_entries[name] = entry
+            if not entry.is_symlink:
+                follow_entries[name] = entry
+                continue
+            target = self._sftp_link_target(prefix + raw_name, name)
+            if target is not None:
+                follow_entries[name] = target
+        return self._store_listing(path, lstat_entries, follow_entries, follow_symlinks)
 
     @override
     def refresh(self, path: VPath | None = None) -> None:

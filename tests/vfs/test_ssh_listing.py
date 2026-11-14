@@ -12,7 +12,7 @@ import paramiko
 import pytest
 from paramiko.channel import ChannelFile, ChannelStderrFile, ChannelStdinFile
 
-from nova_navigator.vfs.filesystems.ssh import SSHFilesystem
+from nova_navigator.vfs.filesystems.ssh import _PROBE_COMMAND, SSHFilesystem
 from nova_navigator.vfs.vpath import VPath
 from tests._utils.stub_ssh_server import StubSSHServer
 
@@ -205,6 +205,17 @@ async def test_iterdir_self_loop_symlink_listed_as_broken(fs: SSHFilesystem, tmp
     assert entries["loop"].is_broken_symlink is True
 
 
+@pytest.mark.asyncio
+async def test_iterdir_directory_of_only_dangling_links_needs_no_probe(fs: SSHFilesystem, tmp_path: Path) -> None:
+    (tmp_path / "gone").symlink_to("does-not-exist")
+    (tmp_path / "loop").symlink_to("loop")
+    with _spy_exec(fs) as commands:
+        entries = {vp.name: vp.stat async for vp in VPath(tmp_path, fs).iterdir()}
+    assert _PROBE_COMMAND not in commands
+    assert len(commands) == 2  # one per follow mode
+    assert {name: (st.is_symlink, st.is_broken_symlink) for name, st in entries.items()} == {"gone": (True, True), "loop": (True, True)}
+
+
 def test_stat_broken_symlink_ssh(fs: SSHFilesystem, tmp_path: Path) -> None:
     (tmp_path / "broken").symlink_to("does-not-exist")
     st = fs.stat(VPath(tmp_path / "broken", fs))
@@ -250,3 +261,15 @@ async def test_list_non_utf8_directory(fs: SSHFilesystem, tmp_path: Path, raw_na
     os.mkdir(raw)
     _write_bytes_named(raw + b"/inner.txt", b"x")
     assert await _names(fs, Path(os.fsdecode(raw))) == {"inner.txt"}
+
+
+@pytest.mark.asyncio
+async def test_gnu_host_never_probes_or_switches_to_sftp(fs: SSHFilesystem, tmp_path: Path) -> None:
+    (tmp_path / "f").write_text("")
+    (tmp_path / "empty").mkdir()
+    with _spy_exec(fs) as commands:
+        assert await _names(fs, tmp_path) == {"f", "empty"}
+        assert await _names(fs, tmp_path / "empty") == set()
+    assert _PROBE_COMMAND not in commands
+    assert len(commands) == 4  # two follow modes per directory, ADR-3
+    assert fs._listing_via_sftp is False

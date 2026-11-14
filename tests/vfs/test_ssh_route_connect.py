@@ -441,3 +441,13 @@ def test_hash_known_hosts_is_looked_up_by_alias_and_stored_under_the_resolved_na
         assert lines[1].startswith(INTERNAL + " ")
     finally:
         fs.close()
+
+
+def test_home_is_the_login_directory_of_the_target_hop(servers: Servers, tmp_path: Path) -> None:
+    servers.trust_all()
+    fs = _open(servers)
+    try:
+        assert str(fs.home().path) == str(servers.target_root)
+        assert str(fs.home().path) != str(tmp_path / "b")  # not the bastion's login directory
+    finally:
+        fs.close()

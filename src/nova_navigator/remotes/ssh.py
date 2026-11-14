@@ -247,7 +247,7 @@ class SshConnector:
         fs = await connect_ssh(conn)
         if fs is None:
             return None
-        return VPath(path or "/", fs)
+        return VPath(path, fs) if path else fs.home()
 
 
 def _parse_shell_detection_output(output: str) -> str:
