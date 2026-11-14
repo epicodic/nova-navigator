@@ -15,9 +15,10 @@ import uuid
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePath
-from typing import Self, cast, override
+from typing import Protocol, Self, cast, override
 
 import paramiko
+from paramiko.sftp import CMD_CLOSE, CMD_HANDLE, CMD_NAME, CMD_OPENDIR, CMD_READDIR
 
 from nova_navigator.remotes.known_hosts import (
     HostKeyConflictError,
@@ -45,7 +46,7 @@ _EXEC_CHUNK_SIZE = 65536
 
 @dataclass
 class StatEntry:
-    """Raw stat data parsed from a remote ``stat`` command for a single file."""
+    """Raw stat data of one directory entry, parsed from a remote ``stat`` command or read over SFTP."""
 
     size: int
     permissions: int
@@ -159,6 +160,102 @@ def _parse_stat_output(output: bytes) -> dict[str, StatEntry]:
             _logger.warning("Unparsable stat record for %r; ignoring the rest of the output", name)
             break
         entries[name] = entry
+    return entries
+
+
+# SFTP attribute flags (draft-ietf-secsh-filexfer-02, section 5); paramiko's own FLAG_EXTENDED is mis-spelled in its source.
+_ATTR_FLAG_SIZE = 0x1
+_ATTR_FLAG_UIDGID = 0x2
+_ATTR_FLAG_PERMISSIONS = 0x4
+_ATTR_FLAG_ACMODTIME = 0x8
+_ATTR_FLAG_EXTENDED = 0x80000000
+
+
+class _RawSftp(Protocol):
+    """The request channel of ``paramiko.SFTPClient`` that the directory reader needs (it is not part of the paramiko stubs)."""
+
+    def _request(self, t: int, *args: object) -> tuple[int, paramiko.Message]: ...
+
+
+@dataclass(frozen=True)
+class _SftpAttrs:
+    """The attributes of an SFTP directory entry that a listing uses (``None`` when the server omitted them)."""
+
+    size: int | None
+    mode: int | None
+    atime: int | None
+    mtime: int | None
+
+
+def _read_attrs(msg: paramiko.Message) -> _SftpAttrs:
+    """Read one SFTP ``ATTRS`` structure from *msg*, consuming exactly its bytes."""
+    flags = msg.get_int()
+    size = msg.get_int64() if flags & _ATTR_FLAG_SIZE else None
+    if flags & _ATTR_FLAG_UIDGID:
+        msg.get_int()
+        msg.get_int()
+    mode = msg.get_int() if flags & _ATTR_FLAG_PERMISSIONS else None
+    atime = mtime = None
+    if flags & _ATTR_FLAG_ACMODTIME:
+        atime = msg.get_int()
+        mtime = msg.get_int()
+    if flags & _ATTR_FLAG_EXTENDED:
+        for _ in range(msg.get_int()):
+            msg.get_string()
+            msg.get_string()
+    return _SftpAttrs(size, mode, atime, mtime)
+
+
+def _attrs_of(attrs: paramiko.SFTPAttributes) -> _SftpAttrs:
+    """Convert the result of ``SFTPClient.stat`` to :class:`_SftpAttrs`."""
+    return _SftpAttrs(attrs.st_size, attrs.st_mode, attrs.st_atime, attrs.st_mtime)
+
+
+def _entry_from_attrs(name: str, attrs: _SftpAttrs) -> StatEntry:
+    """Map SFTP attributes to a :class:`StatEntry`; owner and change time do not exist in SFTP (they never reach ``Stat``)."""
+    mode = attrs.mode if attrs.mode is not None else 0
+    return StatEntry(
+        size=attrs.size or 0,
+        permissions=stat.S_IMODE(mode),
+        owner="",
+        modified_time=float(attrs.mtime or 0),
+        access_time=float(attrs.atime or 0),
+        change_time=0.0,
+        is_directory=stat.S_ISDIR(mode),
+        is_symlink=stat.S_ISLNK(mode),
+        name=name,
+    )
+
+
+def _sftp_readdir(sftp: _RawSftp, path: bytes) -> list[tuple[bytes, _SftpAttrs]]:
+    """List *path* with OPENDIR/READDIR/CLOSE, returning the raw byte names without ``.`` and ``..``.
+
+    ``SFTPClient.listdir_attr`` decodes names strictly and leaks the server handle when that fails;
+    this loop keeps names as bytes and always closes the handle.
+    Server status replies surface as the ``OSError`` subclasses of ``SFTPClient._convert_status``.
+    """
+    reply, msg = sftp._request(CMD_OPENDIR, path)
+    if reply != CMD_HANDLE:
+        raise paramiko.SFTPError("Expected handle")
+    handle = msg.get_binary()
+    entries: list[tuple[bytes, _SftpAttrs]] = []
+    try:
+        while True:
+            try:
+                reply, msg = sftp._request(CMD_READDIR, handle)
+            except EOFError:
+                break
+            if reply != CMD_NAME:
+                raise paramiko.SFTPError("Expected name response")
+            for _ in range(msg.get_int()):
+                name = msg.get_string()
+                msg.get_string()  # the long name line
+                attrs = _read_attrs(msg)
+                if name not in {b".", b".."}:
+                    entries.append((name, attrs))
+    finally:
+        with contextlib.suppress(*_CLOSE_ERRORS):
+            sftp._request(CMD_CLOSE, handle)
     return entries
 
 
@@ -830,6 +927,65 @@ class SSHFilesystem(Filesystem):
         with self._stat_cache_lock:
             self._stat_cache[key] = result
         return result
+
+    def _store_listing(self, path: str, lstat_entries: dict[str, StatEntry], follow_entries: dict[str, StatEntry], follow_symlinks: bool) -> dict[str, StatEntry]:
+        """Cache both passes of one listing and return the requested one."""
+        with self._stat_cache_lock:
+            self._stat_cache[(path, False)] = lstat_entries
+            self._stat_cache[(path, True)] = follow_entries
+        return follow_entries if follow_symlinks else lstat_entries
+
+    def _sftp_link_target(self, link_path: bytes, name: str) -> StatEntry | None:
+        """Return the followed entry of a symlink, or ``None`` when it cannot be followed (missing, loop, unreadable)."""
+        try:
+            attrs = self._sftp_client.stat(link_path)
+        except OSError:
+            return None
+        except paramiko.SSHException as exc:
+            raise OSError(str(exc)) from exc
+        return _entry_from_attrs(name, _attrs_of(attrs))
+
+    def _sftp_is_not_a_directory(self, raw_path: bytes) -> bool:
+        """True when *raw_path* exists and is not a directory (the generic failure of OPENDIR on a file)."""
+        try:
+            attrs = self._sftp_client.stat(raw_path)
+        except (OSError, paramiko.SSHException):
+            return False
+        return attrs.st_mode is not None and not stat.S_ISDIR(attrs.st_mode)
+
+    def _sftp_dir_stat(self, path: str, follow_symlinks: bool) -> dict[str, StatEntry]:
+        """List *path* through SFTP, filling the cache for both follow modes in one pass.
+
+        Round-trips: one OPENDIR, one READDIR per packet, one CLOSE and one ``stat`` per symlink.
+        A missing path and a path that is not a directory list as empty, like the GNU command.
+        """
+        raw_path = os.fsencode(path)
+        try:
+            raw_entries = _sftp_readdir(cast("_RawSftp", self._sftp_client), raw_path)
+        except PermissionError as exc:
+            raise PermissionError(13, "Permission denied", path) from exc
+        except FileNotFoundError:
+            return self._store_listing(path, {}, {}, follow_symlinks)
+        except paramiko.SSHException as exc:
+            raise OSError(str(exc)) from exc
+        except OSError:
+            if self._sftp_is_not_a_directory(raw_path):
+                return self._store_listing(path, {}, {}, follow_symlinks)
+            raise
+        lstat_entries: dict[str, StatEntry] = {}
+        follow_entries: dict[str, StatEntry] = {}
+        prefix = raw_path.rstrip(b"/") + b"/"
+        for raw_name, attrs in raw_entries:
+            name = _decode(raw_name)
+            entry = _entry_from_attrs(name, attrs)
+            lstat_entries[name] = entry
+            if not entry.is_symlink:
+                follow_entries[name] = entry
+                continue
+            target = self._sftp_link_target(prefix + raw_name, name)
+            if target is not None:
+                follow_entries[name] = target
+        return self._store_listing(path, lstat_entries, follow_entries, follow_symlinks)
 
     @override
     def refresh(self, path: VPath | None = None) -> None:
