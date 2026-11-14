@@ -224,6 +224,8 @@ This is verified against the stub server only.
 
 The modification time of a link is not preserved, because `utime` and `chmod` follow links.
 Each `stat_or_none` costs one directory listing, so large trees cost O(n) listings.
+On a remote without GNU `find` or `stat`, or one that refuses exec requests, the listing uses SFTP and one extra `stat` per link.
+A link whose `stat` fails is listed as a broken link, as it is with `stat -L`.
 
 The SSH behaviour is tested against the stub server only.
 No real OpenSSH server is part of the tests.

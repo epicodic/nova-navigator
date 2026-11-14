@@ -14,7 +14,7 @@ remote://<connection-name>[/path]
 | Part | Description |
 |------|-------------|
 | `connection-name` | The `name` field of a `RemoteConnection` in `remotes.toml`. Case-sensitive. |
-| `/path` | Optional path on the remote host. Defaults to the connection's home directory if omitted. |
+| `/path` | Optional path on the remote host. Omitted, the connection's home directory is used (see [SSH home directory](#ssh-home-directory)). |
 
 ### Examples
 
@@ -212,6 +212,66 @@ Nothing calls `close()` for a connected filesystem yet; the connections end with
 - `Match exec` and every other `Match` keyword outside the list above are never executed (see the host-key limits).
 - Tokens other than the ones paramiko expands (`%h`, `%p`, `%r` and the like) are not supported.
 - A jump host whose SSH server refuses `direct-tcpip` cannot be used.
+
+---
+
+## SSH home directory
+
+The home directory of an SSH connection is the directory the SFTP session starts in after login.
+That is the user's home on a normal server, `/` under a chroot, and the `-d` directory of `internal-sftp`.
+`SSHFilesystem` reads it once while connecting, with an SFTP realpath of `.`, inside the connect timeout of the last hop.
+`home()` only returns the stored value and does no I/O.
+With a jump host, it is the login directory of the target, not of the jump host.
+If the server gives no usable answer, the home is `/`.
+
+The home is used in these places:
+
+- The Copy and Move dialogs abbreviate the destination path.
+- The VFS shell uses it for the prompt, for `cd` without an argument and for `~` expansion (archives and Azure).
+- A URI without a path opens the home directory (`ssh://host`, `remote://name`).
+  A URI with an explicit slash opens `/`.
+
+The panel title, bookmarks and the `ssh://` and `remote://` URIs always show the full path.
+The SSH terminal runs the remote shell, which starts in the login directory by itself.
+
+---
+
+## SSH directory listing
+
+Directories are listed with one GNU command per directory (`find` with `stat --printf`).
+The command runs in follow mode and in no-follow mode as needed.
+If it fails in a way that is not a permission or missing-directory failure, a probe runs the same pipeline on `/`.
+If the probe fails too, the remote lacks GNU `find` or `stat`, and the connection lists through SFTP from then on.
+A server that refuses the exec request (an SFTP-only account) is treated the same way, without a probe.
+The method is decided once per connection and never reverted.
+A listing with no entries and exit status 0 decides nothing, because a non-GNU host answers an empty directory the same way.
+
+SFTP listing opens the directory and reads it in packets, and it keeps the names as bytes.
+Names with spaces, quotes, newlines and non-UTF-8 bytes therefore list exactly once.
+Each symlink costs one extra `stat` to find out what it points to.
+A link whose `stat` fails is listed as a broken link.
+Both follow modes are filled from one pass.
+Owner, access time and change time are not read in this mode; they never reach the file entries.
+
+Errors are the same in both modes:
+
+- An unreadable directory raises a permission error.
+- A missing path and a path that is not a directory list as empty.
+- A dead transport raises an error; it never switches the listing method.
+- Any other failure raises an error and is not cached.
+  A listing is empty only when the command succeeded and found no entries.
+
+One case is not an error on a GNU host.
+In follow mode, `stat -L` reports every dangling or looping link on stderr and exits non-zero.
+When all error lines are of that kind, the directory has no followed entries and lists as empty.
+
+### Limits
+
+- BSD `stat -f` is not detected; such hosts use SFTP listing.
+- Directories with many symlinks list slowly in SFTP mode, because each link costs one round-trip.
+- The SFTP reader uses one paramiko-internal call (`SFTPClient._request`), because `listdir_attr` decodes names strictly and leaks the server handle on an undecodable name.
+- The behaviour is verified against the stub server only.
+  No real OpenSSH server and no real non-GNU host are part of the tests.
 
 ---
 
