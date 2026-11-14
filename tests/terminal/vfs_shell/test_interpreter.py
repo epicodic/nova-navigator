@@ -6,7 +6,7 @@ import argparse
 import asyncio
 import tarfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -61,9 +61,9 @@ class _ReadOnlyMockFilesystem(MockFilesystem):
         return "snapshot"
 
 
-def _make_ctx() -> ShellContext:
-    """Create a ShellContext with a MockFilesystem cwd at /home/user."""
-    fs = MockFilesystem()
+def _make_ctx(home: str = "/home/user") -> ShellContext:
+    """Create a ShellContext with a MockFilesystem whose home and cwd are *home*."""
+    fs = MockFilesystem(home=home, cwd=home)
     return ShellContext(
         filesystem=fs,
         cwd=fs.cwd(),
@@ -179,6 +179,39 @@ def test_resolve_dotdot_past_root() -> None:
     ctx = _make_ctx()
     result = ctx.resolve("/../../etc")
     assert str(result.path) == "/etc"
+
+
+_LOGIN_HOME = "/srv/users/alice"
+
+
+def test_resolve_tilde_goes_to_the_login_directory() -> None:
+    assert str(_make_ctx(_LOGIN_HOME).resolve("~").path) == _LOGIN_HOME
+
+
+def test_resolve_tilde_subdir_goes_below_the_login_directory() -> None:
+    assert str(_make_ctx(_LOGIN_HOME).resolve("~/docs").path) == f"{_LOGIN_HOME}/docs"
+
+
+@pytest.mark.asyncio
+async def test_cd_without_argument_goes_to_the_login_directory() -> None:
+    fs = MockFilesystem(home=_LOGIN_HOME, cwd="/home/user")
+    interp = VfsShellInterpreter(fs, fs.cwd(), cols=80, rows=24)
+    output: list[str] = []
+    assert await interp.execute("cd", output.append, output.append) == 0
+    assert interp.cwd.path == PurePosixPath(_LOGIN_HOME)
+    assert interp.prompt == "~$ "
+
+
+def test_prompt_below_the_login_directory_is_abbreviated() -> None:
+    fs = MockFilesystem(home=_LOGIN_HOME, cwd=_LOGIN_HOME)
+    interp = VfsShellInterpreter(fs, VPath(f"{_LOGIN_HOME}/docs", fs), cols=80, rows=24)
+    assert interp.prompt == "~/docs$ "
+
+
+def test_prompt_outside_the_login_directory_is_shown_in_full() -> None:
+    fs = MockFilesystem(home=_LOGIN_HOME, cwd=_LOGIN_HOME)
+    interp = VfsShellInterpreter(fs, VPath("/home/x", fs), cols=80, rows=24)
+    assert interp.prompt == "/home/x$ "
 
 
 @pytest.fixture

@@ -41,12 +41,16 @@ def _stat_record(
     return b"".join(f.encode() + b"\0" for f in fields) + os.fsencode(name) + b"\0"
 
 
-def _make_fs(cwd: str = "/home/user") -> tuple[SSHFilesystem, MagicMock, MagicMock]:
-    """Return (fs, mock_ssh, mock_sftp) with no real network activity."""
+def _make_fs(cwd: str = "/home/user", login_dir: str | None = "/home/user") -> tuple[SSHFilesystem, MagicMock, MagicMock]:
+    """Return (fs, mock_ssh, mock_sftp) with no real network activity; ``login_dir=None`` makes ``normalize`` fail."""
     mock_ssh = MagicMock(spec=paramiko.SSHClient)
     mock_sftp = MagicMock(spec=paramiko.SFTPClient)
     mock_ssh.open_sftp.return_value = mock_sftp
     mock_sftp.getcwd.return_value = cwd
+    if login_dir is None:
+        mock_sftp.normalize.side_effect = OSError("no realpath")
+    else:
+        mock_sftp.normalize.return_value = login_dir
     fs = SSHFilesystem("localhost", ssh_client=mock_ssh)
     return fs, mock_ssh, mock_sftp
 
@@ -299,9 +303,15 @@ def test_root_returns_slash() -> None:
     assert str(fs.root().path) == "/"
 
 
-def test_home_returns_home() -> None:
-    fs, _, _ = _make_fs()
-    assert str(fs.home().path) == "/home"
+def test_home_is_the_login_directory() -> None:
+    fs, _, mock_sftp = _make_fs(login_dir="/srv/users/alice")
+    assert str(fs.home().path) == "/srv/users/alice"
+    mock_sftp.normalize.assert_called_once_with(".")
+
+
+def test_home_falls_back_to_root_without_a_login_directory() -> None:
+    fs, _, _ = _make_fs(login_dir=None)
+    assert str(fs.home().path) == "/"
 
 
 def test_parent_returns_parent_path() -> None:

@@ -395,6 +395,7 @@ class _Connected:
     clients: list[paramiko.SSHClient]
     sftp: paramiko.SFTPClient
     save_error: OSError | None
+    login_dir: str
 
 
 def _store_confirmed_key(client: paramiko.SSHClient, locations: KnownHostsLocations, ssh_config: SshConfig, alias: str, name: str, key: paramiko.PKey) -> OSError | None:
@@ -512,9 +513,26 @@ def _hop_login(ctx: _RouteContext, route: Sequence[SshHop], index: int) -> tuple
     return hop.user, password, (list(hop.identity_files) or None)
 
 
+def _login_directory(sftp: paramiko.SFTPClient) -> str:
+    """Return the directory the SFTP session starts in, or ``"/"`` when the server cannot tell.
+
+    OpenSSH resolves ``.`` to the working directory of the session, which is the user's home,
+    ``/`` under a chroot or the ``-d`` directory of ``internal-sftp``.
+    """
+    try:
+        resolved = sftp.normalize(".")
+    except (OSError, paramiko.SSHException, paramiko.SFTPError, EOFError, UnicodeDecodeError) as exc:
+        _logger.warning("Cannot determine the SSH login directory (%s); using /", exc)
+        return "/"
+    if not isinstance(resolved, str) or not resolved.startswith("/"):
+        _logger.warning("Unusable SSH login directory %r; using /", resolved)
+        return "/"
+    return resolved
+
+
 def _connect_hop(
     route: Sequence[SshHop], index: int, ctx: _RouteContext, previous: paramiko.SSHClient | None, *, open_sftp: bool
-) -> tuple[paramiko.SSHClient, paramiko.SFTPClient | None, OSError | None]:
+) -> tuple[paramiko.SSHClient, paramiko.SFTPClient | None, str | None, OSError | None]:
     hop = route[index]
     username, password, key_filename = _hop_login(ctx, route, index)
     trusted = ctx.trusted_host_keys.get(host_key_name(hop.hostname, hop.port))
@@ -526,6 +544,7 @@ def _connect_hop(
             client, save_error = _connect_checked(hop.hostname, hop.port, username, key_filename, password, trusted, ctx.locations, link=link, ssh_config=ctx.ssh_config, alias=hop.alias)
             try:
                 sftp = client.open_sftp() if open_sftp else None
+                login_dir = _login_directory(sftp) if sftp is not None else None
                 if not deadline.finish():  # the watchdog fired in the last step: the hop is not usable
                     if sftp is not None:
                         _run_closer(sftp.close)
@@ -542,7 +561,7 @@ def _connect_hop(
             if translated is exc:
                 raise
             raise translated from exc
-    return client, sftp, save_error
+    return client, sftp, login_dir, save_error
 
 
 def _close_reversed(clients: Sequence[paramiko.SSHClient]) -> None:
@@ -555,10 +574,13 @@ def _connect_route(route: Sequence[SshHop], ctx: _RouteContext) -> _Connected:
     opened: list[paramiko.SSHClient] = []
     save_error: OSError | None = None
     sftp: paramiko.SFTPClient | None = None
+    login_dir = "/"
     try:
         for index in range(len(route)):
             last = index == len(route) - 1
-            client, sftp, error = _connect_hop(route, index, ctx, opened[-1] if opened else None, open_sftp=last)
+            client, sftp, hop_login_dir, error = _connect_hop(route, index, ctx, opened[-1] if opened else None, open_sftp=last)
+            if hop_login_dir is not None:
+                login_dir = hop_login_dir
             opened.append(client)
             if error is not None and save_error is None:
                 save_error = error
@@ -569,7 +591,7 @@ def _connect_route(route: Sequence[SshHop], ctx: _RouteContext) -> _Connected:
     except BaseException:
         _close_reversed(opened)
         raise
-    return _Connected(opened, sftp, save_error)
+    return _Connected(opened, sftp, save_error, login_dir)
 
 
 class _SftpAtomicWriter:
@@ -721,6 +743,7 @@ class SSHFilesystem(Filesystem):
             self._ssh_client = connected.clients[-1]
             self._hop_clients = connected.clients[:-1]
             self._sftp_client = connected.sftp
+            self._login_dir = connected.login_dir
             self.host_key_save_error = connected.save_error
             if connected.save_error is not None:
                 self.host_key_save_path = locations.user_known_hosts
@@ -731,6 +754,8 @@ class SSHFilesystem(Filesystem):
             except paramiko.BadHostKeyException as exc:
                 raise ChangedHostKeyError(host_key_name(hostname, port), exc.key, exc.expected_key) from exc
             self._sftp_client = ssh_client.open_sftp()  # an injected client belongs to the caller
+            # The login directory never changes for a connection; home() must not do I/O (it runs on the Textual thread).
+            self._login_dir = _login_directory(self._sftp_client)
         self._stat_cache: dict[tuple[str, bool], dict[str, StatEntry]] = {}
         self._stat_cache_lock = threading.Lock()
         self._hostname = hostname
@@ -778,8 +803,7 @@ class SSHFilesystem(Filesystem):
 
     @override
     def home(self) -> VPath:
-        # TODO
-        return VPath("/home", self)
+        return VPath(self._login_dir, self)
 
     def _dir_stat(self, path: str, follow_symlinks: bool) -> dict[str, StatEntry]:
         key = (path, follow_symlinks)

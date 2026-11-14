@@ -246,3 +246,11 @@ def test_wrapper_is_usable_as_dict_key_and_assert_vpath_accepts_equal_wrapper() 
     b = RemoteFilesystem("b", inner)
     assert {a: 1}[b] == 1
     a._assert_vpath(VPath("/x", b))
+
+
+def test_home_is_the_inner_login_directory() -> None:
+    inner = MockFilesystem(home="/srv/users/alice", cwd="/srv/users/alice")
+    fs = RemoteFilesystem("prod", inner)
+    assert str(fs.home().path) == "/srv/users/alice"
+    assert fs.home().filesystem is fs
+    assert VPath("/srv/users/alice/docs", fs).compact_path_str == "~/docs"
