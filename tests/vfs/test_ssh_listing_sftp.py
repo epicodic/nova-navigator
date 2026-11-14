@@ -169,6 +169,13 @@ def test_sftp_listing_transport_failure_is_an_oserror(fs: SSHFilesystem, tmp_pat
         fs._sftp_dir_stat(str(tmp_path), True)
 
 
+@pytest.mark.parametrize("message", ["Expected handle", "Expected name response"])
+def test_sftp_listing_protocol_violation_is_an_oserror(fs: SSHFilesystem, tmp_path: Path, message: str) -> None:
+    with patch.object(ssh_module, "_sftp_readdir", side_effect=paramiko.SFTPError(message)), pytest.raises(OSError, match=message):
+        fs._sftp_dir_stat(str(tmp_path), True)
+    assert (str(tmp_path), True) not in fs._stat_cache
+
+
 def test_sftp_listing_link_stat_transport_failure_is_not_a_broken_link(fs: SSHFilesystem, tmp_path: Path) -> None:
     (tmp_path / "t").write_text("x")
     (tmp_path / "l").symlink_to("t")

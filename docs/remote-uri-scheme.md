@@ -228,8 +228,13 @@ The home is used in these places:
 
 - The Copy and Move dialogs abbreviate the destination path.
 - The VFS shell uses it for the prompt, for `cd` without an argument and for `~` expansion (archives and Azure).
-- A URI without a path opens the home directory (`ssh://host`, `remote://name`).
+- A URI without a path opens the home directory when a new connection is opened from a `ssh://host` or `remote://name` URI.
   A URI with an explicit slash opens `/`.
+  The go-to-path box on an already open panel is not affected and still opens `/` for an empty path.
+
+A path under the login directory is shown as `~/…`.
+Any other path is shown in full, for example `/home/x` or a sibling `/srv/users/alice2` when the home is `/srv/users/alice`.
+When the home is `/` (a chroot or the fallback), every path is shown as `~/…`.
 
 The panel title, bookmarks and the `ssh://` and `remote://` URIs always show the full path.
 The SSH terminal runs the remote shell, which starts in the login directory by itself.
@@ -263,12 +268,15 @@ Errors are the same in both modes:
 
 One case is not an error on a GNU host.
 In follow mode, `stat -L` reports every dangling or looping link on stderr and exits non-zero.
-When all error lines are of that kind, the directory has no followed entries and lists as empty.
+When all error lines are of that kind, the directory has no followed entries and lists as empty, without a probe.
 
 ### Limits
 
 - BSD `stat -f` is not detected; such hosts use SFTP listing.
 - Directories with many symlinks list slowly in SFTP mode, because each link costs one round-trip.
+- Any `SSHException` from the exec request on a live transport counts as a refused exec, including a transient channel-open or session-limit rejection.
+  The connection then lists through SFTP for its lifetime.
+- The remote listing and probe commands run with `LC_ALL=C`, so the stderr wording they are matched against does not depend on the remote language.
 - The SFTP reader uses one paramiko-internal call (`SFTPClient._request`), because `listdir_attr` decodes names strictly and leaks the server handle on an undecodable name.
 - The behaviour is verified against the stub server only.
   No real OpenSSH server and no real non-GNU host are part of the tests.

@@ -205,6 +205,17 @@ async def test_iterdir_self_loop_symlink_listed_as_broken(fs: SSHFilesystem, tmp
     assert entries["loop"].is_broken_symlink is True
 
 
+@pytest.mark.asyncio
+async def test_iterdir_directory_of_only_dangling_links_needs_no_probe(fs: SSHFilesystem, tmp_path: Path) -> None:
+    (tmp_path / "gone").symlink_to("does-not-exist")
+    (tmp_path / "loop").symlink_to("loop")
+    with _spy_exec(fs) as commands:
+        entries = {vp.name: vp.stat async for vp in VPath(tmp_path, fs).iterdir()}
+    assert _PROBE_COMMAND not in commands
+    assert len(commands) == 2  # one per follow mode
+    assert {name: (st.is_symlink, st.is_broken_symlink) for name, st in entries.items()} == {"gone": (True, True), "loop": (True, True)}
+
+
 def test_stat_broken_symlink_ssh(fs: SSHFilesystem, tmp_path: Path) -> None:
     (tmp_path / "broken").symlink_to("does-not-exist")
     st = fs.stat(VPath(tmp_path / "broken", fs))

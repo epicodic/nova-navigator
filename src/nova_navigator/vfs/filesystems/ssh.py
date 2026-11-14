@@ -116,6 +116,11 @@ def _broken_link_stat(name: str, lstat_entry: StatEntry) -> Stat:
     )
 
 
+# The remote tools run with the C locale so that their stderr wording (matched below) does not depend on the remote user's language.
+# File names are raw bytes in every locale, so the stdout of ``stat --printf`` does not change.
+_C_LOCALE = "LC_ALL=C; export LC_ALL"
+
+
 def _build_list_command(path: str, follow_symlinks: bool) -> str:
     """Build the remote command that lists *path* in ``_STAT_FORMAT``.
 
@@ -123,7 +128,7 @@ def _build_list_command(path: str, follow_symlinks: bool) -> str:
     again for ``sh -c`` so the login shell of the remote user does not interpret it.
     """
     prelude, quoted = _quote_path(path)
-    prelude = f"{prelude}\n" if prelude else ""
+    prelude = f"{_C_LOCALE}\n{prelude}\n" if prelude else f"{_C_LOCALE}\n"
     stat_opts = "-L " if follow_symlinks else ""
     script = (
         f"{prelude}cd -- {quoted} 2>/dev/null || {{ [ -d {quoted} ] && exit {_CD_FAILED_EXIT}; exit {_CD_MISSING_EXIT}; }}\n"
@@ -133,7 +138,7 @@ def _build_list_command(path: str, follow_symlinks: bool) -> str:
 
 
 # Capability probe, run only after an unexplained listing failure: the production pipeline on "/" (always present and statable).
-_PROBE_SCRIPT = f"find / -maxdepth 0 -exec stat --printf '{_STAT_FORMAT}' -- {{}} +"
+_PROBE_SCRIPT = f"{_C_LOCALE}\nfind / -maxdepth 0 -exec stat --printf '{_STAT_FORMAT}' -- {{}} +"
 _PROBE_COMMAND = f"sh -c {shlex.quote(_PROBE_SCRIPT)}"
 _NO_ERROR_TEXT = "listing command failed"
 
@@ -997,10 +1002,16 @@ class SSHFilesystem(Filesystem):
         Otherwise the host lacks GNU find or stat and the connection lists through SFTP from now on.
         """
         message = next(iter(run.stderr.strip().splitlines()), _NO_ERROR_TEXT)
-        if self._gnu_confirmed or self._gnu_probe_succeeds():
-            if follow_symlinks and _only_dangling_link_errors(run.stderr):
-                # ``stat -L`` fails on links it cannot follow; a directory of only such links has no followed entries.
-                return self._cache_listing((path, follow_symlinks), {})
+        if follow_symlinks and _only_dangling_link_errors(run.stderr):
+            # Only GNU ``stat -L`` words its failures like this, so no probe is needed.
+            # A directory of only links it cannot follow has no followed entries.
+            return self._cache_listing((path, follow_symlinks), {})
+        try:
+            gnu_works = self._gnu_confirmed or self._gnu_probe_succeeds()
+        except _ExecRefusedError as exc:
+            # The transport is alive but refuses exec: list through SFTP (DEC-32).
+            return self._switch_to_sftp(path, follow_symlinks, str(exc))
+        if gnu_works:
             raise OSError(errno.EIO, message, path)
         return self._switch_to_sftp(path, follow_symlinks, message)
 
@@ -1058,7 +1069,8 @@ class SSHFilesystem(Filesystem):
             raise PermissionError(13, "Permission denied", path) from exc
         except FileNotFoundError:
             return self._store_listing(path, {}, {}, follow_symlinks)
-        except paramiko.SSHException as exc:
+        except (paramiko.SSHException, paramiko.SFTPError) as exc:
+            # SFTPError (a protocol violation such as an unexpected reply type) is neither an SSHException nor an OSError.
             raise OSError(str(exc)) from exc
         except OSError:
             if self._sftp_is_not_a_directory(raw_path):

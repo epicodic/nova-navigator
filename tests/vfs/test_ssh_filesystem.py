@@ -186,7 +186,7 @@ def test_build_list_command_quotes_path(path: str) -> None:
     outer = shlex.split(command)
     assert outer[:2] == ["sh", "-c"]
     assert len(outer) == 3
-    assert shlex.split(outer[2])[:3] == ["cd", "--", path]
+    assert shlex.split(outer[2].removeprefix("LC_ALL=C; export LC_ALL\n"))[:3] == ["cd", "--", path]
 
 
 @pytest.mark.parametrize("follow", [True, False])
@@ -429,6 +429,62 @@ def test_dir_stat_probe_needs_exit_zero_and_one_parsable_record(probe_stdout: by
     assert fs._listing_via_sftp is True
 
 
+def test_dir_stat_probe_refused_on_a_live_transport_switches_to_sftp() -> None:
+    """DEC-32: the list command fails unexplained and the probe's exec request is refused on a live transport."""
+    fs, mock_ssh, _ = _make_fs()
+    mock_ssh.get_transport.return_value.is_active.return_value = True
+    mock_ssh.exec_command.side_effect = [_exec_result(exit_code=1, stderr="odd\n"), paramiko.SSHException("Channel closed.")]
+    with patch.object(fs, "_sftp_dir_stat", return_value={}) as sftp_listing:
+        fs._dir_stat("/d", follow_symlinks=False)
+    sftp_listing.assert_called_once_with("/d", False)
+    assert fs._listing_via_sftp is True
+
+
+_DANGLING = "stat: cannot statx './a': No such file or directory\nstat: cannot statx './b': Too many levels of symbolic links\n"
+
+
+def test_dir_stat_only_dangling_link_errors_list_empty_without_a_probe() -> None:
+    fs, mock_ssh, _ = _make_fs()
+    mock_ssh.exec_command.side_effect = [_exec_result(exit_code=1, stderr=_DANGLING)]
+    assert fs._dir_stat("/d", follow_symlinks=True) == {}
+    assert mock_ssh.exec_command.call_count == 1
+    assert fs._listing_via_sftp is False
+    assert fs._stat_cache[("/d", True)] == {}
+
+
+def test_dir_stat_dangling_link_errors_beside_a_permission_error_raise() -> None:
+    fs, mock_ssh, _ = _make_fs()
+    stderr = "stat: cannot statx './a': No such file or directory\nstat: cannot statx './b': Permission denied\n"
+    mock_ssh.exec_command.side_effect = [_exec_result(exit_code=1, stderr=stderr)]
+    with pytest.raises(PermissionError):
+        fs._dir_stat("/d", follow_symlinks=True)
+    assert ("/d", True) not in fs._stat_cache
+
+
+def test_dir_stat_dangling_link_errors_beside_another_error_raise() -> None:
+    fs, mock_ssh, _ = _make_fs()
+    stderr = "stat: cannot statx './a': No such file or directory\nfind: something else broke\n"
+    mock_ssh.exec_command.side_effect = [_exec_result(exit_code=1, stderr=stderr), _exec_result(_stat_record("/", ftype="directory"))]
+    with pytest.raises(OSError, match="cannot statx") as info:
+        fs._dir_stat("/d", follow_symlinks=True)
+    assert info.value.errno == errno.EIO
+    assert ("/d", True) not in fs._stat_cache
+
+
+def test_dir_stat_dangling_link_errors_without_follow_are_not_special() -> None:
+    fs, mock_ssh, _ = _make_fs()
+    mock_ssh.exec_command.side_effect = [_exec_result(exit_code=1, stderr=_DANGLING), _exec_result(_stat_record("/", ftype="directory"))]
+    with pytest.raises(OSError, match="No such file"):
+        fs._dir_stat("/d", follow_symlinks=False)
+
+
+@pytest.mark.parametrize("follow", [True, False])
+def test_listing_and_probe_commands_run_in_the_c_locale(follow: bool) -> None:
+    assert "LC_ALL=C; export LC_ALL\n" in shlex.split(_build_list_command("/d", follow))[2]
+    assert "LC_ALL=C; export LC_ALL\n" in shlex.split(_PROBE_COMMAND)[2]
+    assert "LC_ALL=C; export LC_ALL\n" in shlex.split(_build_list_command("/d\xff", follow))[2]
+
+
 def test_dir_stat_exit_minus_one_without_output_probes_and_switches() -> None:
     """A server that accepts the exec request and then closes the channel without an exit status (an SFTP-only account)."""
     fs, mock_ssh, _ = _make_fs()
@@ -448,6 +504,7 @@ def test_dir_stat_unparsable_stdout_is_not_an_empty_listing() -> None:
 
 def test_dir_stat_probe_transport_error_is_oserror_and_does_not_switch() -> None:
     fs, mock_ssh, _ = _make_fs()
+    mock_ssh.get_transport.return_value.is_active.return_value = False
     mock_ssh.exec_command.side_effect = [_exec_result(exit_code=1), paramiko.SSHException("gone")]
     with pytest.raises(OSError, match="gone"):
         fs._dir_stat("/d", follow_symlinks=False)
