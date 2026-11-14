@@ -318,7 +318,7 @@ ctx.report_skipped("/data/dangling", "broken link")
 `report_skipped()` appends a `SkippedItem(item, reason)` under a lock, so it is safe to call from any worker thread.
 It does not trigger the progress callback.
 The skipped items are kept when the job is cancelled.
-`copy_files` and `move_files` report links they leave out with the reasons `"broken link"`, `"link loop"` and `"unreadable link"`.
+`copy_files` and `move_files` report items they leave out with the reasons `"broken link"`, `"link loop"`, `"unreadable link"` and `"folder exists"`.
 See `docs/symlinks.md`.
 Subtasks share the status, so their skips land on the parent job.
 

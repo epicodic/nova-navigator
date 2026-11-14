@@ -39,11 +39,12 @@ _MAX_HOPS = 40
 class _Reader:
     close_count: int
 
-    def __init__(self, data: bytes, error: Exception | None = None) -> None:
+    def __init__(self, data: bytes, error: Exception | None = None, close_error: Exception | None = None) -> None:
         self.close_count = 0
         self._pos = 0
         self._data = data
         self._error = error
+        self._close_error = close_error
 
     def read(self, size: int) -> bytes:
         if self._error is not None:
@@ -54,13 +55,22 @@ class _Reader:
 
     def close(self) -> None:
         self.close_count += 1
+        if self._close_error is not None:
+            raise self._close_error
 
 
 class _Writer:
     close_count: int
 
-    def __init__(self, node: _FileNode, error: Exception | None = None, on_close: Callable[[_FileNode], None] | None = None) -> None:
+    def __init__(
+        self,
+        node: _FileNode,
+        error: Exception | None = None,
+        on_close: Callable[[_FileNode], None] | None = None,
+        close_error: Exception | None = None,
+    ) -> None:
         self.close_count = 0
+        self._close_error = close_error
         self._node = node
         self._error = error
         self._on_close = on_close
@@ -73,6 +83,8 @@ class _Writer:
 
     def close(self) -> None:
         self.close_count += 1
+        if self._close_error is not None:
+            raise self._close_error
         if self._on_close is not None:
             self._on_close(self._node)
         else:
@@ -108,6 +120,8 @@ class MockFilesystem(Filesystem):
         cwd: str = "/home/user",
         read_errors: dict[str, Exception] | None = None,
         write_errors: dict[str, Exception] | None = None,
+        read_close_errors: dict[str, Exception] | None = None,
+        write_close_errors: dict[str, Exception] | None = None,
         links: dict[str, str] | None = None,
         symlinks: bool = True,
     ) -> None:
@@ -118,6 +132,8 @@ class MockFilesystem(Filesystem):
         self._cwd_path = PurePosixPath(cwd)
         self._read_errors: dict[str, Exception] = read_errors or {}
         self._write_errors: dict[str, Exception] = write_errors or {}
+        self._read_close_errors: dict[str, Exception] = read_close_errors or {}
+        self._write_close_errors: dict[str, Exception] = write_close_errors or {}
         self.readers = []
         self.writers = []
         self._write_counter = 0
@@ -287,7 +303,7 @@ class MockFilesystem(Filesystem):
         posix = self._to_posix(path)
         node = self._file_node(posix)
         error = self._read_errors.get(str(posix))
-        reader = _Reader(bytes(node.content), error=error)
+        reader = _Reader(bytes(node.content), error=error, close_error=self._read_close_errors.get(str(posix)))
         self.readers.append(reader)
         return reader
 
@@ -300,7 +316,7 @@ class MockFilesystem(Filesystem):
         node = _FileNode(content=bytearray())
         self._nodes[posix] = node
         error = self._write_errors.get(str(posix))
-        writer = _Writer(node, error=error, on_close=self._touch)
+        writer = _Writer(node, error=error, on_close=self._touch, close_error=self._write_close_errors.get(str(posix)))
         self.writers.append(writer)
         return writer
 

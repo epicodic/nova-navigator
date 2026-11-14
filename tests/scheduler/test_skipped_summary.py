@@ -33,3 +33,7 @@ def test_empty_reasons_omitted() -> None:
 def test_more_than_three_reasons_ellipsis() -> None:
     text = skipped_summary(_items("a", "b", "c", "d"))
     assert text == "Skipped 4 items: a (1), b (1), c (1), …"
+
+
+def test_folder_exists_reason_is_listed() -> None:
+    assert skipped_summary([SkippedItem("/s/x", "folder exists")]) == "Skipped 1 item: folder exists (1)"

@@ -10,7 +10,7 @@ from nova_widgets import Response
 
 from ..file_filter import FileFilter
 from ..vfs import VPath
-from ..vfs.filesystem import Filesystem
+from ..vfs.filesystem import Filesystem, StreamReaderLike, StreamWriterLike
 from ..vfs.types import Stat
 from .link_target import stable_link_target
 
@@ -25,6 +25,7 @@ def _is_real_dir(stat: Stat) -> bool:
 SKIP_BROKEN_LINK = "broken link"
 SKIP_LINK_LOOP = "link loop"
 SKIP_UNREADABLE_LINK = "unreadable link"
+SKIP_FOLDER_EXISTS = "folder exists"
 _MAX_LINK_DEPTH = 16
 
 
@@ -95,6 +96,68 @@ async def _overwrite_allowed(ctx: TaskContext, src: VPath, dst: VPath, options: 
     return True
 
 
+@dataclass(frozen=True)
+class _Claim:
+    """Outcome of ``_claim_file_destination``.
+
+    ``proceed`` tells whether to write.
+    ``removed_link_text`` is the text of a destination link that was removed, if any.
+    """
+
+    proceed: bool
+    removed_link_text: str | None = None
+
+
+async def _claim_file_destination(
+    ctx: TaskContext,
+    src: VPath,
+    dst: VPath,
+    options: FileCopyOptions,
+    label: str,
+) -> _Claim:
+    """Decide what happens at *dst* before a file is written there.
+
+    An absent destination proceeds.
+    A real folder is skipped as "folder exists" without a question under any policy.
+    Such a skip does not consume an ALL/NONE answer.
+    Anything else goes through the overwrite policy once.
+    A destination link is removed itself, never followed, so the write cannot reach its target.
+    """
+    stat = dst.stat_or_none
+    if stat is None:
+        return _Claim(proceed=True)
+    if _is_real_dir(stat):
+        ctx.report_skipped(src.uri, SKIP_FOLDER_EXISTS)
+        return _Claim(proceed=False)
+    if not await _overwrite_allowed(ctx, src, dst.with_stat(stat), options, label):
+        return _Claim(proceed=False)
+    if not (stat.is_symlink and dst.filesystem.supports_symlinks()):
+        return _Claim(proceed=True)
+    text: str | None = None
+    with contextlib.suppress(OSError):
+        text = dst.filesystem.readlink(dst)
+    dst.filesystem.remove(dst)  # unlinks the link itself, also when it points to a folder or is broken
+    return _Claim(proceed=True, removed_link_text=text)
+
+
+def _restore_link(dst: VPath, claim: _Claim) -> None:
+    """Put back a destination link that ``_claim_file_destination`` removed, best effort."""
+    if claim.removed_link_text is None:
+        return
+    with contextlib.suppress(Exception):
+        dst.filesystem.symlink(dst, claim.removed_link_text)
+
+
+def _close_streams(reader: StreamReaderLike | None, writer: StreamWriterLike | None) -> None:
+    """Close the reader and then the writer; the writer is closed even if the reader close raises."""
+    try:
+        if reader:
+            reader.close()
+    finally:
+        if writer:
+            writer.close()
+
+
 DirOutcome = Literal["created", "merged", "skipped"]
 
 
@@ -142,9 +205,10 @@ async def copy_file(
     """Copy a single file from *src_path* to *dst_path*.
 
     Reads in CHUNK_SIZE chunks, updating step-level progress. When the
-    destination already exists the action depends on ``options.overwrite``:
-    ``"overwrite"`` replaces unconditionally, ``"skip"`` leaves it untouched,
-    ``"ask"`` requests a user response.
+    destination already exists (a regular file, a link or a link to a folder)
+    the action depends on ``options.overwrite``: ``"overwrite"`` replaces
+    unconditionally, ``"skip"`` leaves it untouched, ``"ask"`` requests a user
+    response. A destination link is replaced by the file, never written through.
 
     Returns ``True`` if the file was actually written, ``False`` if the copy
     was skipped (destination exists and overwrite policy did not proceed).
@@ -156,12 +220,14 @@ async def copy_file(
     ctx.status.set_current_item(src_path.uri)
     reader = None
     writer = None
+    claim = _Claim(proceed=False)
     _failed = False
     try:
         src_stat = src_path.stat
         reader = src_path.filesystem.read(src_path)
 
-        if not await _overwrite_allowed(ctx, src_path, dst_path, options, "copy_file"):
+        claim = await _claim_file_destination(ctx, src_path, dst_path, options, "copy_file")
+        if not claim.proceed:
             return False
 
         writer = dst_path.filesystem.write(dst_path)
@@ -182,13 +248,19 @@ async def copy_file(
         _logger.debug("copy_file failed %s -> %s", src_path.path, dst_path.path)
         raise
     finally:
-        if reader:
-            reader.close()
-        if writer:
-            writer.close()
+        try:
+            try:
+                _close_streams(reader, writer)
+            except BaseException:
+                if not _failed:  # an earlier error stays the one that is raised
+                    _failed = True
+                    raise
+        finally:
             if _failed:
-                with contextlib.suppress(Exception):
-                    dst_path.filesystem.remove(dst_path)
+                if writer:
+                    with contextlib.suppress(Exception):
+                        dst_path.filesystem.remove(dst_path)
+                _restore_link(dst_path, claim)
     dst_path.filesystem.copy_stat(dst_path, src_stat)
     return True
 
@@ -210,12 +282,17 @@ async def _confirm_link_replace(ctx: TaskContext, link: VPath, dst: VPath, optio
     """Apply the overwrite policy to an existing *dst*.
 
     Return True when the link may be created; *dst* is then removed.
+    A real folder at *dst* is skipped ("folder exists") without a question.
     """
-    if dst.stat_or_none is None:
+    stat = dst.stat_or_none
+    if stat is None:
         return True
+    if _is_real_dir(stat):
+        ctx.report_skipped(link.uri, SKIP_FOLDER_EXISTS)
+        return False
     if not await _overwrite_allowed(ctx, link, dst, options, "copy_link"):
         return False
-    dst.filesystem.remove(dst)  # removes a file or link itself, never follows; a real directory makes it raise
+    dst.filesystem.remove(dst)  # removes a file or link itself, never follows
     return True
 
 
@@ -538,6 +615,9 @@ async def copy_files(
         options = FileCopyOptions()
 
     dst_filesystem = destination.filesystem
+    # The claim stats each destination entry from the cached listing, so drop stale listings once per job.
+    dst_filesystem.refresh(destination)
+    dst_filesystem.refresh(destination.parent)
 
     dst_stat = destination.stat_or_none
     dst_is_directory = dst_stat is not None and dst_stat.is_directory
@@ -589,6 +669,9 @@ async def _move_entry(
         return
     if same_device:
         f_dst_stat = f_dst.stat_or_none
+        if f_dst_stat is not None and _is_real_dir(f_dst_stat):
+            ctx.report_skipped(f.uri, SKIP_FOLDER_EXISTS)
+            return
         if f_dst_stat is not None:
             if options.overwrite == "skip":
                 return
@@ -717,6 +800,11 @@ async def _move_path(
             # _move_dir_contents adds total and completed incrementally.
             await _move_dir_contents(ctx, src_path, actual_dst, options, same_device=True)
         else:
+            if actual_dst_stat is not None and _is_real_dir(actual_dst_stat):
+                # A file or link never replaces a folder; a folder source onto a folder took the merge branch above.
+                ctx.report_skipped(src_path.uri, SKIP_FOLDER_EXISTS)
+                ctx.status.update_progress(inc_completed=1)
+                return
             if actual_dst_stat is not None:
                 if options.overwrite == "skip":
                     _logger.debug("move_path skip (exists) %s", actual_dst.path)
@@ -732,13 +820,12 @@ async def _move_path(
                         _logger.debug("move_path skip (user declined) %s", actual_dst.path)
                         ctx.status.update_progress(inc_completed=1)
                         return
-                if _is_real_dir(actual_dst_stat):
-                    await erase_files(ctx, [actual_dst], EraseFilesOptions(ask_before_erase=False))
-                else:
-                    actual_dst.filesystem.remove(actual_dst)
+                actual_dst.filesystem.remove(actual_dst)
             src_path.filesystem.rename(src_path, actual_dst)
             _logger.debug("move_path renamed %s -> %s", src_path.path, actual_dst.path)
     else:
+        # The copy claim stats the destination from the cached listing, so drop a stale one first.
+        actual_dst.filesystem.refresh(actual_dst.parent)
         if is_dir:
             # _move_dir_contents adds total and completed incrementally.
             await _move_dir_contents(ctx, src_path, actual_dst, options, same_device=False)
