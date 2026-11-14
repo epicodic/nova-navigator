@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import socket
 import threading
+import time
 from collections.abc import Generator
 from pathlib import Path
 
@@ -139,5 +140,23 @@ def test_silent_server_accepts_tcp_and_never_writes() -> None:
             sock.settimeout(0.5)
             with pytest.raises(TimeoutError):
                 sock.recv(1)
+    finally:
+        server.stop()
+
+
+def test_session_channel_survives_the_servers_accept_loop(tmp_path: Path) -> None:
+    """The accept loop pops every channel; session channels must stay alive until their request arrives."""
+    server = StubSSHServer(root_dir=tmp_path, host_key=make_host_key("rsa"))
+    server.start()
+    try:
+        client = _client(server)
+        transport = client.get_transport()
+        assert transport is not None
+        channel = transport.open_session(timeout=5)
+        time.sleep(1.0)  # the accept loop polls every 0.5 s and lets go of what it popped
+        channel.settimeout(5)
+        channel.exec_command("echo still-open")
+        assert channel.recv(64).strip() == b"still-open"
+        client.close()
     finally:
         server.stop()

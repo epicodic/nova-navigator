@@ -401,7 +401,8 @@ def _pump_forward(channel: paramiko.Channel, target: tuple[str, int]) -> None:
     try:
         upstream = socket.create_connection(target, timeout=5)
     except OSError:
-        channel.close()
+        with contextlib.suppress(EOFError, OSError):
+            channel.close()
         return
     upstream.settimeout(None)
 
@@ -409,16 +410,16 @@ def _pump_forward(channel: paramiko.Channel, target: tuple[str, int]) -> None:
         with contextlib.suppress(OSError):
             while data := upstream.recv(65536):
                 channel.sendall(data)
-        with contextlib.suppress(OSError):
+        with contextlib.suppress(EOFError, OSError):
             channel.close()
 
     threading.Thread(target=_upstream_to_channel, daemon=True, name="stub-ssh-forward-up").start()
-    with contextlib.suppress(OSError):
+    with contextlib.suppress(EOFError, OSError):
         while data := channel.recv(65536):
             upstream.sendall(data)
     with contextlib.suppress(OSError):
         upstream.close()
-    with contextlib.suppress(OSError):
+    with contextlib.suppress(EOFError, OSError):
         channel.close()
 
 
@@ -523,8 +524,15 @@ class StubSSHServer:
         with contextlib.suppress(Exception):
             transport.start_server(event=event, server=server_iface)
         event.wait(timeout=10)
+        # accept() hands out every channel, not only forwarded ones.  The transport keeps channels weakly, so each
+        # popped channel is held here: a dropped session channel is closed by its finalizer before its request arrives.
+        held: list[paramiko.Channel] = []
         while transport.is_active():
             channel = transport.accept(timeout=0.5)
-            target = server_iface.pending_forwards.pop(channel.get_id(), None) if channel is not None else None
-            if channel is not None and target is not None:
+            if channel is None:
+                continue
+            held[:] = [c for c in held if not c.closed]
+            held.append(channel)
+            target = server_iface.pending_forwards.pop(channel.get_id(), None)
+            if target is not None:
                 threading.Thread(target=_pump_forward, args=(channel, target), daemon=True, name="stub-ssh-forward").start()
