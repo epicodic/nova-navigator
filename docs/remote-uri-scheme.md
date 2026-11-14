@@ -39,7 +39,7 @@ When `parse_uri` encounters `remote://name/path`, the resolver:
 1. Looks up `name` in `RemoteConfig` (the saved connections).
 2. Retrieves the full `RemoteConnection` — protocol type, credentials, proxy config, etc.
 3. Constructs the appropriate `Filesystem` subclass from those settings:
-   - `ssh` → `SSHFilesystem` (with identity file, proxy, etc. already applied)
+   - `ssh` → `SSHFilesystem` (host, user, port and identity file from the saved values and `ssh_config`, jump hosts from `ProxyJump`)
    - `azure` → `AzureFilesystem` (future)
    - additional protocols as they are added
 4. Returns a `VPath` rooted at `/path` on that filesystem.
@@ -51,8 +51,9 @@ If `name` is not found, a `ValueError` is raised with a clear message.
 ## SSH host keys
 
 `SSHFilesystem` verifies the server host key against OpenSSH `known_hosts` files before it authenticates.
-The reader, the appender and the `HashKnownHosts` lookup live in `src/nova_navigator/remotes/known_hosts.py`.
-That module imports neither Textual nor `vfs`, so `vfs/filesystems/ssh.py` can use it without a cycle.
+The reader and the appender live in `src/nova_navigator/remotes/known_hosts.py`.
+The `HashKnownHosts` value comes from the shared `ssh_config` loader in `src/nova_navigator/remotes/ssh_config.py`.
+Neither module imports Textual or `vfs`, so `vfs/filesystems/ssh.py` can use them without a cycle.
 
 ### Files read
 
@@ -123,6 +124,94 @@ A key that is already stored is not appended again.
 ### Terminal sessions
 
 The SSH terminal receives the already connected client from `connect_ssh`, so it performs no host-key handling of its own.
+
+---
+
+## SSH config and jump hosts
+
+Before it connects, `connect_ssh` resolves the requested host through the user's OpenSSH configuration.
+The loader is `src/nova_navigator/remotes/ssh_config.py` and the resolver is `src/nova_navigator/remotes/ssh_route.py`.
+Both import neither Textual nor `vfs`.
+
+### Files and precedence
+
+`~/.ssh/config` is read first, then `/etc/ssh/ssh_config`, once per connection.
+For every keyword the first value found wins, as in OpenSSH.
+`IdentityFile` is the exception: the lists of both files are joined in order without duplicates.
+A missing file is skipped silently.
+A file that cannot be read or parsed is logged by file name and exception type and skipped, and the connection proceeds with the other file or without config.
+
+### Supported keywords
+
+`Host` blocks and `Match` lines made only of `host`, `originalhost`, `user`, `localuser`, `all`, `canonical` and `final` are honoured.
+`HostName`, `User`, `Port`, `IdentityFile` and `ProxyJump` are applied.
+`HashKnownHosts` is read from the same loaded config for the host-key storage.
+
+### Which value wins
+
+Values given explicitly always win for the target: the user, port and identity file of a saved remote, and the user and port of an `ssh://user@host:port` URI.
+Explicit values never apply to jump hosts.
+Without an explicit value the config value is used, then the default (port 22, the local user name).
+The name the user typed (the alias) stays the name of the filesystem, so panel titles, bookmarks and copy sources show `ssh://alias/...`.
+Only the connection uses the resolved `HostName`.
+
+### Jump hosts
+
+`ProxyJump` takes a comma-separated list, `[user@]host[:port]` or `ssh://user@host:port` per entry.
+`ProxyJump a,b` connects to `a`, then to `b` through `a`, then to the target through `b`.
+Each jump host is resolved with the same rules, and a user or port written inside the `ProxyJump` value overrides its config entry.
+A jump host that has its own `ProxyJump` is reached through its own jumps first.
+`ProxyJump none` connects directly.
+A loop or a route of more than eight hops is refused with an error naming the host.
+The first hop is a TCP connection; every further hop is a `direct-tcpip` channel of the previous hop.
+The jump host's server must allow TCP forwarding.
+Listing, reading, writing and the remote terminal use the last hop's connection, so they work through the jumps.
+
+### Host keys and passwords per hop
+
+Every hop passes the host-key checks described above, including the confirmation dialog for unknown keys and the refusal of changed or revoked keys.
+A key confirmed for a jump host is stored once, under the name the hop connected to.
+A password question names the hop it belongs to and is asked once per hop.
+After each question the chain is connected again from the first hop; earlier hops reconnect without new questions.
+
+### Connect timeout
+
+Every hop must be established within `network.ssh_timeout` seconds (default 30), counted from the start of that hop's attempt.
+The setting is read for every connection, so a changed value applies to the next connection without a restart.
+Values below one second are treated as one second.
+A timer closes the socket or channel of a hop that exceeds its time, so a host that accepts TCP but never answers fails on time.
+Opening the SFTP session of the target is part of the last hop's time.
+Time spent in dialogs never counts, because questions are asked between attempts.
+Name resolution cannot be interrupted and is bounded only by the operating system.
+One attempt takes at most the number of hops times the timeout.
+
+### Errors
+
+An error for a jump host reads `Jump host 'alias' (host:port), hop 1 of 2: <cause>`.
+An error for a target behind jumps reads `Target host 'alias' (host:port) via <last jump>: <cause>`.
+A timeout reads `Timed out after 30 s connecting to jump host 'alias' (host:port).`
+A failed login reads `Authentication failed for jump host 'alias' (host:port).`
+The role word is `target host` for the last hop of a route with jumps and plain `host` for a direct connection.
+When the alias equals the host name, only `'host:port'` is shown.
+A direct connection keeps the plain paramiko message, except for the timeout and the failed login.
+The application adds no user names, passwords or key paths to these messages.
+The text of the underlying paramiko or operating system error is passed through unchanged.
+
+### Closing
+
+`SSHFilesystem.close()` closes the SFTP session and the target connection, then the jump connections nearest-first.
+A failed attempt closes everything it opened in the same order.
+Nothing calls `close()` for a connected filesystem yet; the connections end with the process.
+
+### Limits
+
+- `ProxyCommand` is never executed and never becomes a hop.
+  If it is set without `ProxyJump`, the app connects directly and writes one info line to the log.
+  With both set, `ProxyJump` is used.
+- `Include` is not followed.
+- `Match exec` and every other `Match` keyword outside the list above are never executed (see the host-key limits).
+- Tokens other than the ones paramiko expands (`%h`, `%p`, `%r` and the like) are not supported.
+- A jump host whose SSH server refuses `direct-tcpip` cannot be used.
 
 ---
 

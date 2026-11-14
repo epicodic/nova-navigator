@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import shlex
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
@@ -14,7 +15,9 @@ from nova_navigator.config import conf_
 from nova_navigator.config.remotes import RemoteConnection, SshSettings
 from nova_navigator.dialogs import CredentialsDialog
 from nova_navigator.plugins import FilesystemPlugin
-from nova_navigator.remotes.known_hosts import fingerprint, key_type_name
+from nova_navigator.remotes.known_hosts import KnownHostsLocations, fingerprint, key_type_name
+from nova_navigator.remotes.ssh_config import SshConfig
+from nova_navigator.remotes.ssh_route import Explicit, SshHop, SshRouteError, resolve_route
 from nova_navigator.terminal.shell_driver import detect_driver
 from nova_navigator.terminal.ssh_pty_backend import SshPtyBackend
 from nova_navigator.terminal.terminal import Terminal
@@ -22,9 +25,11 @@ from nova_navigator.vfs.filesystem import Filesystem
 from nova_navigator.vfs.filesystems import (
     ChangedHostKeyError,
     ConfirmedKeyMismatchError,
+    HopAuthenticationError,
     HostKeyError,
     RevokedHostKeyError,
     SSHFilesystem,
+    SshHopError,
     UnknownHostKeyError,
 )
 from nova_navigator.vfs.vpath import VPath
@@ -39,72 +44,112 @@ MISMATCH_TITLE = "Host Key Mismatch"
 SAVE_FAILURE_TITLE = "Host Key Not Saved"
 
 
+_MIN_TIMEOUT_SECONDS = 1.0
+
+
+@dataclass
+class _Attempt:
+    """Everything one connection needs; the dicts grow between attempts, never during one."""
+
+    ssh: SshSettings
+    route: list[SshHop]
+    username: str | None
+    timeout: float
+    locations: KnownHostsLocations
+    config: SshConfig
+    trusted: dict[str, paramiko.PKey] = field(default_factory=dict)
+    credentials: dict[int, tuple[str | None, str | None]] = field(default_factory=dict)
+
+
+def _connect_timeout() -> float:
+    """Return ``network.ssh_timeout`` in seconds, read per connection so a changed setting applies to the next one; at least one second."""
+    return max(float(conf_.settings.network.ssh_timeout), _MIN_TIMEOUT_SECONDS)
+
+
 async def connect_ssh(conn: RemoteConnection) -> SSHFilesystem | None:
     """Establish an SSH connection with interactive UI for host-key and credential prompts.
 
+    Resolves ssh_config aliases and ``ProxyJump`` chains (explicit values of *conn* win) and applies
+    ``network.ssh_timeout`` to every hop.
     Returns the connected `SSHFilesystem`, or `None` if the user cancelled, the host key was
     refused (changed, revoked or mismatched) or the connection failed.  `conn.ssh` must not be `None`.
     """
     assert conn.ssh is not None
     ssh = conn.ssh
-    fs = await _connect(conn.name, ssh.host, ssh.port or 22, ssh.user, ssh.identity_file, None)
+    locations = KnownHostsLocations.default()
+    config = await asyncio.to_thread(SshConfig.load, locations.config_paths)
+    try:
+        route = resolve_route(ssh.host, Explicit(ssh.user, ssh.port, ssh.identity_file), config)
+    except SshRouteError as exc:
+        _logger.warning("Cannot resolve the SSH route for %r: %s", conn.name, exc)
+        await _report_failure(conn.name, exc)
+        return None
+    username = ssh.user or config.lookup(ssh.host).user
+    fs = await _connect(conn.name, _Attempt(ssh, route, username, _connect_timeout(), locations, config))
     if fs is not None and fs.host_key_save_error is not None and fs.host_key_save_path is not None:
         await MessageBox(save_failure_message(fs.host_key_save_path, fs.host_key_save_error), title=SAVE_FAILURE_TITLE, variant="warning").run()
     return fs
 
 
-async def _connect(
-    name: str,
-    host: str,
-    port: int,
-    username: str | None,
-    identity_file: str | None,
-    trusted_key: paramiko.PKey | None,
-) -> SSHFilesystem | None:
-    """Connect once; *trusted_key* is the host key the user confirmed (``None`` on the first attempt)."""
-    try:
-        return await asyncio.to_thread(SSHFilesystem, host, port, username, identity_file, None, trusted_host_key=trusted_key)
-    except UnknownHostKeyError as exc:
-        _logger.warning("Unknown host key for %r: %s %s", name, exc.key_type, exc.fingerprint)
-        confirm = MessageBox(unknown_host_message(exc), title=UNKNOWN_TITLE, buttons=[Response.OK, Response.CANCEL], variant="warning")
-        if await confirm.run() != Response.OK:
+async def _connect(name: str, attempt: _Attempt) -> SSHFilesystem | None:
+    """Connect; every question (unknown key, credentials) is asked between attempts and the chain restarts afterwards.
+
+    Earlier hops reconnect without new questions: their keys are stored and their typed credentials kept in *attempt*.
+    """
+    ssh = attempt.ssh
+    while True:
+        try:
+            return await asyncio.to_thread(
+                SSHFilesystem,
+                ssh.host,
+                ssh.port or 22,
+                attempt.username,
+                None,
+                None,
+                route=attempt.route,
+                connect_timeout=attempt.timeout,
+                trusted_host_keys=attempt.trusted,
+                credentials=attempt.credentials,
+                known_hosts=attempt.locations,
+                ssh_config=attempt.config,
+            )
+        except UnknownHostKeyError as exc:
+            if exc.hostname in attempt.trusted:  # confirmed already, yet asked again: never prompt in a loop
+                _logger.warning("Host key of %r was confirmed but is still unknown", exc.hostname)
+                await _report_failure(name, RuntimeError(f"The host key of {exc.hostname!r} is still not accepted after it was confirmed."))
+                return None
+            _logger.warning("Unknown host key for %r: %s %s", name, exc.key_type, exc.fingerprint)
+            confirm = MessageBox(unknown_host_message(exc), title=UNKNOWN_TITLE, buttons=[Response.OK, Response.CANCEL], variant="warning")
+            if await confirm.run() != Response.OK:
+                return None
+            attempt.trusted[exc.hostname] = exc.key
+        except HostKeyError as exc:  # revoked, changed or mismatched: refused, there is no way to accept
+            _logger.warning("Host key refused for %r: %s %s %s", name, type(exc).__name__, exc.key_type, exc.fingerprint)
+            await _show_refusal(exc)
             return None
-        return await _connect(name, host, port, username, identity_file, exc.key)
-    except HostKeyError as exc:  # revoked, changed or mismatched: refused, there is no way to accept
-        _logger.warning("Host key refused for %r: %s %s %s", name, type(exc).__name__, exc.key_type, exc.fingerprint)
-        await _show_refusal(exc)
-        return None
-    except paramiko.AuthenticationException:
-        return await _prompt_credentials(host, port, username, trusted_key)
-    except Exception as exc:
-        _logger.exception("SSH connection error for %r: %s", name, exc)
-        return await _report_failure(name, exc)
+        except HopAuthenticationError as exc:
+            if exc.index in attempt.credentials:  # the typed credentials were wrong: no second prompt
+                _logger.warning("SSH password auth failed for hop %d of %r", exc.index, name)
+                await _report_failure(name, exc)
+                return None
+            dialog = CredentialsDialog(exc.hop.hostname, exc.hop.user or "")
+            if await dialog.run() != Response.OK:
+                return None
+            creds = dialog.credentials
+            attempt.credentials[exc.index] = (creds.username or None, creds.password or None)
+        except SshHopError as exc:  # includes SshConnectTimeoutError: expected failures, no traceback
+            _logger.warning("SSH connection to %r failed: %s", name, exc)
+            await _report_failure(name, exc)
+            return None
+        except Exception as exc:
+            _logger.exception("SSH connection error for %r: %s", name, exc)
+            await _report_failure(name, exc)
+            return None
 
 
 async def _report_failure(name: str, exc: Exception) -> None:
-    """Tell the user the connection failed and return `None`."""
+    """Tell the user the connection failed."""
     await MessageBox(f"Could not connect to {name!r}:\n{exc}", variant="error").run()
-
-
-async def _prompt_credentials(hostname: str, port: int, username: str | None, trusted_key: paramiko.PKey | None) -> SSHFilesystem | None:
-    """Show the credentials dialog and attempt a password-based SSH connection.
-
-    *trusted_key* is carried over so a confirmed host key is not asked about again.
-    Returns the connected `SSHFilesystem`, or `None` if the user cancelled or auth failed.
-    """
-    cred_dialog = CredentialsDialog(hostname, username or "")
-    if await cred_dialog.run() != Response.OK:
-        return None
-    creds = cred_dialog.credentials
-    try:
-        return await asyncio.to_thread(SSHFilesystem, hostname, port, creds.username or None, None, creds.password or None, trusted_host_key=trusted_key)
-    except HostKeyError as exc:
-        await _show_refusal(exc)
-        return None
-    except Exception as exc:
-        _logger.exception("SSH password auth failed for %r: %s", hostname, exc)
-        await MessageBox(f"Could not connect to {hostname!r}:\n{exc}", variant="error").run()
-        return None
 
 
 def unknown_host_message(exc: UnknownHostKeyError) -> str:
