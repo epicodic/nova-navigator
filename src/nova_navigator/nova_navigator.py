@@ -53,7 +53,6 @@ from nova_navigator.dialogs.user_menu_input_dialog import InputField, UserMenuIn
 from nova_navigator.embedded_editor_keys import editor_key_actions
 from nova_navigator.filemanager.compare import CompareMode, compare_directories, identical_file_names
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
-from nova_navigator.filemanager.tasks import dummy_task
 from nova_navigator.local_copies.editor_session import EditorTarget, finish_editing, open_for_editing
 from nova_navigator.nova_navigator_core import (
     NovaNavigatorCore,
@@ -155,7 +154,6 @@ class MainScreen(ActionsSupport, Screen[None]):
         Action("Bookmarks", id="app.show_bookmarks", action="show_bookmarks", description="Open bookmarks dialog", shortcut="ctrl+b", show=True, bar_priority=80),
         Action("Local Copies", id="app.local_copies", action="local_copies", description="Manage local copies of remote files", shortcut="ctrl+e", show=True, bar_priority=85),
         Action("Hidden Files", id="browser.toggle_hidden", action="toggle_hidden", description="Toggle display of hidden files", shortcut="ctrl+h", show=False),
-        Action("Dummy Op", id="app.start_dummy_operation", action="start_dummy_operation", description="Start dummy operation (development)", shortcut="ctrl+d", show=False),
         Action("Go to Path…", id="browser.go_to_path", action="go_to_path", description="Navigate to a typed path", shortcut="ctrl+g", show=False),
         Action("Settings", id="app.settings", action="settings", description="Open application settings", shortcut="ctrl+f1", show=False, icon="gear"),
         Action("Connect to…", id="app.connect_to", action="connect_to", description="Connect to a remote server", shortcut="ctrl+shift+g", show=False),
@@ -812,11 +810,6 @@ class MainScreen(ActionsSupport, Screen[None]):
         )
         if job is not None:
             await self.app.start_job(job)
-
-    @work
-    async def action_start_dummy_operation(self) -> None:
-        job = Job("Dummy Operation", dummy_task)
-        await self.app.start_job(job)
 
     @work
     async def on_bookmarks_dialog_bookmark_selected(self, event: BookmarksDialog.BookmarkSelected) -> None:
