@@ -16,7 +16,6 @@ import fcntl
 import hashlib
 import logging
 import os
-import shlex
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -25,7 +24,8 @@ from typing import Literal
 
 import paramiko
 from paramiko.hostkeys import HostKeyEntry, HostKeys, InvalidHostKey
-from paramiko.ssh_exception import ConfigParseError
+
+from nova_navigator.remotes.ssh_config import SshConfig
 
 _logger = logging.getLogger(__name__)
 
@@ -66,6 +66,11 @@ class KnownHostsLocations:
     def under(cls, home: Path, etc_ssh: Path) -> KnownHostsLocations:
         """Return locations below *home* (``.ssh/``) and *etc_ssh*, for tests."""
         return cls(home / ".ssh" / "known_hosts", etc_ssh / "ssh_known_hosts", home / ".ssh" / "config", etc_ssh / "ssh_config")
+
+    @property
+    def config_paths(self) -> tuple[Path, Path]:
+        """Return the two ssh_config files in OpenSSH precedence order (user, then system)."""
+        return (self.user_config, self.system_config)
 
 
 @dataclass(frozen=True)
@@ -250,70 +255,9 @@ def append_host_key(path: Path, name: str, key: paramiko.PKey, *, hashed: bool) 
         os.close(fd)
 
 
-_CONFIG_ERRORS = (OSError, ConfigParseError, ValueError)
-
-
-_MATCH_KEYWORDS_WITH_ARGUMENT = frozenset({"host", "originalhost", "user", "localuser"})
-_MATCH_KEYWORDS_WITHOUT_ARGUMENT = frozenset({"all", "canonical", "final"})
-
-
-def _is_safe_match_line(line: str) -> bool:
-    """Return True if *line* is a ``Match`` line made only of keywords that never run a command.
-
-    Paramiko reads the line as ``key[=| ]value`` and then runs ``shlex.split`` on the value, so quoting and escaping
-    (``e"xec"``, ``exe''c``, backslash escapes) still yield the keyword ``exec``.  A substring check therefore cannot work;
-    this is an allowlist built on the same ``shlex`` tokenisation.  Anything unknown, a keyword without its
-    argument, a tokenisation error or ``Match=...`` (whose first token is not ``match``) is not safe.
-    """
-    try:
-        tokens = shlex.split(line.strip())
-    except ValueError:
-        return False
-    if not tokens or tokens[0].lower() != "match":
-        return False
-    rest = iter(tokens[1:])
-    for token in rest:
-        keyword = token.lower().removeprefix("!")
-        if keyword in _MATCH_KEYWORDS_WITH_ARGUMENT:
-            if next(rest, None) is None:
-                return False
-        elif keyword not in _MATCH_KEYWORDS_WITHOUT_ARGUMENT:
-            return False
-    return True
-
-
-def _neutralise_match_exec(text: str) -> str:
-    """Replace every ``Match`` line that is not made of known-safe keywords by ``Host !*``, keeping the line count.
-
-    Only ``host``, ``originalhost``, ``user``, ``localuser``, ``all``, ``canonical`` and ``final`` are kept; in
-    particular ``exec`` (which paramiko runs through a shell) never survives, however it is quoted.  Lines are split
-    on newline characters only and judged with ``str.strip()``, exactly like paramiko does, so no leading Unicode
-    whitespace can hide a command from this check.
-    """
-    lines = []
-    for line in text.split("\n"):
-        is_match = line.strip().lower().startswith("match")
-        lines.append("Host !*" if is_match and not _is_safe_match_line(line) else line)
-    return "\n".join(lines)
-
-
 def hash_known_hosts_enabled(hostname: str, config_paths: Sequence[Path]) -> bool:
-    """Return True if the effective ``HashKnownHosts`` for *hostname* is ``yes``.
+    """Return True if the effective ``HashKnownHosts`` for *hostname* is ``yes`` (first file with a value wins, as in OpenSSH).
 
-    *config_paths* are read in order (``~/.ssh/config`` then ``/etc/ssh/ssh_config``); the first file
-    that yields a value decides, as in OpenSSH.  ``Match`` lines other than known-safe keywords are replaced by
-    ``Host !*`` before parsing because ``SSHConfig.lookup`` would run an ``exec`` command through a shell.  ``Include`` is
-    not followed (paramiko limitation).  Nothing else is read from the files.
+    Reads through ``SshConfig``, which neutralises ``Match`` lines that could run a command.
     """
-    for path in config_paths:
-        try:
-            text = _neutralise_match_exec(path.read_text(encoding="utf-8", errors="replace"))
-            value = paramiko.SSHConfig.from_text(text).lookup(hostname).get("hashknownhosts")
-        except FileNotFoundError:
-            continue
-        except _CONFIG_ERRORS as exc:
-            _logger.info("Ignoring ssh_config %s: %s", path, type(exc).__name__)
-            continue
-        if value is not None:
-            return str(value).strip().lower() == "yes"
-    return False
+    return SshConfig.load(config_paths).lookup(hostname).hash_known_hosts
