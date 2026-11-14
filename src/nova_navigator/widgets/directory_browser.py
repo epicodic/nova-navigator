@@ -520,6 +520,7 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
     _loading: bool
     _pending: _PendingNavigation | None
     _item_colors: dict[str, str]
+    _hidden_names: frozenset[str]
 
     _empty_strip: Strip = Strip([])
     _columns: list[Column]
@@ -578,6 +579,7 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
         self._loading = False
         self._pending = None
         self._item_colors = {}
+        self._hidden_names = frozenset()
         # Saved cursor position before a reload; None when no hint is active.
         self._cursor_hint: DirectoryBrowser._CursorHint | None = None
         self._all_items = []
@@ -673,6 +675,8 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
             self._history.append(target)
             self._history_index = len(self._history) - 1
 
+        if target != self._path:
+            self._hidden_names = frozenset()
         self._path = target
         self.border_title = target.uri
         self.post_message(DirectoryBrowser.PathChanged(self, target))
@@ -708,6 +712,18 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
         self._item_colors = item_colors or {}
         self.refresh()
 
+    def set_hidden_names(self, names: frozenset[str] | None) -> None:
+        """Hide items by name, in addition to the text filter and the hidden-files rule.
+
+        The items stay in ``items``; only the shown list changes.
+        The names are cleared when the panel navigates to a different directory.
+
+        Args:
+            names: File names to hide, or None (or an empty set) to show them all again.
+        """
+        self._hidden_names = names or frozenset()
+        self.update(self.WhatChanged.FILTERING)
+
     class WhatChanged(int, Enum):
         ALL = 0
         SORTING = 1
@@ -741,11 +757,13 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
         self._all_items.sort(key=sorter, reverse=not self.sort_ascending)
 
         self._shown_items = [UP_PATH] if self._path.parent != self._path else []
-        if self.show_hidden_files and len(self._filter_widget.value) == 0:
+        if self.show_hidden_files and len(self._filter_widget.value) == 0 and not self._hidden_names:
             self._shown_items += self._all_items
         else:
 
             def filter_func(item: VPath) -> bool:
+                if not isinstance(item, UpPath) and item.name in self._hidden_names:
+                    return False
                 if not self.show_hidden_files and item.stat.is_hidden:
                     return False
                 if len(self._filter_widget.value) == 0:
@@ -791,6 +809,8 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
         """Append new items to _shown_items with filtering only (no sort)."""
         filter_text = self._filter_widget.value.lower()
         for item in new_items:
+            if item.name in self._hidden_names:
+                continue
             if not self.show_hidden_files and item.stat.is_hidden:
                 continue
             if filter_text and filter_text not in item.name.lower():

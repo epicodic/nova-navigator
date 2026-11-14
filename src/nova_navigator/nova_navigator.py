@@ -51,7 +51,7 @@ from nova_navigator.dialogs.response_dialog import make_response_dialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
 from nova_navigator.dialogs.user_menu_input_dialog import InputField, UserMenuInputDialog
 from nova_navigator.embedded_editor_keys import editor_key_actions
-from nova_navigator.filemanager.compare import CompareMode, compare_directories
+from nova_navigator.filemanager.compare import CompareMode, compare_directories, identical_file_names
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
 from nova_navigator.filemanager.tasks import dummy_task
 from nova_navigator.local_copies.editor_session import EditorTarget, finish_editing, open_for_editing
@@ -179,6 +179,14 @@ class MainScreen(ActionsSupport, Screen[None]):
         Action("Show Hidden Files", id="view.show_hidden_files", action="show_hidden_files", description="Toggle display of hidden files", checkable=True, checked=False, show=False),
         Action("Synchronized Browsing", id="view.sync_browsing", action="toggle_sync_browsing", description="Mirror navigation between panels", checkable=True, show=False),
         Action("Enable Compare", id="view.compare_enable", action="toggle_compare_enable", description="Enable directory comparison", checkable=True, show=False),
+        Action(
+            "Hide Identical Files",
+            id="view.compare_hide_identical",
+            action="toggle_hide_identical",
+            description="Hide files that are equal in both panels while compare is enabled",
+            checkable=True,
+            show=False,
+        ),
         # File operations (clipboard / open — no keyboard shortcut)
         Action("New File", id="file.new_file", action="new_file", description="Create a new file", show=False, icon="text"),
         Action("Open", id="file.open", action="open_path", description="Open the item under the cursor", show=False),
@@ -323,7 +331,7 @@ class MainScreen(ActionsSupport, Screen[None]):
                     ),
                 ),
                 mc.separator(),
-                mc.action("Hide Identical Files", checkable=True),
+                self._act("view.compare_hide_identical"),
                 name="compare_directories",
             ),
         )
@@ -588,6 +596,13 @@ class MainScreen(ActionsSupport, Screen[None]):
         )
         self._left_panel.set_item_colors(left_colors)
         self._right_panel.set_item_colors(right_colors)
+        hide = self._act("view.compare_hide_identical").checked
+        names = identical_file_names(self._left_panel.items, self._right_panel.items, self._compare_config.mode) if hide else frozenset()
+        self._left_panel.set_hidden_names(names)
+        self._right_panel.set_hidden_names(names)
+
+    def _action_toggle_hide_identical(self) -> None:
+        self._refresh_compare()
 
     def _action_toggle_compare_enable(self) -> None:
         a = self._act("view.compare_enable")
@@ -598,6 +613,8 @@ class MainScreen(ActionsSupport, Screen[None]):
             self._compare_config = None
             self._left_panel.set_item_colors(None)
             self._right_panel.set_item_colors(None)
+            self._left_panel.set_hidden_names(None)
+            self._right_panel.set_hidden_names(None)
 
     def _action_compare_by_size(self) -> None:
         if self._compare_config is not None:

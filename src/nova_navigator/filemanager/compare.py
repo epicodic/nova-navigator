@@ -73,3 +73,47 @@ def _files_differ(left: VPath, right: VPath, mode: CompareMode) -> bool:
     if lm == -1.0 or rm == -1.0:
         return False
     return lm != rm
+
+
+def _files_identical(left: VPath, right: VPath, mode: CompareMode) -> bool:
+    """Return True if two files with the same name are known to be equal according to *mode*.
+
+    Unknown values (-1 / -1.0) are never identical, the opposite default of ``_files_differ``.
+    """
+    if mode is CompareMode.BY_SIZE:
+        ls, rs = left.stat.size, right.stat.size
+        return ls != -1 and rs != -1 and ls == rs
+    # BY_MODIFICATION_TIME
+    lm, rm = left.stat.modified, right.stat.modified
+    return lm != -1.0 and rm != -1.0 and lm == rm
+
+
+def identical_file_names(
+    left_items: list[VPath],
+    right_items: list[VPath],
+    mode: CompareMode | None,
+) -> frozenset[str]:
+    """Return the names of files that are identical in both listings.
+
+    A name qualifies when it exists on both sides, neither side is a directory,
+    and the files are equal according to *mode*.
+
+    Args:
+        left_items: VPath items from the left panel (UpPath excluded).
+        right_items: VPath items from the right panel (UpPath excluded).
+        mode: Comparison criterion, or None (nothing is identical).
+
+    Returns:
+        The set of identical file names; empty when *mode* is None.
+    """
+    if mode is None:
+        return frozenset()
+    right_by_name: dict[str, VPath] = {p.name: p for p in right_items}
+    names: set[str] = set()
+    for left_item in left_items:
+        right_item = right_by_name.get(left_item.name)
+        if right_item is None or left_item.stat.is_directory or right_item.stat.is_directory:
+            continue
+        if _files_identical(left_item, right_item, mode):
+            names.add(left_item.name)
+    return frozenset(names)
