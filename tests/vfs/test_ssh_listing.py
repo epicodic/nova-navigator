@@ -12,7 +12,7 @@ import paramiko
 import pytest
 from paramiko.channel import ChannelFile, ChannelStderrFile, ChannelStdinFile
 
-from nova_navigator.vfs.filesystems.ssh import SSHFilesystem
+from nova_navigator.vfs.filesystems.ssh import _PROBE_COMMAND, SSHFilesystem
 from nova_navigator.vfs.vpath import VPath
 from tests._utils.stub_ssh_server import StubSSHServer
 
@@ -250,3 +250,15 @@ async def test_list_non_utf8_directory(fs: SSHFilesystem, tmp_path: Path, raw_na
     os.mkdir(raw)
     _write_bytes_named(raw + b"/inner.txt", b"x")
     assert await _names(fs, Path(os.fsdecode(raw))) == {"inner.txt"}
+
+
+@pytest.mark.asyncio
+async def test_gnu_host_never_probes_or_switches_to_sftp(fs: SSHFilesystem, tmp_path: Path) -> None:
+    (tmp_path / "f").write_text("")
+    (tmp_path / "empty").mkdir()
+    with _spy_exec(fs) as commands:
+        assert await _names(fs, tmp_path) == {"f", "empty"}
+        assert await _names(fs, tmp_path / "empty") == set()
+    assert _PROBE_COMMAND not in commands
+    assert len(commands) == 4  # two follow modes per directory, ADR-3
+    assert fs._listing_via_sftp is False

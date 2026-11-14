@@ -132,6 +132,34 @@ def _build_list_command(path: str, follow_symlinks: bool) -> str:
     return f"sh -c {shlex.quote(script)}"
 
 
+# Capability probe, run only after an unexplained listing failure: the production pipeline on "/" (always present and statable).
+_PROBE_SCRIPT = f"find / -maxdepth 0 -exec stat --printf '{_STAT_FORMAT}' -- {{}} +"
+_PROBE_COMMAND = f"sh -c {shlex.quote(_PROBE_SCRIPT)}"
+_NO_ERROR_TEXT = "listing command failed"
+
+
+@dataclass(frozen=True)
+class _CommandRun:
+    """Outcome of one remote command."""
+
+    stdout: bytes
+    stderr: str
+    exit_code: int
+
+
+_DANGLING_LINK_ERRORS = ("no such file or directory", "too many levels of symbolic links")
+
+
+def _only_dangling_link_errors(stderr: str) -> bool:
+    """True when every non-empty line of *stderr* reports a link that ``stat -L`` could not follow."""
+    lines = [line.lower() for line in stderr.splitlines() if line.strip()]
+    return bool(lines) and all(any(text in line for text in _DANGLING_LINK_ERRORS) for line in lines)
+
+
+class _ExecRefusedError(OSError):
+    """The server refused the exec request on a live transport (an SFTP-only account)."""
+
+
 def _parse_stat_output(output: bytes) -> dict[str, StatEntry]:
     """Parse NUL-separated ``stat --printf`` output (see ``_STAT_FORMAT``) into entries by name."""
     fields = output.split(b"\0")
@@ -855,6 +883,12 @@ class SSHFilesystem(Filesystem):
             self._login_dir = _login_directory(self._sftp_client)
         self._stat_cache: dict[tuple[str, bool], dict[str, StatEntry]] = {}
         self._stat_cache_lock = threading.Lock()
+        # Listing method of this connection: the GNU command first, SFTP for the rest of the connection once the remote
+        # proved to lack GNU find or stat or refused the exec request (ADR-7, DEC-32).
+        # _gnu_confirmed: GNU produced a listing, so never probe again.
+        self._listing_lock = threading.Lock()
+        self._listing_via_sftp = False
+        self._gnu_confirmed = False
         self._hostname = hostname
         self._port = port
         self._username = username
@@ -902,31 +936,89 @@ class SSHFilesystem(Filesystem):
     def home(self) -> VPath:
         return VPath(self._login_dir, self)
 
-    def _dir_stat(self, path: str, follow_symlinks: bool) -> dict[str, StatEntry]:
-        key = (path, follow_symlinks)
-        with self._stat_cache_lock:
-            if key in self._stat_cache:
-                return self._stat_cache[key]
-        command = _build_list_command(path, follow_symlinks)
+    def _run_command(self, command: str) -> _CommandRun:
+        """Run *command*; a refused exec request on a live transport raises ``_ExecRefusedError``, other SSH errors ``OSError``."""
+        _logger.debug("Running SSH stat command: %s", command)
         try:
-            _logger.debug("Running SSH stat command: %s", command)
             _, stdout, stderr = self._ssh_client.exec_command(command)
+        except paramiko.SSHException as exc:
+            transport = self._ssh_client.get_transport()
+            if transport is not None and transport.is_active():
+                raise _ExecRefusedError(str(exc)) from exc
+            raise OSError(str(exc)) from exc
+        try:
             output = stdout.read()
             stderr_output = stderr.read().decode("utf-8", "replace")
             _logger.debug("stderr: %s", stderr_output)
             exit_code = stdout.channel.recv_exit_status()
         except paramiko.SSHException as exc:
             raise OSError(str(exc)) from exc
-        if exit_code == _CD_FAILED_EXIT:
-            raise PermissionError(13, "Permission denied", path)
-        if not output and exit_code != 0:
-            err = stderr_output.lower()
-            if "permission denied" in err or "operation not permitted" in err:
-                raise PermissionError(13, "Permission denied", path)
-        result = _parse_stat_output(output)
+        return _CommandRun(output, stderr_output, exit_code)
+
+    def _cache_listing(self, key: tuple[str, bool], result: dict[str, StatEntry]) -> dict[str, StatEntry]:
         with self._stat_cache_lock:
             self._stat_cache[key] = result
         return result
+
+    def _dir_stat(self, path: str, follow_symlinks: bool) -> dict[str, StatEntry]:
+        key = (path, follow_symlinks)
+        with self._stat_cache_lock:
+            if key in self._stat_cache:
+                return self._stat_cache[key]
+        if self._listing_via_sftp:
+            return self._sftp_dir_stat(path, follow_symlinks)
+        try:
+            run = self._run_command(_build_list_command(path, follow_symlinks))
+        except _ExecRefusedError as exc:
+            # The exec itself cannot run, so no probe is needed (DEC-32).
+            return self._switch_to_sftp(path, follow_symlinks, str(exc))
+        if run.exit_code == _CD_FAILED_EXIT:
+            raise PermissionError(13, "Permission denied", path)
+        if run.exit_code == _CD_MISSING_EXIT:
+            return self._cache_listing(key, {})
+        if run.stdout:
+            result = _parse_stat_output(run.stdout)
+            if result:
+                self._gnu_confirmed = True
+                return self._cache_listing(key, result)
+        elif run.exit_code == 0:
+            # Genuinely empty.  This decides nothing about the tools: a non-GNU host also exits 0 for an empty directory.
+            return self._cache_listing(key, {})
+        else:
+            err = run.stderr.lower()
+            if "permission denied" in err or "operation not permitted" in err:
+                raise PermissionError(13, "Permission denied", path)
+        return self._after_unexplained_failure(path, follow_symlinks, run)
+
+    def _after_unexplained_failure(self, path: str, follow_symlinks: bool, run: _CommandRun) -> dict[str, StatEntry]:
+        """Handle a failed GNU listing that is neither a permission nor a missing-directory failure.
+
+        On a host where GNU works (confirmed earlier or by the probe) the failure is real and raised.
+        Otherwise the host lacks GNU find or stat and the connection lists through SFTP from now on.
+        """
+        message = next(iter(run.stderr.strip().splitlines()), _NO_ERROR_TEXT)
+        if self._gnu_confirmed or self._gnu_probe_succeeds():
+            if follow_symlinks and _only_dangling_link_errors(run.stderr):
+                # ``stat -L`` fails on links it cannot follow; a directory of only such links has no followed entries.
+                return self._cache_listing((path, follow_symlinks), {})
+            raise OSError(errno.EIO, message, path)
+        return self._switch_to_sftp(path, follow_symlinks, message)
+
+    def _switch_to_sftp(self, path: str, follow_symlinks: bool, reason: str) -> dict[str, StatEntry]:
+        with self._listing_lock:
+            first = not self._listing_via_sftp
+            self._listing_via_sftp = True
+        if first:
+            _logger.info("Listing SSH directories through SFTP: GNU find or stat unavailable (%s)", reason)
+        return self._sftp_dir_stat(path, follow_symlinks)
+
+    def _gnu_probe_succeeds(self) -> bool:
+        """Run the probe; a transport error raises ``OSError`` (a broken connection must not demote the listing method)."""
+        run = self._run_command(_PROBE_COMMAND)
+        works = run.exit_code == 0 and len(_parse_stat_output(run.stdout)) == 1
+        if works:
+            self._gnu_confirmed = True
+        return works
 
     def _store_listing(self, path: str, lstat_entries: dict[str, StatEntry], follow_entries: dict[str, StatEntry], follow_symlinks: bool) -> dict[str, StatEntry]:
         """Cache both passes of one listing and return the requested one."""

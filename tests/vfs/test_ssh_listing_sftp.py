@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Generator
+from collections.abc import Generator, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
 import paramiko
 import pytest
+from paramiko.channel import ChannelFile, ChannelStderrFile, ChannelStdinFile
 from paramiko.sftp import CMD_CLOSE, CMD_HANDLE, CMD_NAME, CMD_OPENDIR, CMD_READDIR
 
 from nova_navigator.vfs.filesystems import ssh as ssh_module
-from nova_navigator.vfs.filesystems.ssh import SSHFilesystem, StatEntry, _entry_from_attrs, _read_attrs, _sftp_readdir, _SftpAttrs
+from nova_navigator.vfs.filesystems.ssh import _PROBE_COMMAND, SSHFilesystem, StatEntry, _entry_from_attrs, _read_attrs, _sftp_readdir, _SftpAttrs
 from nova_navigator.vfs.vpath import VPath
 from tests._utils.stub_ssh_server import StubSSHServer
 
@@ -309,3 +311,234 @@ def test_readdir_open_failure_sends_no_close() -> None:
     with pytest.raises(PermissionError):
         _sftp_readdir(sftp, b"/d")
     assert [request[0] for request in sftp.requests] == [CMD_OPENDIR]
+
+
+# --- a non-GNU remote selects the SFTP listing --------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module", params=["illegal-option", "missing"])
+def non_gnu_server(request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory) -> Generator[StubSSHServer, None, None]:
+    server = StubSSHServer(root_dir=tmp_path_factory.mktemp("ssh_non_gnu_root"), non_gnu=request.param)
+    server.start()
+    yield server
+    server.stop()
+
+
+@pytest.fixture
+def sftp_fs(non_gnu_server: StubSSHServer) -> Generator[SSHFilesystem, None, None]:
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(_AcceptAnyHostKey())
+    filesystem = SSHFilesystem(hostname=non_gnu_server.host, port=non_gnu_server.port, username="testuser", password=_LOGIN_WORD, ssh_client=client)
+    yield filesystem
+    client.close()
+
+
+@pytest.fixture(scope="module")
+def refusing_server(tmp_path_factory: pytest.TempPathFactory) -> Generator[StubSSHServer, None, None]:
+    server = StubSSHServer(root_dir=tmp_path_factory.mktemp("ssh_refuse_exec_root"), refuse_exec=True)
+    server.start()
+    yield server
+    server.stop()
+
+
+@pytest.fixture
+def refusing_fs(refusing_server: StubSSHServer) -> Generator[SSHFilesystem, None, None]:
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(_AcceptAnyHostKey())
+    filesystem = SSHFilesystem(hostname=refusing_server.host, port=refusing_server.port, username="testuser", password=_LOGIN_WORD, ssh_client=client)
+    yield filesystem
+    client.close()
+
+
+@contextmanager
+def _spy_exec(filesystem: SSHFilesystem) -> Iterator[list[str]]:
+    commands: list[str] = []
+    original = filesystem._ssh_client.exec_command
+
+    def spy(command: str) -> tuple[ChannelStdinFile, ChannelFile, ChannelStderrFile]:
+        commands.append(command)
+        return original(command)
+
+    with patch.object(filesystem._ssh_client, "exec_command", side_effect=spy):
+        yield commands
+
+
+async def _snapshot(filesystem: SSHFilesystem, directory: Path) -> dict[str, tuple[object, ...]]:
+    result: dict[str, tuple[object, ...]] = {}
+    async for vp in filesystem.iterdir(VPath(directory, filesystem)):
+        st = vp.stat
+        result[vp.name] = (st.size, st.modified, st.mode, st.is_hidden, st.is_directory, st.is_executable, st.is_symlink, st.is_broken_symlink)
+    return result
+
+
+async def _names(filesystem: SSHFilesystem, directory: Path) -> list[str]:
+    return [vp.name async for vp in filesystem.iterdir(VPath(directory, filesystem))]
+
+
+@pytest.mark.asyncio
+async def test_non_gnu_listing_has_the_same_entries_and_attributes_as_the_gnu_listing(fs: SSHFilesystem, sftp_fs: SSHFilesystem, tmp_path: Path) -> None:
+    _make_tree(tmp_path)
+    via_sftp = await _snapshot(sftp_fs, tmp_path)
+    via_gnu = await _snapshot(fs, tmp_path)
+    assert sftp_fs._listing_via_sftp is True
+    assert fs._listing_via_sftp is False
+    assert via_sftp == via_gnu
+    # tuple order: size, modified, mode, is_hidden, is_directory, is_executable, is_symlink, is_broken_symlink
+    assert via_sftp["link_to_folder"][4] is True  # a link to a folder is a folder
+    assert (via_sftp["link_to_folder"][6], via_sftp["link_to_folder"][7]) == (True, False)
+    assert via_sftp["broken"][4:] == (False, False, True, True)  # broken link: not a folder, a link, marked broken
+    assert via_sftp["loop"][-1] is True
+    assert via_sftp[".hidden"][3] is True
+    assert via_sftp["run.sh"][5] is True  # executable flag
+    assert via_sftp["file.txt"][0] == os.lstat(tmp_path / "file.txt").st_size
+    assert via_sftp["file.txt"][1] == int(os.lstat(tmp_path / "file.txt").st_mtime)
+
+
+@pytest.mark.asyncio
+async def test_non_gnu_first_listing_of_a_non_empty_directory_is_never_empty(sftp_fs: SSHFilesystem, tmp_path: Path) -> None:
+    (tmp_path / "a").write_text("x")
+    assert await _names(sftp_fs, tmp_path) == ["a"]
+    assert sftp_fs._listing_via_sftp is True
+
+
+@pytest.mark.asyncio
+async def test_non_gnu_directory_with_only_symlinks_lists_them(sftp_fs: SSHFilesystem, tmp_path: Path) -> None:
+    (tmp_path / "one").symlink_to("missing")
+    (tmp_path / "two").symlink_to(".", target_is_directory=True)
+    assert sorted(await _names(sftp_fs, tmp_path)) == ["one", "two"]
+
+
+@pytest.mark.asyncio
+async def test_non_gnu_empty_directory_listed_first_does_not_decide_the_method(sftp_fs: SSHFilesystem, tmp_path: Path) -> None:
+    (tmp_path / "empty").mkdir()
+    (tmp_path / "full").mkdir()
+    (tmp_path / "full" / "f").write_text("x")
+    assert await _names(sftp_fs, tmp_path / "empty") == []
+    assert sftp_fs._listing_via_sftp is False
+    assert await _names(sftp_fs, tmp_path / "full") == ["f"]
+    assert sftp_fs._listing_via_sftp is True
+
+
+@pytest.mark.asyncio
+async def test_non_gnu_switch_costs_one_probe_and_later_listings_run_no_command(sftp_fs: SSHFilesystem, tmp_path: Path) -> None:
+    for directory in ("first", "second"):
+        (tmp_path / directory).mkdir()
+        (tmp_path / directory / "f").write_text("x")
+        (tmp_path / directory / "link").symlink_to("f")
+    with _spy_exec(sftp_fs) as commands:
+        await _names(sftp_fs, tmp_path / "first")
+        assert len(commands) == 2
+        assert commands.count(_PROBE_COMMAND) == 1
+        await _names(sftp_fs, tmp_path / "second")
+        assert len(commands) == 2  # zero exec calls after the switch
+    assert sftp_fs._listing_via_sftp is True
+
+
+@pytest.mark.asyncio
+async def test_sftp_mode_lists_a_directory_once_for_both_follow_modes(sftp_fs: SSHFilesystem, tmp_path: Path) -> None:
+    (tmp_path / "f").write_text("x")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "g").write_text("x")
+    await _names(sftp_fs, tmp_path)  # decides the method
+    with patch.object(ssh_module, "_sftp_readdir", wraps=ssh_module._sftp_readdir) as readdir:
+        await _names(sftp_fs, tmp_path / "sub")
+        await _names(sftp_fs, tmp_path / "sub")
+        assert readdir.call_count == 1
+        sftp_fs.refresh(VPath(tmp_path / "sub", sftp_fs))
+        await _names(sftp_fs, tmp_path / "sub")
+        assert readdir.call_count == 2
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+@pytest.mark.asyncio
+async def test_non_gnu_unreadable_first_directory_raises_without_switching(sftp_fs: SSHFilesystem, tmp_path: Path) -> None:
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "f").write_text("")
+    locked.chmod(0o000)
+    try:
+        with pytest.raises(PermissionError):
+            await _names(sftp_fs, locked)
+    finally:
+        locked.chmod(0o755)
+    assert sftp_fs._listing_via_sftp is False
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+@pytest.mark.asyncio
+async def test_non_gnu_unreadable_directory_after_the_switch_raises_permission_error(sftp_fs: SSHFilesystem, tmp_path: Path) -> None:
+    (tmp_path / "ok").mkdir()
+    (tmp_path / "ok" / "f").write_text("x")
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "f").write_text("")
+    await _names(sftp_fs, tmp_path / "ok")
+    assert sftp_fs._listing_via_sftp is True
+    locked.chmod(0o000)
+    try:
+        with pytest.raises(PermissionError):
+            await _names(sftp_fs, locked)
+    finally:
+        locked.chmod(0o755)
+
+
+@pytest.mark.parametrize("switched", [False, True])
+@pytest.mark.asyncio
+async def test_non_gnu_missing_directory_and_file_path_list_empty(sftp_fs: SSHFilesystem, tmp_path: Path, switched: bool) -> None:
+    (tmp_path / "plain").write_text("x")
+    if switched:
+        (tmp_path / "d").mkdir()
+        (tmp_path / "d" / "f").write_text("x")
+        await _names(sftp_fs, tmp_path / "d")
+        assert sftp_fs._listing_via_sftp is True
+    assert await _names(sftp_fs, tmp_path / "nope") == []
+    assert await _names(sftp_fs, tmp_path / "plain") == []
+
+
+@pytest.mark.asyncio
+async def test_non_gnu_odd_names_list_exactly_once(sftp_fs: SSHFilesystem, tmp_path: Path) -> None:
+    for name in _AWKWARD:
+        (tmp_path / name).write_text(name)
+    _write_bytes_named(os.fsencode(tmp_path) + b"/bad\xffname", b"bad")
+    names = await _names(sftp_fs, tmp_path)
+    assert sorted(names) == sorted([*_AWKWARD, os.fsdecode(b"bad\xffname")])
+
+
+@pytest.mark.usefixtures("stub_surrogateescape")
+@pytest.mark.asyncio
+async def test_non_gnu_non_utf8_name_round_trips(sftp_fs: SSHFilesystem, tmp_path: Path) -> None:
+    _write_bytes_named(os.fsencode(tmp_path) + b"/bad\xffname", b"payload")
+    entries = {vp.name: vp async for vp in sftp_fs.iterdir(VPath(tmp_path, sftp_fs))}
+    vp = entries[os.fsdecode(b"bad\xffname")]
+    assert sftp_fs.stat(vp).size == len(b"payload")
+    reader = sftp_fs.read(vp)
+    assert reader.read(1024) == b"payload"
+    reader.close()
+
+
+@pytest.mark.asyncio
+async def test_non_gnu_stat_of_entries(sftp_fs: SSHFilesystem, tmp_path: Path) -> None:
+    _make_tree(tmp_path)
+    await _names(sftp_fs, tmp_path)
+    assert sftp_fs._listing_via_sftp is True
+    assert sftp_fs.stat(VPath(tmp_path / "file.txt", sftp_fs)).size == len("hello")
+    assert sftp_fs.stat(VPath(tmp_path / "link_to_folder", sftp_fs)).is_directory is True
+    broken = sftp_fs.stat(VPath(tmp_path / "broken", sftp_fs))
+    assert (broken.is_symlink, broken.is_broken_symlink, broken.is_directory) == (True, True, False)
+    with pytest.raises(FileNotFoundError):
+        sftp_fs.stat(VPath(tmp_path / "nope", sftp_fs))
+
+
+@pytest.mark.asyncio
+async def test_dir_stat_refused_exec_switches_to_sftp(fs: SSHFilesystem, refusing_fs: SSHFilesystem, tmp_path: Path) -> None:
+    """DEC-32: a server that refuses the exec request lists through SFTP, stickily, with the same entries as the GNU listing."""
+    _make_tree(tmp_path)
+    (tmp_path / "second").mkdir()
+    with _spy_exec(refusing_fs) as commands:
+        via_sftp = await _snapshot(refusing_fs, tmp_path)
+        assert refusing_fs._listing_via_sftp is True
+        assert len(commands) == 1  # the refused list command; no probe
+        await _names(refusing_fs, tmp_path / "second")
+        assert len(commands) == 1  # sticky: no further exec attempts
+    assert set(via_sftp) >= {"file.txt", "run.sh", ".hidden", "folder", "link_to_file", "link_to_folder", "broken", "loop"}
+    assert via_sftp == await _snapshot(fs, tmp_path)
