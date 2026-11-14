@@ -29,6 +29,7 @@ from nova_navigator.vfs.filesystems import (
     HostKeyError,
     RevokedHostKeyError,
     SSHFilesystem,
+    SshHopError,
     UnknownHostKeyError,
 )
 from nova_navigator.vfs.vpath import VPath
@@ -113,6 +114,10 @@ async def _connect(name: str, attempt: _Attempt) -> SSHFilesystem | None:
                 ssh_config=attempt.config,
             )
         except UnknownHostKeyError as exc:
+            if exc.hostname in attempt.trusted:  # confirmed already, yet asked again: never prompt in a loop
+                _logger.warning("Host key of %r was confirmed but is still unknown", exc.hostname)
+                await _report_failure(name, RuntimeError(f"The host key of {exc.hostname!r} is still not accepted after it was confirmed."))
+                return None
             _logger.warning("Unknown host key for %r: %s %s", name, exc.key_type, exc.fingerprint)
             confirm = MessageBox(unknown_host_message(exc), title=UNKNOWN_TITLE, buttons=[Response.OK, Response.CANCEL], variant="warning")
             if await confirm.run() != Response.OK:
@@ -132,6 +137,10 @@ async def _connect(name: str, attempt: _Attempt) -> SSHFilesystem | None:
                 return None
             creds = dialog.credentials
             attempt.credentials[exc.index] = (creds.username or None, creds.password or None)
+        except SshHopError as exc:  # includes SshConnectTimeoutError: expected failures, no traceback
+            _logger.warning("SSH connection to %r failed: %s", name, exc)
+            await _report_failure(name, exc)
+            return None
         except Exception as exc:
             _logger.exception("SSH connection error for %r: %s", name, exc)
             await _report_failure(name, exc)

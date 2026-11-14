@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shlex
 from pathlib import Path
@@ -11,9 +12,11 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Label
 
+from nova_navigator.remotes import ssh as ssh_module
 from nova_navigator.remotes.known_hosts import fingerprint, read_known_hosts
 from nova_navigator.remotes.ssh import changed_host_message, connect_ssh, save_failure_message
-from nova_navigator.vfs.filesystems.ssh import ChangedHostKeyError
+from nova_navigator.remotes.ssh_route import SshHop
+from nova_navigator.vfs.filesystems.ssh import ChangedHostKeyError, SshConnectTimeoutError, UnknownHostKeyError
 from nova_widgets import Response
 from tests._utils.known_hosts_files import key_line, make_key
 from tests._utils.stub_ssh_server import make_host_key
@@ -42,6 +45,35 @@ async def test_unknown_ok_connects_and_stores_key(flow_env: FlowEnv) -> None:
         assert FakeCredentialsDialog.runs == 1
     finally:
         fs._ssh_client.close()
+
+
+@pytest.mark.asyncio
+async def test_key_that_stays_unknown_after_confirmation_is_not_asked_again(flow_env: FlowEnv, monkeypatch: pytest.MonkeyPatch) -> None:
+    def always_unknown(*_args: object, **_kwargs: object) -> None:
+        raise UnknownHostKeyError("h.example", flow_env.server.host_key)
+
+    monkeypatch.setattr(ssh_module, "SSHFilesystem", always_unknown)
+
+    assert await connect_ssh(flow_env.connection) is None
+
+    assert [b.title for b in flow_env.boxes] == [_UNKNOWN_TITLE, "Error"]
+    assert flow_env.boxes[1].variant == "error"
+    assert "still not accepted" in flow_env.boxes[1].message
+
+
+@pytest.mark.asyncio
+async def test_timeout_is_logged_as_warning_without_traceback(flow_env: FlowEnv, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    def times_out(*_args: object, **_kwargs: object) -> None:
+        raise SshConnectTimeoutError([SshHop("h", "h.example", 22, None, ())], 0, 5)
+
+    monkeypatch.setattr(ssh_module, "SSHFilesystem", times_out)
+    with caplog.at_level(logging.DEBUG, logger=ssh_module.__name__):
+        assert await connect_ssh(flow_env.connection) is None
+
+    records = [r for r in caplog.records if r.name == ssh_module.__name__]
+    assert [r.levelno for r in records] == [logging.WARNING]
+    assert records[0].exc_info is None
+    assert flow_env.boxes[0].variant == "error"
 
 
 @pytest.mark.asyncio

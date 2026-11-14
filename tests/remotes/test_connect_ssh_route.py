@@ -421,21 +421,25 @@ async def _timed_failure(route_env: RouteEnv, port: int) -> float:
 
 @pytest.mark.asyncio
 async def test_changed_timeout_setting_applies_to_the_next_connection(route_env: RouteEnv, default_settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
-    silent = SilentServer()
-    silent.start()
-    try:
-        default_settings.network.ssh_timeout = 1
-        assert await _timed_failure(route_env, silent.port) < 3.5
+    route_env.trust_target()
+    ssh = SshSettings(host=route_env.target.host, port=route_env.target.port, user=_USER, identity_file=route_env.identity)
+    conn = RemoteConnection(name="t", ssh=ssh)
 
-        default_settings.network.ssh_timeout = 2
-        assert await _timed_failure(route_env, silent.port) >= 1.8
+    async def connect_once() -> None:
+        fs = await connect_ssh(conn)
+        assert fs is not None
+        fs.close()
 
-        replaced = Settings()
-        replaced.network.ssh_timeout = 1
-        monkeypatch.setattr(ssh_module.conf_, "settings", replaced, raising=False)
-        assert await _timed_failure(route_env, silent.port) < 1.8
-    finally:
-        silent.stop()
+    default_settings.network.ssh_timeout = 1
+    await connect_once()
+    default_settings.network.ssh_timeout = 2
+    await connect_once()
+    replaced = Settings()
+    replaced.network.ssh_timeout = 1
+    monkeypatch.setattr(ssh_module.conf_, "settings", replaced, raising=False)
+    await connect_once()
+
+    assert route_env.flow.timeouts == [1.0, 2.0, 1.0]
 
 
 @pytest.mark.asyncio

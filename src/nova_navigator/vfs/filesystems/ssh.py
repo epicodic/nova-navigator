@@ -321,6 +321,14 @@ class _Deadline:
             self._done = True  # a timer that fires after a successful hop must not close its resources
         self._timer.cancel()
 
+    def finish(self) -> bool:
+        """Mark the hop done so the watchdog can no longer close it; return False if the deadline already expired (resources are closed)."""
+        with self._lock:
+            if self._expired.is_set() or time.monotonic() >= self._end:
+                return False
+            self._done = True
+            return True
+
     @property
     def expired(self) -> bool:
         return self._expired.is_set() or time.monotonic() >= self._end
@@ -518,6 +526,10 @@ def _connect_hop(
             client, save_error = _connect_checked(hop.hostname, hop.port, username, key_filename, password, trusted, ctx.locations, link=link, ssh_config=ctx.ssh_config, alias=hop.alias)
             try:
                 sftp = client.open_sftp() if open_sftp else None
+                if not deadline.finish():  # the watchdog fired in the last step: the hop is not usable
+                    if sftp is not None:
+                        _run_closer(sftp.close)
+                    raise SshConnectTimeoutError(route, index, deadline.seconds)
             except BaseException:
                 client.close()
                 raise

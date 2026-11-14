@@ -194,7 +194,8 @@ A failed login reads `Authentication failed for jump host 'alias' (host:port).`
 The role word is `target host` for the last hop of a route with jumps and plain `host` for a direct connection.
 When the alias equals the host name, only `'host:port'` is shown.
 A direct connection keeps the plain paramiko message, except for the timeout and the failed login.
-Messages never contain user names, passwords or key paths.
+The application adds no user names, passwords or key paths to these messages.
+The text of the underlying paramiko or operating system error is passed through unchanged.
 
 ### Closing
 

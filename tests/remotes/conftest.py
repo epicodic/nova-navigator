@@ -87,6 +87,7 @@ class FlowEnv:
         self.locations = locations
         self.identity = identity
         self.constructions = 0
+        self.timeouts: list[float] = []
 
     @property
     def name(self) -> str:
@@ -132,6 +133,7 @@ def flow_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[FlowE
     class _Counting(SSHFilesystem):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             env.constructions += 1
+            env.timeouts.append(kwargs["connect_timeout"])
             super().__init__(*args, **kwargs)
 
     monkeypatch.setattr(ssh_module, "MessageBox", FakeMessageBox)
