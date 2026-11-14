@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 from typing import Protocol, Self, cast, override
 
@@ -516,8 +516,8 @@ class _RouteContext:
     ssh_config: SshConfig
     connect_timeout: float
     trusted_host_keys: Mapping[str, paramiko.PKey]
-    credentials: Mapping[int, HopCredentials]
-    target_password: str | None
+    credentials: Mapping[int, HopCredentials] = field(repr=False)
+    target_password: str | None = field(repr=False)
 
 
 @dataclass
