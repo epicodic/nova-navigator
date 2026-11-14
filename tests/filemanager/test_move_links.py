@@ -28,7 +28,7 @@ async def test_move_file_over_dir_containing_outside_link_keeps_dir(tmp_path: Pa
     (dst / "a" / "out").symlink_to(outside, target_is_directory=True)
     fs = LocalFilesystem()
     await run_task(lambda ctx: move_files(ctx, [fs.path(src / "a")], fs.path(dst), FileCopyOptions(overwrite="overwrite")))
-    # A file never replaces a folder (REQ-32): the folder, its link and the link target stay, the source stays.
+    # A file never replaces a folder: the folder, its link and the link target stay, the source stays.
     assert (dst / "a" / "out").is_symlink()
     assert (src / "a").read_bytes() == b"new"
     assert sorted(p.name for p in outside.iterdir()) == ["keep.txt"]
@@ -81,7 +81,7 @@ async def test_move_dir_link_over_real_dir_same_device_is_skipped(tmp_path: Path
     (dst / "lnk" / "x.txt").write_text("x")
     fs = LocalFilesystem()
     await run_task(lambda ctx: move_files(ctx, [fs.path(src / "lnk")], fs.path(dst), FileCopyOptions(overwrite="overwrite")))
-    # A link never replaces a real folder (REQ-32): the folder stays, the source link stays.
+    # A link never replaces a real folder: the folder stays, the source link stays.
     assert not (dst / "lnk").is_symlink()
     assert (dst / "lnk" / "x.txt").read_text() == "x"
     assert (src / "lnk").is_symlink()

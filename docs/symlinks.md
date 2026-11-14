@@ -125,12 +125,15 @@ The replacement is remove-then-write on every filesystem, without a temporary fi
 Between the removal and the end of the write the destination has no entry.
 When the write fails or is cancelled, the removed link is put back from its `readlink` text, on a best-effort basis.
 The restored link is a new inode with a new mtime.
+When a destination link cannot be read, it is still replaced, but it cannot be restored after a failed write.
 A hard kill between the removal and the end of the write leaves the destination absent.
 
 A regular destination file is still truncated and written in place.
 A filesystem without links, such as an archive, never has a link removed.
 
-The destination listing is refreshed once per job, at the entry of `copy_files` and `_move_path`.
+The destination listing is refreshed once per job.
+`copy_files` does it at its entry.
+`_move_path` does it only in the cross-device branch, where files are copied.
 This matters for SSH, where the cached `Stat` could be stale.
 Type changes by another process between the stat and the write are not detected.
 

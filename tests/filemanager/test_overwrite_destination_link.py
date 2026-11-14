@@ -1,4 +1,4 @@
-"""A file copied or moved onto a destination symlink replaces the link and never writes through it (REQ-31)."""
+"""A file copied or moved onto a destination symlink replaces the link and never writes through it."""
 
 import asyncio
 import os
@@ -337,6 +337,51 @@ async def test_failed_write_restores_removed_link() -> None:
 
     assert dst_fs.readlink(dst_fs.path("/dst/l")) == "/elsewhere/f"
     assert read_all(dst_fs, "/elsewhere/f") == _TARGET
+
+
+@pytest.mark.asyncio
+async def test_failed_writer_close_restores_removed_link() -> None:
+    src_fs = MockFilesystem({"/elsewhere/src.txt": b"data"})
+    dst_fs = MockFilesystem(
+        {"/elsewhere/f": _TARGET},
+        links={"/dst/l": "/elsewhere/f"},
+        write_close_errors={"/dst/l": OSError("flush failed")},
+    )
+
+    with pytest.raises(OSError, match="flush failed"):
+        await run_task(lambda ctx: copy_file(ctx, src_fs.path("/elsewhere/src.txt"), dst_fs.path("/dst/l"), FileCopyOptions(overwrite="overwrite")))
+
+    assert dst_fs.readlink(dst_fs.path("/dst/l")) == "/elsewhere/f"
+    assert read_all(dst_fs, "/elsewhere/f") == _TARGET
+
+
+@pytest.mark.asyncio
+async def test_failed_reader_close_restores_removed_link_and_removes_partial_file() -> None:
+    src_fs = MockFilesystem({"/elsewhere/src.txt": b"data"}, read_close_errors={"/elsewhere/src.txt": OSError("close failed")})
+    dst_fs = MockFilesystem({"/elsewhere/f": _TARGET}, links={"/dst/l": "/elsewhere/f"})
+
+    with pytest.raises(OSError, match="close failed"):
+        await run_task(lambda ctx: copy_file(ctx, src_fs.path("/elsewhere/src.txt"), dst_fs.path("/dst/l"), FileCopyOptions(overwrite="overwrite")))
+
+    assert dst_fs.writers[0].close_count == 1
+    assert dst_fs.readlink(dst_fs.path("/dst/l")) == "/elsewhere/f"
+    assert read_all(dst_fs, "/elsewhere/f") == _TARGET
+
+
+@pytest.mark.asyncio
+async def test_failed_write_with_failing_close_keeps_original_error_and_restores_link() -> None:
+    src_fs = MockFilesystem({"/elsewhere/src.txt": b"data"}, read_close_errors={"/elsewhere/src.txt": OSError("close failed")})
+    dst_fs = MockFilesystem(
+        {"/elsewhere/f": _TARGET},
+        links={"/dst/l": "/elsewhere/f"},
+        write_errors={"/dst/l": OSError("disk full")},
+        write_close_errors={"/dst/l": OSError("flush failed")},
+    )
+
+    with pytest.raises(OSError, match="disk full"):
+        await run_task(lambda ctx: copy_file(ctx, src_fs.path("/elsewhere/src.txt"), dst_fs.path("/dst/l"), FileCopyOptions(overwrite="overwrite")))
+
+    assert dst_fs.readlink(dst_fs.path("/dst/l")) == "/elsewhere/f"
 
 
 @pytest.mark.asyncio

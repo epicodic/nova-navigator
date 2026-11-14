@@ -10,7 +10,7 @@ from nova_widgets import Response
 
 from ..file_filter import FileFilter
 from ..vfs import VPath
-from ..vfs.filesystem import Filesystem
+from ..vfs.filesystem import Filesystem, StreamReaderLike, StreamWriterLike
 from ..vfs.types import Stat
 from .link_target import stable_link_target
 
@@ -98,18 +98,30 @@ async def _overwrite_allowed(ctx: TaskContext, src: VPath, dst: VPath, options: 
 
 @dataclass(frozen=True)
 class _Claim:
-    """Outcome of ``_claim_file_destination``: whether to write, and the text of a destination link that was removed."""
+    """Outcome of ``_claim_file_destination``.
+
+    ``proceed`` tells whether to write.
+    ``removed_link_text`` is the text of a destination link that was removed, if any.
+    """
 
     proceed: bool
     removed_link_text: str | None = None
 
 
-async def _claim_file_destination(ctx: TaskContext, src: VPath, dst: VPath, options: FileCopyOptions, label: str) -> _Claim:
-    """Decide what happens at *dst* before a file is written there (REQ-31); one decision per entry, link-first.
+async def _claim_file_destination(
+    ctx: TaskContext,
+    src: VPath,
+    dst: VPath,
+    options: FileCopyOptions,
+    label: str,
+) -> _Claim:
+    """Decide what happens at *dst* before a file is written there.
 
-    Absent: proceed. A real folder is skipped ("folder exists") without a question under any policy,
-    so it does not consume an ALL/NONE answer. Anything else goes through the overwrite policy once.
-    A destination link is removed itself (never followed) so the write cannot reach its target.
+    An absent destination proceeds.
+    A real folder is skipped as "folder exists" without a question under any policy.
+    Such a skip does not consume an ALL/NONE answer.
+    Anything else goes through the overwrite policy once.
+    A destination link is removed itself, never followed, so the write cannot reach its target.
     """
     stat = dst.stat_or_none
     if stat is None:
@@ -129,11 +141,21 @@ async def _claim_file_destination(ctx: TaskContext, src: VPath, dst: VPath, opti
 
 
 def _restore_link(dst: VPath, claim: _Claim) -> None:
-    """Put back a destination link that ``_claim_file_destination`` removed, best effort (DEC-41 Q3)."""
+    """Put back a destination link that ``_claim_file_destination`` removed, best effort."""
     if claim.removed_link_text is None:
         return
     with contextlib.suppress(Exception):
         dst.filesystem.symlink(dst, claim.removed_link_text)
+
+
+def _close_streams(reader: StreamReaderLike | None, writer: StreamWriterLike | None) -> None:
+    """Close the reader and then the writer; the writer is closed even if the reader close raises."""
+    try:
+        if reader:
+            reader.close()
+    finally:
+        if writer:
+            writer.close()
 
 
 DirOutcome = Literal["created", "merged", "skipped"]
@@ -226,15 +248,19 @@ async def copy_file(
         _logger.debug("copy_file failed %s -> %s", src_path.path, dst_path.path)
         raise
     finally:
-        if reader:
-            reader.close()
-        if writer:
-            writer.close()
+        try:
+            try:
+                _close_streams(reader, writer)
+            except BaseException:
+                if not _failed:  # an earlier error stays the one that is raised
+                    _failed = True
+                    raise
+        finally:
             if _failed:
-                with contextlib.suppress(Exception):
-                    dst_path.filesystem.remove(dst_path)
-        if _failed:
-            _restore_link(dst_path, claim)
+                if writer:
+                    with contextlib.suppress(Exception):
+                        dst_path.filesystem.remove(dst_path)
+                _restore_link(dst_path, claim)
     dst_path.filesystem.copy_stat(dst_path, src_stat)
     return True
 

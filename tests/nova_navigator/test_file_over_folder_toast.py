@@ -1,4 +1,4 @@
-"""A real copy or move job with a file that meets a same-named folder produces exactly one toast (REQ-32)."""
+"""A real copy or move job with a file that meets a same-named folder produces exactly one toast."""
 
 import asyncio
 from functools import partial

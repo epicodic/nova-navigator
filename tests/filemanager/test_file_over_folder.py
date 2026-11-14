@@ -1,4 +1,4 @@
-"""A file (or link) that meets a same-named real folder is skipped with "folder exists"; the folder is never replaced (REQ-32)."""
+"""A file (or link) that meets a same-named real folder is skipped with "folder exists"; the folder is never replaced."""
 
 import asyncio
 from collections.abc import Awaitable, Callable
