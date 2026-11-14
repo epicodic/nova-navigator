@@ -200,3 +200,46 @@ async def test_cross_device_move_link_over_folder_keeps_source(link_fs: Filesyst
     assert (src / "x").is_symlink()
     assert _snapshot(dst / "x") == before
     assert [s.reason for s in status.skipped] == [_SKIP_REASON]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("policy", _POLICIES)
+async def test_same_device_move_file_over_folder_keeps_folder_and_source(tmp_path: Path, policy: OverwritePolicy) -> None:
+    src, dst = _folder_over_file_tree(tmp_path)
+    before = _snapshot(dst / "x")
+    local = LocalFilesystem()
+    status, requests = await _run(move_files, local, local, [src / "x", src / "y"], dst, FileCopyOptions(overwrite=policy), [])
+    assert requests == []
+    assert _snapshot(dst / "x") == before
+    assert (src / "x").read_bytes() == b"new-x"
+    assert not (src / "y").exists()
+    assert (dst / "y").read_bytes() == b"new-y"
+    assert [s.reason for s in status.skipped] == [_SKIP_REASON]
+    assert status.progress.completed == status.progress.total
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("policy", _POLICIES)
+async def test_same_device_move_nested_file_over_folder_keeps_folder_and_source(tmp_path: Path, policy: OverwritePolicy) -> None:
+    src, dst = _nested_tree(tmp_path)
+    before = _snapshot(dst / "d" / "x")
+    local = LocalFilesystem()
+    status, requests = await _run(move_files, local, local, [src / "d"], dst, FileCopyOptions(overwrite=policy), [])
+    assert requests == []
+    assert _snapshot(dst / "d" / "x") == before
+    assert (src / "d" / "x").read_bytes() == b"new-x"
+    assert not (src / "d" / "other").exists()
+    assert (dst / "d" / "other").read_bytes() == b"new-other"
+    assert [s.reason for s in status.skipped] == [_SKIP_REASON]
+
+
+@pytest.mark.asyncio
+async def test_same_device_move_link_over_folder_skipped(tmp_path: Path) -> None:
+    src, dst = _link_over_folder_tree(tmp_path)
+    before = _snapshot(dst / "x")
+    local = LocalFilesystem()
+    status, requests = await _run(move_files, local, local, [src / "x"], dst, FileCopyOptions(overwrite="ask"), [])
+    assert requests == []
+    assert (src / "x").is_symlink()
+    assert _snapshot(dst / "x") == before
+    assert [s.reason for s in status.skipped] == [_SKIP_REASON]

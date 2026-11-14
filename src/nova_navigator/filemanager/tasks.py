@@ -643,6 +643,9 @@ async def _move_entry(
         return
     if same_device:
         f_dst_stat = f_dst.stat_or_none
+        if f_dst_stat is not None and _is_real_dir(f_dst_stat):
+            ctx.report_skipped(f.uri, SKIP_FOLDER_EXISTS)
+            return
         if f_dst_stat is not None:
             if options.overwrite == "skip":
                 return
@@ -771,6 +774,11 @@ async def _move_path(
             # _move_dir_contents adds total and completed incrementally.
             await _move_dir_contents(ctx, src_path, actual_dst, options, same_device=True)
         else:
+            if actual_dst_stat is not None and _is_real_dir(actual_dst_stat):
+                # A file or link never replaces a folder; a folder source onto a folder took the merge branch above.
+                ctx.report_skipped(src_path.uri, SKIP_FOLDER_EXISTS)
+                ctx.status.update_progress(inc_completed=1)
+                return
             if actual_dst_stat is not None:
                 if options.overwrite == "skip":
                     _logger.debug("move_path skip (exists) %s", actual_dst.path)
@@ -786,10 +794,7 @@ async def _move_path(
                         _logger.debug("move_path skip (user declined) %s", actual_dst.path)
                         ctx.status.update_progress(inc_completed=1)
                         return
-                if _is_real_dir(actual_dst_stat):
-                    await erase_files(ctx, [actual_dst], EraseFilesOptions(ask_before_erase=False))
-                else:
-                    actual_dst.filesystem.remove(actual_dst)
+                actual_dst.filesystem.remove(actual_dst)
             src_path.filesystem.rename(src_path, actual_dst)
             _logger.debug("move_path renamed %s -> %s", src_path.path, actual_dst.path)
     else:

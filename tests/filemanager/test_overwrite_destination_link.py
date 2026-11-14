@@ -515,3 +515,106 @@ async def test_cross_device_move_sees_link_created_after_the_listing_was_cached(
 
     _assert_replaced(link, target, "file", mtime)
     assert not src_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# Same-device move (local to local): the link is replaced by a rename
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target_kind", ["file", "broken"])
+@pytest.mark.parametrize(("policy", "responses"), _POLICIES)
+async def test_same_device_move_over_link_replaces_link(tmp_path: Path, target_kind: str, policy: OverwritePolicy, responses: list[Response]) -> None:
+    src_file, dst, link, target = _link_tree(tmp_path, target_kind)
+    mtime = _mtime(target)
+    inode = src_file.stat().st_ino
+    local = LocalFilesystem()
+
+    _status, requests = await _run_move((local, local), [src_file], dst, FileCopyOptions(overwrite=policy), responses)
+
+    _assert_replaced(link, target, target_kind, mtime)
+    assert not src_file.exists()
+    assert link.stat().st_ino == inode
+    assert len(requests) == len(responses)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target_kind", ["file", "broken"])
+async def test_same_device_move_onto_link_skip_keeps_source_and_link(tmp_path: Path, target_kind: str) -> None:
+    src_file, dst, link, target = _link_tree(tmp_path, target_kind)
+    mtime = _mtime(target)
+    local = LocalFilesystem()
+
+    status, requests = await _run_move((local, local), [src_file], dst, FileCopyOptions(overwrite="skip"), [])
+
+    _assert_link_untouched(link, target, target_kind, mtime)
+    assert src_file.read_bytes() == _NEW
+    assert requests == []
+    assert reasons(status) == []
+
+
+@pytest.mark.asyncio
+async def test_same_device_move_onto_link_ask_no_keeps_both(tmp_path: Path) -> None:
+    src_file, dst, link, target = _link_tree(tmp_path, "file")
+    mtime = _mtime(target)
+    local = LocalFilesystem()
+
+    _status, requests = await _run_move((local, local), [src_file], dst, FileCopyOptions(overwrite="ask"), [Response.NO])
+
+    assert len(requests) == 1
+    _assert_link_untouched(link, target, "file", mtime)
+    assert src_file.read_bytes() == _NEW
+
+
+@pytest.mark.asyncio
+async def test_same_device_move_nested_over_links_asks_once_per_entry(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    (src / "d").mkdir(parents=True)
+    (src / "d" / "a").write_bytes(_NEW)
+    (src / "d" / "other").write_bytes(_NEW)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "a").write_bytes(_TARGET)
+    dst = tmp_path / "dst"
+    (dst / "d").mkdir(parents=True)
+    (dst / "d" / "a").symlink_to(outside / "a")
+    local = LocalFilesystem()
+
+    _status, requests = await _run_move((local, local), [src / "d"], dst, FileCopyOptions(overwrite="ask"), [Response.YES])
+
+    assert len(requests) == 1
+    assert not (dst / "d" / "a").is_symlink()
+    assert (dst / "d" / "a").read_bytes() == _NEW
+    assert (dst / "d" / "other").read_bytes() == _NEW
+    assert (outside / "a").read_bytes() == _TARGET
+
+
+@pytest.mark.asyncio
+async def test_same_device_move_over_link_to_folder_replaces_link_only(tmp_path: Path) -> None:
+    src_file, dst, link, _target = _link_tree(tmp_path, "file")
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    (folder / "keep.txt").write_bytes(b"keep")
+    link.unlink()
+    link.symlink_to(folder)
+    local = LocalFilesystem()
+
+    await _run_move((local, local), [src_file], dst, FileCopyOptions(overwrite="overwrite"), [])
+
+    assert not link.is_symlink()
+    assert link.read_bytes() == _NEW
+    assert sorted(p.name for p in folder.iterdir()) == ["keep.txt"]
+
+
+@pytest.mark.asyncio
+async def test_same_device_move_follow_links_on_over_link(tmp_path: Path) -> None:
+    src_file, dst, link, target = _link_tree(tmp_path, "file")
+    mtime = _mtime(target)
+    inode = src_file.stat().st_ino
+    local = LocalFilesystem()
+
+    await _run_move((local, local), [src_file], dst, FileCopyOptions(overwrite="overwrite", follow_links=True), [])
+
+    _assert_replaced(link, target, "file", mtime)
+    assert link.stat().st_ino == inode
