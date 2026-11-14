@@ -25,6 +25,7 @@ def _is_real_dir(stat: Stat) -> bool:
 SKIP_BROKEN_LINK = "broken link"
 SKIP_LINK_LOOP = "link loop"
 SKIP_UNREADABLE_LINK = "unreadable link"
+SKIP_FOLDER_EXISTS = "folder exists"
 _MAX_LINK_DEPTH = 16
 
 
@@ -106,12 +107,16 @@ class _Claim:
 async def _claim_file_destination(ctx: TaskContext, src: VPath, dst: VPath, options: FileCopyOptions, label: str) -> _Claim:
     """Decide what happens at *dst* before a file is written there (REQ-31); one decision per entry, link-first.
 
-    Absent: proceed. Anything else goes through the overwrite policy once.
+    Absent: proceed. A real folder is skipped ("folder exists") without a question under any policy,
+    so it does not consume an ALL/NONE answer. Anything else goes through the overwrite policy once.
     A destination link is removed itself (never followed) so the write cannot reach its target.
     """
     stat = dst.stat_or_none
     if stat is None:
         return _Claim(proceed=True)
+    if _is_real_dir(stat):
+        ctx.report_skipped(src.uri, SKIP_FOLDER_EXISTS)
+        return _Claim(proceed=False)
     if not await _overwrite_allowed(ctx, src, dst.with_stat(stat), options, label):
         return _Claim(proceed=False)
     if not (stat.is_symlink and dst.filesystem.supports_symlinks()):
@@ -251,12 +256,17 @@ async def _confirm_link_replace(ctx: TaskContext, link: VPath, dst: VPath, optio
     """Apply the overwrite policy to an existing *dst*.
 
     Return True when the link may be created; *dst* is then removed.
+    A real folder at *dst* is skipped ("folder exists") without a question.
     """
-    if dst.stat_or_none is None:
+    stat = dst.stat_or_none
+    if stat is None:
         return True
+    if _is_real_dir(stat):
+        ctx.report_skipped(link.uri, SKIP_FOLDER_EXISTS)
+        return False
     if not await _overwrite_allowed(ctx, link, dst, options, "copy_link"):
         return False
-    dst.filesystem.remove(dst)  # removes a file or link itself, never follows; a real directory makes it raise
+    dst.filesystem.remove(dst)  # removes a file or link itself, never follows
     return True
 
 
