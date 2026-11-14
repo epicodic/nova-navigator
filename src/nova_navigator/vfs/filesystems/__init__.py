@@ -5,9 +5,12 @@ from .remote import RemoteFilesystem
 from .ssh import (
     ChangedHostKeyError,
     ConfirmedKeyMismatchError,
+    HopAuthenticationError,
     HostKeyError,
     RevokedHostKeyError,
+    SshConnectTimeoutError,
     SSHFilesystem,
+    SshHopError,
     UnknownHostKeyError,
 )
 
@@ -16,10 +19,13 @@ __all__ = [
     "AzureFilesystem",
     "ChangedHostKeyError",
     "ConfirmedKeyMismatchError",
+    "HopAuthenticationError",
     "HostKeyError",
     "LocalFilesystem",
     "RemoteFilesystem",
     "RevokedHostKeyError",
     "SSHFilesystem",
+    "SshConnectTimeoutError",
+    "SshHopError",
     "UnknownHostKeyError",
 ]

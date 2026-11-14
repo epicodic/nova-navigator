@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import os
 import shlex
+import socket
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import paramiko
 import pytest
@@ -227,7 +228,11 @@ def test_init_creates_new_client_when_none_provided(tmp_path: Path) -> None:
     mock_ssh = MagicMock(spec=paramiko.SSHClient)
     mock_sftp = MagicMock(spec=paramiko.SFTPClient)
     mock_ssh.open_sftp.return_value = mock_sftp
-    with patch("nova_navigator.vfs.filesystems.ssh.paramiko.SSHClient", return_value=mock_ssh):
+    sock = MagicMock(spec=socket.socket)
+    with (
+        patch("nova_navigator.vfs.filesystems.ssh.paramiko.SSHClient", return_value=mock_ssh),
+        patch("nova_navigator.vfs.filesystems.ssh._open_tcp", return_value=sock),
+    ):
         SSHFilesystem("remotehost", port=2222, known_hosts=KnownHostsLocations.under(tmp_path / "h", tmp_path / "e"))
     mock_ssh.load_system_host_keys.assert_not_called()
     mock_ssh.load_host_keys.assert_not_called()
@@ -236,7 +241,7 @@ def test_init_creates_new_client_when_none_provided(tmp_path: Path) -> None:
     policy = mock_ssh.set_missing_host_key_policy.call_args.args[0]
     assert isinstance(policy, _CaptureUnknownHostPolicy)
     assert not isinstance(policy, paramiko.AutoAddPolicy)
-    mock_ssh.connect.assert_called_once_with("remotehost", port=2222, username=None, key_filename=None, password=None)
+    mock_ssh.connect.assert_called_once_with("remotehost", port=2222, username=None, key_filename=None, password=None, sock=sock, timeout=ANY, banner_timeout=ANY, auth_timeout=ANY)
 
 
 # ── identity ──────────────────────────────────────────────────────────────────

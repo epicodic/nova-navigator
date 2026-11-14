@@ -3,17 +3,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import errno
+import functools
 import logging
 import os
 import shlex
+import socket
 import stat
 import threading
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePath
-from typing import override
+from typing import Self, cast, override
 
 import paramiko
 
@@ -23,11 +25,12 @@ from nova_navigator.remotes.known_hosts import (
     KnownHostsLocations,
     append_host_key,
     fingerprint,
-    hash_known_hosts_enabled,
     host_key_name,
     key_type_name,
     read_known_hosts,
 )
+from nova_navigator.remotes.ssh_config import SshConfig
+from nova_navigator.remotes.ssh_route import SshHop
 
 from ..filesystem import AtomicWriterLike, Filesystem, FilesystemCapabilities, Stat, StreamReaderLike, StreamWriterLike
 from ..tail_buffer import TailBuffer
@@ -229,15 +232,174 @@ def _translate_bad_host_key(exc: paramiko.BadHostKeyException, name: str, known_
     return ChangedHostKeyError(name, exc.key, exc.expected_key)
 
 
-def _store_confirmed_key(client: paramiko.SSHClient, locations: KnownHostsLocations, hostname: str, name: str, key: paramiko.PKey) -> OSError | None:
+DEFAULT_CONNECT_TIMEOUT = 30.0
+_MIN_ATTEMPT_SECONDS = 0.1
+_HINT_SLACK_SECONDS = 1.0  # paramiko's own phase timeouts are only hints; the watchdog is the guarantee and must win the race
+_LOCAL_ORIGIN = ("127.0.0.1", 0)
+_CLOSE_ERRORS = (OSError, paramiko.SSHException, EOFError)
+
+type HopCredentials = tuple[str | None, str | None]  # (username, password) typed by the user for one hop
+
+
+def _hop_label(hop: SshHop) -> str:
+    where = f"{hop.hostname}:{hop.port}"
+    return repr(where) if hop.alias == hop.hostname else f"{hop.alias!r} ({where})"
+
+
+def _hop_role(index: int, count: int) -> str:
+    if count == 1:
+        return "host"
+    return "target host" if index == count - 1 else "jump host"
+
+
+class SshHopError(Exception):
+    """A hop of the route failed; the message names the hop (and, behind jumps, the route position)."""
+
+    def __init__(self, route: Sequence[SshHop], index: int, message: str) -> None:
+        super().__init__(message)
+        self.hop = route[index]
+        self.index = index
+        self.count = len(route)
+
+
+class SshConnectTimeoutError(SshHopError):
+    """The hop was not established within ``connect_timeout`` seconds."""
+
+    def __init__(self, route: Sequence[SshHop], index: int, seconds: float) -> None:
+        role = _hop_role(index, len(route))
+        super().__init__(route, index, f"Timed out after {seconds:g} s connecting to {role} {_hop_label(route[index])}.")
+
+
+class HopAuthenticationError(paramiko.AuthenticationException):
+    """Authentication failed on a hop; subclass of the paramiko error so existing handlers keep working."""
+
+    def __init__(self, route: Sequence[SshHop], index: int) -> None:
+        super().__init__(f"Authentication failed for {_hop_role(index, len(route))} {_hop_label(route[index])}.")
+        self.hop = route[index]
+        self.index = index
+        self.count = len(route)
+
+
+def _hop_failure(route: Sequence[SshHop], index: int, cause: BaseException) -> SshHopError:
+    text = str(cause) or type(cause).__name__
+    label = _hop_label(route[index])
+    if index == len(route) - 1:
+        return SshHopError(route, index, f"Target host {label} via {route[index - 1].alias}: {text}")
+    return SshHopError(route, index, f"Jump host {label}, hop {index + 1} of {len(route)}: {text}")
+
+
+def _run_closer(closer: Callable[[], None]) -> None:
+    with contextlib.suppress(*_CLOSE_ERRORS):
+        closer()
+
+
+def _close_socket(sock: socket.socket) -> None:
+    with contextlib.suppress(OSError):
+        sock.shutdown(socket.SHUT_RDWR)  # wakes a blocked recv; close() alone may not
+    sock.close()
+
+
+class _Deadline:
+    """Wall-clock deadline of one hop; when it passes, a timer closes everything registered (socket, channel, client)."""
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        self._end = time.monotonic() + seconds
+        self._expired = threading.Event()
+        self._done = False
+        self._closers: list[Callable[[], None]] = []
+        self._lock = threading.Lock()
+        self._timer = threading.Timer(seconds, self._expire)
+        self._timer.daemon = True
+
+    def __enter__(self) -> Self:
+        self._timer.start()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        with self._lock:
+            self._done = True  # a timer that fires after a successful hop must not close its resources
+        self._timer.cancel()
+
+    @property
+    def expired(self) -> bool:
+        return self._expired.is_set() or time.monotonic() >= self._end
+
+    def remaining(self) -> float:
+        return max(self._end - time.monotonic(), _MIN_ATTEMPT_SECONDS)
+
+    def register(self, closer: Callable[[], None]) -> None:
+        with self._lock:
+            if not self._expired.is_set():
+                self._closers.append(closer)
+                return
+        _run_closer(closer)
+
+    def _expire(self) -> None:
+        with self._lock:
+            if self._done:
+                return
+            self._expired.set()
+            closers = list(reversed(self._closers))
+        for closer in closers:
+            _run_closer(closer)
+
+
+def _open_tcp(host: str, port: int, deadline: _Deadline) -> socket.socket:
+    """Connect to *host*:*port*, trying every address; each attempt is bounded by the remaining time and closable by the watchdog.
+
+    ``getaddrinfo`` itself cannot be interrupted (documented limit).
+    """
+    last_error: OSError | None = None
+    for family, kind, proto, _canon, address in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM):
+        sock = socket.socket(family, kind, proto)
+        deadline.register(functools.partial(_close_socket, sock))
+        try:
+            sock.settimeout(deadline.remaining())
+            sock.connect(address)
+        except OSError as exc:
+            _close_socket(sock)
+            last_error = exc
+            continue
+        return sock
+    raise last_error if last_error is not None else OSError(f"No address found for {host}")
+
+
+@dataclass(frozen=True)
+class _HopLink:
+    sock: socket.socket | paramiko.Channel
+    timeout: float
+    register: Callable[[Callable[[], None]], None]
+
+
+@dataclass(frozen=True)
+class _RouteContext:
+    locations: KnownHostsLocations
+    ssh_config: SshConfig
+    connect_timeout: float
+    trusted_host_keys: Mapping[str, paramiko.PKey]
+    credentials: Mapping[int, HopCredentials]
+    target_password: str | None
+
+
+@dataclass
+class _Connected:
+    clients: list[paramiko.SSHClient]
+    sftp: paramiko.SFTPClient
+    save_error: OSError | None
+
+
+def _store_confirmed_key(client: paramiko.SSHClient, locations: KnownHostsLocations, ssh_config: SshConfig, alias: str, name: str, key: paramiko.PKey) -> OSError | None:
     """Append *key* once the host key was verified; return the ``OSError`` instead of raising (DEC-17 Q3).
+
+    ``HashKnownHosts`` is looked up by *alias* (the name as the user wrote it); the entry is stored under *name*.
 
     Raises:
         ChangedHostKeyError: known_hosts already holds a different key of the same type for the host
             (another window stored it meanwhile); nothing is stored and *client* is closed (DEC-19).
     """
     try:
-        hashed = hash_known_hosts_enabled(hostname, [locations.user_config, locations.system_config])
+        hashed = ssh_config.lookup(alias).hash_known_hosts
         append_host_key(locations.user_known_hosts, name, key, hashed=hashed)
     except HostKeyConflictError as exc:
         client.close()
@@ -252,15 +414,20 @@ def _connect_checked(
     hostname: str,
     port: int,
     username: str | None,
-    key_filename: str | None,
+    key_filename: list[str] | None,
     password: str | None,
     trusted_host_key: paramiko.PKey | None,
     locations: KnownHostsLocations,
+    *,
+    link: _HopLink,
+    ssh_config: SshConfig,
+    alias: str,
 ) -> tuple[paramiko.SSHClient, OSError | None]:
-    """Connect with ``known_hosts`` verification; returns the client and a save error (if any)."""
+    """Connect over *link* with ``known_hosts`` verification; returns the client and a save error (if any)."""
     known_hosts = read_known_hosts([locations.user_known_hosts, locations.system_known_hosts])
     name = host_key_name(hostname, port)
     client = paramiko.SSHClient()
+    link.register(client.close)
     if trusted_host_key is None:
         known_hosts.apply_to(client.get_host_keys(), name)
         client.set_missing_host_key_policy(_CaptureUnknownHostPolicy(known_hosts))
@@ -270,21 +437,127 @@ def _connect_checked(
         client.get_host_keys().add(name, trusted_host_key.get_name(), trusted_host_key)
         client.set_missing_host_key_policy(paramiko.RejectPolicy())
     try:
-        client.connect(hostname, port=port, username=username, key_filename=key_filename, password=password)
+        client.connect(
+            hostname,
+            port=port,
+            username=username,
+            key_filename=cast("str | None", key_filename),  # paramiko accepts a list; its stub only declares str
+            password=password,
+            sock=link.sock,
+            timeout=link.timeout,
+            banner_timeout=link.timeout,
+            auth_timeout=link.timeout,
+        )
     except paramiko.BadHostKeyException as exc:
         client.close()
         raise _translate_bad_host_key(exc, name, known_hosts, trusted_host_key) from exc
     except paramiko.AuthenticationException:
         # paramiko verifies the host key before it authenticates (client.py:454-483), so the confirmed key is verified here.
         if trusted_host_key is not None:
-            _store_confirmed_key(client, locations, hostname, name, trusted_host_key)
+            _store_confirmed_key(client, locations, ssh_config, alias, name, trusted_host_key)
         client.close()
         raise
     except BaseException:
         client.close()
         raise
-    save_error = _store_confirmed_key(client, locations, hostname, name, trusted_host_key) if trusted_host_key is not None else None
+    save_error = _store_confirmed_key(client, locations, ssh_config, alias, name, trusted_host_key) if trusted_host_key is not None else None
     return client, save_error
+
+
+def _open_link(hop: SshHop, previous: paramiko.SSHClient | None, deadline: _Deadline) -> socket.socket | paramiko.Channel:
+    if previous is None:
+        return _open_tcp(hop.hostname, hop.port, deadline)
+    transport = previous.get_transport()
+    if transport is None:
+        raise paramiko.SSHException("The jump host connection is closed")
+    channel = transport.open_channel("direct-tcpip", (hop.hostname, hop.port), _LOCAL_ORIGIN, timeout=deadline.remaining())
+    deadline.register(channel.close)
+    return channel
+
+
+def _close_link(sock: socket.socket | paramiko.Channel | None) -> None:
+    if isinstance(sock, socket.socket):
+        _close_socket(sock)
+    elif sock is not None:
+        _run_closer(sock.close)
+
+
+def _translate_hop_error(exc: BaseException, route: Sequence[SshHop], index: int, deadline: _Deadline) -> BaseException:
+    """Timeout first, then authentication; transport errors are wrapped only when jumps are involved (single hop errors stay as today)."""
+    transport_error = isinstance(exc, (OSError, paramiko.SSHException, EOFError))
+    if transport_error and deadline.expired:
+        return SshConnectTimeoutError(route, index, deadline.seconds)
+    if isinstance(exc, paramiko.AuthenticationException):
+        return HopAuthenticationError(route, index)
+    if transport_error and len(route) > 1:
+        return _hop_failure(route, index, exc)
+    return exc
+
+
+def _hop_login(ctx: _RouteContext, route: Sequence[SshHop], index: int) -> tuple[str | None, str | None, list[str] | None]:
+    """Return ``(username, password, key_filename)``: typed credentials replace the configured identity, only the target gets the password."""
+    hop = route[index]
+    typed = ctx.credentials.get(index)
+    if typed is not None:
+        return (typed[0] or hop.user), typed[1], None
+    password = ctx.target_password if index == len(route) - 1 else None
+    return hop.user, password, (list(hop.identity_files) or None)
+
+
+def _connect_hop(
+    route: Sequence[SshHop], index: int, ctx: _RouteContext, previous: paramiko.SSHClient | None, *, open_sftp: bool
+) -> tuple[paramiko.SSHClient, paramiko.SFTPClient | None, OSError | None]:
+    hop = route[index]
+    username, password, key_filename = _hop_login(ctx, route, index)
+    trusted = ctx.trusted_host_keys.get(host_key_name(hop.hostname, hop.port))
+    sock: socket.socket | paramiko.Channel | None = None
+    with _Deadline(ctx.connect_timeout) as deadline:
+        try:
+            sock = _open_link(hop, previous, deadline)
+            link = _HopLink(sock, deadline.remaining() + _HINT_SLACK_SECONDS, deadline.register)
+            client, save_error = _connect_checked(hop.hostname, hop.port, username, key_filename, password, trusted, ctx.locations, link=link, ssh_config=ctx.ssh_config, alias=hop.alias)
+            try:
+                sftp = client.open_sftp() if open_sftp else None
+            except BaseException:
+                client.close()
+                raise
+        except HostKeyError:
+            _close_link(sock)
+            raise
+        except BaseException as exc:
+            _close_link(sock)
+            translated = _translate_hop_error(exc, route, index, deadline)
+            if translated is exc:
+                raise
+            raise translated from exc
+    return client, sftp, save_error
+
+
+def _close_reversed(clients: Sequence[paramiko.SSHClient]) -> None:
+    for client in reversed(clients):
+        _run_closer(client.close)
+
+
+def _connect_route(route: Sequence[SshHop], ctx: _RouteContext) -> _Connected:
+    """Connect hop by hop; on any failure close what was opened, last first."""
+    opened: list[paramiko.SSHClient] = []
+    save_error: OSError | None = None
+    sftp: paramiko.SFTPClient | None = None
+    try:
+        for index in range(len(route)):
+            last = index == len(route) - 1
+            client, sftp, error = _connect_hop(route, index, ctx, opened[-1] if opened else None, open_sftp=last)
+            opened.append(client)
+            if error is not None and save_error is None:
+                save_error = error
+            elif error is not None:
+                _logger.warning("Further host key could not be saved for hop %d: %s", index, error)
+        if sftp is None:
+            raise paramiko.SSHException("SFTP session was not opened")
+    except BaseException:
+        _close_reversed(opened)
+        raise
+    return _Connected(opened, sftp, save_error)
 
 
 class _SftpAtomicWriter:
@@ -382,6 +655,12 @@ class SSHFilesystem(Filesystem):
         ssh_client: paramiko.SSHClient | None = None,
         trusted_host_key: paramiko.PKey | None = None,
         known_hosts: KnownHostsLocations | None = None,
+        *,
+        route: Sequence[SshHop] | None = None,
+        connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
+        trusted_host_keys: Mapping[str, paramiko.PKey] | None = None,
+        credentials: Mapping[int, HopCredentials] | None = None,
+        ssh_config: SshConfig | None = None,
     ) -> None:
         """Connect to *hostname*:*port* over SSH, reusing *ssh_client* if provided.
 
@@ -396,6 +675,13 @@ class SSHFilesystem(Filesystem):
                 Only this exact key is trusted for the connection and, once verified, appended to
                 ``~/.ssh/known_hosts``.  ``None`` (default) trusts only keys already in known_hosts.
             known_hosts: Locations of the known_hosts and ssh_config files (default: the real ones).
+            route: Hops to connect through, jump hosts first and the target last.  ``hostname``/``port``/``username``
+                stay the requested values and serve ``uri_for_path`` only when *route* is given.
+                ``None`` connects directly to *hostname*.
+            connect_timeout: Seconds each hop may take to be established (including the SFTP session of the target).
+            trusted_host_keys: Confirmed host keys by known_hosts name, for any hop (in addition to *trusted_host_key*).
+            credentials: User name and password typed for a hop, by hop index; they replace the configured identity.
+            ssh_config: Parsed ssh_config; loaded from *known_hosts* locations when ``None``.
 
         Raises:
             UnknownHostKeyError: The host key is not in known_hosts.
@@ -403,13 +689,28 @@ class SSHFilesystem(Filesystem):
                 different key of the same type than *trusted_host_key*.
             RevokedHostKeyError: The host key is listed as revoked.
             ConfirmedKeyMismatchError: The server presented another key than *trusted_host_key*.
+            SshHopError: A hop failed (named in the message); ``SshConnectTimeoutError`` when it timed out.
+            HopAuthenticationError: Authentication failed on a hop.
         """
         self.host_key_save_error: OSError | None = None
         self.host_key_save_path: Path | None = None
+        # Jump transports must stay referenced while the target rides on their channels.
+        self._hop_clients: list[paramiko.SSHClient] = []
+        self._owns_client = ssh_client is None
         if ssh_client is None:
             locations = known_hosts if known_hosts is not None else KnownHostsLocations.default()
-            self._ssh_client, self.host_key_save_error = _connect_checked(hostname, port, username, key_filename, password, trusted_host_key, locations)
-            if self.host_key_save_error is not None:
+            hops = list(route) if route else [SshHop(hostname, hostname, port, username, (key_filename,) if key_filename else ())]
+            trusted = dict(trusted_host_keys or {})
+            if trusted_host_key is not None:
+                trusted[host_key_name(hops[-1].hostname, hops[-1].port)] = trusted_host_key
+            config = ssh_config if ssh_config is not None else SshConfig.load(locations.config_paths)
+            context = _RouteContext(locations, config, connect_timeout, trusted, credentials or {}, password)
+            connected = _connect_route(hops, context)
+            self._ssh_client = connected.clients[-1]
+            self._hop_clients = connected.clients[:-1]
+            self._sftp_client = connected.sftp
+            self.host_key_save_error = connected.save_error
+            if connected.save_error is not None:
                 self.host_key_save_path = locations.user_known_hosts
         else:
             self._ssh_client = ssh_client
@@ -417,12 +718,7 @@ class SSHFilesystem(Filesystem):
                 ssh_client.connect(hostname, port=port, username=username, key_filename=key_filename, password=password)
             except paramiko.BadHostKeyException as exc:
                 raise ChangedHostKeyError(host_key_name(hostname, port), exc.key, exc.expected_key) from exc
-        try:
-            self._sftp_client = self._ssh_client.open_sftp()
-        except BaseException:
-            if ssh_client is None:  # an injected client belongs to the caller
-                self._ssh_client.close()
-            raise
+            self._sftp_client = ssh_client.open_sftp()  # an injected client belongs to the caller
         self._stat_cache: dict[tuple[str, bool], dict[str, StatEntry]] = {}
         self._stat_cache_lock = threading.Lock()
         self._hostname = hostname
@@ -437,6 +733,13 @@ class SSHFilesystem(Filesystem):
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self._ssh_client!r})"
+
+    def close(self) -> None:
+        """Close the SFTP session and the target transport, then the jump transports nearest-first.  Idempotent, never raises."""
+        _run_closer(self._sftp_client.close)
+        if self._owns_client:
+            _run_closer(self._ssh_client.close)
+        _close_reversed(self._hop_clients)
 
     @override
     def uri_for_path(self, path: PurePath) -> str:
