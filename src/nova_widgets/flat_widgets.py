@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from textual.content import Content
 from textual.events import Blur, Enter, Focus, Leave
+from textual.style import Style
 from textual.widgets import Button as _Button
 from textual.widgets import Checkbox as _Checkbox
 from textual.widgets import Input as _Input
 from textual.widgets import Select as _Select
 from textual.widgets._button import ButtonVariant
+
+from .menu import SYMBOL_TABLE
 
 _MIN_HEIGHT_FOR_BORDER = 3
 """A ``border:`` declaration always reserves 1 extra row above and below the
@@ -186,7 +190,16 @@ class Select(_Select[object]):
 
 
 class Checkbox(_Checkbox):
-    """A ``Checkbox`` with no border and no background tint on focus."""
+    """A ``Checkbox`` with no border and no background tint on focus, drawn with the menu checkbox symbols."""
+
+    @property
+    def _button(self) -> Content:
+        """The box: the same unchecked/checked glyphs as checkable menu items (``SYMBOL_TABLE["checkbox"]``)."""
+        unchecked, checked = SYMBOL_TABLE["checkbox"]
+        if not self.value:
+            return Content(unchecked.glyph.rstrip())
+        mark_style = Style(foreground=self.get_visual_style("toggle--button").foreground, bold=True)
+        return Content.styled(checked.glyph.rstrip(), mark_style)
 
     DEFAULT_CSS = """
     Checkbox {
