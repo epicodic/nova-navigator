@@ -105,6 +105,13 @@ If `prefix` is not found, `self` is returned unchanged.
 Key names follow Textual notation: `"f5"`, `"ctrl+c"`, `"alt+left"`, `"shift+enter"`.
 Multi-chord sequences are space-separated: `"ctrl+x ctrl+s"`.
 
+### Default chords for `+` and `-`
+
+Textual names the keys `plus` and `minus`.
+`KeySequence.parse` splits on `+`, so `ctrl+s +` cannot be written.
+The defaults are `ctrl+s plus` (Select By Pattern) and `ctrl+s minus` (Unselect By Pattern).
+The keys are displayed as `+` and `-` in all three styles.
+
 ---
 
 ## Key-Sequence State Machine (`KeySequenceStateMachine`)

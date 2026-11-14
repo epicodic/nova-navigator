@@ -44,6 +44,7 @@ from nova_navigator.dialogs import (
     InputNameDialog,
     JobsDialog,
     LocalCopiesDialog,
+    SelectByPatternDialog,
 )
 from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
 from nova_navigator.dialogs.response_dialog import make_response_dialog
@@ -167,6 +168,8 @@ class MainScreen(ActionsSupport, Screen[None]):
         Action("Invert Selection", id="selection.invert", action="invert_selection", description="Invert the current selection", shortcut="ctrl+s i", show=True),
         Action("Select All", id="selection.select_all", action="select_all", description="Select all items in the current directory", shortcut="ctrl+s a", show=True),
         Action("Select None", id="selection.select_none", action="select_none", description="Deselect all items in the current directory", shortcut="ctrl+s n", show=True),
+        Action("Select By Pattern…", id="selection.select_by_pattern", action="select_by_pattern", description="Select files matching a pattern", shortcut="ctrl+s plus", show=True),
+        Action("Unselect By Pattern…", id="selection.unselect_by_pattern", action="unselect_by_pattern", description="Deselect files matching a pattern", shortcut="ctrl+s minus", show=True),
         # Sort order (operate on the active panel)
         Action("Sort by Name", id="browser.sort_name", action="sort_by_name", description="Sort entries by name", shortcut="ctrl+t n", show=False),
         Action("Sort by Size", id="browser.sort_size", action="sort_by_size", description="Sort entries by size", shortcut="ctrl+t s", show=False),
@@ -271,7 +274,8 @@ class MainScreen(ActionsSupport, Screen[None]):
                 action="toggle_selection_under_cursor",
             ),
             mc.separator(),
-            mc.action("Select By Pattern…", name="select_by_pattern"),
+            self._act("selection.select_by_pattern"),
+            self._act("selection.unselect_by_pattern"),
         )
 
         self._menu_bar.add_menu("Go", name="go").add(
@@ -756,6 +760,31 @@ class MainScreen(ActionsSupport, Screen[None]):
         )
         if job is not None:
             await self.app.start_job(job)
+
+    @work
+    async def action_select_by_pattern(self) -> None:
+        await self._pattern_selection(select=True)
+
+    @work
+    async def action_unselect_by_pattern(self) -> None:
+        await self._pattern_selection(select=False)
+
+    async def _pattern_selection(self, *, select: bool) -> None:
+        """Ask for a pattern and (un)select the matching entries of the active panel.
+
+        The Include folders state is shared by both dialogs and saved when OK is pressed.
+        """
+        panel = self.active_panel()
+        dialog = SelectByPatternDialog(select=select, include_folders=conf_.settings.selection.include_folders)
+        if await dialog.run() != Response.OK:
+            return
+        # Re-read the settings so a replaced settings object (e.g. reloaded while the dialog was open) is not stale.
+        conf_.settings.selection.include_folders = dialog.include_folders
+        try:
+            conf_.settings.save()
+        except OSError:
+            _logger.warning("Could not save the selection settings", exc_info=True)
+        panel.apply_pattern_selection(dialog.file_filter, include_folders=dialog.include_folders, select=select)
 
     @work
     async def action_delete_files(self) -> None:

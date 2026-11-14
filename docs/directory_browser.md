@@ -138,6 +138,10 @@ Selection helpers:
 - `action_select_all` — all visible non-UpPath items.
 - `action_select_none` — clear.
 - `action_invert_selection` — flip.
+- `apply_pattern_selection(file_filter, *, include_folders, select)` — adds the matching entries to the selection, or removes them.
+  It works on `_shown_items`, so hidden and filtered entries are skipped.
+  It skips `UpPath`, and it includes folders only with `include_folders`.
+  It ends with `refresh()` and `refresh_border()`.
 
 ## Filtering
 

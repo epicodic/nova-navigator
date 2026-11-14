@@ -29,6 +29,7 @@ from nova_widgets.actions_support import ActionsSupport
 from nova_widgets.custom_border import CustomBorderMixin
 
 from ..config import conf_
+from ..file_filter import FilenamePatternFilter
 from ..format_utils import format_size
 from ..icons import ico_
 from ..vfs import VPath
@@ -1197,6 +1198,33 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
                 new_selection.add(item)
         self._selected_items = new_selection
         self.refresh()
+
+    def apply_pattern_selection(self, file_filter: FilenamePatternFilter, *, include_folders: bool, select: bool) -> None:
+        """Select or unselect the shown entries whose name matches a pattern filter.
+
+        Only entries currently shown are considered, so hidden and text-filtered entries are skipped.
+        The ``..`` entry is never touched, and folders only take part when *include_folders* is set.
+        The result is added to (or removed from) the existing selection.
+
+        Args:
+            file_filter: Filter deciding which names match.
+            include_folders: Whether matching folders are affected as well as files.
+            select: True to add matches to the selection, False to remove them.
+        """
+        matched: set[VPath] = set()
+        for item in self._shown_items:
+            if isinstance(item, UpPath):
+                continue
+            if item.stat.is_directory and not include_folders:
+                continue
+            if file_filter.matches(item):
+                matched.add(item)
+        if select:
+            self._selected_items |= matched
+        else:
+            self._selected_items -= matched
+        self.refresh()
+        self.refresh_border()
 
     def watch_show_hidden_files(self, _old: bool, _new: bool) -> None:
         self.update(self.WhatChanged.FILTERING)
