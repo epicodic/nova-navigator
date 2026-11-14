@@ -113,3 +113,32 @@ def test_suffix_after_full_sequence_prefix_returns_empty() -> None:
     seq = KeySequence.parse("ctrl+x ctrl+s")
     result = seq.suffix_after(seq)
     assert result == KeySequence(())
+
+
+def test_format_ctrl_s_plus_classic() -> None:
+    assert KeySequence.parse("ctrl+s plus").format(KeyFormatStyle.CLASSIC) == "Ctrl+S +"
+
+
+def test_format_ctrl_s_plus_emacs() -> None:
+    assert KeySequence.parse("ctrl+s plus").format(KeyFormatStyle.EMACS) == "C-s +"
+
+
+def test_format_ctrl_s_plus_caret() -> None:
+    assert KeySequence.parse("ctrl+s plus").format(KeyFormatStyle.CARET) == "^S +"
+
+
+def test_format_ctrl_s_minus_classic() -> None:
+    assert KeySequence.parse("ctrl+s minus").format(KeyFormatStyle.CLASSIC) == "Ctrl+S -"
+
+
+def test_format_ctrl_s_minus_emacs() -> None:
+    assert KeySequence.parse("ctrl+s minus").format(KeyFormatStyle.EMACS) == "C-s -"
+
+
+def test_format_ctrl_s_minus_caret() -> None:
+    assert KeySequence.parse("ctrl+s minus").format(KeyFormatStyle.CARET) == "^S -"
+
+
+def test_parse_keeps_textual_names_for_plus_and_minus() -> None:
+    assert str(KeySequence.parse("ctrl+s plus")) == "ctrl+s plus"
+    assert str(KeySequence.parse("ctrl+s minus")) == "ctrl+s minus"

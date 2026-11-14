@@ -42,3 +42,12 @@ async def test_settings_dialog_still_shows_confirm_delete_row() -> None:
         await pilot.pause()
         general = app.screen.query_one("#editor_general", ModelEditor)
         assert "confirm_delete" in general._field_controls
+
+
+@pytest.mark.asyncio
+async def test_settings_dialog_shows_include_folders_row() -> None:
+    app = _make_app(SettingsDialog(Settings()))()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        selection = app.screen.query_one("#editor_selection", ModelEditor)
+        assert "include_folders" in selection._field_controls

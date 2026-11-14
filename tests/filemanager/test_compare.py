@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import PurePosixPath
 
 from nova_navigator.filemanager.compare import (
@@ -10,6 +11,7 @@ from nova_navigator.filemanager.compare import (
     RIGHT_ONLY_COLOR,
     CompareMode,
     compare_directories,
+    identical_file_names,
 )
 from nova_navigator.vfs.vpath import VPath
 from tests._utils.mock_filesystem import MockFilesystem, _FileNode  # type: ignore[attr-defined]
@@ -225,3 +227,89 @@ def test_mixed_listing_returns_correct_colors_for_all_entries() -> None:
 
     assert left_colors == {"common.txt": DIFFERENT_COLOR, "left_only.txt": LEFT_ONLY_COLOR}
     assert right_colors == {"common.txt": DIFFERENT_COLOR, "right_only.txt": RIGHT_ONLY_COLOR}
+
+
+# ---------------------------------------------------------------------------
+# identical_file_names
+# ---------------------------------------------------------------------------
+
+
+def _pair(name: str = "a.txt") -> tuple[MockFilesystem, MockFilesystem, VPath, VPath]:
+    left_fs = _fs(f"/dir/{name}")
+    right_fs = _fs(f"/dir/{name}")
+    return left_fs, right_fs, _vpath(left_fs, f"/dir/{name}"), _vpath(right_fs, f"/dir/{name}")
+
+
+def test_identical_names_by_size_equal() -> None:
+    _, _, left, right = _pair()
+    left._stat = dataclasses.replace(left.stat, size=5)
+    right._stat = dataclasses.replace(right.stat, size=5)
+
+    assert identical_file_names([left], [right], CompareMode.BY_SIZE) == frozenset({"a.txt"})
+
+
+def test_identical_names_by_size_different_excluded() -> None:
+    _, _, left, right = _pair()
+    left._stat = dataclasses.replace(left.stat, size=5)
+    right._stat = dataclasses.replace(right.stat, size=6)
+
+    assert identical_file_names([left], [right], CompareMode.BY_SIZE) == frozenset()
+
+
+def test_identical_names_by_size_unknown_not_identical() -> None:
+    _, _, left, right = _pair()
+    left._stat = dataclasses.replace(left.stat, size=-1)
+    right._stat = dataclasses.replace(right.stat, size=5)
+    assert identical_file_names([left], [right], CompareMode.BY_SIZE) == frozenset()
+
+    right._stat = dataclasses.replace(right.stat, size=-1)
+    assert identical_file_names([left], [right], CompareMode.BY_SIZE) == frozenset()
+
+
+def test_identical_names_mode_none_is_empty() -> None:
+    _, _, left, right = _pair()
+
+    assert identical_file_names([left], [right], None) == frozenset()
+
+
+def test_identical_names_directories_never_identical() -> None:
+    left_fs = MockFilesystem({"/dir/subdir": None})
+    right_fs = MockFilesystem({"/dir/subdir": None})
+    left = _vpath(left_fs, "/dir/subdir")
+    right = _vpath(right_fs, "/dir/subdir")
+
+    for mode in (CompareMode.BY_SIZE, CompareMode.BY_MODIFICATION_TIME):
+        assert identical_file_names([left], [right], mode) == frozenset()
+
+
+def test_identical_names_one_sided_excluded() -> None:
+    _, _, left, _right = _pair()
+
+    assert identical_file_names([left], [], CompareMode.BY_SIZE) == frozenset()
+    assert identical_file_names([], [left], CompareMode.BY_SIZE) == frozenset()
+
+
+def test_identical_names_by_mtime_equal() -> None:
+    _, _, left, right = _pair()
+    left._stat = dataclasses.replace(left.stat, modified=100.0)
+    right._stat = dataclasses.replace(right.stat, modified=100.0)
+
+    assert identical_file_names([left], [right], CompareMode.BY_MODIFICATION_TIME) == frozenset({"a.txt"})
+
+
+def test_identical_names_by_mtime_different_excluded() -> None:
+    _, _, left, right = _pair()
+    left._stat = dataclasses.replace(left.stat, modified=100.0)
+    right._stat = dataclasses.replace(right.stat, modified=200.0)
+
+    assert identical_file_names([left], [right], CompareMode.BY_MODIFICATION_TIME) == frozenset()
+
+
+def test_identical_names_by_mtime_unknown_not_identical() -> None:
+    _, _, left, right = _pair()
+    left._stat = dataclasses.replace(left.stat, modified=-1.0)
+    right._stat = dataclasses.replace(right.stat, modified=100.0)
+    assert identical_file_names([left], [right], CompareMode.BY_MODIFICATION_TIME) == frozenset()
+
+    right._stat = dataclasses.replace(right.stat, modified=-1.0)
+    assert identical_file_names([left], [right], CompareMode.BY_MODIFICATION_TIME) == frozenset()

@@ -33,6 +33,7 @@ from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.dialogs.input_name_dialog import InputNameDialog
 from nova_navigator.dialogs.local_copies_dialog import LocalCopiesDialog
 from nova_navigator.dialogs.response_dialog import OverwriteResponseDialog, ResponseDialog
+from nova_navigator.dialogs.select_by_pattern_dialog import SelectByPatternDialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
 from nova_navigator.dialogs.user_menu_input_dialog import InputField, UserMenuInputDialog
 from nova_navigator.local_copies import CopyEntry, CopyStatus, LocalCopyManager
@@ -147,6 +148,10 @@ def _copy_move_result(dialog: CopyMoveFilesDialog, result: Response | None) -> s
     head = f"Result: {result}  filename={dialog.filename!r}  file_filter={dialog.file_filter!r}"
     links = f"follow_links={dialog.follow_links!r}  stable_symlinks={dialog.stable_symlinks!r}"
     return f"{head}  {links}"
+
+
+def _select_by_pattern_result(dialog: SelectByPatternDialog, result: Response | None) -> str:
+    return f"Result: {result}  pattern={dialog.pattern!r}  include_folders={dialog.include_folders!r}"
 
 
 @dataclass
@@ -319,6 +324,18 @@ _ENTRIES: list[DialogEntry] = [
                 _link_path(),
             ]
         ),
+    ),
+    DialogEntry(
+        "SelectByPatternDialog (select)",
+        "Select files by pattern (Include folders off).",
+        lambda: SelectByPatternDialog(select=True),
+        result_fn=_select_by_pattern_result,
+    ),
+    DialogEntry(
+        "SelectByPatternDialog (unselect)",
+        "Unselect files by pattern (Include folders on).",
+        lambda: SelectByPatternDialog(select=False, include_folders=True),
+        result_fn=_select_by_pattern_result,
     ),
     DialogEntry(
         "KeyCaptureDialog",

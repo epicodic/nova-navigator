@@ -59,6 +59,12 @@ CopyMoveFilesDialog (move)
 DeleteFilesDialog
   Delete confirmation for multiple files.
 
+SelectByPatternDialog (select)
+  Select files by pattern (Include folders off).
+
+SelectByPatternDialog (unselect)
+  Unselect files by pattern (Include folders on).
+
 KeyCaptureDialog
   Capture a key sequence for a single action.
 

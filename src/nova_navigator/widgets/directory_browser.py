@@ -29,6 +29,7 @@ from nova_widgets.actions_support import ActionsSupport
 from nova_widgets.custom_border import CustomBorderMixin
 
 from ..config import conf_
+from ..file_filter import FilenamePatternFilter
 from ..format_utils import format_size
 from ..icons import ico_
 from ..vfs import VPath
@@ -519,6 +520,7 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
     _loading: bool
     _pending: _PendingNavigation | None
     _item_colors: dict[str, str]
+    _hidden_names: frozenset[str]
 
     _empty_strip: Strip = Strip([])
     _columns: list[Column]
@@ -577,6 +579,7 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
         self._loading = False
         self._pending = None
         self._item_colors = {}
+        self._hidden_names = frozenset()
         # Saved cursor position before a reload; None when no hint is active.
         self._cursor_hint: DirectoryBrowser._CursorHint | None = None
         self._all_items = []
@@ -672,6 +675,8 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
             self._history.append(target)
             self._history_index = len(self._history) - 1
 
+        if target != self._path:
+            self._hidden_names = frozenset()
         self._path = target
         self.border_title = target.uri
         self.post_message(DirectoryBrowser.PathChanged(self, target))
@@ -707,6 +712,18 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
         self._item_colors = item_colors or {}
         self.refresh()
 
+    def set_hidden_names(self, names: frozenset[str] | None) -> None:
+        """Hide items by name, in addition to the text filter and the hidden-files rule.
+
+        The items stay in ``items``; only the shown list changes.
+        The names are cleared when the panel navigates to a different directory.
+
+        Args:
+            names: File names to hide, or None (or an empty set) to show them all again.
+        """
+        self._hidden_names = names or frozenset()
+        self.update(self.WhatChanged.FILTERING)
+
     class WhatChanged(int, Enum):
         ALL = 0
         SORTING = 1
@@ -740,11 +757,13 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
         self._all_items.sort(key=sorter, reverse=not self.sort_ascending)
 
         self._shown_items = [UP_PATH] if self._path.parent != self._path else []
-        if self.show_hidden_files and len(self._filter_widget.value) == 0:
+        if self.show_hidden_files and len(self._filter_widget.value) == 0 and not self._hidden_names:
             self._shown_items += self._all_items
         else:
 
             def filter_func(item: VPath) -> bool:
+                if not isinstance(item, UpPath) and item.name in self._hidden_names:
+                    return False
                 if not self.show_hidden_files and item.stat.is_hidden:
                     return False
                 if len(self._filter_widget.value) == 0:
@@ -790,6 +809,8 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
         """Append new items to _shown_items with filtering only (no sort)."""
         filter_text = self._filter_widget.value.lower()
         for item in new_items:
+            if item.name in self._hidden_names:
+                continue
             if not self.show_hidden_files and item.stat.is_hidden:
                 continue
             if filter_text and filter_text not in item.name.lower():
@@ -1197,6 +1218,33 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
                 new_selection.add(item)
         self._selected_items = new_selection
         self.refresh()
+
+    def apply_pattern_selection(self, file_filter: FilenamePatternFilter, *, include_folders: bool, select: bool) -> None:
+        """Select or unselect the shown entries whose name matches a pattern filter.
+
+        Only entries currently shown are considered, so hidden and text-filtered entries are skipped.
+        The ``..`` entry is never touched, and folders only take part when *include_folders* is set.
+        The result is added to (or removed from) the existing selection.
+
+        Args:
+            file_filter: Filter deciding which names match.
+            include_folders: Whether matching folders are affected as well as files.
+            select: True to add matches to the selection, False to remove them.
+        """
+        matched: set[VPath] = set()
+        for item in self._shown_items:
+            if isinstance(item, UpPath):
+                continue
+            if item.stat.is_directory and not include_folders:
+                continue
+            if file_filter.matches(item):
+                matched.add(item)
+        if select:
+            self._selected_items |= matched
+        else:
+            self._selected_items -= matched
+        self.refresh()
+        self.refresh_border()
 
     def watch_show_hidden_files(self, _old: bool, _new: bool) -> None:
         self.update(self.WhatChanged.FILTERING)
