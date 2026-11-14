@@ -51,13 +51,15 @@ def make_host_key(kind: str = "rsa") -> paramiko.PKey:
     return paramiko.RSAKey.generate(bits=2048)
 
 
-type NonGnuMode = Literal["illegal-option", "missing"]
+type NonGnuMode = Literal["illegal-option", "missing", "silent-failure"]
 
 # A `stat` that cannot print a format, as on BSD, macOS or BusyBox; find itself stays in place, so an empty directory
 # still lists with exit 0 and a non-empty one fails with empty stdout (the shape a real non-GNU remote has).
 _STAT_SHIMS: dict[str, str] = {
     "illegal-option": '#!/bin/sh\necho "stat: illegal option -- -" >&2\nexit 1\n',
     "missing": '#!/bin/sh\necho "stat: command not found" >&2\nexit 127\n',
+    # A BusyBox-style `find` that reports the failed `stat` on stderr but still exits 0: exit 0, empty stdout, error text.
+    "silent-failure": '#!/bin/sh\necho "stat: unrecognized option: printf" >&2\nexit 0\n',
 }
 
 
@@ -473,7 +475,7 @@ class StubSSHServer:
             for the sftp subsystem's canonicalize('.') call.
         exec_delay: Artificial delay (seconds) added before each exec_command
             response, to simulate network/server latency in tests.
-        non_gnu: Puts a failing ``stat`` first on PATH of exec commands (``illegal-option`` or ``missing``).
+        non_gnu: Puts a failing ``stat`` first on PATH of exec commands (``illegal-option``, ``missing`` or ``silent-failure``).
         refuse_exec: Rejects every exec request (as an SFTP-only account does); SFTP keeps working.
     """
 

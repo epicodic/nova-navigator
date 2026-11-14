@@ -62,7 +62,9 @@ def _set_exec_output(mock_ssh: MagicMock, output: bytes) -> None:
     stdout = MagicMock()
     stdout.read.return_value = output
     stdout.channel.recv_exit_status.return_value = 0
-    mock_ssh.exec_command.return_value = (MagicMock(), stdout, MagicMock())
+    stderr = MagicMock()
+    stderr.read.return_value = b""
+    mock_ssh.exec_command.return_value = (MagicMock(), stdout, stderr)
 
 
 def _exec_result(stdout: bytes = b"", exit_code: int = 0, stderr: str = "") -> tuple[MagicMock, MagicMock, MagicMock]:
@@ -384,6 +386,24 @@ def test_dir_stat_exit_zero_with_empty_output_is_an_empty_directory() -> None:
     assert fs._dir_stat("/home/user/empty", follow_symlinks=False) == {}
     assert mock_ssh.exec_command.call_count == 1  # no probe: an empty listing proves nothing about the tools
     assert fs._listing_via_sftp is False
+
+
+def test_dir_stat_exit_zero_with_empty_output_and_error_text_is_unexplained_and_probes() -> None:
+    fs, mock_ssh, _ = _make_fs()
+    mock_ssh.exec_command.side_effect = [_exec_result(exit_code=0, stderr="stat: unrecognized option: printf\n"), _exec_result(exit_code=0)]
+    entry = _parse_stat_output(_stat_record("x"))["x"]
+    with patch.object(fs, "_sftp_dir_stat", return_value={"x": entry}) as sftp_listing:
+        assert fs._dir_stat("/d", follow_symlinks=False) == {"x": entry}
+    sftp_listing.assert_called_once_with("/d", False)
+    assert mock_ssh.exec_command.call_args_list[1].args == (_PROBE_COMMAND,)
+    assert fs._listing_via_sftp is True
+
+
+def test_dir_stat_exit_zero_with_empty_output_and_blank_stderr_is_an_empty_directory() -> None:
+    fs, mock_ssh, _ = _make_fs()
+    mock_ssh.exec_command.return_value = _exec_result(exit_code=0, stderr="\n  \n")
+    assert fs._dir_stat("/d", follow_symlinks=False) == {}
+    assert mock_ssh.exec_command.call_count == 1
 
 
 def test_dir_stat_unexplained_failure_on_a_gnu_host_raises_oserror_and_is_not_cached() -> None:

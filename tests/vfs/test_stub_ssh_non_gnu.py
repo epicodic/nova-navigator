@@ -91,6 +91,25 @@ def test_non_gnu_stub_fails_the_listing_of_a_non_empty_directory(non_gnu_server:
     assert status != 0
 
 
+@pytest.fixture(scope="module")
+def silent_failure_server(tmp_path_factory: pytest.TempPathFactory) -> Generator[StubSSHServer, None, None]:
+    server = StubSSHServer(root_dir=tmp_path_factory.mktemp("stub_silent_failure_root"), non_gnu="silent-failure")
+    server.start()
+    yield server
+    server.stop()
+
+
+def test_silent_failure_stub_lists_a_non_empty_directory_with_exit_zero_and_error_text(silent_failure_server: StubSSHServer, tmp_path: Path) -> None:
+    (tmp_path / "f").write_text("x")
+    output, error, status = _run(silent_failure_server, _list_command(tmp_path))
+    assert (output, status) == (b"", 0)
+    assert error.strip() != ""
+
+
+def test_silent_failure_stub_lists_an_empty_directory_with_exit_zero_and_no_error_text(silent_failure_server: StubSSHServer, tmp_path: Path) -> None:
+    assert _run(silent_failure_server, _list_command(tmp_path)) == (b"", "", 0)
+
+
 def test_plain_stub_lists_a_non_empty_directory(gnu_server: StubSSHServer, tmp_path: Path) -> None:
     (tmp_path / "f").write_text("x")
     output, _error, status = _run(gnu_server, _list_command(tmp_path))

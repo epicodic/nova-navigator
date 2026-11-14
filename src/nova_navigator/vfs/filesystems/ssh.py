@@ -987,6 +987,9 @@ class SSHFilesystem(Filesystem):
                 self._gnu_confirmed = True
                 return self._cache_listing(key, result)
         elif run.exit_code == 0:
+            if run.stderr.strip():
+                # A BusyBox-style find can exit 0 with empty stdout although stat failed: not an empty directory.
+                return self._after_unexplained_failure(path, follow_symlinks, run)
             # Genuinely empty.  This decides nothing about the tools: a non-GNU host also exits 0 for an empty directory.
             return self._cache_listing(key, {})
         else:

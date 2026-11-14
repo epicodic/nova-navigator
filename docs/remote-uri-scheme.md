@@ -249,7 +249,8 @@ If it fails in a way that is not a permission or missing-directory failure, a pr
 If the probe fails too, the remote lacks GNU `find` or `stat`, and the connection lists through SFTP from then on.
 A server that refuses the exec request (an SFTP-only account) is treated the same way, without a probe.
 The method is decided once per connection and never reverted.
-A listing with no entries and exit status 0 decides nothing, because a non-GNU host answers an empty directory the same way.
+Exit status 0 with empty output and empty stderr is an empty directory and decides nothing, because a non-GNU host answers an empty directory the same way.
+Exit status 0 with empty output but error text on stderr is an unexplained result (a BusyBox-style `find` can exit 0 although `stat` failed), so the probe runs.
 
 SFTP listing opens the directory and reads it in packets, and it keeps the names as bytes.
 Names with spaces, quotes, newlines and non-UTF-8 bytes therefore list exactly once.

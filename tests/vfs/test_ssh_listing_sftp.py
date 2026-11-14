@@ -331,6 +331,23 @@ def non_gnu_server(request: pytest.FixtureRequest, tmp_path_factory: pytest.Temp
     server.stop()
 
 
+@pytest.fixture(scope="module")
+def silent_failure_server(tmp_path_factory: pytest.TempPathFactory) -> Generator[StubSSHServer, None, None]:
+    server = StubSSHServer(root_dir=tmp_path_factory.mktemp("ssh_silent_failure_root"), non_gnu="silent-failure")
+    server.start()
+    yield server
+    server.stop()
+
+
+@pytest.fixture
+def silent_failure_fs(silent_failure_server: StubSSHServer) -> Generator[SSHFilesystem, None, None]:
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(_AcceptAnyHostKey())
+    filesystem = SSHFilesystem(hostname=silent_failure_server.host, port=silent_failure_server.port, username="testuser", password=_LOGIN_WORD, ssh_client=client)
+    yield filesystem
+    client.close()
+
+
 @pytest.fixture
 def sftp_fs(non_gnu_server: StubSSHServer) -> Generator[SSHFilesystem, None, None]:
     client = paramiko.SSHClient()
@@ -406,6 +423,25 @@ async def test_non_gnu_first_listing_of_a_non_empty_directory_is_never_empty(sft
     (tmp_path / "a").write_text("x")
     assert await _names(sftp_fs, tmp_path) == ["a"]
     assert sftp_fs._listing_via_sftp is True
+
+
+@pytest.mark.asyncio
+async def test_non_gnu_exit_zero_with_error_text_lists_all_entries_through_sftp(silent_failure_fs: SSHFilesystem, tmp_path: Path) -> None:
+    for name in ("a", "b", "c"):
+        (tmp_path / name).write_text("x")
+    with _spy_exec(silent_failure_fs) as commands:
+        assert sorted(await _names(silent_failure_fs, tmp_path)) == ["a", "b", "c"]
+    assert silent_failure_fs._listing_via_sftp is True
+    assert commands.count(_PROBE_COMMAND) == 1
+
+
+@pytest.mark.asyncio
+async def test_non_gnu_exit_zero_with_no_error_text_is_an_empty_directory_without_a_probe(silent_failure_fs: SSHFilesystem, tmp_path: Path) -> None:
+    with _spy_exec(silent_failure_fs) as commands:
+        assert await _names(silent_failure_fs, tmp_path) == []
+    assert commands  # the listing ran, and only listing commands
+    assert _PROBE_COMMAND not in commands
+    assert silent_failure_fs._listing_via_sftp is False
 
 
 @pytest.mark.asyncio
