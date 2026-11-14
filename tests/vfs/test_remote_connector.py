@@ -98,17 +98,59 @@ async def test_ssh_with_empty_host_falls_through_to_azure() -> None:
 
 
 @pytest.mark.asyncio
-async def test_empty_path_defaults_to_root() -> None:
+async def test_empty_path_defaults_to_the_home_directory() -> None:
     from nova_navigator.remotes.remote import RemoteConnector
     from tests._utils.mock_filesystem import MockFilesystem
 
     conn = RemoteConnection(name="srv", ssh=SshSettings(host="srv"))
-    config = _make_config(conn)
-    connector = RemoteConnector(config)
+    connector = RemoteConnector(_make_config(conn))
 
-    mock_fs = MockFilesystem()
+    mock_fs = MockFilesystem(home="/srv/users/alice", cwd="/srv/users/alice")
     with patch("nova_navigator.remotes.remote.connect_ssh", new_callable=AsyncMock, return_value=mock_fs):
         vpath = await connector.resolve("", "srv")
+
+    assert vpath is not None
+    assert isinstance(vpath.filesystem, RemoteFilesystem)
+    assert str(vpath.path) == "/srv/users/alice"
+
+
+@pytest.mark.asyncio
+async def test_explicit_root_path_stays_at_root() -> None:
+    from nova_navigator.remotes.remote import RemoteConnector
+    from tests._utils.mock_filesystem import MockFilesystem
+
+    conn = RemoteConnection(name="srv", ssh=SshSettings(host="srv"))
+    connector = RemoteConnector(_make_config(conn))
+
+    mock_fs = MockFilesystem(home="/srv/users/alice", cwd="/srv/users/alice")
+    with patch("nova_navigator.remotes.remote.connect_ssh", new_callable=AsyncMock, return_value=mock_fs):
+        vpath = await connector.resolve("/", "srv")
+
+    assert vpath is not None
+    assert str(vpath.path) == "/"
+
+
+@pytest.mark.asyncio
+async def test_ssh_uri_without_path_opens_the_home_directory() -> None:
+    from nova_navigator.remotes.ssh import SshConnector
+    from tests._utils.mock_filesystem import MockFilesystem
+
+    mock_fs = MockFilesystem(home="/srv/users/alice", cwd="/srv/users/alice")
+    with patch("nova_navigator.remotes.ssh.connect_ssh", new_callable=AsyncMock, return_value=mock_fs):
+        vpath = await SshConnector().resolve("", "alice@host")
+
+    assert vpath is not None
+    assert str(vpath.path) == "/srv/users/alice"
+
+
+@pytest.mark.asyncio
+async def test_ssh_uri_with_an_explicit_slash_opens_the_root() -> None:
+    from nova_navigator.remotes.ssh import SshConnector
+    from tests._utils.mock_filesystem import MockFilesystem
+
+    mock_fs = MockFilesystem(home="/srv/users/alice", cwd="/srv/users/alice")
+    with patch("nova_navigator.remotes.ssh.connect_ssh", new_callable=AsyncMock, return_value=mock_fs):
+        vpath = await SshConnector().resolve("/", "alice@host")
 
     assert vpath is not None
     assert str(vpath.path) == "/"

@@ -163,6 +163,29 @@ async def test_ssh_uri_values_win_over_config(route_env: RouteEnv) -> None:
 
 
 @pytest.mark.asyncio
+async def test_ssh_uri_without_path_opens_the_target_login_directory(route_env: RouteEnv) -> None:
+    route_env.write_config(route_env.alias_config())
+    route_env.trust_target()
+
+    vpath = await SshConnector().resolve("", f"{_USER}@myalias:{route_env.target.port}")
+
+    assert vpath is not None
+    assert str(vpath.path) == str(route_env.root / "troot")
+
+
+@pytest.mark.asyncio
+async def test_saved_remote_without_path_opens_the_target_login_directory(route_env: RouteEnv) -> None:
+    route_env.write_config(route_env.alias_config())
+    route_env.trust_target()
+
+    vpath = await RemoteConnector(_make_config(route_env.connection("myalias"))).resolve("", "myalias")
+
+    assert vpath is not None
+    assert isinstance(vpath.filesystem, RemoteFilesystem)
+    assert str(vpath.path) == str(route_env.root / "troot")
+
+
+@pytest.mark.asyncio
 async def test_no_matching_entry_uses_given_host_and_port(route_env: RouteEnv) -> None:
     route_env.write_config("")
     route_env.trust_target()

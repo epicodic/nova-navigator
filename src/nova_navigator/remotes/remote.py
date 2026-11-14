@@ -41,7 +41,7 @@ class RemoteConnector:
             return None
 
         fs = RemoteFilesystem(name, inner)
-        return VPath(path or "/", fs)
+        return VPath(path, fs) if path else fs.home()
 
 
 def register_remote_scheme(config: RemoteConfig, *, registry: SchemeRegistry = SCHEME_REGISTRY) -> None:
