@@ -59,6 +59,8 @@ Filters apply to a link by its name, like a file.
 A link that a filter excludes counts as completed and is not reported.
 An existing destination follows the overwrite policy of file copies (`skip`, `ask` or `overwrite`).
 On the link-creating path, overwriting removes the old entry itself and never follows it.
+A real folder at the destination skips the link with the reason `"folder exists"`, without a question.
+A followed file is written like any file: a link at the destination is replaced, never written through.
 `readlink` runs before the overwrite check there, so an unreadable link never removes an existing destination.
 
 ## Copy and move into existing folders
@@ -96,6 +98,46 @@ A source folder is removed only after its contents were moved, so a folder that 
 A top-level destination that is a link to a folder counts as an existing directory.
 The source goes inside it under its own name, and the link is not replaced.
 
+## Copy and move onto existing files, links and folders
+
+`_claim_file_destination` in `filemanager/tasks.py` is the one decision point for a file that is about to be written.
+Copy, nested copy, followed links and the cross-device move all reach it through `copy_file`, once per destination entry.
+It runs after the source is opened and before the destination is opened for writing.
+The two same-device move branches, which rename instead of writing, apply the same folder check.
+The check is link-first: `Stat.is_symlink` is tested before `Stat.is_directory`.
+
+| Destination | Action |
+|---|---|
+| nothing there | write the file |
+| real folder | skip with `"folder exists"`; no question under any overwrite policy; the folder and its contents stay unchanged |
+| file or link of any kind | ask the overwrite policy once, then write or skip |
+
+A move keeps the source of a skipped item.
+The old recursive erase of a destination folder by a same-device move is gone, so a file never replaces a folder.
+A link source that meets a real folder is skipped the same way.
+
+A destination link that may be overwritten is removed itself and replaced by the file.
+This holds for a link to a file, to a folder, a broken link and a looping link.
+The target of the link is never written and never touched.
+A link to a folder is a link, not a folder, so it is replaced and not skipped.
+
+The replacement is remove-then-write on every filesystem, without a temporary file.
+Between the removal and the end of the write the destination has no entry.
+When the write fails or is cancelled, the removed link is put back from its `readlink` text, on a best-effort basis.
+The restored link is a new inode with a new mtime.
+A hard kill between the removal and the end of the write leaves the destination absent.
+
+A regular destination file is still truncated and written in place.
+A filesystem without links, such as an archive, never has a link removed.
+
+The destination listing is refreshed once per job, at the entry of `copy_files` and `_move_path`.
+This matters for SSH, where the cached `Stat` could be stale.
+Type changes by another process between the stat and the write are not detected.
+
+An answer of `skip` or "No" is a decision of the user.
+Such a policy skip is not reported, unlike `"folder exists"`.
+A move of a file onto a link on the same device renames over it, so the link is replaced.
+
 ## Loop detection
 
 Loops only matter when a directory link is followed and copied as a tree.
@@ -114,15 +156,16 @@ When `real_path` returns `None`, the link is walked through a followed view and 
 
 ## Skip reasons
 
-A link that is left out is reported with `TaskContext.report_skipped(link.uri, reason)`.
-There are three exact reasons.
+An item that is left out is reported with `TaskContext.report_skipped(item.uri, reason)`.
+There are four exact reasons.
 
 - `"broken link"`: the target does not exist, or no longer exists when the link is processed (for example moved earlier in the same move), and links are followed or the destination has no links.
 - `"link loop"`: the directory link loops, or the depth guard was hit.
 - `"unreadable link"`: `readlink` failed on the source.
+- `"folder exists"`: a file or link met a real folder of the same name at the destination; `item` is the source path.
 
 The app shows one toast per finished job and the Jobs dialog lists each path with its reason.
-A skipped link counts as completed work.
+A skipped item counts as completed work.
 See `docs/scheduler.md` for the reporting API.
 
 ## Cross-device move
@@ -130,6 +173,7 @@ See `docs/scheduler.md` for the reporting API.
 A move across devices copies each link with `_copy_link` and removes the source link only if it was copied.
 Both link options apply to the copied part.
 A skipped link stays in the source.
+A skipped file (`"folder exists"`) stays in the source too.
 Its parent directory then cannot be removed and stays too.
 A directory link is removed from the source once its tree copy has finished, except when the destination folder itself was skipped.
 The target of a directory link is only read, never touched.
@@ -190,8 +234,8 @@ With both options off and a destination without links, a link whose target vanis
 Before this change such a link failed the job.
 This is a changed edge case.
 
-A followed file is written with the normal file write, so an existing link at the destination is written through.
-The write follows that link and overwrites its target.
+A followed file goes through the same destination step as every file copy.
+See "Copy and move onto existing files, links and folders".
 
 ## Archives
 

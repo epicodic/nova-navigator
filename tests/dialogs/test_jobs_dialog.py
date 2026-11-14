@@ -183,6 +183,20 @@ async def test_finished_job_renders_each_skipped_path_with_reason_in_order() -> 
 
 
 @pytest.mark.asyncio
+async def test_finished_job_lists_folder_exists_reason() -> None:
+    job = _make_job(state=Job.State.COMPLETED, skipped=(SkippedItem("/src/x", "folder exists"),))
+    view = JobListView()
+    async with _ListViewApp(view).run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        view.set_jobs([job])
+        await pilot.pause()
+        lines = _all_lines(view)
+        header = next(i for i, line in enumerate(lines) if "Skipped (1):" in line)
+        assert "/src/x" in lines[header + 1]
+        assert "folder exists" in lines[header + 1]
+
+
+@pytest.mark.asyncio
 async def test_job_without_skips_has_no_skipped_section() -> None:
     job = _make_job(state=Job.State.COMPLETED)
     view = JobListView()
