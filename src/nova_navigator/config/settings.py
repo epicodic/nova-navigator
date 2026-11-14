@@ -65,6 +65,16 @@ class CopyMoveSettings(BaseModel):
 
 
 @dataclass
+class SelectionSettings(BaseModel):
+    """Selection settings."""
+
+    include_folders: bool = field_comment(
+        False,
+        "Include folders when selecting or unselecting by pattern. Saved when a By Pattern dialog is confirmed with OK.",
+    )
+
+
+@dataclass
 class Settings(BaseModel, ModelConfig):
     """Application settings."""
 
@@ -73,3 +83,4 @@ class Settings(BaseModel, ModelConfig):
     network: NetworkSettings = field(default_factory=NetworkSettings)
     terminal: TerminalSettings = field(default_factory=TerminalSettings)
     copy_move: CopyMoveSettings = field(default_factory=CopyMoveSettings)
+    selection: SelectionSettings = field(default_factory=SelectionSettings)

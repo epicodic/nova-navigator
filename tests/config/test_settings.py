@@ -254,3 +254,79 @@ def test_copy_move_save_keeps_comments_and_other_content(tmp_path: Path, monkeyp
     assert reloaded.copy_move.follow_links is True
     assert reloaded.copy_move.stable_symlinks is False
     assert reloaded.network.ssh_timeout == 77
+
+
+def test_selection_settings_default_off() -> None:
+    from nova_navigator.config.settings import Settings
+
+    assert Settings().selection.include_folders is False
+
+
+def test_selection_settings_section_comment_in_new_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+    from nova_navigator.config.settings import Settings
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    Settings.load()
+    content = (tmp_path / "settings.toml").read_text()
+    assert "[selection]" in content
+    assert "Selection settings" in content
+    assert "include_folders = false" in content
+
+
+def test_selection_missing_section_loads_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+    from nova_navigator.config.settings import Settings
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+    (tmp_path / "settings.toml").write_text("[general]\nshow_hidden_files = true\n")
+
+    assert Settings.load().selection.include_folders is False
+
+
+def test_selection_missing_key_loads_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+    from nova_navigator.config.settings import Settings
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+    (tmp_path / "settings.toml").write_text("[selection]\n")
+
+    assert Settings.load().selection.include_folders is False
+
+
+def test_selection_save_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+    from nova_navigator.config.settings import Settings
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+
+    instance = Settings.load()
+    instance.selection.include_folders = True
+    instance.save()
+
+    assert Settings.load().selection.include_folders is True
+
+
+def test_selection_save_keeps_comments_and_other_content(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+    from nova_navigator.config.settings import Settings
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+    settings_file = tmp_path / "settings.toml"
+    settings_file.write_text(
+        "# user note\n[general]\n# keep me\nshow_hidden_files = true\n[network]\nssh_timeout = 77\n",
+    )
+
+    instance = Settings.load()
+    instance.selection.include_folders = True
+    instance.save()
+
+    content = settings_file.read_text()
+    assert "# user note" in content
+    assert "# keep me" in content
+    assert "ssh_timeout = 77" in content
+    assert "show_hidden_files = true" in content
+    reloaded = Settings.load()
+    assert reloaded.selection.include_folders is True
+    assert reloaded.network.ssh_timeout == 77
