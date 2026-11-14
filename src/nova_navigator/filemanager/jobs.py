@@ -65,12 +65,17 @@ async def copy_or_move_files_job(src_paths: list[VPath], dst_path: VPath, move: 
 
 
 async def delete_files_job(paths: list[VPath]) -> Job | None:
-    """Create a Job that erases the specified files."""
-    dialog = DeleteFilesDialog(paths=paths)
-    result = await dialog.run()
-    if result != Response.YES:
-        _logger.info("Delete cancelled by user")
-        return None
+    """Create a Job that erases the specified files.
+
+    The "Delete ...?" dialog is skipped when `general.confirm_delete` is off; the setting is read on every call.
+    A non-empty directory is still confirmed by the erase task.
+    """
+    if conf_.settings.general.confirm_delete:
+        dialog = DeleteFilesDialog(paths=paths)
+        result = await dialog.run()
+        if result != Response.YES:
+            _logger.info("Delete cancelled by user")
+            return None
 
     names = ", ".join(p.name for p in paths)
     _logger.info("Delete %d item(s) [%s]", len(paths), names)

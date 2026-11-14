@@ -13,7 +13,7 @@ from nova_navigator.config import loader
 from nova_navigator.config.global_config import conf_
 from nova_navigator.config.settings import Settings
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
-from nova_navigator.filemanager.tasks import FileCopyOptions
+from nova_navigator.filemanager.tasks import FileCopyOptions, erase_files
 from nova_navigator.scheduler import Job
 from nova_navigator.vfs import VPath
 from nova_widgets import Response
@@ -246,3 +246,48 @@ async def test_delete_job_returns_erase_job_on_yes() -> None:
         result = await delete_files_job(paths)  # type: ignore
     assert isinstance(result, Job)
     assert result.title == "Erase Files"
+
+
+@pytest.mark.asyncio
+async def test_delete_job_without_confirmation_skips_dialog_and_returns_erase_job() -> None:
+    conf_.settings.general.confirm_delete = False
+    paths = cast("list[VPath]", [_vpath("file.txt")])
+    with patch("nova_navigator.filemanager.jobs.DeleteFilesDialog") as dialog_cls:
+        result = await delete_files_job(paths)
+    dialog_cls.assert_not_called()
+    assert isinstance(result, Job)
+    assert result.title == "Erase Files"
+
+
+@pytest.mark.asyncio
+async def test_delete_job_without_confirmation_keeps_non_empty_directory_prompt() -> None:
+    conf_.settings.general.confirm_delete = False
+    paths = cast("list[VPath]", [_vpath("dir")])
+    with patch("nova_navigator.filemanager.jobs.Job") as job_cls:
+        await delete_files_job(paths)
+    assert job_cls.call_args.args[:2] == ("Erase Files", erase_files)
+    assert len(job_cls.call_args.args) == 3
+
+
+@pytest.mark.asyncio
+async def test_delete_job_with_confirmation_default_shows_dialog() -> None:
+    dialog = _mock_delete_dialog(Response.YES)
+    with patch("nova_navigator.filemanager.jobs.DeleteFilesDialog", return_value=dialog):
+        result = await delete_files_job(cast("list[VPath]", [_vpath("file.txt")]))
+    dialog.run.assert_awaited_once()
+    assert isinstance(result, Job)
+
+
+@pytest.mark.asyncio
+async def test_delete_job_reads_option_at_call_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    paths = cast("list[VPath]", [_vpath("file.txt")])
+    with patch("nova_navigator.filemanager.jobs.DeleteFilesDialog", return_value=_mock_delete_dialog(Response.NO)) as dialog_cls:
+        assert await delete_files_job(paths) is None
+        dialog_cls.assert_called_once()
+
+        replaced = Settings.load()
+        replaced.general.confirm_delete = False
+        monkeypatch.setattr(conf_, "settings", replaced, raising=False)
+        result = await delete_files_job(paths)
+        dialog_cls.assert_called_once()
+    assert isinstance(result, Job)
