@@ -23,6 +23,7 @@ from nova_navigator.vfs.filesystems.ssh import (
     UnknownHostKeyError,
 )
 from tests._utils.known_hosts_files import key_line, make_key
+from tests._utils.ssh_close_recorder import record_closes
 from tests._utils.ssh_identity import write_identity
 from tests._utils.stub_ssh_server import StubSSHServer, make_host_key
 
@@ -301,18 +302,6 @@ def test_single_hop_errors_are_not_wrapped(servers: Servers) -> None:
         _open(servers, [SshHop("x", "127.0.0.1", _closed_port(), "u", ())])
 
 
-def _record_closes(monkeypatch: pytest.MonkeyPatch) -> list[int]:
-    closed: list[int] = []
-    original = paramiko.SSHClient.close
-
-    def record(self: paramiko.SSHClient) -> None:
-        closed.append(id(self))
-        original(self)
-
-    monkeypatch.setattr(paramiko.SSHClient, "close", record)
-    return closed
-
-
 def test_close_order_is_target_then_jumps_in_reverse(servers: Servers, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "b2").mkdir()
     bastion2 = StubSSHServer(
@@ -345,7 +334,7 @@ def test_close_order_is_target_then_jumps_in_reverse(servers: Servers, tmp_path:
             + "\n"
         )
         fs = _open(servers, route)
-        closed = _record_closes(monkeypatch)
+        closed = record_closes(monkeypatch)
         expected = [id(fs._ssh_client), id(fs._hop_clients[1]), id(fs._hop_clients[0])]
         fs.close()
         assert closed == expected
@@ -374,7 +363,7 @@ def test_failed_attempt_closes_opened_jump_clients(servers: Servers, tmp_path: P
             SshHop("target", INTERNAL, 22, "testuser", (identity,)),
         ]
         servers.locations.user_known_hosts.write_text(key_line(host_key_name(bastion.host, bastion.port), bastion.host_key) + "\n" + key_line(INTERNAL, target.host_key) + "\n")
-        closed = _record_closes(monkeypatch)
+        closed = record_closes(monkeypatch)
         with pytest.raises(HopAuthenticationError):
             SSHFilesystem(
                 "target",

@@ -17,6 +17,7 @@ from nova_navigator.remotes.ssh_route import SshHop
 from nova_navigator.vfs.filesystems.ssh import SshConnectTimeoutError, SSHFilesystem, SshHopError, _Deadline
 from tests._utils.known_hosts_files import key_line
 from tests._utils.silent_server import SilentServer
+from tests._utils.ssh_close_recorder import record_closes
 from tests._utils.stub_ssh_server import StubSSHServer, make_host_key
 
 _LOGIN_WORD = "testpass"
@@ -109,14 +110,15 @@ def test_silent_second_hop_names_the_target_and_closes_the_bastion(silent: Silen
         forward_map={("silent.internal", 22): ("127.0.0.1", silent.port)},
     )
     bastion.start()
-    closed: list[int] = []
-    original = paramiko.SSHClient.close
+    closed = record_closes(monkeypatch)
+    connected: list[int] = []
+    original_connect = paramiko.SSHClient.connect
 
-    def record(self: paramiko.SSHClient) -> None:
-        closed.append(id(self))
-        original(self)
+    def track_connect(self: paramiko.SSHClient, *args: Any, **kwargs: Any) -> None:
+        connected.append(id(self))
+        original_connect(self, *args, **kwargs)
 
-    monkeypatch.setattr(paramiko.SSHClient, "close", record)
+    monkeypatch.setattr(paramiko.SSHClient, "connect", track_connect)
     try:
         locations.user_known_hosts.write_text(key_line(host_key_name(bastion.host, bastion.port), bastion.host_key) + "\n")
         route = [SshHop("bastion", bastion.host, bastion.port, "j", ()), SshHop("silent.internal", "silent.internal", 22, "u", ())]
@@ -126,7 +128,8 @@ def test_silent_second_hop_names_the_target_and_closes_the_bastion(silent: Silen
         assert time.monotonic() - start <= 2 * 1.0 + 2.5
         assert info.value.index == 1
         assert "silent.internal" in str(info.value)
-        assert closed
+        assert len(connected) >= 1
+        assert connected[0] in closed  # the bastion (first hop) is closed, not only the failing target
     finally:
         bastion.stop()
 
@@ -155,12 +158,16 @@ def test_hop_whose_watchdog_fired_during_the_last_step_fails_with_the_timeout(tm
 
         def slow_sftp(_self: paramiko.SSHClient) -> paramiko.SFTPClient:
             time.sleep(1.5)  # the watchdog (1 s) fires and closes the client, yet this call "succeeds"
-            return MagicMock(spec=paramiko.SFTPClient)
+            return sftp
 
+        sftp = MagicMock(spec=paramiko.SFTPClient)
+        closed = record_closes(monkeypatch)
         monkeypatch.setattr(paramiko.SSHClient, "open_sftp", slow_sftp)
         route = [SshHop("stub", server.host, server.port, "u", ())]
         with pytest.raises(SshConnectTimeoutError):
             SSHFilesystem("stub", server.port, "u", None, _LOGIN_WORD, route=route, connect_timeout=1.0, known_hosts=locations)
+        sftp.close.assert_called()
+        assert closed
     finally:
         server.stop()
 
@@ -202,7 +209,7 @@ def test_timeout_per_hop_not_per_chain(tmp_path: Path, locations: KnownHostsLoca
 
     def slow_connect(self: paramiko.SSHClient, *args: Any, **kwargs: Any) -> None:
         calls.append(time.monotonic())
-        time.sleep(0.6)  # every hop uses 0.6 s of its own 1 s budget; the chain needs 1.2 s
+        time.sleep(1.2)  # every hop uses 1.2 s of its own 2 s budget; the chain needs 2.4 s
         original(self, *args, **kwargs)
 
     monkeypatch.setattr(paramiko.SSHClient, "connect", slow_connect)
@@ -210,10 +217,10 @@ def test_timeout_per_hop_not_per_chain(tmp_path: Path, locations: KnownHostsLoca
         locations.user_known_hosts.write_text(key_line(host_key_name(bastion.host, bastion.port), bastion.host_key) + "\n" + key_line("t.internal", target.host_key) + "\n")
         route = [SshHop("bastion", bastion.host, bastion.port, "j", ()), SshHop("t", "t.internal", 22, "u", ())]
         start = time.monotonic()
-        fs = SSHFilesystem("t", 22, "u", None, _LOGIN_WORD, route=route, connect_timeout=1.0, known_hosts=locations, credentials=_JUMP_LOGIN)
+        fs = SSHFilesystem("t", 22, "u", None, _LOGIN_WORD, route=route, connect_timeout=2.0, known_hosts=locations, credentials=_JUMP_LOGIN)
         fs.close()
         assert len(calls) == 2
-        assert time.monotonic() - start > 1.0
+        assert time.monotonic() - start > 2.0
     finally:
         bastion.stop()
         target.stop()
