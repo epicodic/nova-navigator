@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import bz2
+import gzip
 import io
+import lzma
 import tarfile
 import threading
 import zipfile
@@ -13,6 +16,8 @@ from typing import IO, Any, cast
 import pytest
 
 from nova_navigator.archive.archive import Archive
+from nova_navigator.archive.archives import is_archive_writable, is_supported_archive, is_zip_archive, open_archive
+from nova_navigator.archive.compressed_archive import CompressedFileArchive
 from nova_navigator.archive.tar_archive import TarArchive
 from nova_navigator.archive.zip_archive import ZipArchive
 from nova_navigator.vfs.filesystems.archive import ArchiveFilesystem
@@ -527,3 +532,58 @@ def test_tar_dangling_hard_link(tmp_path: Path) -> None:
     assert st.is_symlink is False
     with pytest.raises(FileNotFoundError):
         archive.read(PurePath("b.txt"))
+
+
+# ---------------------------------------------------------------------------
+# Registry: bare compressed files and tar name precedence
+# ---------------------------------------------------------------------------
+
+_COMPRESSED_NAMES = ["a.gz", "a.bz2", "a.xz"]
+_TAR_NAMES = ["a.tar", "a.tar.gz", "a.tgz", "a.tar.bz2", "a.tbz2", "a.tar.xz", "a.txz"]
+
+
+@pytest.mark.parametrize("name", _COMPRESSED_NAMES)
+def test_bare_compressed_names_are_supported(name: str) -> None:
+    assert is_supported_archive(PurePath(name))
+
+
+@pytest.mark.parametrize("name", _COMPRESSED_NAMES)
+def test_bare_compressed_names_are_read_only_and_not_zip(name: str) -> None:
+    assert not is_archive_writable(PurePath(name))
+    assert not is_zip_archive(PurePath(name))
+
+
+@pytest.mark.parametrize("name", _COMPRESSED_NAMES)
+def test_open_archive_returns_compressed_file_archive(tmp_path: Path, name: str) -> None:
+    compress = {".gz": gzip.compress, ".bz2": bz2.compress, ".xz": lzma.compress}[Path(name).suffix]
+    path = tmp_path / name
+    path.write_bytes(compress(b"content"))
+    archive = open_archive(path, "r")
+    assert isinstance(archive, CompressedFileArchive)
+    assert archive.listdir(PurePath("/")) == [PurePath("a")]
+
+
+@pytest.mark.parametrize("name", _TAR_NAMES)
+def test_tar_names_still_open_as_tar_archives(tmp_path: Path, name: str) -> None:
+    path = tmp_path / name
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        info = tarfile.TarInfo("member.txt")
+        info.size = 3
+        tar.addfile(info, io.BytesIO(b"abc"))
+    path.write_bytes(_compress_for(name, buffer.getvalue()))
+    archive = open_archive(path, "r")
+    assert isinstance(archive, TarArchive)
+    assert archive.listdir(PurePath("/")) == [PurePath("member.txt")]
+    assert is_archive_writable(path)
+    assert not is_zip_archive(path)
+
+
+def _compress_for(name: str, data: bytes) -> bytes:
+    if name.endswith((".gz", ".tgz")):
+        return gzip.compress(data)
+    if name.endswith((".bz2", ".tbz2")):
+        return bz2.compress(data)
+    if name.endswith((".xz", ".txz")):
+        return lzma.compress(data)
+    return data
