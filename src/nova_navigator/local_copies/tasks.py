@@ -37,7 +37,7 @@ def _progress(ctx: TaskContext, total: int) -> Callable[[int], None]:
 async def create_copy_task(ctx: TaskContext, source: VPath, root: Path, read_only: bool, result: TaskResult) -> None:
     """Download *source* into a fresh :class:`LocalCopy` below *root*."""
     ctx.set_current_item(source.uri)
-    size = source.filesystem.stat(source).size
+    size = source.filesystem.stat_uncached(source).size
     result.copy = LocalCopy.create(source, root, read_only=read_only, progress=_progress(ctx, size))
     result.opened = True
     ctx.status.set_completed()
