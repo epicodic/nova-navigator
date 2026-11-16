@@ -213,6 +213,21 @@ Alternatives that were rejected:
 JAR, WAR, EAR, APK, and WHL report `FilesystemCapabilities.read_only` and raise `PermissionError` on write, as does any archive whose source filesystem is itself read-only (see `archive/archives.py`, `is_archive_writable`).
 The archive virtual shell's `cp` command (`terminal/vfs_shell/commands/cp.py`) writes through the same generic `Filesystem.write()`, so it can copy a file into a writable archive too.
 
+#### Compressed single files
+
+A file ending in `.gz`, `.bz2` or `.xz` that is not one of the tar names opens as a read-only archive with one entry (`archive/compressed_archive.py`, `CompressedFileArchive`).
+The entry is the decompressed content, named like the file without the suffix, or `data` if nothing remains.
+The suffix match is case-sensitive, and the compressed file's own header name is ignored.
+Such a file is never writable, so writing into it raises `PermissionError`, and remove and rename are unsupported.
+Mounting streams the whole file once, in 1 MiB chunks, to check it and to measure the uncompressed size, so opening a very large file takes as long as decompressing it, but memory stays small.
+Each read afterwards decompresses incrementally from its own file handle.
+The three suffixes are registered after the tar and zip names in `_SUPPORTED_ARCHIVES`, so the first matching suffix wins.
+This keeps `.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz` and `.txz` opening as tar archives.
+A `.gz` file that contains a tar stream is shown as one entry, because only the name decides.
+A corrupt, truncated or empty file raises `OSError(EINVAL)` ("Corrupt or empty ... file") from the mount; system errors such as a missing file propagate unchanged.
+As for tar and zip, the size is measured at mount, so a local file rewritten afterwards is not noticed until the archive is reloaded.
+For a remote file, `LocalCopyManager.mount_archive` discards the downloaded copy before re-raising, so a failed mount leaves nothing behind.
+
 ### Probe tool
 
 `src/tools/local_copy_probe.py` exercises a `ChangeDetector` against a real editor outside the full application, to check how that editor's save strategy is seen:

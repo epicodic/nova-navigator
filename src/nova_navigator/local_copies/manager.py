@@ -361,6 +361,11 @@ class LocalCopyManager:
         if not result.opened or job.state is not Job.State.COMPLETED or result.copy is None:
             return None
         # The rebuilt archive is renamed into the copy, so its work dir must share the copy's root (same device).
-        archive_fs = ArchiveFilesystem(source.parent, CopiedArchiveBacking(result.copy), work_dir=self._root / "work")
+        try:
+            archive_fs = ArchiveFilesystem(source.parent, CopiedArchiveBacking(result.copy), work_dir=self._root / "work")
+        except BaseException:
+            # A file that cannot be opened as an archive (corrupt, empty) must not leave its download behind.
+            result.copy.discard()
+            raise
         self._archive_mounts[key] = archive_fs
         return archive_fs
