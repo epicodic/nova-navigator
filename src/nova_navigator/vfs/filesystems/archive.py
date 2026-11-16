@@ -113,10 +113,10 @@ class ArchiveFilesystem(Filesystem):
         a mount with no backing (a pre-opened :class:`Archive` with nothing behind it to
         refresh from).
         """
-        if self._backing is None:
-            return
         if self._closed:
             raise ValueError("Archive mount is closed")
+        if self._backing is None:
+            return
         with self._write_lock:
             self._backing.prepare_write()
             if _stamp_of(self._local_path) != self._stamp:

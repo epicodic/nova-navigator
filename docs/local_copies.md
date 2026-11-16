@@ -112,6 +112,8 @@ An empty one is removed silently; one that still holds files produces a notifica
 - SSH files and TAR members have no version tag, so a source change is detected by size and modification time alone.
   The check is a fresh stat on every reopen and every sync, never a directory listing.
   A same-size change within the same whole second is not detected for these sources.
+  For an archive member the container's fingerprint counts too, so a ZIP or TAR on SSH inherits this same-second limit for the whole archive.
+  A local container is compared by device, inode, size and mtime in nanoseconds.
   ZIP members (CRC-32), Azure blobs (ETag) and local files do not share this limit for their own content.
 - Nothing prevents another writer from racing the final replacement of the source.
 - Writing back to SSH needs the server's `posix-rename@openssh.com` SFTP extension; a server without it fails the write-back and leaves both the source and the local copy untouched.

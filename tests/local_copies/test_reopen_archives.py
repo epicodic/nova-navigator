@@ -232,6 +232,26 @@ async def test_remote_archive_member_reopen_after_the_remote_archive_changed(ssh
         assert reopened.copy.path.read_bytes() == b"a much longer new content"
 
 
+@pytest.mark.asyncio
+async def test_remote_archive_member_reopen_unchanged_does_not_download(ssh_fs: SSHFilesystem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    remote = _remote_dir(tmp_path) / "a.zip"
+    remote.write_bytes(_zip_bytes({"m.txt": b"same"}))
+    source = VPath(remote, ssh_fs)
+    ssh_fs.stat(source)
+    async with _managed(tmp_path) as manager:
+        mount = _mounted(await manager.mount_archive(source))
+        entry = await manager.open(mount.path("/m.txt"))
+        assert entry is not None
+        await manager.release(entry)
+        reads = _count_reads(monkeypatch, ssh_fs)
+
+        reopened = await manager.open(mount.path("/m.txt"))
+
+        assert reopened is not None
+        assert reopened.copy.path.read_bytes() == b"same"
+        assert reads == []
+
+
 # ---------------------------------------------------------------------------
 # Nested archives
 # ---------------------------------------------------------------------------

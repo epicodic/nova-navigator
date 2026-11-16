@@ -1259,7 +1259,7 @@ class SSHFilesystem(Filesystem):
         raw_path = _sftp_path(path)
         try:
             attrs = self._sftp_client.lstat(raw_path)
-        except paramiko.SSHException as exc:
+        except (paramiko.SSHException, paramiko.SFTPError) as exc:
             raise OSError(str(exc)) from exc
         lstat_entry = _entry_from_attrs(path.name, _attrs_of(attrs))
         if not lstat_entry.is_symlink:

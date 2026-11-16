@@ -265,5 +265,18 @@ def test_ssh_stat_uncached_maps_ssh_exception_to_oserror(gnu_fs: SSHFilesystem, 
         gnu_fs.stat_uncached(_remote(gnu_fs, target))
 
 
+def test_ssh_stat_uncached_maps_sftp_error_to_oserror(gnu_fs: SSHFilesystem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = tmp_path / "file.txt"
+    target.write_bytes(b"abc")
+    raiser: Callable[..., paramiko.SFTPAttributes] = _raise_sftp_error
+    monkeypatch.setattr(gnu_fs._sftp_client, "lstat", raiser)
+    with pytest.raises(OSError, match="Expected name response"):
+        gnu_fs.stat_uncached(_remote(gnu_fs, target))
+
+
+def _raise_sftp_error(*_args: object) -> paramiko.SFTPAttributes:
+    raise paramiko.SFTPError("Expected name response")
+
+
 def _raise_ssh_exception(*_args: object) -> paramiko.SFTPAttributes:
     raise paramiko.SSHException("gone")

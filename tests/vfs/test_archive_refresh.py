@@ -113,19 +113,33 @@ def test_stat_uncached_on_a_closed_mount_raises_value_error(tmp_path: Path) -> N
         fs.stat_uncached(fs.path(_MEMBER))
 
 
+def test_refresh_from_source_on_a_closed_pre_opened_mount_raises_value_error(tmp_path: Path) -> None:
+    archive = tmp_path / "a.zip"
+    archive.write_bytes(_zip_bytes({"dir/edit.txt": b"old"}))
+    local = LocalFilesystem.singleton()
+    fs = ArchiveFilesystem(local.path(tmp_path), open_archive(archive, mode="r"))
+    fs.close()
+
+    with pytest.raises(ValueError, match="Archive mount is closed"):
+        fs.refresh_from_source()
+
+
 def test_commit_then_fingerprint_does_not_reopen_again(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, fs = _local_mount(tmp_path)
     opened = _count_opens(monkeypatch)
 
-    writer = fs.write(fs.path(_MEMBER))
-    writer.write(b"new")
+    member = fs.path(_MEMBER)
+    assert member.stat.size == 3
+    writer = fs.write(member)
+    writer.write(b"newer content")
     writer.close()
     assert len(opened) == 1
 
-    fingerprint = SourceFingerprint.of(fs.path(_MEMBER))
+    fingerprint = SourceFingerprint.of(member)
 
     assert len(opened) == 1
-    assert fingerprint.size == 3
+    assert fingerprint.size == len(b"newer content")
+    assert member.stat.size == len(b"newer content")
 
 
 def test_write_back_of_a_member_does_not_deadlock_on_the_mount_lock(tmp_path: Path) -> None:
