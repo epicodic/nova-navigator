@@ -326,6 +326,14 @@ class Filesystem(ABC):
         self._assert_vpath(path)
         return _SpooledAtomicWriter(self, path)
 
+    def stat_uncached(self, path: VPath) -> Stat:
+        """Return the current :class:`Stat` of *path*, never answered from a cache.
+
+        The default is :meth:`stat`. Backends whose ``stat`` can be stale (listing caches, reader
+        snapshots) override this to ask the underlying source.
+        """
+        return self.stat(path)
+
     def version_tag(self, path: VPath) -> str | None:
         """Opaque token that changes whenever *path* is rewritten or replaced; None if unavailable."""
         self._assert_vpath(path)
