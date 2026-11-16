@@ -184,3 +184,11 @@ def test_multi_member_gzip_size_and_content(tmp_path: Path) -> None:
     archive = CompressedFileArchive(path, "r")
     assert archive.stats(PurePath("/multi")).size == len(b"first-second")
     assert _read_all(archive, PurePath("/multi")) == b"first-second"
+
+
+@pytest.mark.parametrize("suffix", _SUFFIXES)
+def test_directory_with_a_compressed_name_is_not_reported_as_corrupt(tmp_path: Path, suffix: str) -> None:
+    folder = tmp_path / f"dir{suffix}"
+    folder.mkdir()
+    with pytest.raises(IsADirectoryError):
+        CompressedFileArchive(folder, "r")

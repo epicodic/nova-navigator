@@ -58,19 +58,28 @@ class CompressedFileArchive(Archive):
         self._modified = self._local_path.stat().st_mtime
         self._size = self._measure()
 
+    def _corrupt(self) -> OSError:
+        return OSError(errno.EINVAL, f"Corrupt or empty {self._format_name} file", str(self._archive_path))
+
     def _measure(self) -> int:
-        """Stream the whole file once, returning the uncompressed size; raise ``OSError`` if it is corrupt or empty."""
+        """Stream the whole file once, returning the uncompressed size; raise ``OSError`` if it is corrupt or empty.
+
+        System errors (missing file, permissions, I/O failure) propagate unchanged.
+        """
+        if self._local_path.stat().st_size == 0:
+            raise self._corrupt()
         total = 0
         try:
-            if self._local_path.stat().st_size == 0:
-                raise EOFError("empty file")
             with self._opener(self._local_path) as stream:
                 while chunk := stream.read(_CHUNK_SIZE):
                     total += len(chunk)
-        except (gzip.BadGzipFile, EOFError, lzma.LZMAError, zlib.error, OSError) as error:
-            if isinstance(error, (FileNotFoundError, PermissionError)):
+        except (gzip.BadGzipFile, EOFError, lzma.LZMAError, zlib.error) as error:
+            raise self._corrupt() from error
+        except OSError as error:
+            # The bz2 module reports a damaged stream as a plain OSError without an errno.
+            if error.errno is not None:
                 raise
-            raise OSError(errno.EINVAL, f"Corrupt or empty {self._format_name} file", str(self._archive_path)) from error
+            raise self._corrupt() from error
         return total
 
     @staticmethod

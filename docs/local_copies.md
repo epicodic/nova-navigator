@@ -221,9 +221,11 @@ The suffix match is case-sensitive, and the compressed file's own header name is
 Such a file is never writable, so writing into it raises `PermissionError`, and remove and rename are unsupported.
 Mounting streams the whole file once, in 1 MiB chunks, to check it and to measure the uncompressed size, so opening a very large file takes as long as decompressing it, but memory stays small.
 Each read afterwards decompresses incrementally from its own file handle.
-The three suffixes are registered after the tar and zip names in `_SUPPORTED_ARCHIVES`, so `.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz` and `.txz` still open as tar archives; the first matching suffix wins.
+The three suffixes are registered after the tar and zip names in `_SUPPORTED_ARCHIVES`, so the first matching suffix wins.
+This keeps `.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz` and `.txz` opening as tar archives.
 A `.gz` file that contains a tar stream is shown as one entry, because only the name decides.
-A corrupt, truncated or empty file raises `OSError(EINVAL)` ("Corrupt or empty ... file") from the mount.
+A corrupt, truncated or empty file raises `OSError(EINVAL)` ("Corrupt or empty ... file") from the mount; system errors such as a missing file propagate unchanged.
+As for tar and zip, the size is measured at mount, so a local file rewritten afterwards is not noticed until the archive is reloaded.
 For a remote file, `LocalCopyManager.mount_archive` discards the downloaded copy before re-raising, so a failed mount leaves nothing behind.
 
 ### Probe tool
