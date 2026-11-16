@@ -193,3 +193,8 @@ class RemoteFilesystem(Filesystem):
     def version_tag(self, path: VPath) -> str | None:
         # Explicit override for the same reason as write_atomic above.
         return self._inner.version_tag(self._to_inner(path))
+
+    @override
+    def stat_uncached(self, path: VPath) -> Stat:
+        # Explicit override for the same reason as write_atomic above; the base default would call this wrapper's stat.
+        return self._inner.stat_uncached(self._to_inner(path))

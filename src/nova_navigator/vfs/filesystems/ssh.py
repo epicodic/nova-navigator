@@ -1232,22 +1232,39 @@ class SSHFilesystem(Filesystem):
         lstat = file_list_lstat.get(path.path.name)
         if lstat is None:
             raise FileNotFoundError(f"No such file or directory: {path.path!r}")
-        if stat is None:
-            if lstat.is_symlink:
-                return _broken_link_stat(path.name, lstat)
+        return self._stat_from(path, stat, lstat)
+
+    @staticmethod
+    def _stat_from(path: VPath, stat_entry: StatEntry | None, lstat_entry: StatEntry) -> Stat:
+        """Build the ``Stat`` of *path* from its followed entry (``None`` when the link cannot be followed) and its lstat entry."""
+        if stat_entry is None:
+            if lstat_entry.is_symlink:
+                return _broken_link_stat(path.name, lstat_entry)
             raise FileNotFoundError(f"No such file or directory: {path.path!r}")
-
-        is_hidden = path.name.startswith(".")
-
         return Stat(
-            size=stat.size or 0,
-            modified=stat.modified_time or 0,
-            mode=lstat.permissions,
-            is_hidden=is_hidden,
-            is_directory=stat.is_directory,
-            is_executable=stat.permissions & 0o111 != 0,
-            is_symlink=lstat.is_symlink,
+            size=stat_entry.size or 0,
+            modified=stat_entry.modified_time or 0,
+            mode=lstat_entry.permissions,
+            is_hidden=path.name.startswith("."),
+            is_directory=stat_entry.is_directory,
+            is_executable=stat_entry.permissions & 0o111 != 0,
+            is_symlink=lstat_entry.is_symlink,
         )
+
+    @override
+    def stat_uncached(self, path: VPath) -> Stat:
+        """Answer with one SFTP ``lstat`` (plus one ``stat`` for a symlink), never from or into the listing cache."""
+        if path.path.parent == path.path:
+            return Stat(is_directory=True)
+        raw_path = _sftp_path(path)
+        try:
+            attrs = self._sftp_client.lstat(raw_path)
+        except (paramiko.SSHException, paramiko.SFTPError) as exc:
+            raise OSError(str(exc)) from exc
+        lstat_entry = _entry_from_attrs(path.name, _attrs_of(attrs))
+        if not lstat_entry.is_symlink:
+            return self._stat_from(path, lstat_entry, lstat_entry)
+        return self._stat_from(path, self._sftp_link_target(raw_path, path.name), lstat_entry)
 
     @override
     def read(self, path: VPath) -> StreamReaderLike:

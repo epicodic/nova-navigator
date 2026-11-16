@@ -75,10 +75,15 @@ class SourceFingerprint:
 
     @classmethod
     def of(cls, source: VPath) -> SourceFingerprint:
-        """Return a freshly-stat'd fingerprint of *source* (never the cached VPath stat)."""
+        """Return a fingerprint of *source* taken from a fresh stat, never from a cache.
+
+        Uses :meth:`Filesystem.stat_uncached`, so a listing cache or an archive reader snapshot
+        cannot hide a change. For an archive member the container is fingerprinted first, then
+        the member.
+        """
         filesystem = source.filesystem
-        stat = filesystem.stat(source)
         container = cls.of(filesystem.source) if isinstance(filesystem, ArchiveFilesystem) else None
+        stat = filesystem.stat_uncached(source)
         return cls(stat.size, stat.modified, filesystem.version_tag(source), container)
 
 

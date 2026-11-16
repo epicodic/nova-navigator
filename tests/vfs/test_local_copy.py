@@ -5,12 +5,15 @@ from __future__ import annotations
 import os
 import zipfile
 from pathlib import Path, PurePosixPath
+from typing import override
 
 import pytest
 
 from nova_navigator.vfs.filesystems.archive import ArchiveFilesystem
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
-from nova_navigator.vfs.local_copy import LocalCopy, ReuseAction, is_local_source, relative_copy_path, sanitize_segment
+from nova_navigator.vfs.local_copy import LocalCopy, ReuseAction, SourceFingerprint, is_local_source, relative_copy_path, sanitize_segment
+from nova_navigator.vfs.types import Stat
+from nova_navigator.vfs.vpath import VPath
 from tests._utils.local_copy_helpers import SchemeFs, overwrite
 
 # ---------------------------------------------------------------------------
@@ -159,3 +162,73 @@ def test_is_local_source_is_true_only_for_a_plain_local_file(tmp_path: Path) -> 
     assert is_local_source(local.path(real))
     assert not is_local_source(SchemeFs({"/d/f.txt": b"x"}).path("/d/f.txt"))
     assert not is_local_source(archive_fs.path("/a.txt"))
+
+
+# ---------------------------------------------------------------------------
+# Fresh-stat fingerprints (the cached stat may be stale)
+# ---------------------------------------------------------------------------
+
+
+class _StaleStatFs(SchemeFs):
+    """SchemeFs whose ``stat`` returns the first answer per path forever, like a listing cache; ``stat_uncached`` is the real one."""
+
+    def __init__(self, files: dict[str, bytes | None]) -> None:
+        super().__init__(files)
+        self._first: dict[str, Stat] = {}
+
+    @override
+    def stat(self, path: VPath) -> Stat:
+        key = str(path.path)
+        if key not in self._first:
+            self._first[key] = super().stat(path)
+        return self._first[key]
+
+    @override
+    def stat_uncached(self, path: VPath) -> Stat:
+        return super().stat(path)
+
+
+def test_source_changed_uses_the_uncached_stat(tmp_path: Path) -> None:
+    fs = _StaleStatFs({"/d/f.txt": b"old"})
+    copy = LocalCopy.create(fs.path("/d/f.txt"), tmp_path)
+    overwrite(fs, "/d/f.txt", b"a much longer new content")
+    assert copy.source_changed()
+
+
+def test_reuse_action_refreshes_when_only_the_uncached_stat_changed(tmp_path: Path) -> None:
+    fs = _StaleStatFs({"/d/f.txt": b"old"})
+    copy = LocalCopy.create(fs.path("/d/f.txt"), tmp_path)
+    overwrite(fs, "/d/f.txt", b"a much longer new content")
+    assert copy.reuse_action() is ReuseAction.REFRESH
+
+
+def test_create_records_a_baseline_from_the_uncached_stat(tmp_path: Path) -> None:
+    fs = _StaleStatFs({"/d/f.txt": b"old"})
+    fs.stat(fs.path("/d/f.txt"))  # warm the stale answer: size 3
+    overwrite(fs, "/d/f.txt", b"a much longer new content")
+    copy = LocalCopy.create(fs.path("/d/f.txt"), tmp_path)
+    assert copy.baseline.source.size == len(b"a much longer new content")
+
+
+def test_fingerprint_takes_the_container_before_the_member_stat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    zip_path = tmp_path / "x.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("a.txt", "hi")
+    local = LocalFilesystem.singleton()
+    archive_fs = ArchiveFilesystem(local.path(tmp_path), local.path(zip_path))
+    log: list[str] = []
+    original_container = LocalFilesystem.stat_uncached
+    original_member = archive_fs.stat_uncached
+
+    def container_stat(self: LocalFilesystem, path: VPath) -> Stat:
+        log.append("container")
+        return original_container(self, path)
+
+    def member_stat(path: VPath) -> Stat:
+        log.append("member")
+        return original_member(path)
+
+    monkeypatch.setattr(LocalFilesystem, "stat_uncached", container_stat)
+    monkeypatch.setattr(archive_fs, "stat_uncached", member_stat)
+    SourceFingerprint.of(archive_fs.path("/a.txt"))
+    assert log == ["container", "member"]

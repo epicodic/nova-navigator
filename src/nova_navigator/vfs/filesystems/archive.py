@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import io
+import os
 import tarfile
 import tempfile
 import threading
@@ -26,6 +27,8 @@ from ..vpath import VPath
 from .local import LocalFilesystem
 
 _CHUNK = 1024 * 1024
+
+_Stamp = tuple[int, int, int, int]
 
 
 class ArchiveFilesystem(Filesystem):
@@ -54,6 +57,8 @@ class ArchiveFilesystem(Filesystem):
         self._closed = False
         self._member_paths: WeakSet[VPath] = WeakSet()
         self._write_lock = threading.Lock()
+        self._members_lock = threading.Lock()
+        self._stamp: _Stamp | None = None
         if isinstance(archive, Archive):
             self._backing = None
             self._archive = archive
@@ -63,6 +68,7 @@ class ArchiveFilesystem(Filesystem):
                 self._backing = LocalArchiveBacking(archive)
             else:
                 self._backing = archive
+            self._stamp = _stamp_of(self._backing.local_path)
             self._archive = open_archive(self._backing.local_path, mode="r")
         self._identity = self._archive
         self._local_path = Path(self._archive.archive_path)
@@ -95,7 +101,10 @@ class ArchiveFilesystem(Filesystem):
         self._reopen()
 
     def refresh_from_source(self) -> None:
-        """Refresh the local archive copy from its source if it changed, then reopen the reader.
+        """Refresh the local archive copy from its source if it changed, then reopen the reader if the file changed.
+
+        The reader is reopened only when the local file differs from the one the current reader
+        was opened on (device, inode, size and mtime), so an unchanged archive costs no reopen.
 
         Takes the same write lock as a member commit, since both mutate the local file
         backing this mount (the local copy of a non-local archive): without it, a mount
@@ -104,13 +113,14 @@ class ArchiveFilesystem(Filesystem):
         a mount with no backing (a pre-opened :class:`Archive` with nothing behind it to
         refresh from).
         """
-        if self._backing is None:
-            return
         if self._closed:
             raise ValueError("Archive mount is closed")
+        if self._backing is None:
+            return
         with self._write_lock:
             self._backing.prepare_write()
-            self._reopen()
+            if _stamp_of(self._local_path) != self._stamp:
+                self._reopen()
 
     def _reopen(self) -> None:
         """Reopen the archive reader from ``local_path`` and invalidate cached member stats.
@@ -121,10 +131,14 @@ class ArchiveFilesystem(Filesystem):
         opening the replacement fails, ``self._archive`` is left untouched (still open) and the
         mount stays usable with stale content; the exception propagates to the caller.
         """
+        stamp = _stamp_of(self._local_path)
         new_archive = open_archive(self._local_path, mode="r")
         old_archive = self._archive
         self._archive = new_archive
-        for member in self._member_paths:
+        self._stamp = stamp
+        with self._members_lock:
+            members = tuple(self._member_paths)
+        for member in members:
             member._stat = None
         old_archive.close()
 
@@ -182,7 +196,19 @@ class ArchiveFilesystem(Filesystem):
     @override
     def stat(self, path: VPath) -> Stat:
         self._assert_vpath(path)
-        self._member_paths.add(path)
+        with self._members_lock:
+            self._member_paths.add(path)
+        return self._archive.stats(path.path)
+
+    @override
+    def stat_uncached(self, path: VPath) -> Stat:
+        """Stat *path* after refreshing the mount from its container, so a replaced archive is never answered from the old reader.
+
+        Raises:
+            ValueError: The mount is closed.
+        """
+        self._assert_vpath(path)
+        self.refresh_from_source()
         return self._archive.stats(path.path)
 
     @override
@@ -341,6 +367,15 @@ class _MemberWriter:
         self._done = True
         self._exit_stack.close()
         self._path.unlink(missing_ok=True)
+
+
+def _stamp_of(path: Path) -> _Stamp | None:
+    """Identify the file at *path* by device, inode, size and mtime; ``None`` if it cannot be stat'ed."""
+    try:
+        result = os.stat(path)
+    except OSError:
+        return None
+    return (result.st_dev, result.st_ino, result.st_size, result.st_mtime_ns)
 
 
 def _digest_stream(reader: IO[bytes]) -> str:
