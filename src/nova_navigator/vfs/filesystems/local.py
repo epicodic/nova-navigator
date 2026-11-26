@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import logging
 import os
 import signal
@@ -25,6 +26,8 @@ from ..vpath import VPath
 
 logging.getLogger("watchdog").setLevel(logging.WARNING)
 
+_BROKEN_LINK_ERRNOS = frozenset({errno.ENOENT, errno.ELOOP, errno.ENOTDIR})
+_UNREADABLE_LINK_ERRNOS = frozenset({errno.EACCES})
 _EXEC_POLL_INTERVAL = 0.05
 _EXEC_READER_JOIN_TIMEOUT = 1.0
 _EXEC_CHUNK_SIZE = 65536
@@ -53,6 +56,39 @@ def _terminate_group(process: subprocess.Popen[bytes]) -> None:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
         process.wait()
+
+
+def _device_of(path: PurePath) -> int | None:
+    """Return the device ID a rename to or from *path* would act on, or None if undeterminable.
+
+    An existing entry is examined with ``lstat`` so that a symlink counts as the link itself
+    (which is what ``rename`` moves). A missing entry — typically a move target — takes the
+    device of its nearest existing ancestor directory, since that is where it would be created.
+    """
+    try:
+        return os.lstat(path).st_dev
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return None
+    for ancestor in path.parents:
+        try:
+            return os.stat(ancestor).st_dev
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+    return None
+
+
+def _is_broken_link_error(exc: OSError, lstat: os.stat_result) -> bool:
+    """Tell whether following a link failed because its target is missing or unreadable.
+
+    An unreadable target (EACCES) only counts when *lstat* is a symlink; otherwise the error is real.
+    """
+    if exc.errno in _BROKEN_LINK_ERRNOS:
+        return True
+    return exc.errno in _UNREADABLE_LINK_ERRNOS and S_ISLNK(lstat.st_mode)
 
 
 class _LocalAtomicWriter:
@@ -181,13 +217,9 @@ class LocalFilesystem(Filesystem):
         self._assert_vpath(path1)
         if not isinstance(path2.filesystem, LocalFilesystem):
             return False
-        # Use os.stat to get device IDs and compare them
-        try:
-            stat1 = os.stat(path1.path)
-            stat2 = os.stat(path2.path)
-            return stat1.st_dev == stat2.st_dev
-        except (FileNotFoundError, OSError):
-            return False
+        dev1 = _device_of(path1.path)
+        dev2 = _device_of(path2.path)
+        return dev1 is not None and dev1 == dev2
 
     @override
     def path(self, p: str | PurePath) -> VPath:
@@ -223,7 +255,9 @@ class LocalFilesystem(Filesystem):
                     try:
                         fstat = entry.stat(follow_symlinks=True)
                         is_broken_symlink = False
-                    except FileNotFoundError:
+                    except OSError as exc:
+                        if not _is_broken_link_error(exc, lstat):
+                            raise
                         fstat = lstat
                         is_broken_symlink = True
                     is_hidden = entry.name.startswith(".") if os.name != "nt" else bool(lstat.st_file_attributes & 0x2)
@@ -317,7 +351,9 @@ class LocalFilesystem(Filesystem):
         try:
             stat = os.stat(path, follow_symlinks=True)
             is_broken_symlink = False
-        except FileNotFoundError:
+        except OSError as exc:
+            if not _is_broken_link_error(exc, lstat):
+                raise
             stat = lstat
             is_broken_symlink = True
 
@@ -417,6 +453,20 @@ class LocalFilesystem(Filesystem):
     def readlink(self, path: VPath) -> str:
         self._assert_vpath(path)
         return os.readlink(path.path)
+
+    @override
+    def supports_symlinks(self) -> bool:
+        return True
+
+    @override
+    def symlink(self, path: VPath, target: str) -> None:
+        self._assert_vpath(path)
+        os.symlink(target, path.path)
+
+    @override
+    def real_path(self, path: VPath) -> VPath | None:
+        self._assert_vpath(path)
+        return VPath(os.path.realpath(path.path, strict=True), self)
 
     @override
     def refresh(self, path: VPath | None = None) -> None:

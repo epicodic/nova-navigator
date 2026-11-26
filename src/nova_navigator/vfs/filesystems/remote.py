@@ -37,6 +37,13 @@ class RemoteFilesystem(Filesystem):
     def __repr__(self) -> str:
         return f"RemoteFilesystem({self._remote_name!r}, {self._inner!r})"
 
+    def __eq__(self, value: object) -> bool:
+        """Equal when both wrap equal inner filesystems (the same connection), whatever the remote name."""
+        return isinstance(value, RemoteFilesystem) and self._inner == value._inner
+
+    def __hash__(self) -> int:
+        return hash(self._inner)
+
     @override
     def unwrap(self) -> Filesystem:
         return self._inner.unwrap()
@@ -163,6 +170,20 @@ class RemoteFilesystem(Filesystem):
         return self._inner.readlink(self._to_inner(path))
 
     @override
+    def supports_symlinks(self) -> bool:
+        return self._inner.supports_symlinks()
+
+    @override
+    def symlink(self, path: VPath, target: str) -> None:
+        self._inner.symlink(self._to_inner(path), target)
+
+    @override
+    def real_path(self, path: VPath) -> VPath | None:
+        # Explicit override: the __getattr__ fallback would hand the inner filesystem a VPath bound to this wrapper.
+        inner = self._inner.real_path(self._to_inner(path))
+        return None if inner is None else self._from_inner(inner)
+
+    @override
     def write_atomic(self, path: VPath) -> AtomicWriterLike:
         # Explicit override: the __getattr__ fallback would pass a VPath still
         # bound to this wrapper, which fails the inner filesystem's _assert_vpath.
@@ -172,3 +193,8 @@ class RemoteFilesystem(Filesystem):
     def version_tag(self, path: VPath) -> str | None:
         # Explicit override for the same reason as write_atomic above.
         return self._inner.version_tag(self._to_inner(path))
+
+    @override
+    def stat_uncached(self, path: VPath) -> Stat:
+        # Explicit override for the same reason as write_atomic above; the base default would call this wrapper's stat.
+        return self._inner.stat_uncached(self._to_inner(path))

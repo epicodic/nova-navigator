@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import paramiko
 from rich.console import Console
 from textual import work
 from textual.app import App, ComposeResult
@@ -32,15 +33,19 @@ from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.dialogs.input_name_dialog import InputNameDialog
 from nova_navigator.dialogs.local_copies_dialog import LocalCopiesDialog
 from nova_navigator.dialogs.response_dialog import OverwriteResponseDialog, ResponseDialog
+from nova_navigator.dialogs.select_by_pattern_dialog import SelectByPatternDialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
 from nova_navigator.dialogs.user_menu_input_dialog import InputField, UserMenuInputDialog
 from nova_navigator.local_copies import CopyEntry, CopyStatus, LocalCopyManager
 from nova_navigator.nova_navigator_core import NovaNavigatorCore
+from nova_navigator.remotes.ssh import CHANGED_TITLE, REVOKED_TITLE, UNKNOWN_TITLE, changed_host_message, revoked_host_message
 from nova_navigator.scheduler import Job
 from nova_navigator.scheduler.context import ResponseRequest
 from nova_navigator.vfs.change_detector import ChangeDetector
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
+from nova_navigator.vfs.filesystems.ssh import ChangedHostKeyError, RevokedHostKeyError
 from nova_navigator.vfs.local_copy import Baseline, LocalCopy, SourceFingerprint
+from nova_navigator.vfs.types import Stat
 from nova_navigator.vfs.vpath import VPath
 from nova_widgets import (
     Dialog,
@@ -56,6 +61,14 @@ from nova_widgets import (
 from nova_widgets.action import Action as NavAction
 
 _fs = LocalFilesystem.singleton()
+
+
+def _link_path() -> VPath:
+    """Return a path whose stat marks it as a symlink to a directory."""
+    vp = VPath("/home/user/Documents/current", _fs)
+    vp._stat = Stat(is_symlink=True, is_directory=True)
+    return vp
+
 
 # Absolute path so CSS_PATH resolves regardless of cwd.
 _TCSS = str(Path(__file__).parent.parent / "nova_navigator" / "nn.tcss")
@@ -131,6 +144,16 @@ def _fmt(_dialog: Any, result: Response | None) -> str:
     return f"Result: {result}"
 
 
+def _copy_move_result(dialog: CopyMoveFilesDialog, result: Response | None) -> str:
+    head = f"Result: {result}  filename={dialog.filename!r}  file_filter={dialog.file_filter!r}"
+    links = f"follow_links={dialog.follow_links!r}  stable_symlinks={dialog.stable_symlinks!r}"
+    return f"{head}  {links}"
+
+
+def _select_by_pattern_result(dialog: SelectByPatternDialog, result: Response | None) -> str:
+    return f"Result: {result}  pattern={dialog.pattern!r}  include_folders={dialog.include_folders!r}"
+
+
 @dataclass
 class DialogEntry:
     name: str
@@ -192,8 +215,26 @@ _ENTRIES: list[DialogEntry] = [
         "Confirmation message with OK/Cancel — styled like the unknown-host prompt.",
         lambda: MessageBox(
             "The authenticity of host 'example.com' can't be established.\nED25519 key fingerprint is SHA256:abc123xyz\n\nAdd to known hosts?",
-            title="Unknown Host",
+            title=UNKNOWN_TITLE,
             buttons=[Response.OK, Response.CANCEL],
+        ),
+    ),
+    DialogEntry(
+        "MessageBox (changed host key)",
+        "Changed host key warning — OK only, with presented and stored fingerprints.",
+        lambda: MessageBox(
+            changed_host_message(ChangedHostKeyError("example.com", paramiko.ECDSAKey.generate(), paramiko.ECDSAKey.generate())),
+            title=CHANGED_TITLE,
+            variant="error",
+        ),
+    ),
+    DialogEntry(
+        "MessageBox (revoked host key)",
+        "Revoked host key refusal — OK only, no accept option.",
+        lambda: MessageBox(
+            revoked_host_message(RevokedHostKeyError("example.com", paramiko.ECDSAKey.generate())),
+            title=REVOKED_TITLE,
+            variant="error",
         ),
     ),
     DialogEntry(
@@ -258,8 +299,9 @@ _ENTRIES: list[DialogEntry] = [
             source_paths=[VPath("/home/user/Documents/report.pdf", _fs), VPath("/home/user/Documents/notes.txt", _fs)],
             destination_path=VPath("/home/user/Downloads", _fs),
             move=False,
+            follow_links=True,
         ),
-        result_fn=lambda d, r: f"Result: {r}  filename={d.filename!r}  file_filter={d.file_filter!r}",
+        result_fn=_copy_move_result,
     ),
     DialogEntry(
         "CopyMoveFilesDialog (move)",
@@ -268,13 +310,32 @@ _ENTRIES: list[DialogEntry] = [
             source_paths=[VPath("/home/user/Documents/report.pdf", _fs)],
             destination_path=VPath("/home/user/Downloads", _fs),
             move=True,
+            stable_symlinks=True,
         ),
-        result_fn=lambda d, r: f"Result: {r}  filename={d.filename!r}  file_filter={d.file_filter!r}",
+        result_fn=_copy_move_result,
     ),
     DialogEntry(
         "DeleteFilesDialog",
         "Delete confirmation for multiple files.",
-        lambda: DeleteFilesDialog(paths=[VPath("/home/user/Documents/old_report.pdf", _fs), VPath("/home/user/Downloads/archive.zip", _fs)]),
+        lambda: DeleteFilesDialog(
+            paths=[
+                VPath("/home/user/Documents/old_report.pdf", _fs),
+                VPath("/home/user/Downloads/archive.zip", _fs),
+                _link_path(),
+            ]
+        ),
+    ),
+    DialogEntry(
+        "SelectByPatternDialog (select)",
+        "Select files by pattern (Include folders off).",
+        lambda: SelectByPatternDialog(select=True),
+        result_fn=_select_by_pattern_result,
+    ),
+    DialogEntry(
+        "SelectByPatternDialog (unselect)",
+        "Unselect files by pattern (Include folders on).",
+        lambda: SelectByPatternDialog(select=False, include_folders=True),
+        result_fn=_select_by_pattern_result,
     ),
     DialogEntry(
         "KeyCaptureDialog",

@@ -2,6 +2,7 @@ from pathlib import PurePath
 from typing import NamedTuple
 
 from .archive import Archive
+from .compressed_archive import CompressedFileArchive
 from .tar_archive import TarArchive
 from .zip_archive import ZipArchive
 
@@ -25,6 +26,11 @@ _SUPPORTED_ARCHIVES: dict[str, SupportedArchive] = {
     ".ear": SupportedArchive(ZipArchive, read_only=True),
     ".apk": SupportedArchive(ZipArchive, read_only=True),
     ".whl": SupportedArchive(ZipArchive, read_only=True),
+    # Bare compressed files must stay after the tar entries: ``open_archive`` takes the first suffix match,
+    # so ``a.tar.gz`` is still a tar archive.
+    ".gz": SupportedArchive(CompressedFileArchive, read_only=True),
+    ".bz2": SupportedArchive(CompressedFileArchive, read_only=True),
+    ".xz": SupportedArchive(CompressedFileArchive, read_only=True),
 }
 
 

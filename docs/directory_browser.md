@@ -138,6 +138,10 @@ Selection helpers:
 - `action_select_all` — all visible non-UpPath items.
 - `action_select_none` — clear.
 - `action_invert_selection` — flip.
+- `apply_pattern_selection(file_filter, *, include_folders, select)` — adds the matching entries to the selection, or removes them.
+  It works on `_shown_items`, so hidden and filtered entries are skipped.
+  It skips `UpPath`, and it includes folders only with `include_folders`.
+  It ends with `refresh()` and `refresh_border()`.
 
 ## Filtering
 
@@ -150,6 +154,12 @@ Filtering hides any item whose name does not contain the filter string (case-ins
 
 `show_hidden_files: Reactive[bool]` (default `False`, `repaint=False`, `always_update=False`) controls dotfile visibility independently of filtering.
 Changing it triggers `watch_show_hidden_files` → `update(WhatChanged.FILTERING)`.
+
+`set_hidden_names(names)` hides items by name, in addition to the text filter and the hidden-files rule.
+The hidden items stay in `_all_items` and in `items`.
+`None` or an empty set shows them again.
+The set is cleared when the panel navigates to a different directory.
+Hide Identical Files uses it; `MainScreen._refresh_compare` evaluates the names.
 
 ## Reactives
 

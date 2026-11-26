@@ -30,6 +30,14 @@ _MODIFIER_EMACS: dict[str, str] = {
 }
 
 
+_SYMBOL_NAMES: dict[str, str] = {"plus": "+", "minus": "-"}
+
+
+def _display_name(name: str) -> str:
+    """Return the symbol shown for a Textual key name such as ``plus``, or the name itself."""
+    return _SYMBOL_NAMES.get(name, name)
+
+
 class KeyFormatStyle(StrEnum):
     """How key combinations are rendered in the UI."""
 
@@ -80,14 +88,15 @@ class Key:
                 return _MODIFIER_EMACS.get(self.name, self.name)
             return _MODIFIER_CLASSIC.get(self.name, self.name.capitalize())
         # base key
+        name = _display_name(self.name)
         if style == KeyFormatStyle.EMACS:
-            return self.name
+            return name
         if style == KeyFormatStyle.CARET:
-            if self.name.startswith("f") and self.name[1:].isdigit():
-                return self.name.upper()
-            return self.name.capitalize() if len(self.name) > 1 else self.name
+            if name.startswith("f") and name[1:].isdigit():
+                return name.upper()
+            return name.capitalize() if len(name) > 1 else name
         # CLASSIC
-        return self.name.upper() if len(self.name) == 1 else self.name.capitalize()
+        return name.upper() if len(name) == 1 else name.capitalize()
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +144,7 @@ class KeyChord:
         """
         modifiers = [k for k in self.keys if k.is_modifier]
         base_keys = [k for k in self.keys if not k.is_modifier]
-        base = base_keys[0].name if base_keys else ""
+        base = _display_name(base_keys[0].name) if base_keys else ""
 
         if style == KeyFormatStyle.CLASSIC:
             mod_parts = [_MODIFIER_CLASSIC.get(k.name, k.name.capitalize()) for k in modifiers]

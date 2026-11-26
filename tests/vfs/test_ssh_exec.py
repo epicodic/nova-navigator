@@ -37,8 +37,16 @@ def test_ssh_exec_command_wraps_script_with_cd_and_merged_stderr() -> None:
     fs, mock_ssh, _ = _make_fs()
     _set_channel(mock_ssh, _mock_channel([], 0))
     fs.exec_command("make", fs.path("/home/user"))
-    expected_script = "cd /home/user || exit 1\nmake"
+    expected_script = "cd -- /home/user || exit 1\nmake"
     mock_ssh.exec_command.assert_called_once_with(f"sh -c {shlex.quote(expected_script)} 2>&1")
+
+
+def test_ssh_exec_command_dash_cwd_is_not_an_option() -> None:
+    fs, mock_ssh, _ = _make_fs()
+    _set_channel(mock_ssh, _mock_channel([], 0))
+    fs.exec_command("make", fs.path("/home/-dash"))
+    script = shlex.split(mock_ssh.exec_command.call_args.args[0])[2]
+    assert script.startswith("cd -- /home/-dash || exit 1\n")
 
 
 def test_ssh_exec_command_returns_output_and_exit_code() -> None:

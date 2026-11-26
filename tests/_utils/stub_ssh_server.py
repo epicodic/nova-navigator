@@ -1,7 +1,8 @@
 """In-process stub SSH / SFTP server for integration tests.
 
 Listens on 127.0.0.1:0 (OS-assigned port).
-Accepts all authentication.
+Accepts all authentication and records each login in ``auth_log``.
+Optionally forwards ``direct-tcpip`` channels to servers named in a forward map.
 SFTP operations are backed by the real local filesystem (no sandboxing).
 exec_command requests are executed via zsh in a subprocess.
 
@@ -20,18 +21,63 @@ import errno as _errno
 import fcntl
 import os
 import pty
+import shutil
 import socket
 import struct
 import subprocess
+import tempfile
 import termios
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+from typing import IO, Literal
 
 import paramiko
-from paramiko.common import AUTH_SUCCESSFUL, OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED, OPEN_SUCCEEDED
+from paramiko.common import (
+    AUTH_FAILED,
+    AUTH_SUCCESSFUL,
+    OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED,
+    OPEN_FAILED_CONNECT_FAILED,
+    OPEN_SUCCEEDED,
+)
 from paramiko.sftp import SFTP_FAILURE, SFTP_OK
+
+
+def make_host_key(kind: str = "rsa") -> paramiko.PKey:
+    """Generate a server host key (``"rsa"`` or ``"ecdsa"``)."""
+    if kind == "ecdsa":
+        return paramiko.ECDSAKey.generate()
+    return paramiko.RSAKey.generate(bits=2048)
+
+
+type NonGnuMode = Literal["illegal-option", "missing", "silent-failure"]
+
+# A `stat` that cannot print a format, as on BSD, macOS or BusyBox; find itself stays in place, so an empty directory
+# still lists with exit 0 and a non-empty one fails with empty stdout (the shape a real non-GNU remote has).
+_STAT_SHIMS: dict[str, str] = {
+    "illegal-option": '#!/bin/sh\necho "stat: illegal option -- -" >&2\nexit 1\n',
+    "missing": '#!/bin/sh\necho "stat: command not found" >&2\nexit 127\n',
+    # A BusyBox-style `find` that reports the failed `stat` on stderr but still exits 0: exit 0, empty stdout, error text.
+    "silent-failure": '#!/bin/sh\necho "stat: unrecognized option: printf" >&2\nexit 0\n',
+}
+
+
+class _RawName(str):
+    """A file name that goes over the wire as its original bytes (undecodable bytes are surrogate escapes in the str)."""
+
+    __slots__ = ()
+
+    def encode(self, encoding: str = "utf-8", errors: str = "strict") -> bytes:
+        return os.fsencode(str(self))
+
+
+class _RawNameAttributes(paramiko.SFTPAttributes):
+    """Directory entry attributes whose long-name line survives surrogate-escaped names."""
+
+    def asbytes(self) -> bytes:
+        return str(self).encode("utf-8", "surrogateescape")
+
 
 # ---------------------------------------------------------------------------
 # SFTP handle
@@ -94,8 +140,8 @@ class StubSFTPServerInterface(paramiko.SFTPServerInterface):
                     s = os.lstat(fp)
                 except OSError:
                     continue
-                attr = paramiko.SFTPAttributes.from_stat(s)
-                attr.filename = name
+                attr = _RawNameAttributes.from_stat(s)
+                attr.filename = _RawName(name)
                 entries.append(attr)
             return entries
         except OSError as exc:
@@ -183,10 +229,10 @@ class StubSFTPServerInterface(paramiko.SFTPServerInterface):
             return paramiko.SFTPServer.convert_errno(exc.errno or _errno.EIO)
 
     def canonicalize(self, path: str) -> str:
-        """Return normalised absolute path; '.' resolves to root_dir."""
+        """Return the absolute path with symbolic links resolved (OpenSSH's SSH_FXP_REALPATH does); '.' resolves to root_dir."""
         if path == ".":
             return str(self._root)
-        return os.path.normpath(path)
+        return os.path.realpath(path)
 
     def chattr(self, path: str, attr: paramiko.SFTPAttributes) -> int:  # type: ignore[override]
         """Apply utime / chmod from *attr* to *path*."""
@@ -220,22 +266,52 @@ class StubSFTPServerInterface(paramiko.SFTPServerInterface):
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class AuthRecord:
+    """One login attempt seen by the server (``method`` is ``"password"`` or ``"publickey"``)."""
+
+    username: str
+    method: str
+    key_base64: str | None
+
+
 class StubSSHServerInterface(paramiko.ServerInterface):
     """SSH ServerInterface: accepts all auth, handles exec and sftp channels."""
 
-    def __init__(self, exec_delay: float = 0.0) -> None:
+    def __init__(
+        self,
+        exec_delay: float = 0.0,
+        reject_publickey: bool = False,
+        *,
+        forward_map: dict[tuple[str, int], tuple[str, int]] | None = None,
+        auth_log: list[AuthRecord] | None = None,
+        forwarded: list[tuple[str, int]] | None = None,
+        hang_sftp: bool = False,
+        exec_env: dict[str, str] | None = None,
+        refuse_exec: bool = False,
+    ) -> None:
         self._exec_delay = exec_delay
+        self._exec_env = exec_env
+        self._refuse_exec = refuse_exec
+        self._reject_publickey = reject_publickey
+        self._forward_map = forward_map
+        self._auth_log: list[AuthRecord] = auth_log if auth_log is not None else []
+        self._forwarded: list[tuple[str, int]] = forwarded if forwarded is not None else []
+        self.pending_forwards: dict[int, tuple[str, int]] = {}
+        self._hang_sftp = hang_sftp
         self._pty_rows: int = 24
         self._pty_cols: int = 80
         self._pty_master_fd: int = -1
 
     def check_auth_password(self, username: str, password: str) -> int:
         """Accept any password."""
+        self._auth_log.append(AuthRecord(username, "password", None))
         return AUTH_SUCCESSFUL
 
     def check_auth_publickey(self, username: str, key: paramiko.PKey) -> int:
-        """Accept any public key."""
-        return AUTH_SUCCESSFUL
+        """Accept any public key unless the server was told to reject them."""
+        self._auth_log.append(AuthRecord(username, "publickey", key.get_base64()))
+        return AUTH_FAILED if self._reject_publickey else AUTH_SUCCESSFUL
 
     def get_allowed_auths(self, username: str) -> str:
         """Advertise both password and publickey auth methods."""
@@ -247,13 +323,37 @@ class StubSSHServerInterface(paramiko.ServerInterface):
             return OPEN_SUCCEEDED
         return OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
 
+    def check_channel_direct_tcpip_request(
+        self,
+        chanid: int,
+        origin: tuple[str, int],
+        destination: tuple[str, int],
+    ) -> int:
+        """Open the channel only for destinations in the forward map (else prohibited / connect failed)."""
+        if self._forward_map is None:
+            return OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
+        target = self._forward_map.get(destination)
+        if target is None:
+            return OPEN_FAILED_CONNECT_FAILED
+        self._forwarded.append(destination)
+        self.pending_forwards[chanid] = target
+        return OPEN_SUCCEEDED
+
+    def check_channel_subsystem_request(self, channel: paramiko.Channel, name: str) -> bool:
+        """Accept ``sftp`` without starting a handler when the server should hang."""
+        if self._hang_sftp and name == "sftp":
+            return True
+        return super().check_channel_subsystem_request(channel, name)
+
     def check_channel_exec_request(self, channel: paramiko.Channel, command: bytes) -> bool:
-        """Execute *command* via zsh and pipe stdout/stderr back through the channel."""
+        """Execute *command* via zsh and pipe stdout/stderr back through the channel (or refuse the request)."""
+        if self._refuse_exec:
+            return False
 
         def _run() -> None:
             if self._exec_delay > 0:
                 time.sleep(self._exec_delay)
-            result = subprocess.run(["zsh", "-c", command.decode()], capture_output=True, check=False)
+            result = subprocess.run(["zsh", "-c", command.decode()], capture_output=True, check=False, env=self._exec_env)
             channel.sendall(result.stdout)
             if result.stderr:
                 channel.sendall_stderr(result.stderr)
@@ -332,6 +432,33 @@ class StubSSHServerInterface(paramiko.ServerInterface):
         return True
 
 
+def _pump_forward(channel: paramiko.Channel, target: tuple[str, int]) -> None:
+    """Relay bytes between an SSH channel and a TCP connection to *target* until either side closes."""
+    try:
+        upstream = socket.create_connection(target, timeout=5)
+    except OSError:
+        with contextlib.suppress(EOFError, OSError):
+            channel.close()
+        return
+    upstream.settimeout(None)
+
+    def _upstream_to_channel() -> None:
+        with contextlib.suppress(OSError):
+            while data := upstream.recv(65536):
+                channel.sendall(data)
+        with contextlib.suppress(EOFError, OSError):
+            channel.close()
+
+    threading.Thread(target=_upstream_to_channel, daemon=True, name="stub-ssh-forward-up").start()
+    with contextlib.suppress(EOFError, OSError):
+        while data := channel.recv(65536):
+            upstream.sendall(data)
+    with contextlib.suppress(OSError):
+        upstream.close()
+    with contextlib.suppress(EOFError, OSError):
+        channel.close()
+
+
 # ---------------------------------------------------------------------------
 # Server orchestrator
 # ---------------------------------------------------------------------------
@@ -348,13 +475,40 @@ class StubSSHServer:
             for the sftp subsystem's canonicalize('.') call.
         exec_delay: Artificial delay (seconds) added before each exec_command
             response, to simulate network/server latency in tests.
+        non_gnu: Puts a failing ``stat`` first on PATH of exec commands (``illegal-option``, ``missing`` or ``silent-failure``).
+        refuse_exec: Rejects every exec request (as an SFTP-only account does); SFTP keeps working.
     """
 
-    def __init__(self, root_dir: Path, exec_delay: float = 0.0) -> None:
+    def __init__(
+        self,
+        root_dir: Path,
+        exec_delay: float = 0.0,
+        host_key: paramiko.PKey | None = None,
+        reject_publickey: bool = False,
+        *,
+        forward_map: dict[tuple[str, int], tuple[str, int]] | None = None,
+        hang_sftp: bool = False,
+        non_gnu: NonGnuMode | None = None,
+        refuse_exec: bool = False,
+    ) -> None:
         self.root_dir = root_dir
+        self._forward_map = forward_map
+        self._hang_sftp = hang_sftp
+        self._refuse_exec = refuse_exec
+        self._shim_dir: Path | None = None
+        self._exec_env: dict[str, str] | None = None
+        if non_gnu is not None:
+            self._shim_dir = Path(tempfile.mkdtemp(prefix="stub-ssh-shim-"))
+            shim = self._shim_dir / "stat"
+            shim.write_text(_STAT_SHIMS[non_gnu])
+            shim.chmod(0o755)
+            self._exec_env = {**os.environ, "PATH": f"{self._shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+        self.auth_log: list[AuthRecord] = []
+        self.forwarded: list[tuple[str, int]] = []
         self._exec_delay = exec_delay
+        self._reject_publickey = reject_publickey
         self.host = "127.0.0.1"
-        self._host_key: paramiko.RSAKey = paramiko.RSAKey.generate(bits=2048)
+        self._host_key: paramiko.PKey = host_key if host_key is not None else paramiko.RSAKey.generate(bits=2048)
         self._transports: list[paramiko.Transport] = []
         self._lock: threading.Lock = threading.Lock()
         self._sock: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -365,9 +519,14 @@ class StubSSHServer:
         self._thread: threading.Thread = threading.Thread(target=self._accept_loop, daemon=True, name="stub-ssh-accept")
 
     @property
-    def host_key(self) -> paramiko.RSAKey:
-        """Return the server's RSA host key (for adding to a client's known hosts)."""
+    def host_key(self) -> paramiko.PKey:
+        """Return the server's host key (for adding to a client's known hosts)."""
         return self._host_key
+
+    def set_host_key(self, key: paramiko.PKey) -> None:
+        """Present *key* to connections made from now on."""
+        with self._lock:
+            self._host_key = key
 
     def start(self) -> None:
         """Start the accept loop in a daemon thread."""
@@ -380,6 +539,8 @@ class StubSSHServer:
             for transport in list(self._transports):
                 transport.close()
             self._transports.clear()
+        if self._shim_dir is not None:
+            shutil.rmtree(self._shim_dir, ignore_errors=True)
 
     # -- internal ------------------------------------------------------------
 
@@ -396,12 +557,35 @@ class StubSSHServer:
 
     def _run_transport(self, conn: socket.socket) -> None:
         transport = paramiko.Transport(conn)
-        transport.add_server_key(self._host_key)
+        with self._lock:
+            host_key = self._host_key
+        transport.add_server_key(host_key)
         transport.set_subsystem_handler("sftp", paramiko.SFTPServer, StubSFTPServerInterface, self.root_dir)
-        server_iface = StubSSHServerInterface(exec_delay=self._exec_delay)
+        server_iface = StubSSHServerInterface(
+            exec_delay=self._exec_delay,
+            reject_publickey=self._reject_publickey,
+            forward_map=self._forward_map,
+            auth_log=self.auth_log,
+            forwarded=self.forwarded,
+            hang_sftp=self._hang_sftp,
+            exec_env=self._exec_env,
+            refuse_exec=self._refuse_exec,
+        )
         with self._lock:
             self._transports.append(transport)
         event = threading.Event()
         with contextlib.suppress(Exception):
             transport.start_server(event=event, server=server_iface)
         event.wait(timeout=10)
+        # accept() hands out every channel, not only forwarded ones.  The transport keeps channels weakly, so each
+        # popped channel is held here: a dropped session channel is closed by its finalizer before its request arrives.
+        held: list[paramiko.Channel] = []
+        while transport.is_active():
+            channel = transport.accept(timeout=0.5)
+            if channel is None:
+                continue
+            held[:] = [c for c in held if not c.closed]
+            held.append(channel)
+            target = server_iface.pending_forwards.pop(channel.get_id(), None)
+            if target is not None:
+                threading.Thread(target=_pump_forward, args=(channel, target), daemon=True, name="stub-ssh-forward").start()

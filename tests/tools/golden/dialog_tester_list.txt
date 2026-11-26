@@ -22,6 +22,12 @@ MessageBox (error)
 MessageBox (confirm)
   Confirmation message with OK/Cancel — styled like the unknown-host prompt.
 
+MessageBox (changed host key)
+  Changed host key warning — OK only, with presented and stored fingerprints.
+
+MessageBox (revoked host key)
+  Revoked host key refusal — OK only, no accept option.
+
 ResponseDialog
   Simple yes/no response prompt.
 
@@ -52,6 +58,12 @@ CopyMoveFilesDialog (move)
 
 DeleteFilesDialog
   Delete confirmation for multiple files.
+
+SelectByPatternDialog (select)
+  Select files by pattern (Include folders off).
+
+SelectByPatternDialog (unselect)
+  Unselect files by pattern (Include folders on).
 
 KeyCaptureDialog
   Capture a key sequence for a single action.

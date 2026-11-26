@@ -1,11 +1,12 @@
 import threading
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 import pytest
 
 from nova_navigator.file_filter import FilenamePatternFilter
 from nova_navigator.filemanager.tasks import FileCopyOptions, move_files
 from nova_navigator.scheduler import TaskCancelled, TaskStatus
+from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_widgets import Response
 from tests._utils.mock_filesystem import MockFilesystem
 
@@ -686,3 +687,44 @@ async def test_move_filter_none_moves_all() -> None:
 
     assert read_all(dst_fs, "/dst/a.txt") == b"a"
     assert read_all(dst_fs, "/dst/b.py") == b"b"
+
+
+# ---------------------------------------------------------------------------
+# Local filesystem: same-device moves must rename, not copy
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_local_move_file_same_device_renames(tmp_path: Path) -> None:
+    """Moving a file to a new name on the same device keeps its inode (a rename, not copy + delete)."""
+    fs = LocalFilesystem()
+    src = tmp_path / "src.txt"
+    src.write_bytes(b"payload")
+    inode = src.stat().st_ino
+    (tmp_path / "dst").mkdir()
+
+    await run_task(lambda ctx: move_files(ctx, [fs.path(src)], fs.path(tmp_path / "dst" / "renamed.txt")))
+
+    moved = tmp_path / "dst" / "renamed.txt"
+    assert not src.exists()
+    assert moved.read_bytes() == b"payload"
+    assert moved.stat().st_ino == inode
+
+
+@pytest.mark.asyncio
+async def test_local_move_directory_into_directory_renames(tmp_path: Path) -> None:
+    """Moving a directory into another directory on the same device keeps the directory's inode."""
+    fs = LocalFilesystem()
+    src = tmp_path / "tree"
+    (src / "sub").mkdir(parents=True)
+    (src / "sub" / "f.txt").write_bytes(b"x")
+    dir_inode = src.stat().st_ino
+    file_inode = (src / "sub" / "f.txt").stat().st_ino
+    (tmp_path / "dst").mkdir()
+
+    await run_task(lambda ctx: move_files(ctx, [fs.path(src)], fs.path(tmp_path / "dst")))
+
+    moved = tmp_path / "dst" / "tree"
+    assert not src.exists()
+    assert moved.stat().st_ino == dir_inode
+    assert (moved / "sub" / "f.txt").stat().st_ino == file_inode

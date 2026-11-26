@@ -86,6 +86,12 @@ Quitting Nova Navigator while any local copy has unsynced, failed, or conflictin
 
 With nothing unsynced, Nova Navigator quits immediately and removes its local-copy directory.
 
+### Reopening a changed file
+
+Opening a file again after its source was changed elsewhere shows the new content.
+No panel refresh is needed for that.
+When the source is unchanged, the existing local copy is reused without downloading it again.
+
 ### Where the files live
 
 Local copies live under `<tmp>/nova-navigator/<pid>/`, where `<tmp>` is `tempfile.gettempdir()` (normally `/tmp`) and `<pid>` is the running Nova Navigator process's id.
@@ -103,10 +109,17 @@ An empty one is removed silently; one that still holds files produces a notifica
 
 ### Limits
 
-- Detecting a source change is best effort: it compares size, modification time, and (where the filesystem provides it) an ETag or CRC, so a same-size edit within the timestamp's resolution can be missed.
+- SSH files and TAR members have no version tag, so a source change is detected by size and modification time alone.
+  The check is a fresh stat on every reopen and every sync, never a directory listing.
+  A same-size change within the same whole second is not detected for these sources.
+  For an archive member the container's fingerprint counts too, so a ZIP or TAR on SSH inherits this same-second limit for the whole archive.
+  A local container is compared by device, inode, size and mtime in nanoseconds.
+  ZIP members (CRC-32), Azure blobs (ETag) and local files do not share this limit for their own content.
 - Nothing prevents another writer from racing the final replacement of the source.
 - Writing back to SSH needs the server's `posix-rename@openssh.com` SFTP extension; a server without it fails the write-back and leaves both the source and the local copy untouched.
-- Archives nested inside another archive are not supported.
+- Reading a member of a nested archive and copying it out work, also when the outer archive is on SSH.
+  Editing a member of a nested ZIP whose outer archive is local and releasing the copy writes the edit through the inner ZIP into the outer ZIP.
+  Writing back through a nested archive whose outer archive is remote is not covered by tests.
 
 ## Developer Part
 
@@ -137,13 +150,35 @@ The default implementation spools the written bytes to a local temporary file an
 `ArchiveFilesystem` returns the member's ZIP CRC-32 (`ZipArchive.version_tag`) or `None` for TAR.
 `SSHFilesystem` does not override it, so SSH sources have no tag and rely on size and modification time alone.
 
+### `stat_uncached()` (fresh stat)
+
+`Filesystem.stat_uncached(path)` (`vfs/filesystem.py`) returns the current `Stat` of `path` and is never answered from a cache.
+The default is `stat()`.
+Only `SourceFingerprint.of` and `create_copy_task` call it, so the change check of a reopen and of a sync sees out-of-band changes that a listing cache or a reader snapshot would hide.
+For an archive member `SourceFingerprint.of` fingerprints the container first, then the member.
+
+| Filesystem | `stat()` can be stale | `stat_uncached()` |
+|---|---|---|
+| `LocalFilesystem` | No, every call is an `os.stat` | Default |
+| `AzureFilesystem` | No, every call asks the service and there is no local cache | Default |
+| `SSHFilesystem` | Yes, a per-directory stat cache is cleared only by own writes and `refresh()` | One SFTP `lstat` (plus one `stat` for a symlink), never reads or fills the listing cache; works in GNU mode and in SFTP-fallback mode |
+| `RemoteFilesystem` | Inherits the wrapped filesystem | Explicit delegate to the wrapped filesystem, because the base default would call the wrapper's own `stat()` |
+| `ArchiveFilesystem` | Yes, the reader is a snapshot of the archive file | Brings the mount up to date from its container first, then answers from the reader |
+
+`ArchiveFilesystem.stat_uncached()` calls `refresh_from_source()`.
+That asks the backing to `prepare_write()`, which refreshes the local copy of a non-local archive when its source changed.
+It then reopens the reader only when the local archive file differs from the one the reader was opened on (device, inode, size and modification time), so an unchanged archive costs no reopen.
+Reopening clears the cached stat of every member `VPath` handed out by the mount; a lock guards that member set against concurrent `stat()` calls.
+For a nested archive the container is itself an archive member, so the refresh recurses: the inner copy checks its source with `stat_uncached()` on the outer mount, which refreshes the outer mount in turn.
+A same-size change within the same whole second stays undetected for sources without a version tag (SSH files and TAR members), as listed under Limits.
+
 ### `LocalCopy` (`vfs/local_copy.py`)
 
-`LocalCopy.create(source, root, read_only=..., progress=...)` downloads `source` below `root` in bounded-memory chunks and records a `Baseline` (a `SourceFingerprint` — size, modification time, and `version_tag()` — plus the local digest).
+`LocalCopy.create(source, root, read_only=..., progress=...)` downloads `source` below `root` in bounded-memory chunks and records a `Baseline` (a `SourceFingerprint` — size, modification time, `version_tag()` and, for an archive member, the container's fingerprint — plus the local digest).
 A source already on the local filesystem, and not an archive member, is a pass-through: `path` is the source file itself and nothing is copied.
 `is_local_source(source)` is the one predicate for it (a plain local file, never an archive member); `LocalCopy.create`, `NovaNavigatorCore.open_path` and the editor session use it.
 `relative_copy_path(source)` maps a source `VPath` to its path below the process root, sanitising every segment (`sanitize_segment`) against empty/`.`/`..` segments and shortening overlong ones with a hash suffix.
-`is_modified()` compares the local digest with the baseline; `source_changed()` compares a fresh `SourceFingerprint` with the baseline; `reuse_action()` combines both into a `ReuseAction` (`REUSE`, `REFRESH`, or `CONFLICT`) for the reopen flow.
+`is_modified()` compares the local digest with the baseline; `source_changed()` compares a fresh `SourceFingerprint` with the baseline (fresh means taken with `stat_uncached`, container first, see below); `reuse_action()` combines both into a `ReuseAction` (`REUSE`, `REFRESH`, or `CONFLICT`) for the reopen flow.
 `write_back()` uploads through `write_atomic()` and advances the baseline; `refresh()` re-downloads and resets it; `discard()` deletes the local file, never the source.
 `rebase_container()` lets a sibling copy of the same archive absorb the archive's new fingerprint after another member's sync, so editing two members of one archive does not conflict with each other.
 
@@ -178,6 +213,8 @@ The watcher of a copy starts its sync jobs from the context of the call that sta
 ### Writable archives
 
 `ArchiveFilesystem.write(member)` (`vfs/filesystems/archive.py`) spools the new content to a private temporary file, then on `close()` rebuilds the archive with that member substituted or appended and commits it through an `ArchiveBacking` (`archive/backing.py`).
+Archive writes keep existing tar symlink members and ZIP link entries unchanged but cannot add links.
+`ArchiveFilesystem.mkdir` is an implicit no-op, so empty directories are not stored.
 `LocalArchiveBacking` commits straight through `Filesystem.write_atomic()` on the archive's own source.
 `CopiedArchiveBacking` wraps a `LocalCopy` of a non-local archive: `prepare_write()` refreshes it if the source changed underneath, and `commit()` replaces the local copy's file and calls its `write_back()`.
 `archive/zip_rebuild.py` rebuilds a ZIP by copying every unchanged entry's bytes verbatim and only patching the changed entry and its central-directory offsets (stored, deflate, and bzip2 are supported for the changed entry); it rejects encrypted entries, multi-volume archives, an unsupported archive prefix, and an ambiguous duplicate member name.
@@ -210,6 +247,21 @@ Alternatives that were rejected:
 `archive/tar_rebuild.py` streams a TAR (plain, gzip, bzip2, or xz) through `tarfile`, preserving every member's metadata and substituting only the target member's content; it rejects a sparse member and a rebuild that would need to change the archive's global PAX headers.
 JAR, WAR, EAR, APK, and WHL report `FilesystemCapabilities.read_only` and raise `PermissionError` on write, as does any archive whose source filesystem is itself read-only (see `archive/archives.py`, `is_archive_writable`).
 The archive virtual shell's `cp` command (`terminal/vfs_shell/commands/cp.py`) writes through the same generic `Filesystem.write()`, so it can copy a file into a writable archive too.
+
+#### Compressed single files
+
+A file ending in `.gz`, `.bz2` or `.xz` that is not one of the tar names opens as a read-only archive with one entry (`archive/compressed_archive.py`, `CompressedFileArchive`).
+The entry is the decompressed content, named like the file without the suffix, or `data` if nothing remains.
+The suffix match is case-sensitive, and the compressed file's own header name is ignored.
+Such a file is never writable, so writing into it raises `PermissionError`, and remove and rename are unsupported.
+Mounting streams the whole file once, in 1 MiB chunks, to check it and to measure the uncompressed size, so opening a very large file takes as long as decompressing it, but memory stays small.
+Each read afterwards decompresses incrementally from its own file handle.
+The three suffixes are registered after the tar and zip names in `_SUPPORTED_ARCHIVES`, so the first matching suffix wins.
+This keeps `.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz` and `.txz` opening as tar archives.
+A `.gz` file that contains a tar stream is shown as one entry, because only the name decides.
+A corrupt, truncated or empty file raises `OSError(EINVAL)` ("Corrupt or empty ... file") from the mount; system errors such as a missing file propagate unchanged.
+As for tar and zip, the size is measured at mount, so a local file rewritten afterwards is not noticed until the archive is reloaded.
+For a remote file, `LocalCopyManager.mount_archive` discards the downloaded copy before re-raising, so a failed mount leaves nothing behind.
 
 ### Probe tool
 

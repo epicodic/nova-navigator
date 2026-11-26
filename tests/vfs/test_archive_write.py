@@ -14,6 +14,7 @@ from nova_navigator.vfs.filesystems.archive import ArchiveFilesystem
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_navigator.vfs.local_copy import LocalCopy
 from tests._utils.local_copy_helpers import SchemeFs, overwrite
+from tests._utils.tar_fixtures import build_tar_with_symlink_tree
 
 
 def _mount(tmp_path: Path, name: str = "a.zip") -> tuple[Path, ArchiveFilesystem]:
@@ -232,3 +233,85 @@ def test_refresh_from_source_skips_download_when_source_unchanged(tmp_path: Path
 
     assert len(fs.readers) == reads_before
     assert archive_fs.read(archive_fs.path("/keep.txt")).read(10) == b"keep"
+
+
+def test_mkdir_is_implicit_no_op_on_writable_archive(tmp_path: Path) -> None:
+    archive, fs = _mount(tmp_path)
+    fs.mkdir(fs.path("/newdir"))
+    with zipfile.ZipFile(archive) as z:
+        assert sorted(z.namelist()) == ["dir/edit.txt", "keep.txt"]
+    _write(fs, "/newdir/a.txt", b"a")
+    assert fs.stat(fs.path("/newdir")).is_directory
+    assert fs.read(fs.path("/newdir/a.txt")).read(10) == b"a"
+
+
+def test_mkdir_nested_before_parent_has_members_is_allowed(tmp_path: Path) -> None:
+    _, fs = _mount(tmp_path)
+    fs.mkdir(fs.path("/a"))
+    fs.mkdir(fs.path("/a/b"))
+    _write(fs, "/a/b/c.txt", b"c")
+    assert fs.stat(fs.path("/a/b")).is_directory
+
+
+def test_mkdir_on_read_only_archive_raises_permission_error(tmp_path: Path) -> None:
+    _, fs = _mount(tmp_path, "a.jar")
+    with pytest.raises(PermissionError):
+        fs.mkdir(fs.path("/newdir"))
+
+
+def test_mkdir_existing_raises_file_exists(tmp_path: Path) -> None:
+    _, fs = _mount(tmp_path)
+    with pytest.raises(FileExistsError):
+        fs.mkdir(fs.path("/dir"))
+    with pytest.raises(FileExistsError):
+        fs.mkdir(fs.path("/keep.txt"))
+
+
+def test_mkdir_below_a_file_raises_not_a_directory(tmp_path: Path) -> None:
+    _, fs = _mount(tmp_path)
+    with pytest.raises(NotADirectoryError):
+        fs.mkdir(fs.path("/keep.txt/sub"))
+
+
+def test_rmdir_remove_rename_stay_unsupported(tmp_path: Path) -> None:
+    _, fs = _mount(tmp_path)
+    for call in (
+        lambda: fs.rmdir(fs.path("/dir")),
+        lambda: fs.remove(fs.path("/keep.txt")),
+        lambda: fs.rename(fs.path("/keep.txt"), fs.path("/k2")),
+    ):
+        with pytest.raises(OSError, match="does not support"):
+            call()
+
+
+def test_write_member_keeps_tar_symlink_members(tmp_path: Path) -> None:
+    source = tmp_path / "s.tar.gz"
+    build_tar_with_symlink_tree(source)
+    local = LocalFilesystem.singleton()
+    fs = ArchiveFilesystem(local.path(tmp_path), LocalArchiveBacking(local.path(source)), work_dir=tmp_path / "work")
+
+    def members() -> dict[str, tuple[bytes, str]]:
+        with tarfile.open(source) as t:
+            return {m.name: (m.type, m.linkname) for m in t.getmembers()}
+
+    before = members()
+    _write(fs, "/new.txt", b"n")
+    after = members()
+    assert {name: value for name, value in after.items() if name != "new.txt"} == before
+    assert after["lnk"] == (tarfile.SYMTYPE, "real")
+    assert fs.readlink(fs.path("/lnk")) == "real"
+
+
+def test_write_keeps_zip_symlink_entry(tmp_path: Path) -> None:
+    archive = tmp_path / "z.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        info = zipfile.ZipInfo("lnk")
+        info.external_attr = 0o120777 << 16
+        z.writestr(info, "keep.txt")
+        z.writestr("keep.txt", b"keep")
+    local = LocalFilesystem.singleton()
+    fs = ArchiveFilesystem(local.path(tmp_path), LocalArchiveBacking(local.path(archive)), work_dir=tmp_path / "work")
+    _write(fs, "/new.txt", b"n")
+    with zipfile.ZipFile(archive) as z:
+        assert z.getinfo("lnk").external_attr >> 16 == 0o120777
+        assert z.read("lnk") == b"keep.txt"

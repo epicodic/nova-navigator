@@ -103,6 +103,7 @@ await job.start(gui_request_callback)
 - `title: str`
 - `state: Job.State`
 - `progress: Progress`
+- `skipped: tuple[SkippedItem, ...]` — items the task reported as skipped, in report order
 
 ### `Response`
 
@@ -163,6 +164,8 @@ Shared between the worker thread and the GUI thread.
 - `set_step_progress(completed, total) -> None` — set step counters
 - `set_step_completed() -> None` — mark step complete
 - `is_complete() -> bool` — `True` when both overall and step completed >= total
+- `report_skipped(item, reason) -> None` — record a skipped item; thread-safe
+- `skipped: tuple[SkippedItem, ...]` — snapshot of the skipped items reported so far, in report order
 
 Progress updates trigger a callback to refresh the GUI.
 
@@ -178,6 +181,7 @@ Passed as the first argument to every async task function.
 **Methods:**
 
 - `async request_response(title, expected_responses, message) -> Response` — pause and ask the user
+- `report_skipped(item, reason) -> None` — convenience wrapper for `status.report_skipped()`
 - `async subtask(coro: Coroutine[Any, Any, R]) -> asyncio.Task[R]` — spawn a concurrent subtask and yield control so it can begin
 
 ### `GuiRequestCallback`
@@ -303,6 +307,27 @@ Without subtasks, sequential processing would stall completely whenever user fee
 - Only one GUI dialog is shown at a time (the lock in `AsyncTaskScheduler` serializes requests)
 - See `filemanager/tasks.py:_copy_dir_recursive()` (line 98) and `copy_files()` (line 120) for production examples
 
+#### Report Skipped Items
+
+When a task deliberately leaves an item out, report it instead of failing the job:
+
+```python
+ctx.report_skipped("/data/dangling", "broken link")
+```
+
+`report_skipped()` appends a `SkippedItem(item, reason)` under a lock, so it is safe to call from any worker thread.
+It does not trigger the progress callback.
+The skipped items are kept when the job is cancelled.
+`copy_files` and `move_files` report items they leave out with the reasons `"broken link"`, `"link loop"`, `"unreadable link"` and `"folder exists"`.
+See `docs/symlinks.md`.
+Subtasks share the status, so their skips land on the parent job.
+
+When the job ends (completed, canceled or failed), the app shows one notification such as `Skipped 3 items: broken link (2), link loop (1)`.
+The notification groups the items by reason, so producers should pass short, stable reasons such as `"broken link"` or `"link loop"`.
+
+The Jobs dialog lists each skipped path with its reason, in report order, under every finished job that has skips.
+Finished jobs are bounded by `MAX_FINISHED_JOBS`, so the lists are too.
+
 #### Handle Cancellation
 
 ```python
@@ -319,6 +344,8 @@ async def long_operation(ctx: TaskContext) -> None:
 - **`Job`:** `nova_navigator/scheduler/job.py`
 - **`AsyncTaskScheduler`:** `nova_navigator/scheduler/scheduler.py`
 - **`TaskContext`, `TaskStatus`:** `nova_navigator/scheduler/context.py`
+- **`SkippedItem`, `skipped_summary`:** `nova_navigator/scheduler/skipped.py`
+- **Jobs dialog:** `nova_navigator/dialogs/jobs_dialog.py`
 - **Task implementations:** `nova_navigator/filemanager/tasks.py`
 - **Response enum:** `nova_widgets/response.py`
 - **Architecture guide:** See `AGENTS.md` for the broader threading model and async architecture
