@@ -10,7 +10,7 @@ import logging
 import threading
 import time
 from collections.abc import AsyncIterator, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import PurePath, PurePosixPath
 from types import ModuleType
 from typing import TYPE_CHECKING, override
@@ -20,7 +20,7 @@ from ..types import Stat
 from ..vpath import VPath
 
 if TYPE_CHECKING:
-    from azure.storage.blob import BlobPrefix, BlobProperties, ContainerClient, StorageStreamDownloader
+    from azure.storage.blob import BlobClient, BlobPrefix, BlobProperties, ContainerClient, StorageStreamDownloader
 
 _logger = logging.getLogger(__name__)
 
@@ -71,6 +71,20 @@ def _as_oserror(path: str) -> Iterator[None]:
         raise OSError(errno.EIO, str(exc), path) from exc
 
 
+def _abandon_copy(dst_client: BlobClient, copy_id: object, status: object, existed: bool) -> None:
+    """Stop an unfinished server-side copy and remove the destination it created (best effort).
+
+    A destination that existed before the copy is kept; the caller still raises the copy error.
+    """
+    sdk = _sdk()
+    if status == "pending" and isinstance(copy_id, str) and copy_id:
+        with suppress(sdk.AzureError):
+            dst_client.abort_copy(copy_id)
+    if not existed:
+        with suppress(sdk.AzureError):
+            dst_client.delete_blob()
+
+
 def _blob_name(path: VPath) -> str:
     """Convert a VPath to a blob name (strip leading slash)."""
     return str(path.path).lstrip("/")
@@ -110,11 +124,14 @@ class AzureFilesystem(Filesystem):
     class _BlobReader:
         """Wraps a StorageStreamDownloader to satisfy StreamReaderLike (adds close())."""
 
-        def __init__(self, downloader: StorageStreamDownloader[str] | StorageStreamDownloader[bytes]) -> None:
+        def __init__(self, downloader: StorageStreamDownloader[str] | StorageStreamDownloader[bytes], path: str) -> None:
             self._downloader = downloader
+            self._path = path
 
         def read(self, size: int) -> bytes:
-            data = self._downloader.read(size)
+            # The blob may be deleted while it downloads; the SDK error then maps to FileNotFoundError.
+            with _as_oserror(self._path):
+                data = self._downloader.read(size)
             return data.encode() if isinstance(data, str) else data
 
         @property
@@ -337,7 +354,7 @@ class AzureFilesystem(Filesystem):
         self._assert_vpath(path)
         with _as_oserror(str(path.path)):
             downloader = self._client.get_blob_client(_blob_name(path)).download_blob(encoding=None)
-            return self._BlobReader(downloader)
+            return self._BlobReader(downloader, str(path.path))
 
     @override
     def write(self, path: VPath) -> StreamWriterLike:
@@ -359,6 +376,10 @@ class AzureFilesystem(Filesystem):
             raise OSError(errno.EXDEV, "Cannot rename across containers", str(src_path.path))
         src_name = _blob_name(src_path)
         dst_name = _blob_name(dst_path)
+        if src_name == dst_name:
+            # Like os.rename onto the same path: nothing moves, and a missing source is still an error.
+            self.stat(src_path)
+            return
         sdk = _sdk()
         with _as_oserror(str(src_path.path)):
             try:
@@ -385,13 +406,16 @@ class AzureFilesystem(Filesystem):
         """
         src_client = self._client.get_blob_client(src_name)
         dst_client = self._client.get_blob_client(dst_name)
+        existed = dst_client.exists()
         # Note: copy + delete is not atomic; another client may observe both names briefly.
-        status = dst_client.start_copy_from_url(src_client.url).get("copy_status")
+        copy = dst_client.start_copy_from_url(src_client.url)
+        status = copy.get("copy_status")
         deadline = time.monotonic() + _COPY_TIMEOUT
         while status == "pending" and time.monotonic() < deadline:
             time.sleep(_COPY_POLL)
             status = dst_client.get_blob_properties().copy.status
         if status != "success":
+            _abandon_copy(dst_client, copy.get("copy_id"), status, existed)
             raise OSError(errno.EIO, f"Server-side copy did not complete (status: {status}); the source was kept", src_name)
         src_client.delete_blob()
 

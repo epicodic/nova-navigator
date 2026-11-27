@@ -456,3 +456,72 @@ def test_rename_waits_for_a_pending_copy() -> None:
     fs.rename(fs.path("/old.txt"), fs.path("/new.txt"))
     assert dst_blob_client.get_blob_properties.call_count == 2
     src_blob_client.delete_blob.assert_called_once()
+
+
+# ── deleted during download, same-name rename, abandoned copy ─────────────────
+
+
+def test_read_blob_deleted_during_download_raises_file_not_found() -> None:
+    fs, mock_client = _make_fs()
+    downloader = MagicMock()
+    downloader.read.side_effect = ResourceNotFoundError
+    mock_client.get_blob_client.return_value.download_blob.return_value = downloader
+    reader = fs.read(fs.path("/file.txt"))
+    with pytest.raises(FileNotFoundError):
+        reader.read(4)
+
+
+def test_rename_onto_itself_keeps_the_blob() -> None:
+    fs, mock_client = _make_fs()
+    blob_client = MagicMock()
+    blob_client.start_copy_from_url.return_value = {"copy_status": "success"}
+    mock_client.get_blob_client.return_value = blob_client
+    fs.rename(fs.path("/same.txt"), fs.path("/same.txt"))
+    blob_client.delete_blob.assert_not_called()
+
+
+def test_rename_onto_itself_of_a_missing_blob_raises_file_not_found() -> None:
+    fs, mock_client = _make_fs()
+    mock_client.get_blob_client.return_value.get_blob_properties.side_effect = ResourceNotFoundError
+    mock_client.list_blobs.return_value = iter([])
+    with pytest.raises(FileNotFoundError):
+        fs.rename(fs.path("/missing.txt"), fs.path("/missing.txt"))
+
+
+def test_pending_copy_at_timeout_is_aborted_and_new_destination_removed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.vfs.filesystems import azure as azure_module
+
+    monkeypatch.setattr(azure_module, "_COPY_TIMEOUT", 0.0)
+    fs, mock_client = _make_fs()
+    src_blob_client = MagicMock()
+    dst_blob_client = MagicMock()
+    dst_blob_client.exists.return_value = False
+    dst_blob_client.start_copy_from_url.return_value = {"copy_status": "pending", "copy_id": "copy-1"}
+
+    def _get_client(name: str) -> MagicMock:
+        return src_blob_client if name == "old.txt" else dst_blob_client
+
+    mock_client.get_blob_client.side_effect = _get_client
+    with pytest.raises(OSError, match="did not complete"):
+        fs.rename(fs.path("/old.txt"), fs.path("/new.txt"))
+    dst_blob_client.abort_copy.assert_called_once_with("copy-1")
+    dst_blob_client.delete_blob.assert_called_once()
+    src_blob_client.delete_blob.assert_not_called()
+
+
+def test_failed_copy_keeps_a_destination_that_existed_before() -> None:
+    fs, mock_client = _make_fs()
+    src_blob_client = MagicMock()
+    dst_blob_client = MagicMock()
+    dst_blob_client.exists.return_value = True
+    dst_blob_client.start_copy_from_url.return_value = {"copy_status": "failed", "copy_id": "copy-2"}
+
+    def _get_client(name: str) -> MagicMock:
+        return src_blob_client if name == "old.txt" else dst_blob_client
+
+    mock_client.get_blob_client.side_effect = _get_client
+    with pytest.raises(OSError, match="did not complete"):
+        fs.rename(fs.path("/old.txt"), fs.path("/new.txt"))
+    dst_blob_client.delete_blob.assert_not_called()
+    dst_blob_client.abort_copy.assert_not_called()
+    src_blob_client.delete_blob.assert_not_called()
