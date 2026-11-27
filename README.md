@@ -73,7 +73,8 @@ ned [file] [--config-dir DIR] [--hex]
 
 These are the default bindings.
 Most of them can be changed in the Key Bindings dialog, which is in the first menu.
-The ones that cannot are `Insert`, `Ctrl+A`, `Ctrl+F`, `Tab` and `Shift+Tab`.
+`Tab` and `Shift+Tab` are fixed and cannot be changed.
+`Insert`, `Ctrl+A` and `Ctrl+F` are not listed in the Key Bindings dialog, but can be changed by setting `browser.insert_select`, `browser.select_all` and `browser.filter` in `keybindings.toml`.
 
 | Key | Action |
 |---|---|
@@ -172,6 +173,7 @@ When enabled, each run writes to `~/.cache/nova-navigator/debug-analytics/<pid>/
 The directory is deleted when `nn` ends, also after most crashes inside the application.
 Only an exit that skips this, such as a killed process or an error outside the application's own error handling, leaves it behind.
 While an error dialog is open, `crash.txt` is already written: choose Continue to keep `nn` running, and copy `crash.txt` before you choose Abort, because Abort ends `nn` and deletes the directory.
+Crash reports can contain passwords, so check `crash.txt` before you share it; the known issues in [CHANGELOG.md](https://github.com/epicodic/nova-navigator/blob/main/CHANGELOG.md) list the cases.
 
 | Variable | Effect |
 |---|---|

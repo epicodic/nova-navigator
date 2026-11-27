@@ -115,7 +115,7 @@
   If the file is read-only, OK in the settings dialog fails.
 - Closing the terminal window, SIGTERM (a termination signal) or a crash loses this session's right-panel folder and sort order.
 - A right-panel folder whose name is not valid UTF-8 is not remembered.
-- Three file-panel actions are not listed in the Key Bindings dialog and cannot be rebound there.
+- Three file-panel actions, Insert, Ctrl+A and Ctrl+F, are not listed in the Key Bindings dialog and cannot be rebound there.
   Tab and Shift+Tab are fixed keys.
 - Ctrl+F1 opens Settings, so the terminal's "Ctrl+F1 leaves focus" appears not to work.
   This was seen in the code and not tried.
