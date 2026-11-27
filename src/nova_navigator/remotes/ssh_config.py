@@ -16,6 +16,8 @@ from pathlib import Path
 import paramiko
 from paramiko.ssh_exception import ConfigParseError
 
+from nova_navigator.secret_registry import register_userinfo
+
 _logger = logging.getLogger(__name__)
 
 _MIN_PORT = 1
@@ -142,10 +144,12 @@ class SshConfig:
                 proxy_command_set = options["proxycommand"] is not None
                 break
         hashed = _first_value(found, "hashknownhosts")
+        user = _first_value(found, "user")
+        register_userinfo(user)
         return SshOptions(
             hostname=hostname,
             port=_port(_first_value(found, "port")),
-            user=_first_value(found, "user"),
+            user=user,
             identity_files=tuple(identity),
             proxy_jump=_first_value(found, "proxyjump"),
             proxy_command_set=proxy_command_set,

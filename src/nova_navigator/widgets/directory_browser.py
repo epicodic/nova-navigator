@@ -32,6 +32,7 @@ from ..config import conf_
 from ..file_filter import FilenamePatternFilter
 from ..format_utils import format_size
 from ..icons import ico_
+from ..secret_registry import register_uri_secrets
 from ..vfs import VPath
 from ..vfs.types import Stat
 
@@ -377,6 +378,7 @@ class GoToPathWidget(PopupWidget, can_focus=True):
 
     def action_accept(self) -> None:
         value = self.input.value.strip()
+        register_uri_secrets(value)
         if not value:
             self.action_dismiss()
             return

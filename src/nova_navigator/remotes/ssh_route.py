@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass
 
 from nova_navigator.remotes.ssh_config import SshConfig, SshOptions
+from nova_navigator.secret_registry import register_userinfo
 
 _logger = logging.getLogger(__name__)
 
@@ -58,6 +59,7 @@ def _parse_jump(spec: str) -> tuple[str | None, str, int | None]:
     user: str | None = None
     if "@" in rest:
         user_part, rest = rest.rsplit("@", 1)
+        register_userinfo(user_part)
         user = user_part or None
     port: int | None = None
     if rest.startswith("[") and "]" in rest:

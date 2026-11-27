@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import override
 
 from textual.app import ComposeResult
+from textual.await_complete import AwaitComplete
 from textual.containers import Horizontal
 from textual.widgets import Label
 
+from nova_navigator.secret_registry import register_secret
 from nova_widgets import DefaultButton, Dialog, Input
+from nova_widgets.response import Response
 
 
 @dataclass
@@ -55,3 +59,9 @@ class CredentialsDialog(Dialog):
         username = self.query_one("#input_username", Input).value
         password = self.query_one("#input_password", Input).value
         return Credentials(username=username, password=password)
+
+    @override
+    def dismiss(self, result: Response | None = None) -> AwaitComplete:
+        """Register the typed password, whichever way the dialog is closed."""
+        register_secret(self.query_one("#input_password", Input).value)
+        return super().dismiss(result)
