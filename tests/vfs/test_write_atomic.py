@@ -2,6 +2,7 @@
 
 import os
 import stat
+import threading
 from pathlib import Path
 from typing import cast
 
@@ -206,6 +207,7 @@ class _TestSSH(SSHFilesystem):
         # __eq__ compares _ssh_client by identity, so any distinct object works here.
         self._ssh_client = cast("paramiko.SSHClient", sftp)
         self._sftp_client = cast("paramiko.SFTPClient", sftp)
+        self._sftp_lock = threading.RLock()
 
     def refresh(self, path: VPath | None = None) -> None:
         pass
