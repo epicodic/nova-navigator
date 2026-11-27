@@ -1139,7 +1139,7 @@ dev = [
 requires-dist = [
     { name = "azure-identity", marker = "extra == 'azure'", specifier = ">=1.25.1" },
     { name = "azure-storage-blob", marker = "extra == 'azure'", specifier = ">=12.27.1" },
-    { name = "paramiko", specifier = ">=4.0.0" },
+    { name = "paramiko", specifier = ">=4.0.0,<5" },
     { name = "pygments", specifier = ">=2.19.2" },
     { name = "pyte", specifier = ">=0.8.2" },
     { name = "rich", specifier = ">=14.2.0" },

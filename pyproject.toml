@@ -20,7 +20,7 @@ dependencies = [
     "textual[syntax]>=8.2",
     "tomlkit>=0.13.3",
     "watchdog>=6.0.0",
-    "paramiko>=4.0.0",
+    "paramiko>=4.0.0,<5",
     "pygments>=2.19.2",
     "rich>=14.2.0",
 ]
