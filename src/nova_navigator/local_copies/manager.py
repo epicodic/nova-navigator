@@ -315,6 +315,7 @@ class LocalCopyManager:
         """Stop all detectors, await any running syncs, close cached archive mounts, and optionally remove the local-copy root.
 
         Viewer copies are removed also when *remove_files* is false: they hold no changes and no later session would list them.
+        The files are also kept when any copy is still unsynced, whatever *remove_files* says.
 
         Idempotent: a first call decides *remove_files* for the whole process, and every later
         call (e.g. the app's unconditional cleanup on unmount, after a quit prompt already shut
@@ -331,6 +332,8 @@ class LocalCopyManager:
             if entry.sync_task is not None:
                 with contextlib.suppress(Exception):
                     await entry.sync_task
+        if remove_files and self.unsynced():
+            remove_files = False  # only a synced copy may be deleted without the user asking for it
         self._entries.clear()
         for archive_fs in self._archive_mounts.values():
             archive_fs.close()

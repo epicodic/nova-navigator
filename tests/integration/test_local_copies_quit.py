@@ -15,18 +15,22 @@ exactly what the Ctrl+Q binding, the "Quit" menu item, and any other action look
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 from pathlib import Path
 
 import pytest
 from textual import widgets
 
+from nova_navigator.config import loader
 from nova_navigator.local_copies import CopyEntry, CopyStatus, LocalCopyManager
+from nova_navigator.nova_navigator import NovaNavigator
 from nova_navigator.scheduler import Job
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_navigator.vfs.local_copy import Baseline, LocalCopy, SourceFingerprint
 from nova_navigator.vfs.vpath import VPath
-from tests.integration.conftest import AppCtx
+from nova_widgets import MessageBox
+from tests.integration.conftest import AppCtx, poll_until
 
 _ROOT = Path(tempfile.gettempdir()) / "nn-local-copies-quit-test"
 
@@ -144,3 +148,140 @@ async def test_quit_prompt_sync_failure_keeps_app_running(app_ctx: AppCtx) -> No
     assert fake.synced == [pending]
     assert app_ctx.app.is_running
     assert fake.shutdown_calls == []
+
+
+async def _press_all(app_ctx: AppCtx, keys: list[str]) -> None:
+    for key in keys:
+        await app_ctx.pilot.press(key)
+        await app_ctx.pilot.pause()
+
+
+def _quit_prompts(app: NovaNavigator) -> list[MessageBox]:
+    return [screen for screen in app.screen_stack if isinstance(screen, MessageBox)]
+
+
+def _assert_asking(app: NovaNavigator, fake: _FakeLocalCopyManager) -> None:
+    assert app.is_running
+    assert fake.shutdown_calls == []
+    assert len(_quit_prompts(app)) == 1
+    assert app.screen.query_one("#IGNORE", widgets.Button) is not None
+
+
+_STATES = {
+    "settings dialog": ["ctrl+f1"],
+    "local copies dialog": ["ctrl+e"],
+    "help": ["f1"],
+    "new directory dialog": ["f7"],
+    "quit prompt itself": ["ctrl+q"],
+    "pending ctrl+s": ["ctrl+s"],
+    "pending ctrl+t": ["ctrl+t"],
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("keys", _STATES.values(), ids=_STATES.keys())
+async def test_ctrl_q_asks_in_every_state(app_ctx: AppCtx, keys: list[str]) -> None:
+    fake = _FakeLocalCopyManager(pending=[_entry()])
+    app_ctx.app.local_copies = fake
+    await _press_all(app_ctx, keys)
+
+    await _press_all(app_ctx, ["ctrl+q"])
+
+    _assert_asking(app_ctx.app, fake)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("binding", ["ctrl+k", "ctrl+x ctrl+c"])
+@pytest.mark.parametrize("keys", [["ctrl+q"], ["ctrl+f1", "ctrl+q"]], ids=["panel", "dialog"])
+async def test_ctrl_q_asks_with_quit_rebound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, binding: str, keys: list[str]) -> None:
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "keybindings.toml").write_text(f'[bindings]\n"app.quit" = "{binding}"\n')
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", config)
+    app = NovaNavigator(config_dir=config)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        fake = _FakeLocalCopyManager(pending=[_entry()])
+        app.local_copies = fake
+
+        for key in keys:
+            await pilot.press(key)
+            await pilot.pause()
+
+        _assert_asking(app, fake)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_cancel_over_a_dialog_returns_to_that_dialog(app_ctx: AppCtx) -> None:
+    fake = _FakeLocalCopyManager(pending=[_entry()])
+    app_ctx.app.local_copies = fake
+    await _press_all(app_ctx, ["ctrl+f1"])
+    dialog = app_ctx.app.screen
+
+    await _press_all(app_ctx, ["ctrl+q", "escape"])
+
+    assert app_ctx.app.is_running
+    assert app_ctx.app.screen is dialog
+    assert fake.shutdown_calls == []
+
+    await _press_all(app_ctx, ["ctrl+q"])
+    await app_ctx.pilot.click("#IGNORE")
+    await app_ctx.pilot.pause()
+
+    assert not app_ctx.app.is_running
+    assert fake.shutdown_calls == [False]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ctrl_q_with_a_dialog_open_and_nothing_unsynced_exits(app_ctx: AppCtx) -> None:
+    fake = _FakeLocalCopyManager(pending=[])
+    app_ctx.app.local_copies = fake
+    await _press_all(app_ctx, ["ctrl+f1"])
+
+    await app_ctx.pilot.press("ctrl+q")
+    await poll_until(app_ctx.pilot, lambda: not app_ctx.app.is_running)
+
+    assert not app_ctx.app.is_running
+    assert fake.shutdown_calls == [True]
+
+
+class _BlockedSync(_FakeLocalCopyManager):
+    """A fake whose sync waits for ``gate`` and records a cancellation."""
+
+    def __init__(self, pending: list[CopyEntry]) -> None:
+        super().__init__(pending)
+        self.gate = asyncio.Event()
+        self.cancelled = False
+
+    async def sync_now(self, entry: CopyEntry) -> None:
+        try:
+            await self.gate.wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        await super().sync_now(entry)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ctrl_q_during_sync_and_quit_does_not_cancel_the_sync(app_ctx: AppCtx) -> None:
+    fake = _BlockedSync(pending=[_entry()])
+    app_ctx.app.local_copies = fake
+    await _press_all(app_ctx, ["ctrl+q"])
+    await app_ctx.pilot.click("#SAVE")
+    await app_ctx.pilot.pause()
+
+    await _press_all(app_ctx, ["ctrl+q"])
+
+    assert app_ctx.app.is_running
+    assert not fake.cancelled
+    assert _quit_prompts(app_ctx.app) == []
+
+    fake.gate.set()
+    await poll_until(app_ctx.pilot, lambda: not app_ctx.app.is_running)
+
+    assert fake.shutdown_calls == [True]

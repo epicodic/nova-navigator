@@ -34,8 +34,6 @@
   The effect has not been verified.
 - Two hard-linked names on SSH are not recognised as one file, so copying or moving one onto the other may destroy data.
   This was not tested.
-- With a dialog open, after Ctrl+S has been pressed and the application waits for the next key, or with Quit rebound, Ctrl+Q quits without asking and deletes local copies that were not written back.
-  Those edits are lost.
 - If a directory is replaced by a symbolic link while it is being deleted, moved, or removed with `rm -r` in the built-in shell, the operation can follow the link.
 - Killing the application while it replaces a link can leave the destination missing.
   Changes made by other programs during a copy are not detected.
