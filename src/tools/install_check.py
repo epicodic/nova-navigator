@@ -5,6 +5,7 @@ import contextlib
 import fcntl
 import os
 import pty
+import re
 import select
 import signal
 import struct
@@ -18,6 +19,8 @@ from pathlib import Path
 
 _ROOT = Path(__file__).parent.parent.parent
 _SETTLE_SECONDS = 1.0
+# CSI, OSC and two-byte escape sequences (colour, cursor and title codes).
+_ESCAPE_SEQUENCE = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[ -/]*[0-~]")
 
 _PROBE = """
 import sys
@@ -63,39 +66,77 @@ class CheckError(Exception):
 def run_until(argv: list[str], marker: bytes, *, env: dict[str, str], cwd: Path, timeout: float) -> None:
     """Run *argv* in a pseudo-terminal until *marker* is printed, then kill its process group.
 
+    Terminal escape sequences are removed from the output before *marker* is searched for,
+    so a marker split by colour codes still matches.
+
     Raises:
-        CheckError: If the process exits, times out or prints a traceback.
+        CheckError: If the process cannot be started, exits, times out or prints a traceback.
     """
     master, slave = pty.openpty()
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
-    process = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave, env=env, cwd=cwd, start_new_session=True)
-    os.close(slave)
+    try:
+        try:
+            process = _spawn(argv, slave, env=env, cwd=cwd)
+        finally:
+            os.close(slave)
+        try:
+            _wait_for_marker(process, master, argv[0], marker, timeout)
+        finally:
+            _kill_group(process)
+    finally:
+        os.close(master)
+
+
+def _spawn(argv: list[str], slave: int, *, env: dict[str, str], cwd: Path) -> subprocess.Popen[bytes]:
+    """Start *argv* on the pseudo-terminal *slave* in a new session.
+
+    Raises:
+        CheckError: If the terminal size cannot be set or the process cannot be started.
+    """
+    try:
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+        return subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave, env=env, cwd=cwd, start_new_session=True)
+    except OSError as error:
+        raise CheckError(f"{argv[0]}: cannot start: {error}") from error
+
+
+def _wait_for_marker(process: subprocess.Popen[bytes], master: int, name: str, marker: bytes, timeout: float) -> None:
+    """Read the terminal until *marker* has been seen and the process has run for the settle time.
+
+    Raises:
+        CheckError: If the process exits, times out before the marker settles, or prints a traceback.
+    """
     output = bytearray()
     deadline = time.monotonic() + timeout
     seen = False
-    try:
-        while time.monotonic() < deadline:
-            if select.select([master], [], [], 0.1)[0]:
-                try:
-                    chunk = os.read(master, 65536)
-                except OSError:
-                    chunk = b""
-                if not chunk:
-                    break
-                output += chunk
-            elif process.poll() is not None:
+    ended = False
+    text = b""
+    while time.monotonic() < deadline:
+        if select.select([master], [], [], 0.1)[0]:
+            try:
+                chunk = os.read(master, 65536)
+            except OSError:
+                chunk = b""
+            if not chunk:
+                ended = True
                 break
-            if not seen and marker in output:
-                seen = True
-                deadline = time.monotonic() + _SETTLE_SECONDS
-        else:
-            if seen and process.poll() is None and b"Traceback" not in output:
-                return
-        tail = bytes(output[-3000:]).decode(errors="replace")
-        raise CheckError(f"{argv[0]}: no healthy start (marker seen: {seen}, exit code: {process.poll()})\n{tail}")
-    finally:
-        _kill_group(process)
-        os.close(master)
+            output += chunk
+        elif process.poll() is not None:
+            ended = True
+            break
+        text = _strip_escapes(bytes(output))
+        if not seen and marker in text:
+            seen = True
+            deadline = time.monotonic() + _SETTLE_SECONDS
+    # The deadline passed with the process still running: healthy only if the marker was seen and no traceback.
+    if not ended and seen and process.poll() is None and b"Traceback" not in text:
+        return
+    tail = _strip_escapes(bytes(output))[-3000:].decode(errors="replace")
+    raise CheckError(f"{name}: no healthy start (marker seen: {seen}, exit code: {process.poll()})\n{tail}")
+
+
+def _strip_escapes(data: bytes) -> bytes:
+    """Remove CSI, OSC and other escape sequences from terminal output."""
+    return _ESCAPE_SEQUENCE.sub(b"", data)
 
 
 def _kill_group(process: subprocess.Popen[bytes]) -> None:
@@ -106,7 +147,10 @@ def _kill_group(process: subprocess.Popen[bytes]) -> None:
 
 
 def _run(argv: list[str], *, env: dict[str, str] | None = None, cwd: Path | None = None) -> None:
-    result = subprocess.run(argv, env=env, cwd=cwd, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(argv, env=env, cwd=cwd, capture_output=True, text=True, check=False)
+    except OSError as error:
+        raise CheckError(f"{argv[0]} cannot start: {error}") from error
     if result.returncode != 0:
         raise CheckError(f"{' '.join(argv[:4])} failed:\n{result.stdout}{result.stderr}")
 
