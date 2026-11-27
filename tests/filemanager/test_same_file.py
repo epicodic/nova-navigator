@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -9,12 +10,13 @@ import pytest
 from azure.core.exceptions import ResourceNotFoundError
 from azure.storage.blob import ContainerClient
 
-from nova_navigator.filemanager.tasks import FileCopyOptions, OverwritePolicy, copy_files, move_files
+from nova_navigator.filemanager.tasks import FileCopyOptions, OverwritePolicy, _is_same_entry, copy_files, move_files
 from nova_navigator.scheduler import ResponseRequest, TaskStatus
 from nova_navigator.vfs.filesystem import Filesystem
 from nova_navigator.vfs.filesystems.azure import AzureFilesystem
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_navigator.vfs.filesystems.remote import RemoteFilesystem
+from nova_navigator.vfs.types import Stat
 from nova_navigator.vfs.vpath import VPath
 from nova_widgets import Response
 
@@ -258,3 +260,77 @@ async def test_two_azure_instances_of_one_container_are_the_same_storage(operati
         blob.delete_blob.assert_not_called()
         blob.upload_blob.assert_not_called()
     _assert_refused(status, requests, source)
+
+
+@pytest.mark.parametrize("operation", _OPERATIONS)
+async def test_file_onto_itself_survives_one_failed_lstat(tree: Path, monkeypatch: pytest.MonkeyPatch, operation: object) -> None:
+    target = str(tree / "d" / "f")
+    before = _snapshot(tree)
+    fs = LocalFilesystem()
+    source = fs.path(tree / "d" / "f")
+    real_lstat = os.lstat
+    failures: list[OSError] = [OSError("transient")]
+
+    def flaky_lstat(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> os.stat_result:
+        # One transient failure, only for the comparison made by _is_same_entry on the identical path.
+        if os.fspath(path) == target and failures and sys._getframe(1).f_code.co_name == "_is_same_entry":
+            raise failures.pop()
+        return real_lstat(path, dir_fd=dir_fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "lstat", flaky_lstat)
+        status, requests = await _run(operation, [source], fs.path(tree / "d" / "f"))
+
+    assert _snapshot(tree) == before
+    _assert_refused(status, requests, source)
+
+
+@pytest.mark.parametrize("operation", _OPERATIONS)
+async def test_azure_file_onto_itself_survives_one_failed_stat(operation: object, monkeypatch: pytest.MonkeyPatch) -> None:
+    blobs: dict[str, MagicMock] = {}
+
+    def blob_client(name: str) -> MagicMock:
+        if name not in blobs:
+            blobs[name] = MagicMock()
+            blobs[name].get_blob_properties.return_value = MagicMock(size=4, last_modified=None)
+        return blobs[name]
+
+    client = MagicMock(spec=ContainerClient)
+    client.get_blob_client.side_effect = blob_client
+    client.list_blobs.return_value = []
+    fs = AzureFilesystem("https://test.blob.core.windows.net", "box", client=client)
+    source = fs.path("/d/f")
+    real_stat = fs.stat
+    failures: list[OSError] = [OSError("transient")]
+
+    def flaky_stat(path: VPath) -> Stat:
+        # One transient failure, only for the comparison made by _is_same_entry on the identical path.
+        if str(path.path) == "/d/f" and failures and sys._getframe(1).f_code.co_name == "_is_same_entry":
+            raise failures.pop()
+        return real_stat(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(fs, "stat", flaky_stat)
+        status, requests = await _run(operation, [source], fs.path("/d/f"))
+
+    for blob in blobs.values():
+        blob.delete_blob.assert_not_called()
+        blob.upload_blob.assert_not_called()
+    _assert_refused(status, requests, source)
+
+
+@pytest.mark.parametrize(
+    ("first_account", "second_account", "first_container", "second_container"),
+    [
+        ("https://test.blob.core.windows.net", "https://test.blob.core.windows.net", "box", "other"),
+        ("https://test.blob.core.windows.net", "https://other.blob.core.windows.net", "box", "box"),
+    ],
+    ids=["other-container", "other-account"],
+)
+def test_identical_path_on_other_azure_storage_is_not_the_same_entry(first_account: str, second_account: str, first_container: str, second_container: str) -> None:
+    client = MagicMock(spec=ContainerClient)
+    first = AzureFilesystem(first_account, first_container, client=client)
+    second = AzureFilesystem(second_account, second_container, client=client)
+
+    assert not _is_same_entry(first.path("/d/f"), second.path("/d/f"))
+    assert not _is_same_entry(second.path("/d/f"), first.path("/d/f"))

@@ -79,14 +79,14 @@ def _is_same_entry(a: VPath, b: VPath) -> bool:
     filesystem = a.filesystem.unwrap()
     if filesystem != b.filesystem.unwrap() and not a.filesystem.is_same_device(a, b):
         return False
+    if a.path == b.path:  # same storage and same path: the same entry, so no stat is needed
+        return True
     try:
         if isinstance(filesystem, LocalFilesystem):
             return os.path.samestat(os.lstat(a.path), os.lstat(b.path))
         if a.name != b.name:
             return False
         b.filesystem.stat(b)  # raises when there is nothing at *b*; does not cache on the VPath
-        if a.path == b.path:
-            return True
         real_a = a.filesystem.real_path(a.parent)
         real_b = b.filesystem.real_path(b.parent)
     except OSError:
