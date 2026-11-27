@@ -48,6 +48,17 @@ def _find_menu(menus: list[Menu], menu_id: str) -> Menu | None:
     return None
 
 
+def _check_mode(ctx: AppCtx, mode: str) -> None:
+    """Choose *mode* ("size" or "mtime") as the menu does: check the item, then run its handler."""
+    menu = _find_menu(list(ctx.screen._menu_bar._menus), "compare_directories")
+    assert menu is not None
+    next(a for a in menu._actions if a.id == f"compare_by_{mode}").set_checked(True)
+    if mode == "size":
+        ctx.screen._action_compare_by_size()
+    else:
+        ctx.screen._action_compare_by_mtime()
+
+
 def _shown(panel: DirectoryBrowser) -> set[str]:
     return {p.name for p in panel._shown_items if not isinstance(p, UpPath)}
 
@@ -84,10 +95,8 @@ async def _compare_with_hide(ctx: AppCtx, mode: str | None) -> None:
     """Enable compare, pick *mode* ("size", "mtime" or None), check Hide Identical."""
     _enable_compare(ctx)
     await _settle(ctx)
-    if mode == "size":
-        ctx.screen._action_compare_by_size()
-    elif mode == "mtime":
-        ctx.screen._action_compare_by_mtime()
+    if mode is not None:
+        _check_mode(ctx, mode)
     _set_hide_identical(ctx, True)
     await _settle(ctx)
 
@@ -192,18 +201,34 @@ async def test_disable_compare_shows_files_again(app_ctx: AppCtx) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_reenable_compare_needs_mode_again(app_ctx: AppCtx) -> None:
+@pytest.mark.parametrize(("mode", "still_shown"), [("size", "diff_size.txt"), ("mtime", "diff_mtime.txt")])
+async def test_reenable_compare_restores_checked_mode(app_ctx: AppCtx, mode: str, still_shown: str) -> None:
     await _prepare(app_ctx)
-    await _compare_with_hide(app_ctx, "size")
+    await _compare_with_hide(app_ctx, mode)
     _disable_compare(app_ctx)
     await _settle(app_ctx)
 
     _enable_compare(app_ctx)
     await _settle(app_ctx)
-    assert "same.txt" in _shown(app_ctx.screen._left_panel)
 
-    app_ctx.screen._action_compare_by_size()
+    menu = _find_menu(list(app_ctx.screen._menu_bar._menus), "compare_directories")
+    assert menu is not None
+    assert [a.id for a in menu._actions if a.id in ("compare_by_size", "compare_by_mtime") and a.checked] == [f"compare_by_{mode}"]
+    for panel in (app_ctx.screen._left_panel, app_ctx.screen._right_panel):
+        assert "same.txt" not in _shown(panel)
+        assert still_shown in _shown(panel)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_mode_chosen_while_disabled_applies_on_enable(app_ctx: AppCtx) -> None:
+    await _prepare(app_ctx)
+    _check_mode(app_ctx, "size")
+
+    _enable_compare(app_ctx)
+    _set_hide_identical(app_ctx, True)
     await _settle(app_ctx)
+
     assert "same.txt" not in _shown(app_ctx.screen._left_panel)
     assert "same.txt" not in _shown(app_ctx.screen._right_panel)
 
