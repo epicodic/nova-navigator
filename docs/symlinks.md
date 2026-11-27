@@ -158,8 +158,9 @@ It applies to files, links and folders, on copy and on move.
 
 Copying or moving a file onto a link that points to it is not such a case: the link is replaced, as any destination link.
 
-Two separate SSH connections are never the same filesystem, even to the same host and account.
-The same file reached through both is not recognised.
+Two SSH connections with the same host name, port and user, as effective after `~/.ssh/config`, are the same storage (`Filesystem.is_same_storage`).
+They still compare unequal with `==`, so link rewriting and the move strategy treat them as separate.
+The same storage reached under another host name, user or port is not recognised, and neither is a hard link on SSH.
 Copying a folder into its own subfolder is not recognised either.
 
 ## Loop detection

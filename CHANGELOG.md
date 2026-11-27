@@ -27,7 +27,9 @@
 
 #### Possible data loss
 
-- The same file reached through two separate SSH connections is not recognised, so copying or moving it onto itself can destroy it.
+- The same storage reached in another way, for example under another host name, user or port, is not recognised, so copying or moving a file onto itself that way can destroy it.
+- Servers with the same address, port and user name behind different jump hosts are treated as one machine.
+  So copying or moving a file to the same path between them is skipped.
 - In the built-in shell, `cp` of a file onto itself is not refused and can destroy it.
   This was not reproduced.
 - Copying a folder into its own subfolder is not refused.

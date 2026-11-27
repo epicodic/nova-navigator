@@ -70,19 +70,23 @@ class EraseFilesOptions:
     """Refresh the cached stat of each path before erasing; internal children listings turn it off."""
 
 
+def _is_same_storage(a: VPath, b: VPath) -> bool:
+    """Return whether *a* and *b* are paths on the same storage."""
+    return a.filesystem.unwrap().is_same_storage(b.filesystem.unwrap()) or a.filesystem.is_same_device(a, b)
+
+
 def _is_same_entry(a: VPath, b: VPath) -> bool:
     """Return whether *a* and *b* name the same existing entry; a final link is not followed.
 
     Local paths compare by inode, so symlinked parent folders and hard links count.
     Elsewhere the paths must be equal, or the names equal and the parent folders resolve to the same folder.
     """
-    filesystem = a.filesystem.unwrap()
-    if filesystem != b.filesystem.unwrap() and not a.filesystem.is_same_device(a, b):
+    if not _is_same_storage(a, b):
         return False
     if a.path == b.path:  # same storage and same path: the same entry, so no stat is needed
         return True
     try:
-        if isinstance(filesystem, LocalFilesystem):
+        if isinstance(a.filesystem.unwrap(), LocalFilesystem):
             return os.path.samestat(os.lstat(a.path), os.lstat(b.path))
         if a.name != b.name:
             return False

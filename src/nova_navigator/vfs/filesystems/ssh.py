@@ -1255,12 +1255,24 @@ class SSHFilesystem(Filesystem):
         self._hostname = hostname
         self._port = port
         self._username = username
+        # Effective values (after ~/.ssh/config), unlike the requested ones above.
+        target = route[-1] if route else None
+        transport = self._ssh_client.get_transport()
+        self._storage_key = (
+            (target.hostname if target else hostname).casefold(),
+            target.port if target else port,
+            transport.get_username() if transport is not None else username,
+        )
 
     def __eq__(self, value: object) -> bool:
         return isinstance(value, SSHFilesystem) and self._ssh_client == value._ssh_client
 
     def __hash__(self) -> int:
         return hash(self._ssh_client)
+
+    @override
+    def is_same_storage(self, other: Filesystem) -> bool:
+        return isinstance(other, SSHFilesystem) and other._storage_key == self._storage_key
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self._ssh_client!r})"
