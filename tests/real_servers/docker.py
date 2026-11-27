@@ -5,10 +5,12 @@ Run ``uv run python -m tests.real_servers.docker prepare`` once before the tests
 
 from __future__ import annotations
 
+import functools
 import os
 import subprocess
 import sys
-from collections.abc import Mapping
+import threading
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import NoReturn
 
@@ -25,6 +27,31 @@ IMAGES_DIR = Path(__file__).resolve().parent / "images"
 
 class ServerUnavailable(Exception):
     """A Docker call failed, timed out or the docker binary is missing."""
+
+
+def start_once[T](start: Callable[[], T]) -> Callable[[], T]:
+    """Call *start* at most once per process and share its result.
+
+    A ServerUnavailable is remembered too: later calls re-raise it without starting again, so a broken
+    server start costs one attempt instead of one per test. Other errors are not remembered and retry.
+    """
+    outcome: list[T | ServerUnavailable] = []
+    lock = threading.Lock()
+
+    @functools.wraps(start)
+    def _shared() -> T:
+        with lock:
+            if not outcome:
+                try:
+                    outcome.append(start())
+                except ServerUnavailable as exc:
+                    outcome.append(exc)
+        result = outcome[0]
+        if isinstance(result, ServerUnavailable):
+            raise result
+        return result
+
+    return _shared
 
 
 def run_docker(*args: str, input: bytes | None = None, timeout: float = CALL_TIMEOUT) -> bytes:

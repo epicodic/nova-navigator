@@ -10,7 +10,6 @@ import atexit
 import base64
 import contextlib
 import datetime
-import functools
 import http.client
 import ipaddress
 import json
@@ -31,7 +30,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from tests.real_servers.docker import AZURITE_IMAGE, ServerUnavailable, pull_azurite, run_docker, unavailable
+from tests.real_servers.docker import AZURITE_IMAGE, ServerUnavailable, pull_azurite, run_docker, start_once, unavailable
 
 LOOPBACK = "127.0.0.1"
 IMDS_ADDRESS = "169.254.169.254"
@@ -179,7 +178,7 @@ def _remove_container(name: str) -> None:
         run_docker("rm", "-f", name)
 
 
-@functools.cache
+@start_once
 def azurite_server() -> Azurite:
     """Start Azurite once per process; the container and the scratch files are removed at exit."""
     pull_azurite()

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import atexit
 import contextlib
-import functools
 import secrets
 import shutil
 import socket
@@ -17,7 +16,7 @@ from typing import Literal
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from tests.real_servers.docker import ServerUnavailable, build_image, run_docker
+from tests.real_servers.docker import ServerUnavailable, build_image, run_docker, start_once
 
 LOOPBACK = "127.0.0.1"
 FLAVOURS: tuple[Literal["gnu", "busybox"], ...] = ("gnu", "busybox")
@@ -108,7 +107,7 @@ def _start(flavour: Literal["gnu", "busybox"], network: str, identity: Path, pub
     return SshServer(flavour=flavour, container=container, port=port, alias=flavour, password=password, identity=identity)
 
 
-@functools.cache
+@start_once
 def ssh_servers() -> dict[str, SshServer]:
     """Start the gnu and busybox servers on one network, once per process; everything is removed at exit."""
     workdir = Path(tempfile.mkdtemp(prefix="nova-rs-keys-"))
