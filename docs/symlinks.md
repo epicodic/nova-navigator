@@ -164,6 +164,8 @@ The same storage reached under another host name, user or port is not recognised
 
 A folder copied or moved into itself or one of its subfolders, with links resolved, is skipped as `"into itself"` in the same way.
 
+`cp` refuses to copy a file onto itself, also through a link, and `cp -r` refuses to copy a directory into itself.
+
 ## Loop detection
 
 Loops only matter when a directory link is followed and copied as a tree.

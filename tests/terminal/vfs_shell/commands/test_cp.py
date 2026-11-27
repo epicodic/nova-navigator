@@ -112,3 +112,43 @@ async def test_cp_r_on_local_filesystem_copies_link_only(tmp_path: Path) -> None
     assert await interp.execute("cp -r src dst", output.append, output.append) == 0
     assert (tmp_path / "dst" / "out").is_symlink()
     assert sorted(p.name for p in outside.iterdir()) == ["keep.txt"]
+
+
+def _cp_tree_on_disk(root: Path) -> None:
+    (root / "d" / "sub").mkdir(parents=True)
+    (root / "d" / "f").write_bytes(b"data-f")
+    (root / "link").symlink_to("d/f")
+    (root / "hard").hardlink_to(root / "d" / "f")
+    (root / "alias").symlink_to("d")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["cp d/f d/f", "cp d/f d/./f", "cp d/f link", "cp link d/f", "cp d/f hard", "cp d/f alias/f"])
+async def test_cp_onto_itself_is_refused(tmp_path: Path, command: str) -> None:
+    _cp_tree_on_disk(tmp_path)
+    local = LocalFilesystem()
+    interp = VfsShellInterpreter(local, local.path(tmp_path), cols=80, rows=24)
+    output: list[str] = []
+
+    exit_code = await interp.execute(command, output.append, output.append)
+
+    assert exit_code == 1
+    assert "are the same file" in "".join(output)
+    assert (tmp_path / "d" / "f").read_bytes() == b"data-f"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("destination", ["d", "d/sub", "d/new", "alias"])
+async def test_cp_r_into_itself_is_refused(tmp_path: Path, destination: str) -> None:
+    _cp_tree_on_disk(tmp_path)
+    local = LocalFilesystem()
+    interp = VfsShellInterpreter(local, local.path(tmp_path), cols=80, rows=24)
+    output: list[str] = []
+
+    exit_code = await interp.execute(f"cp -r d {destination}", output.append, output.append)
+
+    assert exit_code == 1
+    assert "into itself" in "".join(output)
+    assert (tmp_path / "d" / "f").read_bytes() == b"data-f"
+    assert sorted(p.name for p in (tmp_path / "d").iterdir()) == ["f", "sub"]
+    assert list((tmp_path / "d" / "sub").iterdir()) == []

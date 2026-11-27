@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import logging
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import PurePath, PurePosixPath
 from typing import Literal
@@ -125,6 +126,25 @@ def _skip_onto_itself(ctx: TaskContext, src: VPath, dst: VPath) -> bool:
         return False
     ctx.report_skipped(src.uri, SKIP_SAME_FILE)
     return True
+
+
+def _link_chain(path: VPath) -> Iterator[VPath]:
+    """Yield *path* and then, while it is a link, each next step towards its target."""
+    yield path
+    if not path.filesystem.supports_symlinks():
+        return
+    for _ in range(_MAX_LINK_DEPTH):
+        try:
+            path = path.parent / path.filesystem.readlink(path)
+        except OSError:  # the end of the chain: not a link any more
+            return
+        yield path
+
+
+def would_overwrite_source(src: VPath, dst: VPath) -> bool:
+    """Return whether writing through *dst* would overwrite what is read through *src*; links are followed on both."""
+    targets = list(_link_chain(dst))
+    return any(_is_same_entry(source, target) for source in _link_chain(src) for target in targets)
 
 
 def _resolved(path: VPath) -> PurePath:
