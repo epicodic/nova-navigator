@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 from typing import Protocol, Self, cast, override
@@ -302,16 +302,27 @@ def _entry_from_attrs(name: str, attrs: _SftpAttrs) -> StatEntry:
     )
 
 
+# paramiko reports a lost connection as SSHException or EOFError and a broken reply as SFTPError, none of them an OSError.
+_STREAM_ERRORS = (OSError, EOFError, paramiko.SSHException, paramiko.SFTPError)
+
+
+@contextlib.contextmanager
+def _stream_errors() -> Iterator[None]:
+    """Raise every paramiko error of a stream operation as ``OSError``."""
+    try:
+        yield
+    except (EOFError, paramiko.SSHException, paramiko.SFTPError) as exc:
+        raise OSError(str(exc) or "SSH connection lost") from exc
+
+
 def _send_whole_packets(sftp: paramiko.SFTPClient) -> None:
     """Make every packet of *sftp* leave in one piece.
 
-    paramiko sends a packet larger than the channel's maximum in several parts without a lock, and a garbage
-    collected ``SFTPFile`` sends its close from whatever thread runs the collection, without the session lock.
-    The lock is reentrant because that collection may run inside a send of the same thread.
+    paramiko sends a packet larger than the channel's maximum in several parts without a lock.
     """
     sender = cast("_RawSftpSender", sftp)
     send = sender._send_packet
-    lock = threading.RLock()
+    lock = threading.Lock()
 
     def send_locked(t: int, packet: object) -> None:
         with lock:
@@ -320,12 +331,32 @@ def _send_whole_packets(sftp: paramiko.SFTPClient) -> None:
     sender._send_packet = send_locked
 
 
+class _SessionSftpFile(paramiko.SFTPFile):
+    """An ``SFTPFile`` of the shared session whose finalizer only notes the handle.
+
+    paramiko's finalizer sends the close request, and for a pipelined file reads replies, on whatever thread runs the
+    garbage collection: inside a packet of that thread, while it holds the client's non-reentrant ``_lock`` (a
+    deadlock), on the transport thread, or without the session lock.  So it takes no lock and does no I/O;
+    ``SSHFilesystem`` closes the noted handles when it next opens a file.
+    """
+
+    abandoned: deque[bytes]
+
+    def __del__(self) -> None:
+        state = vars(self)
+        if not state["_closed"]:
+            state["_closed"] = True
+            self.abandoned.append(state["handle"])
+
+
 class _LockedSftpFile:
     """An SFTPFile whose every channel access holds the session lock: paramiko reads replies without one.
 
     paramiko reads the acknowledgements of pipelined writes later, by number, and every other reader of the channel
     drops them: the writer then waits forever.  So each write request is handed to the file object, to which any
     reader delivers its reply; the file keeps an error for the next ``write`` or ``close``.
+
+    ``close`` collects the outstanding replies itself, because paramiko stops at the first error.  All errors are raised as ``OSError``.
     """
 
     def __init__(self, file: paramiko.SFTPFile, lock: threading.RLock, unacknowledged: deque[int]) -> None:
@@ -334,39 +365,38 @@ class _LockedSftpFile:
         self._unacknowledged = unacknowledged  # unanswered writes of the whole session, in the order sent
 
     def read(self, size: int | None = None) -> bytes:
-        with self._lock:
+        with _stream_errors(), self._lock:
             return self._file.read(size)
 
     def write(self, data: bytes) -> int:
-        for start in range(0, len(data), _WRITE_PIECE):
-            with self._lock:  # per piece, so others get a turn during a large write
-                self._write_piece(data[start : start + _WRITE_PIECE])
+        with _stream_errors():
+            for start in range(0, len(data), _WRITE_PIECE):
+                with self._lock:  # per piece, so others get a turn during a large write
+                    self._write_piece(data[start : start + _WRITE_PIECE])
         return len(data)
 
     def close(self) -> None:
-        error: OSError | EOFError | None = None
-        with self._lock:
-            while True:
-                try:
-                    self._file.close()
-                    self._check_write_error()
-                    break
-                except (OSError, EOFError) as exc:
-                    # A failed write stops the close before the handle is released: close again.
-                    if error is not None:
-                        break
-                    error = exc
-        if isinstance(error, EOFError):
-            raise OSError(str(error)) from error
-        if error is not None:
-            raise error
+        """Collect the outstanding replies and release the handle; raises the first error seen."""
+        with _stream_errors(), self._lock:
+            error = self._collect_replies()
+            try:
+                self._file.close()
+            except _STREAM_ERRORS as exc:
+                error = error or exc
+            if error is not None:
+                raise error
 
     def _write_piece(self, piece: bytes) -> None:
-        self._file.write(piece)
         if not isinstance(self._file, paramiko.SFTPFile):  # test doubles have no outstanding requests
+            self._file.write(piece)
             return
         raw = cast("_RawSftpFile", self._file)
         client = raw.sftp
+        try:
+            self._file.write(piece)
+        except BaseException:
+            raw._reqs.clear()  # registering them later could wait for a reply that has already been dropped
+            raise
         with client._lock:
             for number in raw._reqs:
                 client._expecting[number] = self._file
@@ -376,16 +406,46 @@ class _LockedSftpFile:
         # the moment) stops taking input, and a send blocked on that would hold the session lock for ever.
         while self._count_unacknowledged(client) > _MAX_UNACKNOWLEDGED:
             client._read_response()
-        try:
-            self._check_write_error()
-        except EOFError as exc:
-            raise OSError(str(exc)) from exc
+        self._check_write_error()
 
     def _count_unacknowledged(self, client: _RawSftpReplies) -> int:
         """Forget the answered requests (replies arrive in order) and return how many are still open."""
         while self._unacknowledged and self._unacknowledged[0] not in client._expecting:
             self._unacknowledged.popleft()
         return len(self._unacknowledged)
+
+    def _pending_replies(self) -> list[int]:
+        client = cast("_RawSftpFile", self._file).sftp
+        with client._lock:
+            return [number for number, owner in client._expecting.items() if owner is self._file]
+
+    def _collect_replies(self) -> BaseException | None:
+        """Read until every write is answered and return the first error.
+
+        Reading goes on after an error for as long as it still answers requests of this file; what cannot be read
+        any more is forgotten, so that nothing waits for it.
+        """
+        if not isinstance(self._file, paramiko.SFTPFile):
+            return None
+        client = cast("_RawSftpFile", self._file).sftp
+        error: BaseException | None = None
+        pending = self._pending_replies()
+        while pending:
+            try:
+                client._read_response()
+                self._check_write_error()
+            except _STREAM_ERRORS as exc:
+                error = error or exc
+                if len(self._pending_replies()) >= len(pending):
+                    with client._lock:
+                        for number in pending:
+                            client._expecting.pop(number, None)
+            pending = self._pending_replies()
+        try:
+            self._check_write_error()  # delivered earlier by another reader
+        except _STREAM_ERRORS as exc:
+            error = error or exc
+        return error
 
     def _check_write_error(self) -> None:
         if isinstance(self._file, paramiko.SFTPFile):
@@ -399,6 +459,9 @@ class _SftpDownload:
     blocks in ``send``, and with it every other request of the session.  With ``max_concurrent_requests`` it leaves a
     thread spinning after a cancelled download.  So the consumer sends the requests itself, under the session lock,
     and whoever reads the channel hands the replies to this object.
+
+    Only the server's end-of-file status ends the file.  Every failure is raised as ``OSError``, and after a failed
+    read all further reads fail: the bytes taken by the failed call are lost, so going on would skip them.
     """
 
     def __init__(self, file: paramiko.SFTPFile, lock: threading.RLock) -> None:
@@ -413,27 +476,36 @@ class _SftpDownload:
         self._replies: dict[int, tuple[int, paramiko.Message] | None] = {}  # None until the reply arrived
         self._buffer = b""
         self._closed = False
+        self._failed = False
 
     def read(self, size: int | None = None) -> bytes:
         data = bytearray()
-        while size is None or size < 0 or len(data) < size:
-            with self._lock:  # per block, so others get a turn during a large read
-                if self._closed:
-                    raise OSError("File is closed")
-                self._buffer = self._buffer or self._next_block()
-                end = len(self._buffer) if size is None or size < 0 else size - len(data)
-                piece, self._buffer = self._buffer[:end], self._buffer[end:]
-            if not piece:
-                break
-            data += piece
+        with _stream_errors():
+            while size is None or size < 0 or len(data) < size:
+                with self._lock:  # per block, so others get a turn during a large read
+                    if self._closed:
+                        raise OSError("File is closed")
+                    if self._failed:
+                        raise OSError("An earlier read failed")
+                    try:
+                        self._buffer = self._buffer or self._next_block()
+                    except BaseException:
+                        self._failed = True
+                        self._forget_requests()
+                        raise
+                    end = len(self._buffer) if size is None or size < 0 else size - len(data)
+                    piece, self._buffer = self._buffer[:end], self._buffer[end:]
+                if not piece:
+                    break
+                data += piece
         return bytes(data)
 
     def close(self) -> None:
-        with self._lock:
+        with _stream_errors(), self._lock:
             self._closed = True
-            self._file.close()
             self._forget_requests()
             self._buffer = b""
+            self._file.close()
 
     def _request(self, offset: int, length: int) -> tuple[int, int, int]:
         handle = cast("_RawSftpFile", self._file).handle
@@ -457,27 +529,29 @@ class _SftpDownload:
             self._requests.append(self._request(self._requested, length))
             self._requested += length
         if not self._requests:
-            # Past the size the file had when it was opened: read on, in case it grew.
-            self._file.seek(self._offset)
-            data = self._file.read(paramiko.SFTPFile.MAX_REQUEST_SIZE)
-            self._offset += len(data)
-            return data
+            # Past the size the file had when it was opened: read on, in case it grew.  Not through
+            # ``SFTPFile.read``, which takes a lost connection for the end of the file.
+            self._requests.append(self._request(self._offset, paramiko.SFTPFile.MAX_REQUEST_SIZE))
         number, offset, length = self._requests[0]
         while (reply := self._replies[number]) is None:
             self._client._read_response()
         t, msg = reply
         if t != CMD_DATA:
-            self._forget_requests()  # a later read asks again from here
+            self._forget_requests()
             if t == CMD_STATUS:
                 try:
                     self._client._convert_status(msg)  # raises the error of the server
-                except EOFError:  # the file shrank
-                    self._size = self._offset
+                except EOFError:
+                    if offset >= self._size:
+                        return b""
+                    self._size = offset  # the file shrank
                     return self._next_block()
             raise paramiko.SFTPError("Expected data")
         self._requests.popleft()
         del self._replies[number]
         data = msg.get_string()
+        if not data and offset < self._size:
+            raise OSError(f"The server sent no data at offset {offset} of {self._size}")
         self._offset += len(data)
         if 0 < len(data) < length:  # a short answer: ask for the rest before using what comes after
             self._requests.appendleft(self._request(offset + len(data), length - len(data)))
@@ -1003,7 +1077,7 @@ class _SftpAtomicWriter:
         self._target = target
         self._tmp = os.fsencode((path.path.parent / f".{path.name}.{uuid.uuid4().hex}.nn-tmp").as_posix())
         with lock:
-            file = client.open(self._tmp, "wx")
+            file = filesystem._open_file(self._tmp, "wx")
             file.set_pipelined(True)
             self._file = _LockedSftpFile(file, lock, filesystem._unacknowledged_writes)
         self._done = False
@@ -1016,25 +1090,26 @@ class _SftpAtomicWriter:
         if self._done:
             return
         self._done = True
-        try:
-            self._file.close()
+        with _stream_errors():
             try:
-                with self._lock:
-                    mode = self._client.stat(self._target).st_mode
-            except FileNotFoundError:
-                mode = None
-            if mode is not None:
-                with self._lock:
-                    self._client.chmod(self._tmp, stat.S_IMODE(mode))
-            try:
-                with self._lock:
-                    self._client.posix_rename(self._tmp, self._target)
-            except (OSError, paramiko.SSHException) as error:
-                raise OSError(f"SSH server does not support atomic replacement: {error}") from error
-        except BaseException:
-            self._remove_tmp()
-            raise
-        self._filesystem.refresh(self._filesystem.parent(self._path))
+                self._file.close()
+                try:
+                    with self._lock:
+                        mode = self._client.stat(self._target).st_mode
+                except FileNotFoundError:
+                    mode = None
+                if mode is not None:
+                    with self._lock:
+                        self._client.chmod(self._tmp, stat.S_IMODE(mode))
+                try:
+                    with self._lock:
+                        self._client.posix_rename(self._tmp, self._target)
+                except (OSError, paramiko.SSHException) as error:
+                    raise OSError(f"SSH server does not support atomic replacement: {error}") from error
+            except BaseException:
+                self._remove_tmp()
+                raise
+            self._filesystem.refresh(self._filesystem.parent(self._path))
 
     def abort(self) -> None:
         if not self._done:
@@ -1044,7 +1119,7 @@ class _SftpAtomicWriter:
             self._remove_tmp()
 
     def _remove_tmp(self) -> None:
-        with contextlib.suppress(OSError, paramiko.SSHException), self._lock:
+        with contextlib.suppress(*_STREAM_ERRORS), self._lock:
             self._client.remove(self._tmp)
 
 
@@ -1125,6 +1200,7 @@ class SSHFilesystem(Filesystem):
         # ``close()`` does not take it, so closing can always unblock a stuck request.
         self._sftp_lock = threading.RLock()
         self._unacknowledged_writes: deque[int] = deque()  # request numbers, guarded by _sftp_lock
+        self._abandoned_handles: deque[bytes] = deque()  # added by finalizers of unclosed files, without a lock
         # Jump transports must stay referenced while the target rides on their channels.
         self._hop_clients: list[paramiko.SSHClient] = []
         self._owns_client = ssh_client is None
@@ -1542,16 +1618,28 @@ class SSHFilesystem(Filesystem):
             return self._stat_from(path, lstat_entry, lstat_entry)
         return self._stat_from(path, self._sftp_link_target(raw_path, path.name), lstat_entry)
 
+    def _open_file(self, path: bytes, mode: str) -> paramiko.SFTPFile:
+        """Open a file of the shared session; the caller holds ``_sftp_lock``."""
+        file = self._sftp_client.open(path, mode)
+        if isinstance(file, paramiko.SFTPFile):  # not a test double
+            file.__class__ = _SessionSftpFile
+            cast("_SessionSftpFile", file).abandoned = self._abandoned_handles
+            client = cast("_RawSftpReplies", self._sftp_client)
+            while self._abandoned_handles:
+                with contextlib.suppress(*_STREAM_ERRORS):
+                    client._async_request(type(None), CMD_CLOSE, self._abandoned_handles.popleft())
+        return file
+
     @override
     def read(self, path: VPath) -> StreamReaderLike:
         with self._sftp_lock:
-            f = self._sftp_client.open(_sftp_path(path), "rb")
+            f = self._open_file(_sftp_path(path), "rb")
             return _SftpDownload(f, self._sftp_lock)
 
     @override
     def write(self, path: VPath) -> StreamWriterLike:
         with self._sftp_lock:
-            f = self._sftp_client.open(_sftp_path(path), "wb")
+            f = self._open_file(_sftp_path(path), "wb")
             f.set_pipelined(True)
             locked = _LockedSftpFile(f, self._sftp_lock, self._unacknowledged_writes)
         return self._PipelinedWriter(locked, lambda: self.refresh(self.parent(path)))
