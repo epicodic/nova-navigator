@@ -22,9 +22,9 @@ if TYPE_CHECKING:
 
 _logger = logging.getLogger(__name__)
 
-MISSING_AZURE_EXTRA_MESSAGE = (
-    "Azure Blob support is not installed. Install the extra 'nova-navigator[azure]', for example: uv tool install 'nova-navigator[azure]' (or pipx install 'nova-navigator[azure]')."
-)
+MISSING_AZURE_EXTRA_MESSAGE = """\
+Azure Blob support is not installed. Install the extra 'nova-navigator[azure]', for example: \
+uv tool install 'nova-navigator[azure]' (or pipx install 'nova-navigator[azure]')."""
 
 
 class MissingAzureExtraError(RuntimeError):

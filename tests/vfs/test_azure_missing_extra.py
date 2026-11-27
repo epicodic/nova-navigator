@@ -2,6 +2,7 @@
 
 import subprocess
 import sys
+import textwrap
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -22,7 +23,16 @@ def no_azure_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_startup_imports_no_azure_sdk() -> None:
-    code = "import sys\nimport nova_navigator.nova_navigator\nbad = [m for m in sys.modules if m.startswith(('azure.core', 'azure.identity', 'azure.storage'))]\nassert not bad, bad\n"
+    code = textwrap.dedent(
+        """\
+        import sys
+        import nova_navigator.nova_navigator
+        bad = [
+            m for m in sys.modules if m.startswith(('azure.core', 'azure.identity', 'azure.storage'))
+        ]
+        assert not bad, bad
+        """
+    )
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
