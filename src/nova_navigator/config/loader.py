@@ -7,6 +7,7 @@ config files in the application config directory.
 from __future__ import annotations
 
 import abc
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar, Self
@@ -21,9 +22,30 @@ from nova_navigator.config.model import (
     to_toml,
     update_toml_doc,
 )
+from nova_navigator.vfs import VPath
+from nova_navigator.vfs.filesystems.local import LocalFilesystem
 
 _APP_CONFIG_DIR: Path = Path.home() / ".config" / "nova-navigator"
 _DEFAULT_CONFIG_DIR: Path = Path(__file__).parent.parent / "_default"
+
+
+def _write_atomic(path: Path, data: bytes) -> None:
+    """Replace ``path`` with ``data`` so that a failure leaves the previous file intact.
+
+    A symlink is resolved first so the link stays in place and its target is updated.
+    Raises ``FileNotFoundError`` when the parent directory is missing, as a plain write would.
+    """
+    target = Path(os.path.realpath(path))
+    if not target.parent.is_dir():
+        raise FileNotFoundError(f"No such directory: {target.parent}")
+    filesystem = LocalFilesystem.singleton()
+    writer = filesystem.write_atomic(VPath(str(target), filesystem))
+    try:
+        writer.write(data)
+    except BaseException:
+        writer.abort()
+        raise
+    writer.close()
 
 
 def get_config_file_path(config_filename: str) -> Path:
@@ -101,7 +123,7 @@ class ModelConfig(ConfigBase):
             doc = to_toml(self)  # type: ignore
         else:
             update_toml_doc(doc, self)  # type: ignore
-        file_path.write_text(tomlkit.dumps(doc))
+        _write_atomic(file_path, tomlkit.dumps(doc).encode("utf-8"))
 
 
 class ListConfig(ConfigBase):
