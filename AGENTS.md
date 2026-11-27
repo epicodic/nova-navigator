@@ -26,14 +26,15 @@ It supports a virtual file system (VFS) abstraction for local, SSH, and archive 
 
 | Item | Value |
 |------|-------|
-| OS | Ubuntu 24.04 (only — macOS and Windows are not supported) |
-| Python version | 3.12 |
+| OS | Ubuntu 24.04 and 26.04 (only — macOS and Windows are not supported) |
+| Python version | 3.12, 3.13 and 3.14 |
 
 ---
 
 ## Setup
 
-No setup step is required before running commands.
+No setup step is required before running the app.
+The tests also need `zsh` (`sudo apt-get install zsh`), because the stub SSH server runs commands with it.
 
 `uv run` syncs the development environment, which includes the `azure` extra and the local `devtools/` project.
 
@@ -54,6 +55,18 @@ uv run pytest                                  # run all tests
 uv run pytest tests/test_archives.py           # run a specific test file
 uv run pytest tests/test_archives.py::test_foo # run a specific test
 ```
+
+Every test has a limit of 120 s.
+A timeout ends a run without `-n` after printing all stacks; with `-n` only that worker is lost, the test is reported by name and the run continues.
+Run in parallel with `uv run pytest -n 4 --dist worksteal -m "not wall_clock"`, then run the wall-clock tests serially with `uv run pytest -m wall_clock`.
+Wall-clock budget tests carry `@pytest.mark.wall_clock`, because they assert an elapsed-time budget that parallel load can break.
+`uv run qa` runs two test passes.
+The first runs the unmarked tests in parallel only when `PYTEST_ADDOPTS="-n 4 --dist worksteal"` is set, as in CI; a bare `uv run qa` runs them serially.
+The second runs the wall-clock tests serially with `-n 0`.
+New elapsed-time assertions must carry the marker.
+
+CI runs `uv run qa` in parallel and `uv run install_check` on Ubuntu 24.04 and 26.04 with Python 3.12, 3.13 and 3.14.
+Each CI job is stopped after 15 minutes.
 
 ### Quality Assurance (lint, type check, tests)
 

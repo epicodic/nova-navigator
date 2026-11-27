@@ -174,3 +174,20 @@ def test_refusing_stub_still_serves_sftp(tmp_path: Path) -> None:
             client.close()
     finally:
         server.stop()
+
+
+def test_exec_without_zsh_fails_with_an_error_instead_of_hanging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    server = StubSSHServer(root_dir=tmp_path)
+    server.start()
+    try:
+        client = _connect(server)
+        try:
+            monkeypatch.setenv("PATH", str(tmp_path / "no-tools"))
+            _, stdout, stderr = client.exec_command("true", timeout=10)
+            assert stdout.channel.status_event.wait(10), "no exit status"
+            assert stdout.channel.recv_exit_status() == 127
+            assert b"zsh" in stderr.read()
+        finally:
+            client.close()
+    finally:
+        server.stop()

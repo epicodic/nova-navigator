@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "activity/**"]
   pull_request:
 
 permissions:
@@ -14,13 +14,24 @@ concurrency:
 
 jobs:
   qa:
+    name: qa (${{ matrix.os }}, python ${{ matrix.python }})
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, ubuntu-26.04]
+        python: ["3.12", "3.13", "3.14"]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      UV_PYTHON: ${{ matrix.python }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
+      # The stub SSH server of the tests runs commands with zsh, which the runner images do not have.
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
       - run: uv sync --locked --all-groups
+      - run: uv run python --version
       - run: uv run qa
+        env:
+          PYTEST_ADDOPTS: "-n 4 --dist worksteal -v"
+      - run: uv run install_check

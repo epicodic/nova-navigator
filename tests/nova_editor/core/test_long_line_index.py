@@ -87,6 +87,7 @@ def test_tabs_wide_and_combining_widths() -> None:
     assert index.total_disp == ref.disp[-1]
 
 
+@pytest.mark.wall_clock
 def test_far_column_query_does_not_block_while_the_scan_is_stalled() -> None:
     data = ("x" * 50 + "é" * 50).encode()
     gate = threading.Event()
@@ -117,6 +118,7 @@ def test_far_column_query_does_not_block_while_the_scan_is_stalled() -> None:
     index.cancel()
 
 
+@pytest.mark.wall_clock
 def test_a_wait_in_progress_is_ended_by_the_cancel_event() -> None:
     data = b"x" * 64
     gate = threading.Event()
@@ -148,6 +150,7 @@ class StallAfterFirstBlock(MemorySource):
         return super().read(offset, size, cache=cache)
 
 
+@pytest.mark.wall_clock
 def test_try_queries_inside_the_frontier_answer_while_the_scan_is_stalled() -> None:
     data = ("x" * 64).encode()
     source = StallAfterFirstBlock(data)

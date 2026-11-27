@@ -67,6 +67,9 @@ class StatEntry:
 # ctime, file type, name (``./name`` as produced by find).
 _STAT_FORMAT = r"%s\0%a\0%U\0%Y\0%X\0%Z\0%F\0%n\0"
 _STAT_FIELD_COUNT = 8
+# U+FFFD in UTF-8.  uutils `stat` (Ubuntu 26.04) writes it for each name byte that is not UTF-8, so such a listing
+# may name files that do not exist, or other files.  A name that really contains U+FFFD takes the same path.
+_REPLACEMENT_BYTES = "�".encode()
 # Exit codes of the wrapper script when ``cd`` fails: the directory exists (permission problem)
 # or it does not.  Shell-independent, unlike the wording of the ``cd`` error message.
 _CD_FAILED_EXIT = 120
@@ -985,6 +988,8 @@ class SSHFilesystem(Filesystem):
             result = _parse_stat_output(run.stdout)
             if result:
                 self._gnu_confirmed = True
+                if _REPLACEMENT_BYTES in run.stdout:
+                    return self._sftp_dir_stat(path, follow_symlinks)
                 return self._cache_listing(key, result)
         elif run.exit_code == 0:
             if run.stderr.strip():

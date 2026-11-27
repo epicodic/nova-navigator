@@ -88,6 +88,7 @@ def test_register_after_expiry_runs_the_closer_immediately() -> None:
     assert closed == ["late"]
 
 
+@pytest.mark.wall_clock
 def test_silent_host_fails_after_the_timeout_naming_host_and_seconds(silent: SilentServer, locations: KnownHostsLocations) -> None:
     route = [SshHop("silent", "127.0.0.1", silent.port, "u", ())]
     start = time.monotonic()
@@ -102,6 +103,7 @@ def test_silent_host_fails_after_the_timeout_naming_host_and_seconds(silent: Sil
     assert isinstance(info.value, SshHopError)
 
 
+@pytest.mark.wall_clock
 def test_silent_second_hop_names_the_target_and_closes_the_bastion(silent: SilentServer, locations: KnownHostsLocations, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "b").mkdir()
     bastion = StubSSHServer(
@@ -134,6 +136,7 @@ def test_silent_second_hop_names_the_target_and_closes_the_bastion(silent: Silen
         bastion.stop()
 
 
+@pytest.mark.wall_clock
 def test_hanging_sftp_subsystem_is_bounded(tmp_path: Path, locations: KnownHostsLocations) -> None:
     (tmp_path / "root").mkdir()
     server = StubSSHServer(root_dir=tmp_path / "root", host_key=make_host_key("rsa"), hang_sftp=True)
@@ -173,7 +176,8 @@ def test_hop_whose_watchdog_fired_during_the_last_step_fails_with_the_timeout(tm
 
 
 def _watchdogs() -> list[threading.Thread]:
-    return [t for t in threading.enumerate() if isinstance(t, threading.Timer)]
+    """Live timers of a hop deadline; other timers, such as the one of pytest-timeout, do not count."""
+    return [t for t in threading.enumerate() if isinstance(t, threading.Timer) and isinstance(getattr(t.function, "__self__", None), _Deadline)]
 
 
 def test_fast_connect_leaves_no_watchdog_threads(tmp_path: Path, locations: KnownHostsLocations) -> None:
