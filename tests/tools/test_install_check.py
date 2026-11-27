@@ -44,6 +44,6 @@ def test_marker_split_by_sgr_sequences_succeeds(tmp_path: Path) -> None:
 
 
 def test_coloured_traceback_fails(tmp_path: Path) -> None:
-    code = "import time; print('\\x1b[31mTraceback (most recent call last):\\x1b[0m', flush=True); time.sleep(30)"
+    code = "import time; print('MARKER\\n\\x1b[31mTrace\\x1b[0mback (most recent call last):\\x1b[0m', flush=True); time.sleep(30)"
     with pytest.raises(CheckError):
         _run(code, tmp_path, timeout=3.0)
