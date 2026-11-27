@@ -525,3 +525,23 @@ def test_failed_copy_keeps_a_destination_that_existed_before() -> None:
     dst_blob_client.delete_blob.assert_not_called()
     dst_blob_client.abort_copy.assert_not_called()
     src_blob_client.delete_blob.assert_not_called()
+
+
+@pytest.mark.parametrize("existed", [False, True])
+def test_pending_copy_is_abandoned_when_its_status_cannot_be_read(existed: bool) -> None:
+    fs, mock_client = _make_fs()
+    src_blob_client = MagicMock()
+    dst_blob_client = MagicMock()
+    dst_blob_client.exists.return_value = existed
+    dst_blob_client.start_copy_from_url.return_value = {"copy_status": "pending", "copy_id": "copy-3"}
+    dst_blob_client.get_blob_properties.side_effect = ServiceRequestError("status unreachable")
+
+    def _get_client(name: str) -> MagicMock:
+        return src_blob_client if name == "old.txt" else dst_blob_client
+
+    mock_client.get_blob_client.side_effect = _get_client
+    with pytest.raises(OSError, match="status unreachable"):
+        fs.rename(fs.path("/old.txt"), fs.path("/new.txt"))
+    dst_blob_client.abort_copy.assert_called_once_with("copy-3")
+    assert dst_blob_client.delete_blob.call_count == (0 if existed else 1)
+    src_blob_client.delete_blob.assert_not_called()

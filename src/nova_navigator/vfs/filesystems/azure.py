@@ -411,9 +411,13 @@ class AzureFilesystem(Filesystem):
         copy = dst_client.start_copy_from_url(src_client.url)
         status = copy.get("copy_status")
         deadline = time.monotonic() + _COPY_TIMEOUT
-        while status == "pending" and time.monotonic() < deadline:
-            time.sleep(_COPY_POLL)
-            status = dst_client.get_blob_properties().copy.status
+        try:
+            while status == "pending" and time.monotonic() < deadline:
+                time.sleep(_COPY_POLL)
+                status = dst_client.get_blob_properties().copy.status
+        except BaseException:
+            _abandon_copy(dst_client, copy.get("copy_id"), status, existed)
+            raise
         if status != "success":
             _abandon_copy(dst_client, copy.get("copy_id"), status, existed)
             raise OSError(errno.EIO, f"Server-side copy did not complete (status: {status}); the source was kept", src_name)
