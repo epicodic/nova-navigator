@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import copy
 import datetime
 import logging
 import os
@@ -10,14 +12,14 @@ import sys
 import types
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.rule import Rule
 from rich.text import Text
 
-from nova_navigator.secret_registry import REDACTED
+from nova_navigator.secret_registry import REDACTED, scrub
 
 _logger = logging.getLogger(__name__)
 
@@ -65,7 +67,7 @@ def _render_frame_source(console: Console, frame: types.FrameType, lineno: int) 
                 continue
             prefix = ">>>" if line_no == lineno else "   "
             style = "bold white on dark_red" if line_no == lineno else "dim"
-            console.print(f"    [dim]{line_no:4d}[/] [{style}]{prefix} {src_line.rstrip()}[/]")
+            console.print(f"    [dim]{line_no:4d}[/] [{style}]{prefix} {scrub(src_line.rstrip())}[/]")
     except Exception:  # noqa: BLE001, S110
         pass
 
@@ -111,7 +113,7 @@ def format_local(name: str, value: object) -> str:
     if is_secret_local(name, value):
         return REDACTED
     try:
-        return repr(value)
+        return scrub(repr(value))
     except Exception:  # noqa: BLE001
         return "<repr failed>"
 
@@ -138,7 +140,7 @@ def _render_crash(
 ) -> None:
     """Render a GDB-style crash report to the given rich Console."""
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    exc_label = f"{exc_type.__qualname__}: {exc_value}"
+    exc_label = scrub(f"{exc_type.__qualname__}: {exc_value}")
 
     console.print(Rule(f"[bold red]CRASH[/] [dim]{ts}[/]", style="red"))
     console.print()
@@ -169,9 +171,9 @@ def _render_crash(
         header = Text()
         header.append(f"#{i}", style="bold cyan")
         header.append("  ")
-        header.append(funcname, style="bold white")
+        header.append(scrub(funcname), style="bold white")
         header.append(" () at ", style="dim")
-        header.append(filename, style="green")
+        header.append(scrub(filename), style="green")
         header.append(":", style="dim")
         header.append(str(lineno), style="cyan")
         console.print(header)
@@ -251,6 +253,38 @@ def _crash_handler(
         _live_pdb(exc_type, exc_value, exc_tb)
 
 
+def _scrubbed_message(record: logging.LogRecord) -> str:
+    """Return the record's message, traceback and stack as one scrubbed plain string."""
+    parts = [record.getMessage()]
+    if record.exc_info:
+        parts.append(logging.Formatter().formatException(record.exc_info))
+    elif record.exc_text:
+        parts.append(record.exc_text)
+    if record.stack_info:
+        parts.append(record.stack_info)
+    return scrub("\n".join(parts))
+
+
+class _ScrubbingRichHandler(RichHandler):
+    """Rich log handler that removes registered secrets before anything is rendered.
+
+    Rich wraps and styles text, so the message and traceback are scrubbed as plain strings first.
+    """
+
+    @override
+    def emit(self, record: logging.LogRecord) -> None:
+        message = "<log record could not be formatted>"
+        with contextlib.suppress(Exception):
+            message = _scrubbed_message(record)
+        clean = copy.copy(record)
+        clean.msg = message
+        clean.args = None
+        clean.exc_info = None
+        clean.exc_text = None
+        clean.stack_info = None
+        super().emit(clean)
+
+
 # ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
@@ -273,11 +307,11 @@ def install() -> None:
         width=120,
         highlight=True,
     )
-    handler = RichHandler(
+    handler = _ScrubbingRichHandler(
         console=file_console,
-        rich_tracebacks=True,
+        rich_tracebacks=False,
         show_path=True,
-        markup=True,
+        markup=False,
         log_time_format="[%X]",
     )
     handler.setLevel(logging.DEBUG)
