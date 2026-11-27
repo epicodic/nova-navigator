@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from nova_navigator.terminal.shell_driver import RESTORE_SEQUENCE, STASH_SEQUENCE
-from nova_navigator.terminal.vfs_shell.virtual_pty_backend import VfsShellDriver, VirtualPtyBackend
+from nova_navigator.terminal.vfs_shell.virtual_pty_backend import VirtualPtyBackend
 from tests._utils.mock_filesystem import MockFilesystem
 
 
@@ -78,19 +78,6 @@ async def test_teardown_stops_running(fs: MockFilesystem) -> None:
     await asyncio.sleep(0)
     backend.teardown()
     assert not backend._running
-
-
-# ---------------------------------------------------------------------------
-# VfsShellDriver
-# ---------------------------------------------------------------------------
-
-
-def test_vfs_shell_driver_supports_line_editing() -> None:
-    assert VfsShellDriver().supports_line_editing is True
-
-
-def test_vfs_shell_driver_supports_editor_protocol() -> None:
-    assert VfsShellDriver().supports_editor_protocol is True
 
 
 # ---------------------------------------------------------------------------

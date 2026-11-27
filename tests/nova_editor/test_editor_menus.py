@@ -7,13 +7,6 @@ from nova_editor.editor_menus import build_menu_bar
 from nova_widgets.menu import Menu
 
 
-def test_build_menu_bar_takes_action_dict_and_returns_menubar() -> None:
-    actions = {a.id: a for a in build_editor_actions() if a.id is not None}
-    menu_bar = build_menu_bar(actions, standalone=True)
-    assert menu_bar is not None
-    assert hasattr(menu_bar, "add_menu")
-
-
 def test_four_menus_in_order() -> None:
     actions = {a.id: a for a in build_editor_actions() if a.id is not None}
     menu_bar = build_menu_bar(actions, standalone=True)

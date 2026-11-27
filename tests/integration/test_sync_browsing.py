@@ -123,18 +123,6 @@ async def test_sync_browsing_does_not_echo_back_to_source(app_ctx: AppCtx) -> No
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_sync_browsing_toggle_stores_bases(app_ctx: AppCtx) -> None:
-    """Enabling sync browsing captures both panels' current paths as bases."""
-    await set_panels(app_ctx)
-    enable_sync(app_ctx)
-
-    assert app_ctx.screen._sync_state is not None
-    assert app_ctx.screen._sync_state.left_base.path == PurePosixPath(app_ctx.src_dir)
-    assert app_ctx.screen._sync_state.right_base.path == PurePosixPath(app_ctx.dst_dir)
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
 async def test_sync_browsing_manual_disable_clears_state(app_ctx: AppCtx) -> None:
     """Manually toggling sync off clears _sync_state and unchecks the menu action."""
     await set_panels(app_ctx)

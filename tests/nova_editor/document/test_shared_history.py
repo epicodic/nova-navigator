@@ -12,7 +12,7 @@ from nova_editor.document._byte_edit import ByteEdit
 from nova_editor.document._document import EditResult
 from nova_editor.document._edit import Edit
 from nova_editor.document._errors import EditsLocked, RowUnavailable
-from nova_editor.document._history import EditHistory, HistoryRolledBack, HistoryStep
+from nova_editor.document._history import EditHistory, HistoryRolledBack
 from nova_editor.document._lazy_document import LazyDocument
 from tests.nova_editor.document.test_byte_edit import EMPTY, hex_edit
 from tests.nova_editor.document.test_edit_history import area, doc_bytes, new_history, perform
@@ -28,15 +28,6 @@ def record(history: EditHistory, doc: LazyDocument, start: int, end: int, data: 
     entry = hex_edit(doc, start, end, data)
     history.record(entry)
     return entry
-
-
-def test_errors_are_still_importable_from_the_lazy_document() -> None:
-    from nova_editor.document import _errors
-    from nova_editor.document import _lazy_document as lazy
-
-    assert lazy.RowUnavailable is _errors.RowUnavailable
-    assert lazy.EditsLocked is _errors.EditsLocked
-    assert issubclass(EditsLocked, RowUnavailable)
 
 
 def test_undo_restores_bytes_and_redo_reapplies() -> None:
@@ -326,7 +317,3 @@ def test_blind_undo_redo_on_an_unscanned_document() -> None:
     finally:
         case.source.stop()
         case.doc.close()
-
-
-def test_history_step_is_exported() -> None:
-    assert dataclasses.is_dataclass(HistoryStep)

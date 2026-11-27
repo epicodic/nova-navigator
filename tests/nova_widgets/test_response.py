@@ -163,20 +163,6 @@ def test_to_all_excluded_from_role() -> None:
     assert Response.SKIP_ALL.role == ResponseRole.REJECT
 
 
-# --- equality ---
-
-
-def test_identity_equality() -> None:
-    assert Response.OK == Response.OK
-    assert Response.CANCEL == Response.CANCEL
-
-
-def test_distinct_values_not_equal() -> None:
-    assert Response.OK != Response.CANCEL
-    assert Response.YES != Response.NO
-    assert Response.SKIP != Response.SKIP_ALL
-
-
 # --- __str__ / tr ---
 
 

@@ -10,7 +10,6 @@ import pytest
 from rich.cells import cell_len
 
 from nova_editor.core import PreadSource
-from nova_editor.core.line_index import DEFAULT_SCAN_BLOCK
 from nova_editor.document._lazy_config import LazyConfig
 from nova_editor.document._lazy_document import MAX_WINDOW_CHARS, LazyDocument, RowUnavailable, WholeLineAccess
 from tests.nova_editor.helpers_view import LOWERED_OPTIONS, make_mixed, oracle_row_ranges, oracle_row_text
@@ -378,10 +377,6 @@ class _SizeSpy:
 
     def close(self) -> None:
         self._inner.close()
-
-
-def test_scan_block_defaults_to_the_core_default() -> None:
-    assert LazyConfig().scan_block == DEFAULT_SCAN_BLOCK
 
 
 def test_scan_block_limits_every_scan_read(tmp_path: Path) -> None:

@@ -17,7 +17,7 @@ from tools._view_app import LOWERED, GcTimer
 from tools._view_procmem import median, percentile
 from tools._view_save import ByteModel, literal, verify_file
 from tools._view_search import SearchEnd, finished_search_seconds
-from tools.measure_view import _guard_write, build_parser, main
+from tools.measure_view import _guard_write, main
 
 MAX_TEST_FILE_BYTES = 1 << 20
 MODEL_EXAMPLES = 80
@@ -1041,12 +1041,6 @@ def test_smoke_pieces_has_delete_and_component_rows(tmp_path: Path) -> None:
     rows = _rows(out)
     assert {row["delete_pieces"] for row in rows if row["op"] == "splice_delete_many"} == {100, 1000}
     assert any("leaf_bytes_per_piece" in row for row in rows)
-
-
-def test_save_fulldisk_parses_the_real_error_option() -> None:
-    args = build_parser().parse_args(["save-fulldisk", "--file", "x", "--real-error", "efbig"])
-    assert args.real_error == "efbig"
-    assert args.fsize_bytes == 1073741824
 
 
 def test_latency_instrument_and_no_pilot_add_attribution_and_skip_the_pilot_phase(mixed_file: Path, tmp_path: Path) -> None:

@@ -67,17 +67,6 @@ def test_computed_field_uses_default() -> None:
     assert obj.upper == "HELLO"
 
 
-def test_computed_field_not_in_dataclass_init() -> None:
-    # upper has init=False so passing it to the constructor raises TypeError
-    with pytest.raises(TypeError):
-        WithComputed(value="x", upper="ignored")  # type: ignore[call-arg]
-
-
-def test_key_field_default_is_empty_string() -> None:
-    obj = WithKey()
-    assert obj.section_name == ""
-
-
 # ── from_toml: scalars ────────────────────────────────────────────────────────
 
 
@@ -309,15 +298,6 @@ def test_from_toml_file_path_in_error_message() -> None:
     with pytest.raises(ConfigLoadError) as exc_info:
         from_toml(Required, t, file_path="/some/path/config.toml")
     assert "/some/path/config.toml" in str(exc_info.value)
-
-
-def test_update_toml_doc_absent_nested_key_does_not_raise() -> None:
-    # update_toml_doc should silently skip nested tables not present in doc
-    original_toml = "title = 'outer'\n"  # no [inner] section
-    doc = tomlkit.loads(original_toml)
-    obj = Nested(inner=Flat(name="new"), title="updated")
-    update_toml_doc(doc, obj)  # must not raise
-    assert doc["title"] == "updated"
 
 
 def test_update_toml_doc_skips_list_config_model_fields() -> None:

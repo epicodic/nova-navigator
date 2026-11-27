@@ -71,14 +71,3 @@ async def test_animated_icon_click_calls_action() -> None:
         await pilot.click(icon)
         await pilot.pause(delay=0.1)
         assert triggered == ["test_action"]
-
-
-@pytest.mark.asyncio
-async def test_animated_icon_no_action_click_is_noop() -> None:
-    icon = AnimatedIcon(Icon.of("A"), action=None)
-    app = _TestApp(icon)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        # Should not raise
-        await pilot.click(icon)
-        await pilot.pause()

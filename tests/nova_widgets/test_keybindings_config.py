@@ -1,27 +1,10 @@
 from __future__ import annotations
 
-import inspect
 from pathlib import Path
-from typing import Any
-
-import pytest
 
 from nova_widgets import KeybindingsConfig
 from nova_widgets.action import Action
 from nova_widgets.keymap.key_sequence import KeySequence
-
-
-def test_config_requires_config_dir() -> None:
-    # Verify that config_dir parameter has no default value
-    sig = inspect.signature(KeybindingsConfig)
-    assert sig.parameters["config_dir"].default is inspect.Parameter.empty
-
-    # Verify that calling without it raises TypeError
-    def _get_class() -> Any:
-        return KeybindingsConfig
-
-    with pytest.raises(TypeError):
-        _get_class()()
 
 
 def test_config_default_key_used_when_no_file(tmp_path: Path) -> None:
@@ -51,12 +34,6 @@ def test_config_empty_string_unmaps_default(tmp_path: Path) -> None:
     cfg = KeybindingsConfig(tmp_path)
     bindings = cfg.resolve(actions)
     assert "browser.copy" not in bindings
-
-
-def test_config_save_creates_file(tmp_path: Path) -> None:
-    cfg = KeybindingsConfig(tmp_path)
-    cfg.save({"browser.copy": KeySequence.parse("f5"), "app.quit": KeySequence.parse("ctrl+q")})
-    assert (tmp_path / "keybindings.toml").exists()
 
 
 def test_config_save_load_roundtrip(tmp_path: Path) -> None:

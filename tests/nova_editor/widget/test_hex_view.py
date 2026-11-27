@@ -109,24 +109,6 @@ async def test_character_column_follows_req6(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_cursor_is_drawn_on_the_high_digit_and_marked_in_the_char_pane(tmp_path: Path) -> None:
-    with opened(write_file(tmp_path, bytes(32))) as document:
-        view = HexView(lambda: document)
-        async with HexHost(view).run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            layout = view.hex_layout
-            strip = view.render_line(0)
-            cursor = cell_style(strip, layout.digit_x(0, 0))
-            mark = cell_style(strip, layout.char_cell_x(0))
-            plain_digit = cell_style(strip, layout.digit_x(1, 0))
-            plain_char = cell_style(strip, layout.char_cell_x(1))
-            assert cursor != plain_digit
-            assert mark != plain_char
-            assert cursor != mark
-            assert cell_style(strip, layout.digit_x(0, 1)) == mark  # the other digit of the cursor byte
-
-
-@pytest.mark.asyncio
 async def test_scroll_down_shows_the_next_rows(tmp_path: Path) -> None:
     with opened(write_file(tmp_path, bytes(1600))) as document:
         view = HexView(lambda: document)

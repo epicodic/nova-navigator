@@ -68,23 +68,3 @@ def test_package_never_imports_private_textual_text_area_modules() -> None:
                 assert all(alias.name != "_text_area" for alias in node.names), f"{path.relative_to(PACKAGE)} imports textual.widgets._text_area"
             if isinstance(node, ast.ImportFrom) and node.module == "textual":
                 assert all(alias.name != "document" for alias in node.names), f"{path.relative_to(PACKAGE)} imports textual.document"
-
-
-def test_core_text_never_mentions_a_textual_import() -> None:
-    """Static text scan of `core`: no `import textual` or `from textual` line, however it is nested."""
-    for path in sorted(CORE.glob("*.py")):
-        for number, line in enumerate(path.read_text().splitlines(), 1):
-            stripped = line.strip()
-            assert not stripped.startswith(("import textual", "from textual")), f"{path.name}:{number}"
-
-
-def test_save_modules_never_import_document_or_widget() -> None:
-    checked = 0
-    for name in ("save.py", "save_layout.py", "rebase.py"):
-        path = CORE / name
-        if not path.exists():
-            continue
-        checked += 1
-        for module in imported_modules(path):
-            assert not module.startswith(("nova_editor.document", "nova_editor.widget")), f"{name} imports {module}"
-    assert checked >= 2

@@ -41,28 +41,6 @@ def _make_actions() -> list[Action]:
 
 
 @pytest.mark.asyncio
-async def test_keybindings_dialog_opens(tmp_path: Path) -> None:
-    from textual.app import App, ComposeResult
-
-    actions = _make_actions()
-    cfg = KeybindingsConfig(tmp_path)
-    dialog = KeybindingsDialog(actions=actions, config=cfg)
-
-    class TestApp(App[None]):
-        def compose(self) -> ComposeResult:
-            return iter([])
-
-        async def on_mount(self) -> None:
-            await self.push_screen(dialog)
-
-    app = TestApp()
-    async with app.run_test(size=(80, 24)) as pilot:
-        await pilot.pause()
-        # The dialog is the active screen when pushed
-        assert isinstance(app.screen, KeybindingsDialog)
-
-
-@pytest.mark.asyncio
 async def test_keybindings_dialog_shows_actions(tmp_path: Path) -> None:
     from textual.app import App, ComposeResult
     from textual.widgets import DataTable

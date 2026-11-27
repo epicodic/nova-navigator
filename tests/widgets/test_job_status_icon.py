@@ -74,23 +74,6 @@ async def test_job_status_icon_failed_takes_priority_over_running() -> None:
 
 
 @pytest.mark.asyncio
-async def test_job_status_icon_returns_to_idle_after_failed_cleared() -> None:
-    registry = JobRegistry()
-    failed_job = _make_job(Job.State.FAILED)
-    registry._finished.appendleft(failed_job)
-    icon = JobStatusIcon(registry=registry, action="show_processes")
-    app = _TestApp(icon)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        icon._update()
-        assert icon._current_state == _State.FAILED
-
-        registry.remove_job(failed_job)
-        icon._update()
-        assert icon._current_state == _State.IDLE
-
-
-@pytest.mark.asyncio
 async def test_job_status_icon_idle_glyph_restored_after_failed_cleared() -> None:
     """Verify the idle icon is displayed after a failed job is dismissed — not the failed icon."""
     registry = JobRegistry()

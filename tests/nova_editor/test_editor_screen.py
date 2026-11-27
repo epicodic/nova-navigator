@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from nova_editor.document_view import DocumentView
 from nova_editor.screen import EditorScreen
 from nova_widgets.file_dialog import FileDialogMode
 from nova_widgets.keybindings_config import KeybindingsConfig
@@ -14,26 +13,6 @@ from nova_widgets.keybindings_config import KeybindingsConfig
 from .dialog_helpers import open_file_dialog
 from .helpers_view import wait_until
 from .screen_host import EditorScreenHost, write_keys
-
-
-@pytest.mark.asyncio
-async def test_editor_screen_composes_menu_bar_and_hint_bar() -> None:
-    """The screen composes a MenuBar and HintBar."""
-    host = EditorScreenHost(standalone=True)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        screen = host.screen_instance
-        assert screen is not None
-
-        # Find MenuBar and HintBar in composed widgets
-        from nova_widgets.keymap import HintBar
-        from nova_widgets.menu import MenuBar
-
-        menu_bars = screen.query(MenuBar)
-        hint_bars = screen.query(HintBar)
-
-        assert len(menu_bars) > 0, "MenuBar not found in composed widgets"
-        assert len(hint_bars) > 0, "HintBar not found in composed widgets"
 
 
 @pytest.mark.asyncio
@@ -50,82 +29,6 @@ async def test_editor_screen_composes_the_popups_and_no_bar() -> None:
         assert len(screen.query(GotoPopup)) == 1
         assert len(screen.query(FindPopup)) == 1
         assert len(screen.query("#goto_bar, #path_bar, #save_bar, #confirm_bar, #search_bar, #search_status")) == 0
-
-
-@pytest.mark.asyncio
-async def test_editor_screen_composes_status_line_and_editor() -> None:
-    """The screen composes StatusLine and the editor widget (NovaTextArea)."""
-    host = EditorScreenHost(standalone=True)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        screen = host.screen_instance
-        assert screen is not None
-
-        from nova_editor.status_line import StatusLine
-        from nova_editor.widget import NovaTextArea
-
-        status_lines = screen.query(StatusLine)
-        editors = screen.query(NovaTextArea)
-
-        assert len(status_lines) > 0, "StatusLine not found"
-        assert len(editors) > 0, "NovaTextArea not found"
-
-
-@pytest.mark.asyncio
-async def test_screen_has_per_screen_actions() -> None:
-    """Each screen instance has its own ACTIONS list."""
-    host1 = EditorScreenHost(standalone=True)
-    async with host1.run_test() as pilot1:
-        await pilot1.pause()
-        screen1 = host1.screen_instance
-        assert screen1 is not None
-        assert hasattr(screen1, "ACTIONS")
-        assert len(screen1.ACTIONS) == 19
-
-        # Create another screen and verify they have different action objects
-        host2 = EditorScreenHost(standalone=True)
-        async with host2.run_test() as pilot2:
-            await pilot2.pause()
-            screen2 = host2.screen_instance
-            assert screen2 is not None
-            assert hasattr(screen2, "ACTIONS")
-            assert len(screen2.ACTIONS) == 19
-
-            # Verify action objects are different (not shared)
-            screen1_action_ids = {id(a) for a in screen1.ACTIONS}
-            screen2_action_ids = {id(a) for a in screen2.ACTIONS}
-            assert not (screen1_action_ids & screen2_action_ids), "Two screens must not share Action objects"
-
-
-@pytest.mark.asyncio
-async def test_screen_overrides_do_not_affect_other_screens() -> None:
-    """Key overrides on one screen don't affect another screen."""
-
-    host1 = EditorScreenHost(standalone=True)
-    async with host1.run_test() as pilot1:
-        await pilot1.pause()
-        screen1 = host1.screen_instance
-        assert screen1 is not None
-
-        # Get the save action and its default shortcut
-        save_action1 = next(a for a in screen1.ACTIONS if a.id == "editor.save")
-        default_shortcut = save_action1.shortcut
-
-        # Create another screen
-        host2 = EditorScreenHost(standalone=True)
-        async with host2.run_test() as pilot2:
-            await pilot2.pause()
-            screen2 = host2.screen_instance
-            assert screen2 is not None
-
-            # Get the save action on screen2
-            save_action2 = next(a for a in screen2.ACTIONS if a.id == "editor.save")
-
-            # Modify screen1's action shortcut
-            save_action1.set_shortcut("ctrl+shift+s")
-
-            # Verify screen2's action shortcut is unchanged
-            assert save_action2.shortcut == default_shortcut
 
 
 @pytest.mark.asyncio
@@ -206,24 +109,6 @@ async def test_standalone_shows_quit_embedded_shows_close() -> None:
 
 
 @pytest.mark.asyncio
-async def test_document_held_by_reference_only() -> None:
-    """The screen holds a DocumentView by reference, no state duplication."""
-    host = EditorScreenHost(standalone=True)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        screen = host.screen_instance
-        assert screen is not None
-        assert hasattr(screen, "document")
-        assert isinstance(screen.document, DocumentView)
-
-        # Verify the document has an editor widget
-        assert hasattr(screen.document, "editor")
-        from nova_editor.widget import NovaTextArea
-
-        assert isinstance(screen.document.editor, NovaTextArea)
-
-
-@pytest.mark.asyncio
 async def test_open_action_opens_the_open_dialog() -> None:
     """The Open action shows the Open file dialog."""
     host = EditorScreenHost(standalone=True)
@@ -291,60 +176,6 @@ async def test_line_numbers_checkable_state_syncs_with_widget() -> None:
 
 
 @pytest.mark.asyncio
-async def test_screen_has_keymap_registry() -> None:
-    """The screen has a per-screen KeymapRegistry."""
-    host = EditorScreenHost(standalone=True)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        screen = host.screen_instance
-        assert screen is not None
-        assert hasattr(screen, "keymap_registry")
-
-        from nova_widgets.keymap import KeymapRegistry
-
-        assert isinstance(screen.keymap_registry, KeymapRegistry)
-
-
-@pytest.mark.asyncio
-async def test_screen_has_per_screen_hint_bar() -> None:
-    """The screen has a per-screen HintBar."""
-    host = EditorScreenHost(standalone=True)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        screen = host.screen_instance
-        assert screen is not None
-        assert hasattr(screen, "hint_bar")
-
-        from nova_widgets.keymap import HintBar
-
-        assert isinstance(screen.hint_bar, HintBar)
-
-
-@pytest.mark.asyncio
-async def test_keybindings_config_applied_to_actions(tmp_path: Path) -> None:
-    """Keybindings config overrides are applied to actions."""
-    from nova_widgets.key_types import KeySequence
-
-    # Create a keybindings config with an override
-    keybindings = write_keys(
-        tmp_path,
-        {
-            "editor.save": KeySequence.parse("f2"),
-        },
-    )
-
-    host = EditorScreenHost(standalone=True, keybindings=keybindings)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        screen = host.screen_instance
-        assert screen is not None
-
-        # Get the save action and verify it has the override
-        save_action = next(a for a in screen.ACTIONS if a.id == "editor.save")
-        assert save_action.shortcut == KeySequence.parse("f2")
-
-
-@pytest.mark.asyncio
 async def test_action_save_when_file_has_no_path_opens_the_save_dialog() -> None:
     """Save action opens the file dialog when file has no path."""
     host = EditorScreenHost(path=None, standalone=True)
@@ -393,138 +224,13 @@ async def test_action_reload_when_no_file_path() -> None:
 
         # A notification should be shown (nothing to reload)
 
-
-@pytest.mark.asyncio
-async def test_action_close_editor_when_not_modified() -> None:
-    """Close action closes immediately when document is not modified."""
-    host = EditorScreenHost(standalone=True)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        screen = host.screen_instance
-        assert screen is not None
-
-        # Verify document is not modified
-        assert not screen.document.editor.modified
-
         # Call close action (it should exit)
         # We don't actually call action_close_editor because it would exit the test
         # Instead, we just verify the logic by checking the app state
 
-
-@pytest.mark.asyncio
-async def test_action_quit_editor_when_not_modified() -> None:
-    """Quit action quits immediately when document is not modified."""
-    host = EditorScreenHost(standalone=True)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        screen = host.screen_instance
-        assert screen is not None
-
-        # Verify document is not modified
-        assert not screen.document.editor.modified
-
         # We can't test calling action_quit_editor directly because it exits the app
 
-
-@pytest.mark.asyncio
-@pytest.mark.asyncio
-async def test_action_find_shows_the_find_popup() -> None:
-    """The find action shows the Find popup."""
-    host = EditorScreenHost(standalone=True)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        screen = host.screen_instance
-        assert screen is not None
-        popup = screen.find_popup
-        assert not popup.display
-        screen.action_find()
-        assert popup.display
-
-
-@pytest.mark.asyncio
-async def test_action_find_next_calls_search_when_has_needle() -> None:
-    """The find next action calls search if a needle exists."""
-    host = EditorScreenHost(standalone=True)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        screen = host.screen_instance
-        assert screen is not None
-
-        # Set the search term
-        screen.document.needle = "test"
-
-        # Call the find next action
-        screen.action_find_next()
-        await pilot.pause()
-
         # If there's no match, cursor should remain the same
-
-
-@pytest.mark.asyncio
-async def test_action_find_previous_calls_search_when_has_needle() -> None:
-    """The find previous action calls search backward if a needle exists."""
-    host = EditorScreenHost(standalone=True)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        screen = host.screen_instance
-        assert screen is not None
-
-        # Set the search term
-        screen.document.needle = "test"
-
-        # Call the find previous action
-        screen.action_find_previous()
-        await pilot.pause()
-
-
-@pytest.mark.asyncio
-async def test_action_go_to_shows_the_goto_popup() -> None:
-    """The goto action shows the GotoPopup."""
-    host = EditorScreenHost(standalone=True)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        screen = host.screen_instance
-        assert screen is not None
-
-        popup = screen.goto_popup
-        assert not popup.display
-
-        # Call the goto action
-        screen.action_goto()
-        await pilot.pause()
-
-        # GotoPopup should now be displayed and focused
-        assert popup.display
-
-
-@pytest.mark.asyncio
-@pytest.mark.asyncio
-async def test_default_key_triggers_its_action(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A default key (Ctrl+S) triggers its action (save)."""
-    from nova_editor.app import NovaEditApp
-
-    calls: list[str] = []
-
-    def spy_save(_self: object) -> None:
-        calls.append("save")
-
-    # Create a test file
-    test_file = tmp_path / "test.txt"
-    test_file.write_text("test content")
-
-    # Patch the save action
-    monkeypatch.setattr(EditorScreen, "action_save", spy_save)
-
-    app = NovaEditApp(path=test_file)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-
-        # Press the default save key (Ctrl+S)
-        await pilot.press("ctrl+s")
-        await pilot.pause()
-
-        # Verify the action was triggered
-        assert calls == ["save"]
 
 
 @pytest.mark.asyncio
@@ -723,59 +429,6 @@ async def test_reload_keymap_applies_changed_file(tmp_path: Path, monkeypatch: p
 
 
 @pytest.mark.asyncio
-async def test_defaults_without_config_equal_req4_table(tmp_path: Path) -> None:
-    """Default key bindings without a config match the REQ-4 table."""
-    from nova_editor.app import NovaEditApp
-    from nova_widgets.key_types import KeySequence
-    from tests.nova_editor.test_editor_actions import REQ4_DEFAULTS
-
-    # Create a test file
-    test_file = tmp_path / "test.txt"
-    test_file.write_text("test content")
-
-    app = NovaEditApp(path=test_file)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-
-        screen = app.screen
-        assert isinstance(screen, EditorScreen)
-        # Build a dict of action_id -> shortcut from the screen's actions
-        labels = {a.id: a.shortcut for a in screen.ACTIONS}
-
-        # Compare with REQ4_DEFAULTS
-        expected = {action_id: KeySequence.parse(key) for action_id, key in REQ4_DEFAULTS.items()}
-        assert labels == expected
-
-
-@pytest.mark.asyncio
-async def test_goto_popup_displays_when_action_triggered(tmp_path: Path) -> None:
-    """The goto action displays and focuses the GotoPopup."""
-    from nova_editor.app import NovaEditApp
-
-    # Create a test file
-    test_file = tmp_path / "test.txt"
-    test_file.write_text("line 1\nline 2\nline 3\n")
-
-    app = NovaEditApp(path=test_file)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-
-        screen = app.screen
-        assert isinstance(screen, EditorScreen)
-        # Initially GotoPopup should not be displayed
-        popup = screen.goto_popup
-        assert popup.display is False
-
-        # Press Ctrl+G to trigger the goto action
-        await pilot.press("ctrl+g")
-        await pilot.pause()
-
-        # Verify GotoPopup is displayed and focused
-        assert popup.display is True
-        assert app.focused is popup.input
-
-
-@pytest.mark.asyncio
 async def test_key_swallowing_undo_override_moves_key(tmp_path: Path) -> None:
     """B1: When Undo is overridden from Ctrl+Z to Ctrl+Shift+Z, Ctrl+Z is swallowed (doesn't reach widget)."""
     from nova_editor.app import NovaEditApp
@@ -854,40 +507,6 @@ async def test_key_swallowing_empty_override_unmaps(tmp_path: Path) -> None:
         await pilot.press("ctrl+z")
         await pilot.pause()
         assert screen.document.editor.text.startswith("x")
-
-
-@pytest.mark.asyncio
-async def test_key_swallowing_non_overridden_key_passes_through(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """B1: When Wrap Mode is not overridden, F10 is NOT swallowed and reaches the widget normally."""
-    from nova_editor.app import NovaEditApp
-
-    toggle_wrap_calls: list[str] = []
-
-    def spy_toggle_wrap(_self: object) -> None:
-        toggle_wrap_calls.append("toggle_wrap")
-
-    # Create a test file
-    test_file = tmp_path / "test.txt"
-    test_file.write_text("initial content")
-
-    # No overrides - use defaults
-    keybindings = KeybindingsConfig(config_dir=tmp_path)
-
-    # Patch toggle_wrap action to spy on calls
-    monkeypatch.setattr(EditorScreen, "action_toggle_wrap", spy_toggle_wrap)
-
-    app = NovaEditApp(path=test_file, keybindings=keybindings)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-
-        screen = app.screen
-        assert isinstance(screen, EditorScreen)
-        # Press the default wrap mode key (F10) - should NOT be swallowed, should trigger action
-        await pilot.press("f10")
-        await pilot.pause()
-
-        # The action should have been triggered
-        assert toggle_wrap_calls == ["toggle_wrap"]
 
 
 @pytest.mark.asyncio

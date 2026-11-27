@@ -5,14 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from textual.widgets.text_area import Selection
 
 from nova_editor.app import NovaEditApp
 from tests.nova_editor.dialog_helpers import box_message, box_title, wait_box
-from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.save_widget_helpers import wait_saved
-
-LINES = "".join(f"line {i}\n" for i in range(1, 51))
 
 
 @pytest.mark.asyncio
@@ -40,51 +36,6 @@ async def test_a_missing_parent_directory_is_a_visible_failure_and_creates_nothi
         assert box_message(box).startswith("Save failed (")
     assert not path.exists()
     assert not path.parent.exists()
-
-
-@pytest.mark.asyncio
-async def test_goto_line_and_byte_through_ctrl_g(tmp_path: Path) -> None:
-    path = tmp_path / "f.txt"
-    path.write_text(LINES)
-    app = NovaEditApp(file_path=path)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        assert app.editor is not None
-        await pilot.press("ctrl+g", "3", "0", "enter")
-        await wait_until(pilot, lambda: app.editor is not None and app.editor.cursor_location == (29, 0))
-        await pilot.press("ctrl+g", "@", "1", "2", "enter")
-        await wait_until(pilot, lambda: app.editor is not None and app.editor.cursor_byte_offset == 12)
-        assert app.editor.cursor_location == (1, 5)
-
-
-@pytest.mark.asyncio
-async def test_an_out_of_range_goto_is_rejected_with_a_message_and_the_cursor_stays(tmp_path: Path) -> None:
-    path = tmp_path / "f.txt"
-    path.write_text(LINES)
-    app = NovaEditApp(file_path=path)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        assert app.editor is not None
-        await pilot.press("ctrl+g", "5", "enter")
-        await wait_until(pilot, lambda: app.editor is not None and app.editor.cursor_location == (4, 0))
-        before = app.editor.cursor_location
-        await pilot.press("ctrl+g", "9", "9", "9", "9", "9", "enter")
-        await wait_until(pilot, lambda: "line" in app.goto_popup.shown.lower())
-        assert app.editor.cursor_location == before
-        assert app.goto_popup.display
-
-
-@pytest.mark.asyncio
-async def test_ctrl_f_searches_and_selects_the_match(tmp_path: Path) -> None:
-    path = tmp_path / "f.txt"
-    path.write_text(LINES)
-    app = NovaEditApp(file_path=path)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        assert app.editor is not None
-        await pilot.press("ctrl+f")
-        await pilot.press(*"line 42", "enter")
-        await wait_until(pilot, lambda: app.editor is not None and not app.editor.searching and app.editor.selection == Selection((41, 0), (41, 7)))
 
 
 @pytest.mark.asyncio

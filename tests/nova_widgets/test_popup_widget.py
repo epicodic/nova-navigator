@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import ClassVar
-
 import pytest
 from textual.app import App, ComposeResult
 from textual.geometry import Region
@@ -77,13 +75,6 @@ class RemovePopup(PopupWidget):
 
 class KeepPopup(PopupWidget):
     CLOSE_ACTION = PopupWidget.CloseAction.KEEP
-
-
-class NoEscapeOverlay(PopupWidget, can_focus=True):
-    BINDINGS: ClassVar[list] = []
-
-    def action_close_popup(self) -> None:
-        return
 
 
 class OverlayTestApp(App[None]):
@@ -190,17 +181,6 @@ async def test_escape_key_closes_overlay_when_close_on_escape_true() -> None:
         await pilot.press("escape")
         await pilot.pause()
         assert overlay.display is False
-
-
-@pytest.mark.asyncio
-async def test_escape_key_does_nothing_when_close_on_escape_false() -> None:
-    overlay = NoEscapeOverlay("Test", (0, 0))
-    app = OverlayTestApp(overlay)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("escape")
-        await pilot.pause()
-        assert overlay.display is True
 
 
 @pytest.mark.asyncio

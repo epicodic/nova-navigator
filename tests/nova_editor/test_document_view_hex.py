@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,7 +10,6 @@ from textual.app import App, ComposeResult
 
 from nova_editor.document_view import DocumentView
 from nova_editor.timed_text_area import TimedNovaTextArea
-from nova_editor.widget import HexView
 from tests.nova_editor.helpers_view import wait_until
 
 
@@ -35,25 +33,12 @@ def _open(path: Path | None) -> DocumentView:
     return view
 
 
-def test_hex_view_is_an_attribute_not_a_field() -> None:
-    view = _open(None)
-    assert isinstance(view.hex_view, HexView)
-    assert view.hex_view.id == "hex_view"
-    assert "hex_view" not in {field.name for field in dataclasses.fields(DocumentView)}
-
-
 def test_a_new_view_shows_the_text_widget() -> None:
     view = _open(None)
     assert view.shown is view.editor
     assert view.hex_mode is False
     assert view.hex_view.display is False
     assert view.editor.display is True
-
-
-def test_two_views_do_not_share_the_hex_widget() -> None:
-    first = _open(None)
-    second = _open(None)
-    assert first.hex_view is not second.hex_view
 
 
 @pytest.mark.asyncio

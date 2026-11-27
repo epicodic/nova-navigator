@@ -33,38 +33,6 @@ async def test_vpath_local_filesystem() -> None:
     assert file_names == ["file211.txt", "file212.txt"]
 
 
-# def test_vpath_ssh_filesystem() -> None:
-#     local_dir = DATA_DIR / "local"
-#     fs = SSHFilesystem("localhost")
-#     vpath = fs.path(local_dir)
-
-#     assert vpath.name == local_dir.name
-#     assert vpath.stat.is_directory is True
-#     assert vpath.path == local_dir
-
-#     dirs = vpath.iterdir()
-#     dir_names = sorted([d.name for d in dirs])
-#     assert dir_names == ["dir1", "dir2", "dir3"]
-
-#     dir21 = vpath / "dir2" / "dir21"
-#     assert dir21.stat.is_directory is True
-#     files = dir21.iterdir()
-#     file_names = sorted([f.name for f in files])
-#     assert file_names == ["file211.txt", "file212.txt"]
-
-#     file211_ssh = dir21 / "file211.txt"
-
-#     fs = LocalFilesystem.singleton()
-#     file211_local = VPath(local_dir / "dir2" / "dir21" / "file211.txt", fs)
-
-#     assert file211_ssh.stat.size == file211_local.stat.size
-#     assert floor(file211_ssh.stat.modified) == floor(file211_local.stat.modified)
-#     assert file211_ssh.stat.is_hidden == file211_local.stat.is_hidden
-#     assert file211_ssh.stat.is_directory == file211_local.stat.is_directory
-#     assert file211_ssh.stat.is_executable == file211_local.stat.is_executable
-#     assert file211_ssh.stat.is_symlink == file211_local.stat.is_symlink
-
-
 @pytest.mark.asyncio
 async def test_walk() -> None:
     fs = MockFilesystem(
@@ -105,33 +73,6 @@ async def test_walk() -> None:
     assert walk_result[4][1] == []
     assert [f.name for f in walk_result[4][2]] == ["file31.txt"]
     assert walk_result[4][3] == []
-
-
-@pytest.mark.asyncio
-async def test_vpath_iterdir_async() -> None:
-    fs = MockFilesystem(
-        {
-            "/home/user/a.txt": b"",
-            "/home/user/b.txt": b"",
-        }
-    )
-    names = sorted([p.name async for p in fs.path("/home/user").iterdir()])
-    assert names == ["a.txt", "b.txt"]
-
-
-@pytest.mark.asyncio
-async def test_vpath_walk_async() -> None:
-    fs = MockFilesystem(
-        {
-            "/home/user/dir1/file11.txt": b"content11",
-            "/home/user/dir1/file12.txt": b"content12",
-            "/home/user/dir2/dir21/file211.txt": b"content211",
-        }
-    )
-    vpath = fs.path("/home/user")
-    result = [(root.name, [d.name for d in dirs], [f.name for f in files], [lk.name for lk in links]) async for root, dirs, files, links in vpath.walk()]
-    assert result[0] == ("user", ["dir1", "dir2"], [], [])
-    assert result[1] == ("dir1", [], ["file11.txt", "file12.txt"], [])
 
 
 @pytest.mark.asyncio

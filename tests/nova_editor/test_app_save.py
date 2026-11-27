@@ -30,7 +30,6 @@ from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.save_widget_helpers import SETTINGS, Gate, wait_saved
 
 SECOND = 2
-APP_SOURCE = Path(__file__).parents[2] / "src" / "nova_editor" / "app.py"
 
 
 @pytest.fixture(autouse=True)
@@ -165,12 +164,6 @@ async def test_the_saved_note_clears_itself(tmp_path: Path, monkeypatch: pytest.
         await pilot.press("x", "ctrl+s")
         await wait_until(pilot, lambda: status.note is not None and status.note.startswith("Saved"))
         await wait_until(pilot, lambda: status.note is None)
-
-
-def test_interim_code_is_gone() -> None:
-    source = APP_SOURCE.read_text()
-    for needle in ("Interim", "8 MiB", "TEXT_LIMIT"):
-        assert needle not in source, needle
 
 
 @pytest.mark.asyncio

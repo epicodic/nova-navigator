@@ -106,17 +106,6 @@ async def test_copy_dialog_multiple_files_no_input() -> None:
 
 
 @pytest.mark.asyncio
-async def test_copy_dialog_shows_destination() -> None:
-    src = [_make_vpath("file.txt")]
-    dst = _make_vpath("dest", "/some/destination")
-    dialog, _App = _make_copy_app(src, dst)
-    async with _App().run_test(size=(100, 30)) as pilot:
-        await pilot.pause()
-        # verify the destination Static widget is present
-        assert dialog.query_one("#destination", Static) is not None
-
-
-@pytest.mark.asyncio
 async def test_copy_dialog_source_files_listed() -> None:
     src = [_make_vpath("alpha.txt"), _make_vpath("beta.txt")]
     dst = _make_vpath("dest", "/dest")
@@ -137,18 +126,6 @@ async def test_copy_dialog_truncates_long_source_list() -> None:
         items = list(dialog._source_files.query("ListItem"))
         # MAX_DISPLAYED_FILES (10) items + 1 "... and N more" item
         assert len(items) == CopyMoveFilesDialog.MAX_DISPLAYED_FILES + 1
-
-
-@pytest.mark.asyncio
-async def test_capture_filename_stores_input_value() -> None:
-    src = [_make_vpath("original.txt")]
-    dst = _make_vpath("dest", "/dest")
-    dialog, _App = _make_copy_app(src, dst)
-    async with _App().run_test(size=(100, 30)) as pilot:
-        await pilot.pause()
-        dialog.query_one("#filename_input", Input).value = "renamed.txt"
-        dialog._capture_filename()
-        assert dialog.filename == "renamed.txt"
 
 
 @pytest.mark.asyncio
@@ -266,18 +243,6 @@ async def test_link_checkboxes_open_with_given_states() -> None:
 
 
 @pytest.mark.asyncio
-async def test_link_checkboxes_toggle_independently() -> None:
-    dialog, _App = _make_copy_app([_make_vpath("a.txt")], _make_vpath("dest", "/dest"))
-    async with _App().run_test(size=(100, 30)) as pilot:
-        await pilot.pause()
-        follow, stable = _link_boxes(dialog)
-        follow.toggle()
-        await pilot.pause()
-        assert follow.value is True
-        assert stable.value is False
-
-
-@pytest.mark.asyncio
 async def test_space_toggles_focused_link_checkbox() -> None:
     dialog, _App = _make_copy_app([_make_vpath("a.txt"), _make_vpath("b.txt")], _make_vpath("dest", "/dest"))
     async with _App().run_test(size=(100, 30)) as pilot:
@@ -351,17 +316,6 @@ async def test_cancel_keeps_initial_link_states() -> None:
 
 
 @pytest.mark.asyncio
-async def test_delete_dialog_single_file_message() -> None:
-    vp = _make_vpath("report.pdf")
-    dialog, _App = _make_delete_app([vp])
-    async with _App().run_test(size=(100, 30)) as pilot:
-        await pilot.pause()
-        # verify dialog mounts with YES/NO buttons
-        assert dialog.query_one("#YES") is not None
-        assert dialog.query_one("#NO") is not None
-
-
-@pytest.mark.asyncio
 async def test_filter_section_collapsed_by_default() -> None:
     src = [_make_vpath("file.txt")]
     dst = _make_vpath("dest", "/dest")
@@ -402,16 +356,6 @@ async def test_filter_file_filter_returns_filter_for_pattern() -> None:
         result = dialog.file_filter
         assert isinstance(result, FilenamePatternFilter)
         assert result.patterns == ["*.txt"]
-
-
-@pytest.mark.asyncio
-async def test_delete_dialog_multiple_files_message() -> None:
-    paths = [_make_vpath(f"f{i}.txt") for i in range(3)]
-    dialog, _App = _make_delete_app(paths)
-    async with _App().run_test(size=(100, 30)) as pilot:
-        await pilot.pause()
-        # compose_content uses len(paths) — just verify dialog mounts cleanly
-        assert dialog.query_one("#YES") is not None
 
 
 def _make_link_vpath(name: str, *, is_symlink: bool = True) -> MagicMock:

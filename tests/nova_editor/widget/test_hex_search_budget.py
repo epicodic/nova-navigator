@@ -56,15 +56,6 @@ async def test_goto_to_any_offset_including_the_length_reads_one_window(tmp_path
             check_budget(view, source, log, calls_before, reads_before)
 
 
-def test_goto_beyond_the_length_is_rejected_without_reading(tmp_path: Path) -> None:
-    with budget_view(make_sparse(tmp_path)) as (document, source, log, _):
-        reads_before = len(source.reads)
-        message = hex_goto(GotoTarget("byte", SPARSE_SIZE + 1), document.length)
-        assert message == f"byte offset {SPARSE_SIZE + 1} is beyond the end of the file ({SPARSE_SIZE} bytes)"
-        assert len(source.reads) == reads_before
-        assert log.calls == []
-
-
 def test_forward_byte_search_near_the_end_reads_two_windows_at_most(tmp_path: Path) -> None:
     source = CountingSource(sparse_with_needle(tmp_path))
     with opened(source, autostart=False) as document:

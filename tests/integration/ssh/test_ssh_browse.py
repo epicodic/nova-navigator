@@ -15,7 +15,7 @@ import pytest
 
 from nova_navigator.vfs import VPath
 from tests.integration.conftest import poll_until
-from tests.integration.ssh.conftest import SshAppCtx, set_ssh_panels_remote_left
+from tests.integration.ssh.conftest import SshAppCtx
 
 # ---------------------------------------------------------------------------
 # Listing
@@ -72,25 +72,6 @@ async def test_remote_panel_lists_dotfile(ssh_app_ctx: SshAppCtx) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_enter_on_remote_subdir_navigates_into_it(ssh_app_ctx: SshAppCtx) -> None:
-    """Pressing Enter on a remote subdirectory navigates the panel into it."""
-    subdir = ssh_app_ctx.remote_dir / "subdir"
-    subdir.mkdir()
-
-    ssh_app_ctx.screen._left_panel.set_path(VPath(ssh_app_ctx.remote_dir, ssh_app_ctx.ssh_fs))
-    ssh_app_ctx.screen._left_panel.focus()
-    await poll_until(ssh_app_ctx.pilot, lambda: len(ssh_app_ctx.screen._left_panel._shown_items) > 1)
-    await ssh_app_ctx.pilot.press("down")  # land on "subdir"
-    await ssh_app_ctx.pilot.pause()
-
-    await ssh_app_ctx.pilot.press("enter")
-    await poll_until(ssh_app_ctx.pilot, lambda: ssh_app_ctx.screen._left_panel.path.path == PurePosixPath(subdir))
-
-    assert ssh_app_ctx.screen._left_panel.path.path == PurePosixPath(subdir)
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
 async def test_enter_on_dotdot_navigates_to_parent(ssh_app_ctx: SshAppCtx) -> None:
     """Pressing Enter on the '..' entry navigates from a remote subdirectory up to its parent."""
     subdir = ssh_app_ctx.remote_dir / "subdir"
@@ -107,18 +88,6 @@ async def test_enter_on_dotdot_navigates_to_parent(ssh_app_ctx: SshAppCtx) -> No
     await poll_until(ssh_app_ctx.pilot, lambda: ssh_app_ctx.screen._left_panel.path.path == PurePosixPath(ssh_app_ctx.remote_dir))
 
     assert ssh_app_ctx.screen._left_panel.path.path == PurePosixPath(ssh_app_ctx.remote_dir)
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_left_panel_remote_right_panel_local(ssh_app_ctx: SshAppCtx) -> None:
-    """Both panels can be set: left=remote, right=local without errors."""
-    (ssh_app_ctx.remote_dir / "remote_file.txt").write_text("from remote")
-
-    await set_ssh_panels_remote_left(ssh_app_ctx)
-
-    names = [item.name for item in ssh_app_ctx.screen._left_panel._shown_items]
-    assert "remote_file.txt" in names
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,6 @@ from pathlib import Path
 import paramiko
 import pytest
 
-from nova_navigator.terminal.pty_backend import PtyBackend
 from nova_navigator.terminal.ssh_pty_backend import SshPtyBackend
 from tests._utils.stub_ssh_server import StubSSHServer
 
@@ -36,50 +35,12 @@ def ssh_backend(tmp_path: Path) -> Generator[tuple[SshPtyBackend, StubSSHServer]
         server.stop()
 
 
-def test_ssh_pty_backend_is_a_pty_backend(
-    ssh_backend: tuple[SshPtyBackend, StubSSHServer],
-) -> None:
-    backend, _ = ssh_backend
-    assert isinstance(backend, PtyBackend)
-
-
-def test_ssh_pty_backend_supports_precmd_is_true() -> None:
-    from unittest.mock import MagicMock
-
-    client = MagicMock(spec=paramiko.SSHClient)
-    backend = SshPtyBackend(client)
-    assert backend.supports_precmd is True
-
-
-def test_open_returns_none(
-    ssh_backend: tuple[SshPtyBackend, StubSSHServer],
-) -> None:
-    backend, _ = ssh_backend
-    result = backend.open("/bin/sh", rows=24, cols=80)
-    assert result is None
-
-
 def test_open_creates_channel(
     ssh_backend: tuple[SshPtyBackend, StubSSHServer],
 ) -> None:
     backend, _ = ssh_backend
     backend.open("/bin/sh", rows=24, cols=80)
     assert backend._channel is not None
-
-
-def test_resize_does_not_raise(
-    ssh_backend: tuple[SshPtyBackend, StubSSHServer],
-) -> None:
-    backend, _ = ssh_backend
-    backend.open("/bin/sh", rows=24, cols=80)
-    backend.resize(rows=30, cols=120)
-
-
-def test_resume_does_not_raise(
-    ssh_backend: tuple[SshPtyBackend, StubSSHServer],
-) -> None:
-    backend, _ = ssh_backend
-    backend.resume()  # no-op in Option A; must never raise
 
 
 def test_teardown_closes_channel(

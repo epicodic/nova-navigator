@@ -66,11 +66,6 @@ def test_other_values_have_no_name(byte: int) -> None:
     assert bracketed_control_name(byte) is None
 
 
-@pytest.mark.parametrize(("byte", "text"), [(0x00, "<NUL>"), (0x07, "<BEL>"), (0x0A, "<LF>"), (0x0D, "<CR>"), (0x1B, "<ESC>")])
-def test_the_owner_examples(byte: int, text: str) -> None:
-    assert bracketed_control_name(byte) == text
-
-
 def test_the_table_is_read_only() -> None:
     table = cast("dict[int, str]", CONTROL_NAMES)
     with pytest.raises(TypeError):

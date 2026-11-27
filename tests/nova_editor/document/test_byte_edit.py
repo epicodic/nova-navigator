@@ -8,8 +8,6 @@ from typing import cast
 
 from nova_editor.core.pieces import Content, PieceSource, make_unknown_piece
 from nova_editor.document._byte_edit import ByteEdit
-from nova_editor.document._document import Selection
-from nova_editor.document._edit import Edit
 from nova_editor.document._history import EditHistory
 from nova_editor.document._lazy_document import LazyDocument
 from tests.nova_editor.document.test_edit_history import area, new_history, perform
@@ -101,14 +99,6 @@ def test_text_edit_refuses_a_foreign_later_entry() -> None:
     assert edit.origin == "text"
     assert edit.coalesce(hex_edit(doc, 1, 1, b"y")) is False
     doc.close()
-
-
-def test_edit_positional_construction_still_works() -> None:
-    edit = Edit("x", (0, 0), (0, 0), False)
-    assert edit.start_byte is None
-    assert edit.origin == "text"
-    assert edit.insert_content is None
-    assert Selection.cursor((0, 0)) is not None
 
 
 def test_history_module_imports_without_the_widget_in_a_fresh_interpreter() -> None:

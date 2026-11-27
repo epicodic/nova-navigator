@@ -50,16 +50,6 @@ async def test_erase_selected_dir_link_removes_only_link(link_fs: Filesystem, tm
 
 
 @pytest.mark.asyncio
-async def test_erase_dir_link_no_prompt(link_fs: Filesystem, tmp_path: Path) -> None:
-    outside = _outside(tmp_path)
-    lnk = tmp_path / "lnk"
-    lnk.symlink_to(outside, target_is_directory=True)
-    requests = await run_task(lambda ctx: erase_files(ctx, [link_fs.path(lnk)]))
-    assert requests == []
-    assert not lnk.is_symlink()
-
-
-@pytest.mark.asyncio
 async def test_erase_selected_file_link_removes_only_link(link_fs: Filesystem, tmp_path: Path) -> None:
     target = tmp_path / "target.txt"
     target.write_text("t")

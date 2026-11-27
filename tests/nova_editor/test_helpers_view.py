@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.nova_editor.helpers_view import LOWERED_OPTIONS, make_mixed, oracle_display_column, oracle_row_ranges, oracle_row_text
+from tests.nova_editor.helpers_view import make_mixed, oracle_display_column, oracle_row_ranges, oracle_row_text
 
 
 class TestMakeMixed:
@@ -52,13 +52,6 @@ class TestMakeMixed:
 
         # After split, final row should end the file content
         assert not data.endswith(b"\n"), "Final row should not have terminator"
-
-    def test_make_mixed_writable(self, tmp_path: Path) -> None:
-        """Test that make_mixed returns the path and creates the file."""
-        path = make_mixed(tmp_path / "mixed.txt", terminator=b"\n")
-        assert path.exists()
-        assert path.is_file()
-        assert len(path.read_bytes()) > 0
 
     def test_make_mixed_custom_long_chars(self, tmp_path: Path) -> None:
         """Test that long_chars parameter controls the long row length."""
@@ -272,27 +265,3 @@ class TestOracleReconstruction:
                 reconstructed.extend(b"\r")
 
         assert bytes(reconstructed) == data
-
-
-class TestLoweredOptions:
-    """Test that LOWERED_OPTIONS is properly defined."""
-
-    def test_lowered_options_structure(self) -> None:
-        """Test that LOWERED_OPTIONS has required keys and correct types."""
-        assert isinstance(LOWERED_OPTIONS, dict)
-
-        required_keys = {"stride", "index_long_line_threshold", "long_row_threshold", "word_wrap_limit", "checkpoint_chars"}
-        assert set(LOWERED_OPTIONS.keys()) == required_keys
-
-        # All values should be positive integers
-        for key, value in LOWERED_OPTIONS.items():
-            assert isinstance(value, int), f"{key} should be an int, got {type(value)}"
-            assert value > 0, f"{key} should be positive, got {value}"
-
-    def test_lowered_options_values(self) -> None:
-        """Test that LOWERED_OPTIONS has expected values."""
-        assert LOWERED_OPTIONS["stride"] == 4
-        assert LOWERED_OPTIONS["index_long_line_threshold"] == 64
-        assert LOWERED_OPTIONS["long_row_threshold"] == 512
-        assert LOWERED_OPTIONS["word_wrap_limit"] == 128
-        assert LOWERED_OPTIONS["checkpoint_chars"] == 64

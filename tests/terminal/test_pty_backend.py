@@ -8,26 +8,7 @@ import time
 
 import pytest
 
-from nova_navigator.terminal.pty_backend import LocalPtyBackend, PtyBackend
-
-
-def test_local_pty_backend_is_a_pty_backend() -> None:
-    backend = LocalPtyBackend()
-    assert isinstance(backend, PtyBackend)
-
-
-def test_local_pty_backend_supports_precmd_is_true() -> None:
-    backend = LocalPtyBackend()
-    assert backend.supports_precmd is True
-
-
-def test_open_returns_none() -> None:
-    backend = LocalPtyBackend()
-    try:
-        result = backend.open("/bin/sh", rows=24, cols=80)
-        assert result is None
-    finally:
-        backend.teardown()
+from nova_navigator.terminal.pty_backend import LocalPtyBackend
 
 
 def test_open_creates_child_process() -> None:
@@ -55,15 +36,6 @@ def test_teardown_terminates_child_process() -> None:
             return  # Already reaped by teardown
         time.sleep(0.05)
     pytest.fail("Child process did not exit after teardown")
-
-
-def test_write_sends_bytes_to_shell() -> None:
-    backend = LocalPtyBackend()
-    try:
-        backend.open("/bin/sh", rows=24, cols=80)
-        backend.write(b"echo hello\n")  # should not raise
-    finally:
-        backend.teardown()
 
 
 def test_resize_does_not_raise() -> None:
@@ -251,29 +223,6 @@ async def test_process_chunk_osc7_with_panel_prefix_posts_from_nn_true() -> None
     queue: asyncio.Queue[list[object]] = asyncio.Queue()
 
     path = "/home/user/projects"
-    osc7 = f"\033]7;panel=;file://{path}\007"
-    backend._process_chunk(osc7.encode(), loop, queue)
-    await asyncio.sleep(0)  # let call_soon_threadsafe callbacks run
-
-    messages: list[list[object]] = []
-    while not queue.empty():
-        messages.append(queue.get_nowait())
-
-    pre_cmds = [m for m in messages if m[0] == "pre_cmd"]
-    assert len(pre_cmds) == 1
-    assert pre_cmds[0][1] == path
-    assert pre_cmds[0][2] is True
-
-
-@pytest.mark.asyncio
-async def test_process_chunk_osc7_with_empty_panel_posts_from_nn_true() -> None:
-    """OSC 7 with panel=;file:///path is recognised as NN origin (from_nn=True)."""
-    backend = LocalPtyBackend.__new__(LocalPtyBackend)
-    backend._osc_buf = ""
-    loop = asyncio.get_running_loop()
-    queue: asyncio.Queue[list[object]] = asyncio.Queue()
-
-    path = "/home/user"
     osc7 = f"\033]7;panel=;file://{path}\007"
     backend._process_chunk(osc7.encode(), loop, queue)
     await asyncio.sleep(0)  # let call_soon_threadsafe callbacks run

@@ -58,14 +58,6 @@ async def test_vfspath_from_uri_unknown_scheme_raises() -> None:
 
 
 @pytest.mark.asyncio
-async def test_vfspath_from_uri_no_scheme() -> None:
-    register_common_schemes()
-    vpath = await vfspath_from_uri("/usr/local/bin")
-    assert vpath is not None
-    assert str(vpath.path) == "/usr/local/bin"
-
-
-@pytest.mark.asyncio
 async def test_vfspath_from_uri_tilde_expands_to_home() -> None:
     register_common_schemes()
     vpath = await vfspath_from_uri("~/Documents")

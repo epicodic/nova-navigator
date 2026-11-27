@@ -6,13 +6,6 @@ from pathlib import PurePosixPath
 import pytest
 
 from nova_navigator.filemanager.link_target import stable_link_target
-from nova_navigator.filemanager.tasks import FileCopyOptions
-
-
-def test_options_default_values() -> None:
-    options = FileCopyOptions()
-    assert options.follow_links is False
-    assert options.stable_symlinks is False
 
 
 def test_rule_req4_example() -> None:

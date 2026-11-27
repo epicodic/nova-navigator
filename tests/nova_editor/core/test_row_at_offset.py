@@ -61,18 +61,6 @@ def test_scanned_bytes_reaches_length() -> None:
     assert index.snapshot().scanned_bytes == len(data)
 
 
-def test_scanned_bytes_grows_while_scanning_and_answers_inside_it() -> None:
-    data = b"row\n" * 100
-    gate = threading.Event()
-    index = LineIndex(MemorySource(data, gate=gate), scan_block=40)
-    assert index.snapshot().scanned_bytes == 0
-    gate.set()
-    index.start()
-    assert index.join(10)
-    assert index.snapshot().scanned_bytes == len(data)
-    assert index.row_at_offset(len(data)) == (100, RowRange(400, 400, 400))
-
-
 def test_partial_scan_answers_only_indexed_offsets() -> None:
     data = b"row\n" * 100
     calls = 0

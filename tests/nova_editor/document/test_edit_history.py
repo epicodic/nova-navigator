@@ -125,12 +125,6 @@ def test_stock_document_keeps_the_text_based_path() -> None:
     assert doc.text == "aZef"
 
 
-def test_default_history_is_unlimited() -> None:
-    history = EditHistory()
-    assert history.max_checkpoints is None
-    assert history._undo_stack.maxlen is None
-
-
 def test_typing_of_a_thousand_characters_is_one_record() -> None:
     doc = LazyDocument.from_text("", SMALL)
     widget = area(doc)

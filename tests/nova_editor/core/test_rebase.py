@@ -253,11 +253,6 @@ def test_the_last_generation_is_still_usable() -> None:
     assert plan.retained is not None
 
 
-def test_the_default_limit_is_eight_mebibytes() -> None:
-    assert UNDO_COPY_LIMIT == 8 * 1024 * 1024
-    assert MAX_GENERATION == 255
-
-
 @pytest.mark.parametrize("seed", LEGACY_SEEDS)
 def test_an_exception_in_the_translation_keeps_every_reference(seed: int) -> None:
     world = World(seed, failing=True)

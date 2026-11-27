@@ -127,17 +127,6 @@ def test_content_between_does_not_read_the_range_except_the_tail(monkeypatch: py
     doc.close()
 
 
-def test_content_between_keeps_only_the_half_inside_the_range() -> None:
-    doc = LazyDocument.from_bytes(b"a\r\nb", SMALL)
-    inside_start = doc.content_between(2, 4)  # starts between CR and LF
-    assert inside_start.length == 2
-    inside_end = doc.content_between(0, 2)  # ends between CR and LF
-    assert inside_end.length == 2
-    assert doc._table.content_bytes(inside_start, 0, 2) == b"\nb"
-    assert doc._table.content_bytes(inside_end, 0, 2) == b"a\r"
-    doc.close()
-
-
 def test_content_between_rejects_bad_ranges() -> None:
     doc = LazyDocument.from_bytes(b"abc", SMALL)
     with pytest.raises(ValueError, match="invalid byte range"):

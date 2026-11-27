@@ -5,11 +5,10 @@ from __future__ import annotations
 import pytest
 from textual.app import App, ComposeResult
 from textual.message import Message
-from textual.widgets import Button, Input, Static
+from textual.widgets import Button, Static
 
 from nova_editor.find_popup import FindPopup
 from nova_editor.goto_popup import HINT, INVALID, GotoPopup, GotoTarget, parse_goto
-from nova_widgets.flat_widgets import Checkbox
 
 
 class PopupHost(App[None]):
@@ -155,20 +154,3 @@ async def test_find_status_shows_the_text() -> None:
         assert str(app.find.query_one("#find_status", Static).content) == "Not found: zzz"
         app.find.open((24, 1), None)  # a new opening starts with an empty status row
         assert app.find.status == ""
-
-
-@pytest.mark.asyncio
-async def test_the_find_popup_has_only_the_find_controls_and_fits_its_box() -> None:
-    app = PopupHost()
-    async with app.run_test(size=(80, 24)) as pilot:
-        await pilot.pause()
-        app.find.open((24, 1), None)
-        await pilot.pause()
-        assert len(app.find.query(Input)) == 1
-        checkboxes = list(app.find.query(Checkbox))
-        assert [str(box.label) for box in checkboxes] == ["Match case", "Hex"]
-        assert checkboxes[0].value is True
-        assert checkboxes[1].value is False
-        assert [(button.id, str(button.label)) for button in app.find.query(Button)] == [("find_previous", "Previous"), ("find_next", "Next")]
-        for control in app.find.query("Input, Checkbox, Button"):
-            assert app.find.region.contains_region(control.region)

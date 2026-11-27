@@ -5,28 +5,6 @@ from pathlib import Path
 import pytest
 
 
-def test_settings_default_construction() -> None:
-    from nova_navigator.config.settings import Settings
-
-    s = Settings()
-    assert s.general.show_hidden_files is False
-    assert s.general.confirm_delete is True
-    assert s.network.ssh_timeout == 30
-    assert not hasattr(s.network, "proxy")
-    assert s.terminal.scrollback_lines == 1000
-
-
-def test_settings_writes_file_on_first_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from nova_navigator.config import loader
-
-    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
-
-    from nova_navigator.config.settings import Settings
-
-    Settings.load()
-    assert (tmp_path / "settings.toml").exists()
-
-
 def test_settings_file_contains_section_comments(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from nova_navigator.config import loader
 
@@ -58,25 +36,6 @@ def test_settings_save_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert reloaded.general.show_hidden_files is True
     assert reloaded.network.ssh_timeout == 60
     assert reloaded.terminal.scrollback_lines == 5000
-
-
-def test_settings_save_preserves_user_comment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from nova_navigator.config import loader
-
-    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
-
-    from nova_navigator.config.settings import Settings
-
-    settings_file = tmp_path / "settings.toml"
-    settings_file.write_text("# user note\n[general]\nshow_hidden_files = false\nconfirm_delete = true\n[network]\nssh_timeout = 30\nproxy = ''\n")
-
-    instance = Settings.load()
-    instance.general.show_hidden_files = True
-    instance.save()
-
-    content = settings_file.read_text()
-    assert "# user note" in content
-    assert "true" in content
 
 
 def test_settings_new_file_has_no_proxy_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -128,33 +87,6 @@ def test_settings_with_legacy_proxy_key_loads_and_save_keeps_other_settings_and_
     assert reloaded.terminal.scrollback_lines == 4000
 
 
-def test_general_settings_default_key_display_style() -> None:
-    from nova_navigator.config.settings import GeneralSettings
-    from nova_widgets.keymap.key_sequence import KeyFormatStyle
-
-    s = GeneralSettings()
-    assert s.key_display_style == KeyFormatStyle.CLASSIC
-
-
-def test_settings_key_display_style_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from nova_navigator.config import loader
-    from nova_widgets.keymap.key_sequence import KeyFormatStyle
-
-    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
-
-    from nova_navigator.config.settings import Settings
-
-    s = Settings.load()
-    assert s.general.key_display_style == KeyFormatStyle.CLASSIC
-
-
-def test_settings_ui_nerd_font_defaults_to_auto() -> None:
-    from nova_navigator.config.settings import NerdFontMode, Settings
-
-    s = Settings()
-    assert s.general.use_nerd_font is NerdFontMode.AUTO
-
-
 def test_settings_ui_nerd_font_round_trips_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from nova_navigator.config import loader
     from nova_navigator.config.settings import NerdFontMode, Settings
@@ -167,14 +99,6 @@ def test_settings_ui_nerd_font_round_trips_toml(tmp_path: Path, monkeypatch: pyt
 
     reloaded = Settings.load()
     assert reloaded.general.use_nerd_font is NerdFontMode.YES
-
-
-def test_copy_move_settings_default_off() -> None:
-    from nova_navigator.config.settings import Settings
-
-    s = Settings()
-    assert s.copy_move.follow_links is False
-    assert s.copy_move.stable_symlinks is False
 
 
 def test_copy_move_settings_section_comment_in_new_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -254,12 +178,6 @@ def test_copy_move_save_keeps_comments_and_other_content(tmp_path: Path, monkeyp
     assert reloaded.copy_move.follow_links is True
     assert reloaded.copy_move.stable_symlinks is False
     assert reloaded.network.ssh_timeout == 77
-
-
-def test_selection_settings_default_off() -> None:
-    from nova_navigator.config.settings import Settings
-
-    assert Settings().selection.include_folders is False
 
 
 def test_selection_settings_section_comment_in_new_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

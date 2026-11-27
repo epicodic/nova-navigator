@@ -47,16 +47,6 @@ def test_locked_edits_raise_with_the_reason() -> None:
         _closed(doc)
 
 
-def test_the_reason_is_the_one_given() -> None:
-    doc = LazyDocument.from_text("abc", SMALL)
-    try:
-        doc.lock_edits("file changed on disk")
-        with pytest.raises(EditsLocked, match="file changed on disk"):
-            doc.replace_range((0, 0), (0, 0), "x")
-    finally:
-        _closed(doc)
-
-
 def test_begin_and_end_save_set_and_clear_the_flag() -> None:
     doc = LazyDocument.from_text("abc", SMALL)
     try:

@@ -9,7 +9,6 @@ from textual.app import App
 from textual.screen import Screen
 from textual.widgets import Input
 
-from nova_editor import find_popup
 from nova_editor.find_popup import FindPopup
 from nova_editor.screen import EditorScreen
 from nova_editor.widget import NovaTextArea
@@ -68,14 +67,6 @@ def test_select_all_moved_off_f7_and_is_still_reachable() -> None:
     others = [key for key, action in area + binding_pairs(EditorScreen.BINDINGS) + binding_pairs(App.BINDINGS) if action != "select_all"]
     assert "f8" not in others
     assert "ctrl+shift+a" not in others
-
-
-def test_find_popup_module_surface() -> None:
-    """The module defines exactly `FindPopup`, with its two messages."""
-    classes = [name for name in dir(find_popup) if not name.startswith("_") and isinstance(getattr(find_popup, name), type) and getattr(find_popup, name).__module__ == find_popup.__name__]
-    assert classes == ["FindPopup"]
-    messages = sorted(name for name, value in vars(FindPopup).items() if isinstance(value, type))
-    assert messages == ["Dismissed", "Requested"]
 
 
 def test_every_action_name_has_a_handler() -> None:

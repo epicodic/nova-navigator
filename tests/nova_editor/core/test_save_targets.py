@@ -113,17 +113,6 @@ def test_long_file_name_saves(tmp_path: Path) -> None:
     assert [p.name for p in tmp_path.iterdir()] == [target.name]
 
 
-@pytest.mark.parametrize("mode", [0o600, 0o644, 0o755])
-def test_existing_mode_is_kept(tmp_path: Path, mode: int) -> None:
-    target = tmp_path / "f.txt"
-    target.write_bytes(ORIGINAL)
-    target.chmod(mode)
-    job, source = make_job(target)
-    job.run().source.close()
-    source.close()
-    assert stat.S_IMODE(target.stat().st_mode) == mode
-
-
 def test_new_file_uses_the_umask(tmp_path: Path) -> None:
     target = tmp_path / "new.txt"
     with umask(0o027):

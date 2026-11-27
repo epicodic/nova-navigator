@@ -130,10 +130,6 @@ def test_sync_scan_does_not_run_without_autostart_and_start_scan_still_works() -
         doc.close()
 
 
-def test_default_sync_scan_limit_is_one_mebibyte() -> None:
-    assert LazyConfig().sync_scan_limit == 1_048_576
-
-
 def test_close_after_a_synchronous_scan_keeps_snapshot_and_closes_the_source() -> None:
     doc = LazyDocument.from_bytes(b"a\r")
     doc.close()

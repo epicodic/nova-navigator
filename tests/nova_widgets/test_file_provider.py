@@ -8,61 +8,11 @@ from nova_widgets.file_provider import (
     default_file_provider,
 )
 
-# --- FileStat protocol tests (using LocalFileProvider) ---
-
-
-class TestFileStatProtocol:
-    """Tests for FileStat protocol: name, is_dir, is_file, is_hidden."""
-
-    def test_file_stat_has_name_property(self, tmp_path: Path) -> None:
-        """FileStat entry has name property."""
-        (tmp_path / "testfile.txt").touch()
-        provider = LocalFileProvider()
-        entries = list(provider.iterdir(PurePath(tmp_path)))
-        assert len(entries) >= 1
-        stat = entries[0]
-        assert hasattr(stat, "name")
-        assert isinstance(stat.name, str)
-
-    def test_file_stat_has_is_dir_property(self, tmp_path: Path) -> None:
-        """FileStat entry has is_dir property."""
-        (tmp_path / "testfile.txt").touch()
-        provider = LocalFileProvider()
-        entries = list(provider.iterdir(PurePath(tmp_path)))
-        stat = entries[0]
-        assert hasattr(stat, "is_dir")
-        assert isinstance(stat.is_dir, bool)
-
-    def test_file_stat_has_is_file_property(self, tmp_path: Path) -> None:
-        """FileStat entry has is_file property."""
-        (tmp_path / "testfile.txt").touch()
-        provider = LocalFileProvider()
-        entries = list(provider.iterdir(PurePath(tmp_path)))
-        stat = entries[0]
-        assert hasattr(stat, "is_file")
-        assert isinstance(stat.is_file, bool)
-
-    def test_file_stat_has_is_hidden_property(self, tmp_path: Path) -> None:
-        """FileStat entry has is_hidden property."""
-        (tmp_path / "testfile.txt").touch()
-        provider = LocalFileProvider()
-        entries = list(provider.iterdir(PurePath(tmp_path)))
-        stat = entries[0]
-        assert hasattr(stat, "is_hidden")
-        assert isinstance(stat.is_hidden, bool)
-
-
 # --- LocalFileProvider tests ---
 
 
 class TestLocalFileProviderHome:
     """Tests for LocalFileProvider.home()."""
-
-    def test_home_returns_pure_path(self) -> None:
-        """home() returns a PurePath."""
-        provider = LocalFileProvider()
-        home = provider.home()
-        assert isinstance(home, PurePath)
 
     def test_home_returns_real_path_object(self) -> None:
         """Amendment C1: home() returns real pathlib.Path, not just PurePath."""
@@ -89,14 +39,6 @@ class TestLocalFileProviderIterdir:
         names = {entry.name for entry in entries}
         assert "file.txt" in names
         assert "subdir" in names
-
-    def test_iterdir_file_stat_name(self, tmp_path: Path) -> None:
-        """iterdir() entries have correct name property."""
-        (tmp_path / "file.txt").touch()
-        provider = LocalFileProvider()
-        entries = list(provider.iterdir(PurePath(tmp_path)))
-        file_entry = next(e for e in entries if e.name == "file.txt")
-        assert file_entry.name == "file.txt"
 
     def test_iterdir_file_stat_is_file(self, tmp_path: Path) -> None:
         """iterdir() entries correctly identify files."""
@@ -131,13 +73,6 @@ class TestLocalFileProviderIterdir:
         entries = list(provider.iterdir(PurePath(tmp_path)))
         normal = next(e for e in entries if e.name == "normal.txt")
         assert normal.is_hidden is False
-
-    def test_iterdir_returns_iterator(self, tmp_path: Path) -> None:
-        """iterdir() returns an Iterator."""
-        provider = LocalFileProvider()
-        result = provider.iterdir(PurePath(tmp_path))
-        assert hasattr(result, "__iter__")
-        assert hasattr(result, "__next__")
 
 
 class TestLocalFileProviderIsDir:
@@ -189,12 +124,6 @@ class TestLocalFileProviderIsFile:
 class TestLocalFileProviderParent:
     """Tests for LocalFileProvider.parent()."""
 
-    def test_parent_returns_pure_path(self, tmp_path: Path) -> None:
-        """parent() returns a PurePath."""
-        provider = LocalFileProvider()
-        result = provider.parent(PurePath(tmp_path / "child"))
-        assert isinstance(result, PurePath)
-
     def test_parent_returns_real_path_object(self, tmp_path: Path) -> None:
         """Amendment C1: parent() returns real pathlib.Path."""
         provider = LocalFileProvider()
@@ -219,12 +148,6 @@ class TestLocalFileProviderParent:
 class TestLocalFileProviderJoinpath:
     """Tests for LocalFileProvider.joinpath()."""
 
-    def test_joinpath_returns_pure_path(self, tmp_path: Path) -> None:
-        """joinpath() returns a PurePath."""
-        provider = LocalFileProvider()
-        result = provider.joinpath(PurePath(tmp_path), "child")
-        assert isinstance(result, PurePath)
-
     def test_joinpath_returns_real_path_object(self, tmp_path: Path) -> None:
         """Amendment C1: joinpath() returns real pathlib.Path."""
         provider = LocalFileProvider()
@@ -246,18 +169,6 @@ class TestLocalFileProviderJoinpath:
 
 class TestLocalFileProviderResolve:
     """Tests for LocalFileProvider.resolve()."""
-
-    def test_resolve_returns_pure_path_or_none(self, tmp_path: Path) -> None:
-        """resolve() returns a PurePath or None."""
-        provider = LocalFileProvider()
-        result = provider.resolve(PurePath(tmp_path))
-        assert result is None or isinstance(result, PurePath)
-
-    def test_resolve_returns_real_path_object_or_none(self, tmp_path: Path) -> None:
-        """Amendment C1: resolve() returns real pathlib.Path or None."""
-        provider = LocalFileProvider()
-        result = provider.resolve(PurePath(tmp_path))
-        assert result is None or isinstance(result, Path)
 
     def test_resolve_existing_directory(self, tmp_path: Path) -> None:
         """resolve() returns the path for existing directories."""
@@ -298,17 +209,6 @@ class TestLocalFileProviderResolve:
 
 class TestInMemoryFileProviderBasics:
     """Tests for InMemoryFileProvider basic operations."""
-
-    def test_can_create_in_memory_provider(self) -> None:
-        """Can instantiate InMemoryFileProvider."""
-        provider = InMemoryFileProvider()
-        assert provider is not None
-
-    def test_home_returns_pure_path(self) -> None:
-        """home() returns a PurePath."""
-        provider = InMemoryFileProvider()
-        result = provider.home()
-        assert isinstance(result, PurePath)
 
     def test_add_dir_creates_directory(self) -> None:
         """add_dir() creates a directory entry."""
@@ -395,11 +295,6 @@ class TestInMemoryFileProviderBasics:
 
 class TestDefaultFileProvider:
     """Tests for default_file_provider() function."""
-
-    def test_default_file_provider_returns_provider(self) -> None:
-        """default_file_provider() returns a FileProvider."""
-        provider = default_file_provider()
-        assert provider is not None
 
     def test_default_file_provider_is_singleton(self) -> None:
         """default_file_provider() returns the same instance."""

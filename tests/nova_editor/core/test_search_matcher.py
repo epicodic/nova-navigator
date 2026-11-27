@@ -7,8 +7,6 @@ from typing import cast
 import pytest
 
 from nova_editor.core.search import (
-    CONTEXT_AFTER,
-    CONTEXT_BEFORE,
     MAX_NEEDLE_BYTES,
     MAX_PATTERN_CHARS,
     SearchError,
@@ -255,11 +253,6 @@ def test_max_length() -> None:
     assert compile_matcher("s", case_sensitive=False).max_length == 2
     assert compile_matcher("\udca9", case_sensitive=False).max_length == 1
     assert compile_matcher(GRINNING + "a", case_sensitive=True).max_length == 5
-
-
-def test_context_constants() -> None:
-    assert CONTEXT_BEFORE == 3
-    assert CONTEXT_AFTER == 3
 
 
 def test_tiers_agree_on_ascii() -> None:

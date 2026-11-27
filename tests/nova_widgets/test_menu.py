@@ -5,19 +5,6 @@ from tests.nova_widgets._menu_test_app import MenuTestApp
 
 
 @pytest.mark.asyncio
-async def test_menu_mounts_successfully() -> None:
-    menu = Menu()
-    menu.add_action("Item A", name="item_a")
-    menu.add_action("Item B", name="item_b")
-
-    app = MenuTestApp(menu)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        # Menu is present in the DOM
-        assert len(app.query(Menu)) == 1
-
-
-@pytest.mark.asyncio
 async def test_menu_down_key_highlights_first_item() -> None:
     menu = Menu()
     menu.add_action("Item A", name="item_a")

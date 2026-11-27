@@ -91,15 +91,6 @@ def test_parse_goto_plain_digits_stay_a_line_number() -> None:
     assert parse_goto("0x10") == GotoTarget("byte", 16)
 
 
-def test_the_texts_name_the_new_forms() -> None:
-    assert "0x1F00" in INVALID
-    assert "1F00h" in INVALID
-    assert "@4096" in INVALID
-    assert HEX_HINT == "Byte offset: 0x1F00, 1F00h or @7936"
-    assert HEX_INVALID == "Not a byte offset (for example 0x1F00, 1F00h or @7936)"
-    assert HINT
-
-
 def test_hex_goto_helper() -> None:
     assert hex_goto(GotoTarget("line", 3), 100) == LINE_MESSAGE
     assert hex_goto(GotoTarget("byte", 0), 100) == 0

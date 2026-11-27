@@ -43,12 +43,6 @@ async def test_job_error_is_none_on_success() -> None:
     assert job.error is None
 
 
-def test_job_error_is_none_before_start() -> None:
-    """error property is None on a freshly constructed Job."""
-    job = Job("test", _ok_task)
-    assert job.error is None
-
-
 @pytest.mark.asyncio
 async def test_job_canceled_state_not_failed() -> None:
     """A cancelled task transitions to CANCELED, not FAILED."""

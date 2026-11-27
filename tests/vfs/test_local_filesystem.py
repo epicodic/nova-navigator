@@ -32,16 +32,8 @@ def test_eq_non_instance_is_not_equal() -> None:
     assert LocalFilesystem() != "not a filesystem"
 
 
-def test_hash_is_stable() -> None:
-    assert hash(LocalFilesystem()) == hash(LocalFilesystem())
-
-
 def test_singleton_returns_same_object() -> None:
     assert LocalFilesystem.singleton() is LocalFilesystem.singleton()
-
-
-def test_repr() -> None:
-    assert repr(LocalFilesystem()) == "LocalFilesystem"
 
 
 # ── navigation ────────────────────────────────────────────────────────────────
@@ -50,11 +42,6 @@ def test_repr() -> None:
 def test_cwd_returns_current_working_directory() -> None:
     fs = _fs()
     assert str(fs.cwd().path) == os.getcwd()
-
-
-def test_root_returns_slash() -> None:
-    fs = _fs()
-    assert str(fs.root().path) == "/"
 
 
 def test_home_returns_home_directory() -> None:

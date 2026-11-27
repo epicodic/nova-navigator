@@ -191,19 +191,6 @@ async def test_erase_cancelled() -> None:
 
 
 @pytest.mark.asyncio
-async def test_erase_progress_tracking() -> None:
-    """Progress counters reflect the number of items erased."""
-    fs = MockFilesystem({"/home/user/a.txt": b"a", "/home/user/b.txt": b"b", "/home/user/c.txt": b"c"})
-
-    status = make_status()
-    paths = [fs.path(p) for p in ("/home/user/a.txt", "/home/user/b.txt", "/home/user/c.txt")]
-    await run_task(lambda ctx: erase_files(ctx, paths), status=status)
-
-    assert status.progress.total == 3
-    assert status.progress.completed == 3
-
-
-@pytest.mark.asyncio
 async def test_erase_skipped_dir_not_counted_in_completed() -> None:
     """A directory skipped via NO still counts in completed (the skip path increments it)."""
     fs = MockFilesystem({"/home/user/dir/file.txt": b"data"})

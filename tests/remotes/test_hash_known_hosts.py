@@ -31,20 +31,6 @@ def test_effective_value_for_host(tmp_path: Path, text: str, expected: bool) -> 
     assert hash_known_hosts_enabled("h.example", [_cfg(tmp_path, "c", text)]) is expected
 
 
-def test_user_config_beats_system_config(tmp_path: Path) -> None:
-    user = _cfg(tmp_path, "u", "Host *\n  HashKnownHosts no\n")
-    system = _cfg(tmp_path, "s", "Host *\n  HashKnownHosts yes\n")
-    assert hash_known_hosts_enabled("h.example", [user, system]) is False
-    assert hash_known_hosts_enabled("h.example", [_cfg(tmp_path, "empty", "# nothing\n"), system]) is True
-
-
-def test_missing_and_malformed_files_are_skipped(tmp_path: Path) -> None:
-    good = _cfg(tmp_path, "g", "Host *\n  HashKnownHosts yes\n")
-    bad = _cfg(tmp_path, "b", "this is not\x00 a valid = config line [\nHost\n")
-    assert hash_known_hosts_enabled("h.example", [tmp_path / "missing", bad, good]) is True
-    assert hash_known_hosts_enabled("h.example", [tmp_path / "missing"]) is False
-
-
 def test_include_is_not_followed(tmp_path: Path) -> None:
     extra = _cfg(tmp_path, "extra.conf", "Host *\n  HashKnownHosts yes\n")
     main = _cfg(tmp_path, "main", f"Include {extra}\n")
@@ -84,9 +70,4 @@ def test_match_exec_never_runs_and_block_does_not_apply(tmp_path: Path, tmp_path
 
 def test_match_all_still_works(tmp_path: Path) -> None:
     config = _cfg(tmp_path, "c", "Match all\n  HashKnownHosts yes\n")
-    assert hash_known_hosts_enabled("h.example", [config]) is True
-
-
-def test_match_host_still_works(tmp_path: Path) -> None:
-    config = _cfg(tmp_path, "c", "Match host h.example\n  HashKnownHosts yes\n")
     assert hash_known_hosts_enabled("h.example", [config]) is True

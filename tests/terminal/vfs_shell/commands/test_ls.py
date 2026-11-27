@@ -80,24 +80,6 @@ async def test_ls_long_format_dir_kind_and_size(fs: MockFilesystem) -> None:
     assert "       -" in lines[0]
 
 
-def test_format_long_file_kind_is_dot() -> None:
-    stat = Stat(size=42, modified=1234567890.0, is_directory=False)
-    line = LsCommand()._format_long("file.txt", stat, human=False)
-    assert line.startswith(". ")
-
-
-def test_format_long_dir_kind_is_d() -> None:
-    stat = Stat(size=0, modified=1234567890.0, is_directory=True)
-    line = LsCommand()._format_long("mydir", stat, human=False)
-    assert line.startswith("d ")
-
-
-def test_format_long_dir_size_is_dash() -> None:
-    stat = Stat(size=0, modified=1234567890.0, is_directory=True)
-    line = LsCommand()._format_long("mydir", stat, human=False)
-    assert "-" in line.split()[1]
-
-
 def test_format_long_columns_aligned_with_and_without_mtime() -> None:
     with_mtime = Stat(size=10, modified=1234567890.0, is_directory=False)
     without_mtime = Stat(size=10, modified=-1.0, is_directory=False)

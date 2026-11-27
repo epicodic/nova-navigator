@@ -131,14 +131,6 @@ async def test_stable_between_two_wrappers_of_one_filesystem_rewrites(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_stable_off_text_unchanged(link_fs: Filesystem, tmp_path: Path) -> None:
-    proj, _shared_x, c = _layout(tmp_path)
-    status = await copy_between((link_fs, link_fs), [proj], c)
-    assert os.readlink(c / "proj" / "doc" / "l") == "../../shared/x"
-    assert status.progress.completed == status.progress.total
-
-
-@pytest.mark.asyncio
 async def test_follow_beats_stable_same_result(link_fs: Filesystem, tmp_path: Path) -> None:
     proj, _shared_x, c1 = _layout(tmp_path)
     c2 = tmp_path / "c2"

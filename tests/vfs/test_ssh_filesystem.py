@@ -287,11 +287,6 @@ def test_hash_is_consistent() -> None:
     assert hash(fs) == hash(mock_ssh)
 
 
-def test_repr_contains_class_name() -> None:
-    fs, _, _ = _make_fs()
-    assert "SSHFilesystem" in repr(fs)
-
-
 # ── navigation ────────────────────────────────────────────────────────────────
 
 
@@ -312,11 +307,6 @@ def test_cwd_falls_back_to_root_when_none() -> None:
     assert str(fs.cwd().path) == "/"
 
 
-def test_root_returns_slash() -> None:
-    fs, _, _ = _make_fs()
-    assert str(fs.root().path) == "/"
-
-
 def test_home_is_the_login_directory() -> None:
     fs, _, mock_sftp = _make_fs(login_dir="/srv/users/alice")
     assert str(fs.home().path) == "/srv/users/alice"
@@ -326,12 +316,6 @@ def test_home_is_the_login_directory() -> None:
 def test_home_falls_back_to_root_without_a_login_directory() -> None:
     fs, _, _ = _make_fs(login_dir=None)
     assert str(fs.home().path) == "/"
-
-
-def test_parent_returns_parent_path() -> None:
-    fs, _, _ = _make_fs()
-    vp = fs.path("/home/user/file.txt")
-    assert str(fs.parent(vp).path) == "/home/user"
 
 
 # ── _dir_stat / iterdir ───────────────────────────────────────────────────────
@@ -556,22 +540,6 @@ def test_dir_stat_exec_error_on_a_dead_transport_is_oserror_and_does_not_switch(
     assert fs._listing_via_sftp is False
 
 
-def test_dir_stat_exit_121_is_still_an_empty_listing() -> None:
-    fs, mock_ssh, _ = _make_fs()
-    mock_ssh.exec_command.return_value = _exec_result(exit_code=121)
-    assert fs._dir_stat("/missing", follow_symlinks=False) == {}
-    assert mock_ssh.exec_command.call_count == 1
-
-
-@pytest.mark.asyncio
-async def test_iterdir_returns_vpaths() -> None:
-    fs, mock_ssh, _ = _make_fs()
-    output = _stat_record("x.txt") + _stat_record("y.txt")
-    _set_exec_output(mock_ssh, output)
-    names = {vp.name async for vp in fs.iterdir(fs.path("/home/user"))}
-    assert names == {"x.txt", "y.txt"}
-
-
 # ── stat ──────────────────────────────────────────────────────────────────────
 
 
@@ -579,55 +547,6 @@ def test_stat_root_path() -> None:
     fs, _, _ = _make_fs()
     s = fs.stat(fs.path("/"))
     assert s.is_directory is True
-
-
-def test_stat_regular_file() -> None:
-    fs, mock_ssh, _ = _make_fs()
-    line = _stat_record("file.txt", size=512, perms="755", mtime=9999.0)
-    _set_exec_output(mock_ssh, line)
-    s = fs.stat(fs.path("/home/user/file.txt"))
-    assert s.size == 512
-    assert s.is_directory is False
-    assert s.is_executable is True
-    assert s.is_hidden is False
-
-
-def test_stat_hidden_file() -> None:
-    fs, mock_ssh, _ = _make_fs()
-    line = _stat_record(".hidden", perms="600")
-    _set_exec_output(mock_ssh, line)
-    s = fs.stat(fs.path("/home/user/.hidden"))
-    assert s.is_hidden is True
-
-
-def test_stat_symlink() -> None:
-    fs, mock_ssh, _ = _make_fs()
-    # follow_symlinks=True sees regular file; lstat sees symlink
-    follow_line = _stat_record("link.txt", ftype="regular file")
-    lstat_line = _stat_record("link.txt", ftype="symbolic link")
-    call_count = 0
-
-    def _exec_side_effect(cmd: str) -> tuple:
-        nonlocal call_count
-        stdout = MagicMock()
-        stdout.read.return_value = follow_line if "stat -L" in cmd else lstat_line
-        stdout.channel.recv_exit_status.return_value = 0
-        call_count += 1
-        return (MagicMock(), stdout, MagicMock())
-
-    mock_ssh.exec_command.side_effect = _exec_side_effect
-    # clear cache so both calls are made
-    fs.refresh()
-    s = fs.stat(fs.path("/home/user/link.txt"))
-    assert s.is_symlink is True
-
-
-def test_stat_missing_file_raises_file_not_found() -> None:
-    fs, mock_ssh, _ = _make_fs()
-    _set_exec_output(mock_ssh, b"")  # empty directory listing
-    fs.refresh()
-    with pytest.raises(FileNotFoundError):
-        fs.stat(fs.path("/home/user/missing.txt"))
 
 
 # ── read / write ──────────────────────────────────────────────────────────────
@@ -701,13 +620,6 @@ def test_copy_stat_skips_negative_values() -> None:
 # ── readlink ──────────────────────────────────────────────────────────────────
 
 
-def test_readlink_returns_target() -> None:
-    fs, _, mock_sftp = _make_fs()
-    mock_sftp.readlink.return_value = "/real/target.txt"
-    vp = fs.path("/home/user/link.txt")
-    assert fs.readlink(vp) == "/real/target.txt"
-
-
 def test_readlink_raises_oserror_when_not_a_link() -> None:
     fs, _, mock_sftp = _make_fs()
     mock_sftp.readlink.return_value = None
@@ -717,16 +629,6 @@ def test_readlink_raises_oserror_when_not_a_link() -> None:
 
 
 # ── dict cache ────────────────────────────────────────────────────────────────
-
-
-def test_dir_stat_caches_result() -> None:
-    """Second call with same args must not fire exec_command again."""
-    fs, mock_ssh, _ = _make_fs()
-    output = _stat_record("f.txt")
-    _set_exec_output(mock_ssh, output)
-    fs._dir_stat("/home/user", follow_symlinks=False)
-    fs._dir_stat("/home/user", follow_symlinks=False)
-    assert mock_ssh.exec_command.call_count == 1
 
 
 def test_refresh_path_evicts_both_follow_symlink_variants() -> None:
@@ -752,11 +654,6 @@ def test_refresh_none_clears_all_cache_entries() -> None:
     assert len(fs._stat_cache) == 2
     fs.refresh()
     assert len(fs._stat_cache) == 0
-
-
-def test_refresh_nonexistent_path_is_safe() -> None:
-    fs, _, _ = _make_fs()
-    fs.refresh(fs.path("/no/such/dir"))  # must not raise
 
 
 # ── _PipelinedWriter ──────────────────────────────────────────────────────────

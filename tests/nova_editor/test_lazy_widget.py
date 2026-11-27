@@ -269,15 +269,6 @@ async def test_close_before_mount_is_safe(tmp_path: Path) -> None:
     assert spy.closes == 1
 
 
-def test_soft_wrap_default_false(tmp_path: Path) -> None:
-    area = NovaTextArea.open(make_mixed(tmp_path / "m.txt"))
-    assert area.soft_wrap is False
-    area.close()
-    wrapping = NovaTextArea.open(make_mixed(tmp_path / "w.txt"), soft_wrap=True)
-    assert wrapping.soft_wrap is True
-    wrapping.close()
-
-
 def test_open_passes_the_widget_tab_width_to_the_document(tmp_path: Path) -> None:
     area = NovaTextArea.open(make_mixed(tmp_path / "m.txt"), config=LazyConfig(tab_width=7))
     assert isinstance(area.document, LazyDocument)

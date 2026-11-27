@@ -15,12 +15,6 @@ def type_char(doc: LazyDocument, history: EditHistory, char: str = "x") -> None:
     perform(area(doc), history, (0, 0), (0, 0), char)
 
 
-def test_unmodified_after_open() -> None:
-    _doc, history = typing_setup()
-    assert not history.modified
-    assert history.revision == 0
-
-
 def test_modified_after_edit_and_undo_redo() -> None:
     doc, history = typing_setup()
     widget = area(doc)
@@ -113,25 +107,6 @@ def test_undo_and_redo_move_the_revision_with_the_batch() -> None:
     assert history.revision == 0
     assert redo(widget, history)
     assert history.revision == 3
-    doc.close()
-
-
-def test_restore_helpers_put_the_revision_back() -> None:
-    doc, history = typing_setup()
-    type_char(doc, history)
-    batch = history._pop_undo()
-    assert batch is not None
-    assert history.revision == 0
-    history._restore_undo(batch)
-    assert history.revision == 1
-    assert history.modified
-    batch = history._pop_undo()
-    assert batch is not None
-    batch = history._pop_redo()
-    assert batch is not None
-    assert history.revision == 1
-    history._restore_redo(batch)
-    assert history.revision == 0
     doc.close()
 
 

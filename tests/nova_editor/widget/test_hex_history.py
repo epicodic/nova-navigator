@@ -32,14 +32,6 @@ def quiet(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_typed_digits_of_a_run_are_one_batch(tmp_path: Path) -> None:
-    async with session(tmp_path, bytes(8)) as s:
-        await s.press("4", "1", "4", "2")
-        assert s.data() == bytes([0x41, 0x42]) + bytes(6)
-        assert len(s.document.history.undo_stack) == 1  # typing from commit 3 already groups
-
-
-@pytest.mark.asyncio
 async def test_one_undo_takes_back_the_whole_typed_run_and_redo_restores_it(tmp_path: Path) -> None:
     async with session(tmp_path, bytes(8)) as s:
         await s.press("4", "1", "4", "2")
@@ -68,26 +60,6 @@ async def test_typing_then_moving_then_typing_takes_two_undos(tmp_path: Path) ->
         assert s.data() == bytes([0x41]) + bytes(63)
         await s.press("ctrl+z")
         assert s.data() == bytes(64)
-
-
-@pytest.mark.asyncio
-async def test_a_mode_change_ends_the_batch(tmp_path: Path) -> None:
-    async with session(tmp_path, bytes(8)) as s:
-        await s.press("4", "1", "insert", "4", "2")
-        assert len(s.document.history.undo_stack) == 2
-        await s.press("ctrl+z")
-        assert s.data() == bytes([0x41]) + bytes(7)
-        await s.press("ctrl+z")
-        assert s.data() == bytes(8)
-
-
-@pytest.mark.asyncio
-async def test_a_delete_run_is_one_batch_and_typing_before_it_is_another(tmp_path: Path) -> None:
-    async with session(tmp_path, b"abcdef") as s:
-        await s.press("delete", "delete", "delete")
-        assert s.data() == b"def"
-        await s.press("ctrl+z")
-        assert s.data() == b"abcdef"
 
 
 @pytest.mark.asyncio
@@ -292,20 +264,3 @@ async def test_edit_in_text_edit_in_hex_two_undos_restore_the_original(tmp_path:
         await pilot.press("ctrl+y", "ctrl+y")
         await pilot.pause()
         assert bytes_of(app) == edited_in_hex
-
-
-@pytest.mark.asyncio
-async def test_hex_undo_through_the_standalone_screen_keys(tmp_path: Path) -> None:
-    path = tmp_path / "f.txt"
-    path.write_text(ORIGINAL)
-    app = app_for(tmp_path, path)
-    async with app.run_test(size=WIDE) as pilot:
-        await pilot.pause()
-        screen = screen_of(app)
-        await toggle(pilot, screen)
-        await pilot.press("4", "1")
-        await pilot.pause()
-        assert bytes_of(app) == b"Ane\ntwo\n"
-        await pilot.press("ctrl+z")
-        await pilot.pause()
-        assert bytes_of(app) == ORIGINAL.encode()

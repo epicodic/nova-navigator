@@ -87,13 +87,6 @@ def test_registry_unknown_returns_none() -> None:
     assert reg.get("nonexistent") is None
 
 
-def test_registry_all_commands() -> None:
-    reg = CommandRegistry()
-    cmd = _DummyCommand()
-    reg.register(cmd)
-    assert cmd in reg.all_commands()
-
-
 def test_registry_all_commands_sorted() -> None:
     reg = CommandRegistry()
     cmd_z = _DummyCommandNamed("zebra")

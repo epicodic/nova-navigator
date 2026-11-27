@@ -66,17 +66,6 @@ async def test_the_view_menu_has_the_item_only_with_a_config(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_the_item_has_no_default_key(tmp_path: Path) -> None:
-    app = build_app(["--config-dir", str(tmp_path)])
-    async with app.run_test(size=WIDE) as pilot:
-        await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, EditorScreen)
-        action = next(a for a in screen.ACTIONS if a.id == "editor.keyboard_shortcuts")
-        assert action.shortcut is None
-
-
-@pytest.mark.asyncio
 async def test_the_dialog_lists_every_editor_action_with_its_effective_binding(tmp_path: Path) -> None:
     (tmp_path / "keybindings.toml").write_text('[bindings]\n"editor.find" = "ctrl+k"\n"editor.goto" = ""\n')
     app = build_app(["--config-dir", str(tmp_path)])
