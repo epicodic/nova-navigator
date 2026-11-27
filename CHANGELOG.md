@@ -32,8 +32,6 @@
   So copying or moving a file to the same path between them is skipped.
 - In the built-in shell, `cp` of a file onto itself is not refused and can destroy it.
   This was not reproduced.
-- Copying a folder into its own subfolder is not refused.
-  The effect has not been verified.
 - Two hard-linked names on SSH are not recognised as one file, so copying or moving one onto the other may destroy data.
   This was not tested.
 - If a directory is replaced by a symbolic link while it is being deleted, moved, or removed with `rm -r` in the built-in shell, the operation can follow the link.

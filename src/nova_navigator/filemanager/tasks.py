@@ -3,7 +3,7 @@ import contextlib
 import logging
 import os
 from dataclasses import dataclass, replace
-from pathlib import PurePosixPath
+from pathlib import PurePath, PurePosixPath
 from typing import Literal
 
 from nova_navigator.scheduler import TaskContext
@@ -29,6 +29,7 @@ SKIP_LINK_LOOP = "link loop"
 SKIP_UNREADABLE_LINK = "unreadable link"
 SKIP_FOLDER_EXISTS = "folder exists"
 SKIP_SAME_FILE = "same file"
+SKIP_INTO_ITSELF = "into itself"
 _MAX_LINK_DEPTH = 16
 
 
@@ -123,6 +124,32 @@ def _skip_onto_itself(ctx: TaskContext, src: VPath, dst: VPath) -> bool:
     if not _is_onto_itself(src, dst):
         return False
     ctx.report_skipped(src.uri, SKIP_SAME_FILE)
+    return True
+
+
+def _resolved(path: VPath) -> PurePath:
+    """Return *path* with links resolved as far as it exists; the rest is appended as written."""
+    for existing in (path.path, *path.path.parents):
+        try:
+            real = path.filesystem.real_path(VPath(existing, path.filesystem))
+        except OSError:
+            continue
+        if real is None:
+            break
+        return real.path / path.path.relative_to(existing)
+    return path.path
+
+
+def is_into_itself(src: VPath, dst: VPath) -> bool:
+    """Return whether *dst* is the folder *src* or lies inside it."""
+    return _is_same_storage(src, dst) and _resolved(dst).is_relative_to(_resolved(src))
+
+
+def _skip_into_itself(ctx: TaskContext, src: VPath, dst: VPath) -> bool:
+    """Report the folder *src* as skipped and return True when *dst* lies inside it."""
+    if not is_into_itself(src, dst):
+        return False
+    ctx.report_skipped(src.uri, SKIP_INTO_ITSELF)
     return True
 
 
@@ -592,9 +619,10 @@ async def _copy_dir(
 ) -> bool:
     """Copy the folder *src_path* into *dst_path*.
 
-    Return False only when the root was skipped, by the overwrite policy or because *dst_path* is the folder itself.
+    Return False only when the root was skipped, by the overwrite policy or because *dst_path* is the folder
+    itself or lies inside it.
     """
-    if _skip_onto_itself(ctx, src_path, dst_path):
+    if _skip_onto_itself(ctx, src_path, dst_path) or _skip_into_itself(ctx, src_path, dst_path):
         if count_root:
             ctx.status.update_progress(inc_completed=1)
         return False
@@ -863,7 +891,7 @@ async def _move_path(
         return
 
     # Before any branch: each of them removes or truncates the destination.
-    if _skip_onto_itself(ctx, src_path, actual_dst):
+    if _skip_onto_itself(ctx, src_path, actual_dst) or (is_dir and _skip_into_itself(ctx, src_path, actual_dst)):
         ctx.status.update_progress(inc_completed=1)
         return
 

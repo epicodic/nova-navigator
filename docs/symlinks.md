@@ -161,7 +161,8 @@ Copying or moving a file onto a link that points to it is not such a case: the l
 Two SSH connections with the same host name, port and user, as effective after `~/.ssh/config`, are the same storage (`Filesystem.is_same_storage`).
 They still compare unequal with `==`, so link rewriting and the move strategy treat them as separate.
 The same storage reached under another host name, user or port is not recognised, and neither is a hard link on SSH.
-Copying a folder into its own subfolder is not recognised either.
+
+A folder copied or moved into itself or one of its subfolders, with links resolved, is skipped as `"into itself"` in the same way.
 
 ## Loop detection
 
@@ -182,13 +183,14 @@ When `real_path` returns `None`, the link is walked through a followed view and 
 ## Skip reasons
 
 An item that is left out is reported with `TaskContext.report_skipped(item.uri, reason)`.
-There are five exact reasons.
+There are six exact reasons.
 
 - `"broken link"`: the target does not exist, or no longer exists when the link is processed (for example moved earlier in the same move), and links are followed or the destination has no links.
 - `"link loop"`: the directory link loops, or the depth guard was hit.
 - `"unreadable link"`: `readlink` failed on the source.
 - `"folder exists"`: a file or link met a real folder of the same name at the destination; `item` is the source path.
 - `"same file"`: the destination is the source itself; see "Copy and move onto itself".
+- `"into itself"`: the destination of a folder lies inside it; see "Copy and move onto itself".
 
 The app shows one toast per finished job and the Jobs dialog lists each path with its reason.
 A skipped item counts as completed work.
