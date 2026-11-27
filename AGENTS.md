@@ -34,6 +34,7 @@ It supports a virtual file system (VFS) abstraction for local, SSH, and archive 
 ## Setup
 
 No setup step is required before running commands.
+The tests need `zsh` installed (`sudo apt-get install zsh`), because the stub SSH server runs commands with it.
 
 `uv run` syncs the development environment, which includes the `azure` extra and the local `devtools/` project.
 
@@ -54,6 +55,13 @@ uv run pytest                                  # run all tests
 uv run pytest tests/test_archives.py           # run a specific test file
 uv run pytest tests/test_archives.py::test_foo # run a specific test
 ```
+
+Every test has a limit of 120 s.
+A timeout ends a run without `-n` after printing all stacks; with `-n` only that worker is lost, the test is reported by name and the run continues.
+Run in parallel with `uv run pytest -n 4 --dist worksteal`, or for QA with `PYTEST_ADDOPTS="-n 4 --dist worksteal" uv run qa`.
+
+CI runs `uv run qa` in parallel and `uv run install_check` on Ubuntu 24.04 and 26.04 with Python 3.12, 3.13 and 3.14.
+Each CI job is stopped after 15 minutes.
 
 ### Quality Assurance (lint, type check, tests)
 

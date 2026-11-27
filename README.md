@@ -74,6 +74,11 @@ uv run pytest tests/test_archives.py           # single file
 uv run pytest tests/test_archives.py::test_foo # single test
 ```
 
+The tests need `zsh` installed (`sudo apt-get install zsh`).
+Every test has a limit of 120 s, and a timeout ends a run without `-n`.
+Run in parallel with `uv run pytest -n 4 --dist worksteal`, or for QA with `PYTEST_ADDOPTS="-n 4 --dist worksteal" uv run qa`.
+CI runs `uv run qa` and `uv run install_check` on Ubuntu 24.04 and 26.04 with Python 3.12, 3.13 and 3.14, with a limit of 15 minutes per job.
+
 ### Quality checks
 
 ```sh
