@@ -41,6 +41,7 @@ They call `Filesystem.remove` on the link itself.
 Delete checks a directory again with `Filesystem.stat_uncached` before listing it, and again after the recursive-delete question.
 If it has become a link, the link is removed and its target is not listed.
 A change between that check and the operation itself is not covered.
+An entry that has vanished meanwhile is skipped and does not abort the job.
 
 ## Copy decision
 

@@ -241,3 +241,57 @@ async def test_subfolder_swapped_for_link_while_earlier_entries_are_deleted(link
     finally:
         assert _snapshot(outside) == before
     assert not tree.exists()
+
+
+@pytest.mark.asyncio
+async def test_entries_vanished_while_question_open(link_fs: Filesystem, tmp_path: Path) -> None:
+    tree = tmp_path / "tree"
+    (tree / "folder").mkdir(parents=True)
+    (tree / "folder" / "x.txt").write_text("x")
+    (tree / "f.txt").write_text("f")
+    (tree / "g.txt").write_text("g")
+
+    def vanish() -> None:
+        shutil.rmtree(tree / "folder")
+        (tree / "f.txt").unlink()
+
+    await _erase_changing_on_question([link_fs.path(tree)], vanish)
+    assert not tree.exists()
+
+
+@pytest.mark.asyncio
+async def test_selected_dir_vanished_while_question_open(link_fs: Filesystem, tmp_path: Path) -> None:
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "f.txt").write_text("f")
+    other = tmp_path / "other.txt"
+    other.write_text("o")
+    await _erase_changing_on_question([link_fs.path(tree), link_fs.path(other)], lambda: shutil.rmtree(tree))
+    assert not tree.exists()
+    assert not other.exists()
+
+
+@pytest.mark.asyncio
+async def test_subfolder_vanished_while_earlier_entries_are_deleted(link_fs: Filesystem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tree = tmp_path / "tree"
+    (tree / "z_folder").mkdir(parents=True)
+    (tree / "z_folder" / "x.txt").write_text("x")
+    (tree / "a.txt").write_text("a")
+    _change_after_first_removal(monkeypatch, link_fs, "a.txt", lambda: shutil.rmtree(tree / "z_folder"))
+    await run_task(lambda ctx: erase_files(ctx, [link_fs.path(tree)]), [Response.YES])
+    assert not tree.exists()
+
+
+@pytest.mark.asyncio
+async def test_not_found_error_for_an_existing_entry_is_reported(link_fs: Filesystem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """SFTP reports e.g. "not a directory" as "no such file"; that must not pass as vanished."""
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    def failing_rmdir(path: VPath) -> None:
+        raise FileNotFoundError(path.path)
+
+    monkeypatch.setattr(link_fs, "rmdir", failing_rmdir)
+    with pytest.raises(FileNotFoundError):
+        await run_task(lambda ctx: erase_files(ctx, [link_fs.path(empty)]))
+    assert empty.is_dir()
