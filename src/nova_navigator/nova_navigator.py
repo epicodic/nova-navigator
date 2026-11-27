@@ -64,6 +64,8 @@ from nova_navigator.remotes.remote import RemoteConnector, register_remote_schem
 from nova_navigator.remotes.ssh import SSH_PLUGIN
 from nova_navigator.runtime_patches import apply_runtime_patches
 from nova_navigator.scheduler import Job, ResponseRequest, skipped_summary
+from nova_navigator.session_state import PanelState, SessionState, load_session_state, usable_directory
+from nova_navigator.session_state import save_session_state as store_session_state
 from nova_navigator.terminal import Terminal, TerminalPool
 from nova_navigator.usermenu import (
     USER_MENU_FILENAME,
@@ -83,7 +85,7 @@ from nova_navigator.vfs.parse_uri import parse_uri
 from nova_navigator.vfs.process_root import find_orphans
 from nova_navigator.vfs.scheme_registry import SCHEME_REGISTRY, vfspath_from_uri
 from nova_navigator.widgets import DirectoryBrowser, JobStatusIcon
-from nova_navigator.widgets.directory_browser import GoToPathWidget, UpPath
+from nova_navigator.widgets.directory_browser import GoToPathWidget, SortKey, UpPath
 from nova_widgets import ButtonSpec, KeybindingsConfig, KeybindingsDialog, MessageBox, Response
 from nova_widgets.actions_support import ActionsSupport
 from nova_widgets.keymap import HintBar, HintsChanged, KeymapRegistry
@@ -228,6 +230,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         self._hint_bar = HintBar()
         self._user_menu_store = UserMenuStore(_config_dir / USER_MENU_FILENAME)
         self._command_runner: CommandRunner | None = None
+        self._session_state = load_session_state()
 
     @property
     def app(self) -> NovaNavigator:  # type: ignore[override]
@@ -349,7 +352,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         self._left_panel = DirectoryBrowser(id="pane-left", path=LocalFilesystem.singleton().cwd())
         self._last_active_panel = self._left_panel
 
-        self._right_panel = DirectoryBrowser(id="pane-right", path=LocalFilesystem.singleton().cwd())
+        self._right_panel = DirectoryBrowser(id="pane-right", path=self._restored_right_path())
         yield Horizontal(
             self._left_panel,
             self._right_panel,
@@ -387,9 +390,32 @@ class MainScreen(ActionsSupport, Screen[None]):
             case PanelRef.ACTIVE:
                 return self._last_active_panel
 
+    def _restored_right_path(self) -> VPath:
+        """The directory the right panel starts in: the stored one when it is still usable, else the cwd."""
+        local = LocalFilesystem.singleton()
+        stored = usable_directory(self._session_state.right_path)
+        return VPath(stored, local) if stored is not None else local.cwd()
+
     async def on_mount(self) -> None:
         self._keymap_registry = KeymapRegistry(self._hint_bar)
         self._reload_keymap()
+        for panel, state in ((self._left_panel, self._session_state.left), (self._right_panel, self._session_state.right)):
+            if state.sort_column is not None:
+                panel.sort_column = SortKey[state.sort_column.upper()]
+            if state.sort_ascending is not None:
+                panel.sort_ascending = state.sort_ascending
+        self._left_panel.focus()
+
+    def save_session_state(self) -> None:
+        """Store the sort orders and the right panel's last local directory."""
+        left, right = self._left_panel, self._right_panel
+        store_session_state(
+            SessionState(
+                left=PanelState(left.sort_column.name.lower(), left.sort_ascending),
+                right=PanelState(right.sort_column.name.lower(), right.sort_ascending),
+                right_path=right.last_local_path or self._session_state.right_path,
+            )
+        )
 
     @property
     def keymap_config(self) -> KeybindingsConfig:
@@ -1372,7 +1398,11 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         Prompting about unsynced copies before quitting is a separate concern (not handled
         here); this only ensures a clean, non-leaking shutdown on a normal exit. Bounded by a
         timeout so a stuck sync (e.g. an unreachable remote) can never hang app shutdown.
+        The session state is saved first, and only when the main screen has built its panels.
         """
+        main = getattr(self, "_main_screen", None)
+        if main is not None and hasattr(main, "_right_panel"):
+            main.save_session_state()
         try:
             await asyncio.wait_for(self.local_copies.shutdown(), timeout=5)
         except TimeoutError:

@@ -256,3 +256,13 @@ It is instantiated once as the module-level constant `UP_PATH`.
 `UpPath.parent` returns `self`, and `UpPath.__eq__` matches any other `UpPath`.
 `stat` reports `is_directory=True` and all other fields at their defaults.
 Code that must skip the `..` entry checks `isinstance(item, UpPath)`.
+
+## Persistence
+
+The right panel's directory and the sort orders of both panels are saved between runs.
+The state is stored in `~/.local/state/nova-navigator/state.toml`.
+It is read once at start and written once, when the app quits normally (`MainScreen.save_session_state`, called from `NovaNavigator.on_unmount`).
+The right panel's stored directory is its last local directory, so an archive or remote location does not replace it.
+The left panel always starts in the current working directory.
+A stored directory that cannot be listed or entered falls back to the current working directory.
+Damaged state is ignored, and a failed write is logged without blocking quit.

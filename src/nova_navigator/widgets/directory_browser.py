@@ -34,6 +34,7 @@ from ..format_utils import format_size
 from ..icons import ico_
 from ..secret_registry import register_uri_secrets
 from ..vfs import VPath
+from ..vfs.local_copy import is_local_source
 from ..vfs.types import Stat
 
 
@@ -575,6 +576,7 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
             ),
         ]
         self._path = UpPath()
+        self.last_local_path: str | None = None
         self._history = []
         self._history_index = -1
         self._load_cancel = None
@@ -680,6 +682,8 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
         if target != self._path:
             self._hidden_names = frozenset()
         self._path = target
+        if is_local_source(target):
+            self.last_local_path = str(target.path)
         self.border_title = target.uri
         self.post_message(DirectoryBrowser.PathChanged(self, target))
 
