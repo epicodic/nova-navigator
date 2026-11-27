@@ -1,11 +1,12 @@
 """Tests for atomic replacement and version tags."""
 
+import errno
 import os
 import stat
 import threading
 from collections import deque
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import paramiko
 import pytest
@@ -301,20 +302,6 @@ def test_ssh_version_tag_is_none() -> None:
     assert fs.version_tag(VPath("/d/f.txt", fs)) is None
 
 
-def test_local_write_atomic_read_only_target_raises_and_keeps_file(tmp_path: Path) -> None:
-    target = tmp_path / "f.txt"
-    target.write_bytes(b"old")
-    target.chmod(0o444)
-    fs = LocalFilesystem.singleton()
-    try:
-        with pytest.raises(PermissionError):
-            fs.write_atomic(fs.path(target))
-        assert target.read_bytes() == b"old"
-        assert sorted(p.name for p in tmp_path.iterdir()) == ["f.txt"]
-    finally:
-        target.chmod(0o644)
-
-
 def test_local_write_atomic_abort_removes_tmp_when_close_raises(tmp_path: Path) -> None:
     target = tmp_path / "f.txt"
     target.write_bytes(b"old")
@@ -331,4 +318,61 @@ def test_local_write_atomic_abort_removes_tmp_when_close_raises(tmp_path: Path) 
     writer._file = _CloseFails()
     writer.abort()
     assert target.read_bytes() == b"old"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["f.txt"]
+
+
+class _UnlinkFails:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def unlink(self, missing_ok: bool = False) -> None:
+        self.calls += 1
+        raise OSError(errno.EBUSY, "Device or resource busy")
+
+
+def test_local_write_atomic_abort_ignores_unlink_error(tmp_path: Path) -> None:
+    target = tmp_path / "f.txt"
+    target.write_bytes(b"old")
+    fs = LocalFilesystem.singleton()
+    writer = cast("local_module._LocalAtomicWriter", fs.write_atomic(fs.path(target)))
+    writer.write(b"partial")
+    real_tmp = writer._tmp
+    failing_tmp = _UnlinkFails()
+    writer._tmp = cast("Path", failing_tmp)
+    writer.abort()
+    assert failing_tmp.calls == 1
+    assert target.read_bytes() == b"old"
+    real_tmp.unlink()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["f.txt"]
+
+
+def test_local_write_atomic_close_error_cleanup_keeps_first_error(tmp_path: Path) -> None:
+    target = tmp_path / "f.txt"
+    target.write_bytes(b"old")
+    fs = LocalFilesystem.singleton()
+    writer = cast("local_module._LocalAtomicWriter", fs.write_atomic(fs.path(target)))
+    writer.write(b"partial")
+    real_tmp = writer._tmp
+    real_file = writer._file
+    failing_tmp = _UnlinkFails()
+
+    class _FlushAndCloseFail:
+        def flush(self) -> None:
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        def fileno(self) -> int:
+            return real_file.fileno()
+
+        def close(self) -> None:
+            real_file.close()
+            raise OSError(errno.EIO, "Input/output error")
+
+    writer._file = cast("Any", _FlushAndCloseFail())
+    writer._tmp = cast("Path", failing_tmp)
+    with pytest.raises(OSError, match="No space left on device") as info:
+        writer.close()
+    assert info.value.errno == errno.ENOSPC
+    assert failing_tmp.calls == 1
+    assert target.read_bytes() == b"old"
+    real_tmp.unlink()
     assert sorted(p.name for p in tmp_path.iterdir()) == ["f.txt"]

@@ -49,6 +49,8 @@ def _write_atomic(path: Path, data: bytes) -> None:
         raise FileNotFoundError(f"No such directory: {target.parent}")
     if target.is_symlink():
         raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(path))
+    if os.path.lexists(target) and not os.access(target, os.W_OK):
+        raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(target))
     filesystem = LocalFilesystem.singleton()
     try:
         writer = filesystem.write_atomic(VPath(str(target), filesystem))

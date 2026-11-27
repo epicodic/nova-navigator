@@ -97,8 +97,6 @@ class _LocalAtomicWriter:
     def __init__(self, target: Path) -> None:
         if target.is_symlink():
             raise ValueError(f"Cannot atomically replace a symlink: {target}")
-        if os.path.lexists(target) and not os.access(target, os.W_OK):
-            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(target))
         target.parent.mkdir(parents=True, exist_ok=True)
         fd, name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".nn-tmp", dir=target.parent)
         self._target = target
@@ -125,9 +123,11 @@ class _LocalAtomicWriter:
             os.replace(self._tmp, self._target)
         except BaseException:
             try:
-                self._file.close()
+                with contextlib.suppress(OSError):
+                    self._file.close()
             finally:
-                self._tmp.unlink(missing_ok=True)
+                with contextlib.suppress(OSError):
+                    self._tmp.unlink(missing_ok=True)
             raise
 
     def abort(self) -> None:
@@ -137,7 +137,8 @@ class _LocalAtomicWriter:
                 with contextlib.suppress(OSError):
                     self._file.close()
             finally:
-                self._tmp.unlink(missing_ok=True)
+                with contextlib.suppress(OSError):
+                    self._tmp.unlink(missing_ok=True)
 
 
 class LocalFilesystem(Filesystem):
