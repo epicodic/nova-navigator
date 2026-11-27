@@ -590,6 +590,8 @@ class MainScreen(ActionsSupport, Screen[None]):
         stale target for a panel that is no longer active.
         """
         panel = self.active_panel()
+        if not panel.has_committed_path:
+            return  # the first listing has not succeeded yet, so there is no directory to point the terminal at
         path = panel.path
         await self._ensure_terminal_for(path)
         self._terminal_pool.switch_to(path.filesystem)

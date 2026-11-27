@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import threading
 import zipfile
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path, PurePath
@@ -227,3 +228,33 @@ async def test_restoring_right_directory_does_not_move_terminal(work_dir: Path, 
         await asyncio.sleep(0.2)
     assert requested
     assert all(path == cwd for path in requested)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_unreadable_cwd_with_restored_right_directory_does_not_crash(work_dir: Path, config_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    requested: list[str] = []
+    original_request_cd = Terminal.request_cd
+    original_iterdir = LocalFilesystem.iterdir
+    cwd = Path.cwd()
+
+    def recording_request_cd(self: Terminal, path: PurePath) -> None:
+        requested.append(str(path))
+        original_request_cd(self, path)
+
+    async def failing_iterdir(self: LocalFilesystem, path: VPath, *, cancel: threading.Event | None = None) -> AsyncIterator[VPath]:
+        if path.path == cwd:
+            raise PermissionError(13, "Permission denied", str(cwd))
+        async for item in original_iterdir(self, path, cancel=cancel):
+            yield item
+
+    monkeypatch.setattr(Terminal, "request_cd", recording_request_cd)
+    monkeypatch.setattr(LocalFilesystem, "iterdir", failing_iterdir)
+    save_session_state(SessionState(right_path=str(work_dir)))
+    async with _session(config_dir) as (app, screen):
+        await _wait_for(lambda: _committed(screen._right_panel))
+        await _wait_for(lambda: _local_dir(screen._right_panel) == str(work_dir))
+        await asyncio.sleep(0.2)
+        assert app.is_running
+        assert not _committed(screen._left_panel)
+    assert str(work_dir) not in requested

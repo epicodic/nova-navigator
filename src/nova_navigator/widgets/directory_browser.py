@@ -615,6 +615,11 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
         return self._path
 
     @property
+    def has_committed_path(self) -> bool:
+        """Whether a directory has been listed successfully, so ``path`` is a real path rather than the placeholder."""
+        return not isinstance(self._path, UpPath)
+
+    @property
     def path_item_under_cursor(self) -> VPath:
         return self._shown_items[self.cursor_row]
 
