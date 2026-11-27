@@ -97,7 +97,7 @@ With nothing unsynced, Nova Navigator quits immediately and removes its local-co
 
 `Ctrl+Q` asks only when a local copy is unsynced.
 With the built-in editor or viewer open, `Ctrl+Q` first closes that screen and asks about its unsaved text; the quit prompt for the copies is asked by a later `Ctrl+Q`.
-While a quit is under way, a quit key is ignored.
+While a quit is under way, a quit key is ignored, except that it still closes a built-in editor or viewer opened meanwhile.
 A running sync cannot be interrupted, so the application stays open until the sync finishes or fails.
 Any other way the application ends, such as a crash, keeps the local files whenever a copy is unsynced.
 

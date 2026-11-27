@@ -14,6 +14,7 @@ from ..file_filter import FileFilter
 from ..vfs import VPath
 from ..vfs.filesystem import Filesystem, StreamReaderLike, StreamWriterLike
 from ..vfs.filesystems.local import LocalFilesystem
+from ..vfs.local_copy import MAX_LINK_HOPS
 from ..vfs.types import Stat
 from .link_target import stable_link_target
 
@@ -32,7 +33,6 @@ SKIP_FOLDER_EXISTS = "folder exists"
 SKIP_SAME_FILE = "same file"
 SKIP_INTO_ITSELF = "into itself"
 _MAX_LINK_DEPTH = 16
-_MAX_LINK_HOPS = 40  # Linux refuses to open a longer chain of links (ELOOP), so no write can go through one
 
 
 @dataclass(frozen=True)
@@ -120,9 +120,9 @@ def _skip_onto_itself(ctx: TaskContext, src: VPath, dst: VPath) -> bool:
 
 
 def _walk_links(path: VPath) -> Iterator[VPath]:
-    """Yield *path* and then, while it is a link, each next step towards its target (at most _MAX_LINK_HOPS steps)."""
+    """Yield *path* and then, while it is a link, each next step towards its target (at most MAX_LINK_HOPS steps)."""
     yield path
-    for _ in range(_MAX_LINK_HOPS):
+    for _ in range(MAX_LINK_HOPS):
         try:
             path = path.parent / path.filesystem.readlink(path)
         except OSError:  # the end of the chain: not a link any more

@@ -19,7 +19,7 @@ from .vpath import VPath
 _MAX_SEGMENT_BYTES = 255
 _MAX_SUFFIX_BYTES = 16
 _CHUNK_SIZE = 1024 * 1024
-_MAX_LINK_HOPS = 40  # the Linux limit on symbolic links followed in one path
+MAX_LINK_HOPS = 40  # Linux refuses longer chains of links (ELOOP); the link walks in both places stop here
 
 
 def sanitize_segment(segment: str) -> str:
@@ -119,7 +119,7 @@ def _final_target(filesystem: Filesystem, path: VPath) -> VPath:
         OSError: ``ELOOP`` when the links do not end within the hop limit.
     """
     current = path
-    for _ in range(_MAX_LINK_HOPS):
+    for _ in range(MAX_LINK_HOPS):
         try:
             stat = filesystem.stat_uncached(current)
         except FileNotFoundError:

@@ -177,3 +177,48 @@ async def test_a_followed_link_onto_a_destination_link_to_the_same_folder_replac
     assert (root / "B" / "l" / "t").read_bytes() == b"data-t"
     assert (root / "T" / "t").read_bytes() == b"data-t"
     assert (root / "A" / "l").is_symlink()
+
+
+Snapshot = list[tuple[str, str, bytes | str]]
+
+
+def _snapshot(root: Path) -> Snapshot:
+    """Every entry under *root* with its kind and content: file bytes or link target, without following links."""
+    entries: Snapshot = []
+    for folder, folders, files in os.walk(root):
+        for name in (*folders, *files):
+            path = Path(folder, name)
+            rel = str(path.relative_to(root))
+            if path.is_symlink():
+                entries.append((rel, "link", os.readlink(path)))
+            elif path.is_dir():
+                entries.append((rel, "dir", ""))
+            else:
+                entries.append((rel, "file", path.read_bytes()))
+    return sorted(entries)
+
+
+@pytest.fixture
+def link_inside_source(tmp_path: Path) -> Path:
+    """A/d/f, A/d/sub/g, A/d/d -> A/d/sub and ``alias`` -> A/d: the destination entry is a link inside the source."""
+    (tmp_path / "A" / "d" / "sub").mkdir(parents=True)
+    (tmp_path / "A" / "d" / "f").write_bytes(b"data-f")
+    (tmp_path / "A" / "d" / "sub" / "g").write_bytes(b"data-g")
+    (tmp_path / "A" / "d" / "d").symlink_to(tmp_path / "A" / "d" / "sub", target_is_directory=True)
+    (tmp_path / "alias").symlink_to("A/d", target_is_directory=True)
+    return tmp_path
+
+
+@pytest.mark.parametrize("destination", ["A/d", "alias"], ids=["direct", "through-alias"])
+@pytest.mark.parametrize("operation", _OPERATIONS)
+async def test_a_destination_link_inside_the_source_is_refused(pair: tuple[Filesystem, Filesystem], link_inside_source: Path, operation: Callable[..., object], destination: str) -> None:
+    root = link_inside_source
+    source = pair[0].path(root / "A" / "d")
+    before = _snapshot(root)
+
+    status = await _run(operation, [source], pair[1].path(root / destination))
+
+    assert _snapshot(root) == before
+    assert [(item.item, item.reason) for item in status.skipped] == [(source.uri, "into itself")]
+    assert (root / "A" / "d" / "d").is_symlink()
+    assert os.readlink(root / "A" / "d" / "d") == str(root / "A" / "d" / "sub")
