@@ -154,6 +154,7 @@ Filtering hides any item whose name does not contain the filter string (case-ins
 
 `show_hidden_files: Reactive[bool]` (default `False`, `repaint=False`, `always_update=False`) controls dotfile visibility independently of filtering.
 Changing it triggers `watch_show_hidden_files` → `update(WhatChanged.FILTERING)`.
+`MainScreen` sets both panels from the `general.show_hidden_files` setting at start and saves it when the toggle changes.
 
 `set_hidden_names(names)` hides items by name, in addition to the text filter and the hidden-files rule.
 The hidden items stay in `_all_items` and in `items`.

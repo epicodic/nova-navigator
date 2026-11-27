@@ -22,6 +22,7 @@ from textual.logging import TextualHandler
 from textual.screen import Screen
 from textual.widgets import Input
 from textual.worker import WorkerFailed
+from tomlkit.exceptions import TOMLKitError
 
 from nova_editor.screen import EditorScreen
 from nova_navigator import debug_analytics
@@ -36,6 +37,7 @@ from nova_navigator.commands import (
     CommandRunner,
 )
 from nova_navigator.config import app_config_dir, conf_
+from nova_navigator.config.settings import Settings
 from nova_navigator.dialogs import (
     BookmarksDialog,
     ConnectToDialog,
@@ -98,6 +100,21 @@ logging.basicConfig(
 )
 
 _logger = logging.getLogger("nova_navigator.nova_navigator")
+
+
+def _store_show_hidden(value: bool) -> None:
+    """Save the show_hidden_files setting, reloading settings.toml first so hand edits survive.
+
+    A settings file that cannot be read or written is logged and left as it is; the toggle still applies.
+    """
+    conf_.settings.general.show_hidden_files = value
+    # a damaged or unwritable settings file must not break the toggle
+    try:
+        stored = Settings.load()
+        stored.general.show_hidden_files = value
+        stored.save()
+    except (OSError, TOMLKitError, TypeError, ValueError, KeyError, AttributeError):
+        _logger.warning("Could not save the show_hidden_files setting", exc_info=True)
 
 
 class CommandInput(Input):
@@ -404,6 +421,7 @@ class MainScreen(ActionsSupport, Screen[None]):
                 panel.sort_column = SortKey[state.sort_column.upper()]
             if state.sort_ascending is not None:
                 panel.sort_ascending = state.sort_ascending
+        self._set_show_hidden(conf_.settings.general.show_hidden_files is True)
         self._left_panel.focus()
 
     def save_session_state(self) -> None:
@@ -990,15 +1008,19 @@ class MainScreen(ActionsSupport, Screen[None]):
         if event.action and event.action:
             await self._run_action(event.action)
 
+    def _set_show_hidden(self, value: bool) -> None:
+        self._act("view.show_hidden_files").set_checked(value)
+        self._left_panel.show_hidden_files = value
+        self._right_panel.show_hidden_files = value
+
     def _action_toggle_hidden(self) -> None:
-        new_state = not self._left_panel.show_hidden_files
-        self._act("view.show_hidden_files").set_checked(new_state)
-        self._action_show_hidden_files()
+        self._set_show_hidden(not self._left_panel.show_hidden_files)
+        _store_show_hidden(self._left_panel.show_hidden_files)
 
     def _action_show_hidden_files(self) -> None:
-        a = self._act("view.show_hidden_files")
-        self._left_panel.show_hidden_files = a.checked
-        self._right_panel.show_hidden_files = a.checked
+        value = self._act("view.show_hidden_files").checked  # the menu has already flipped it
+        self._set_show_hidden(value)
+        _store_show_hidden(value)
 
     async def _action_open_editor(self) -> None:
         path = self.active_panel().path_item_under_cursor
@@ -1133,6 +1155,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         dialog = SettingsDialog(copy.deepcopy(conf_.settings))
         if await dialog.run() == Response.OK:
             conf_.settings = dialog.config
+            self._set_show_hidden(conf_.settings.general.show_hidden_files is True)
             conf_.settings.save()
 
     @work
