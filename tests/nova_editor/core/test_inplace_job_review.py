@@ -46,8 +46,10 @@ def run_in_thread(doc: LazyDocument, job: InPlaceJob) -> tuple[threading.Thread,
 
     thread = threading.Thread(target=work)
     thread.start()
-    doc.join_on_close(thread)
-    registered.set()
+    try:
+        doc.join_on_close(thread)
+    finally:
+        registered.set()
     return thread, outcome
 
 
