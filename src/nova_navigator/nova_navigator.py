@@ -20,6 +20,7 @@ from textual.containers import Horizontal
 from textual.geometry import Offset
 from textual.logging import TextualHandler
 from textual.screen import Screen
+from textual.widget import Widget
 from textual.widgets import Input
 from textual.worker import WorkerFailed
 
@@ -48,12 +49,14 @@ from nova_navigator.dialogs import (
     SelectByPatternDialog,
 )
 from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
+from nova_navigator.dialogs.key_help_dialog import KeyHelpDialog
 from nova_navigator.dialogs.response_dialog import make_response_dialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
 from nova_navigator.dialogs.user_menu_input_dialog import InputField, UserMenuInputDialog
 from nova_navigator.embedded_editor_keys import editor_key_actions
 from nova_navigator.filemanager.compare import CompareMode, compare_directories, identical_file_names
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
+from nova_navigator.key_help import build_key_help
 from nova_navigator.local_copies.editor_session import EditorTarget, finish_editing, open_for_editing
 from nova_navigator.nova_navigator_core import (
     NovaNavigatorCore,
@@ -114,6 +117,9 @@ def _store_show_hidden(value: bool) -> None:
         stored.save()
     except Exception:
         _logger.exception("Could not save the show_hidden_files setting")
+
+
+_TERMINAL_PASS_THROUGH = frozenset({"app.help", "browser.view_file"})  # the second id arrives with the viewer
 
 
 class CommandInput(Input):
@@ -181,6 +187,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         Action("Go Up", id="browser.go_up", action="go_up", description="Navigate to the parent directory", shortcut="alt+up", show=False),
         Action("Follow Symlink", id="browser.follow_symlink", action="follow_symlink", description="Follow symlink to destination", shortcut="alt+down", show=False),
         Action("Key Bindings…", id="app.keybindings", action="keybindings", description="Open keybinding editor", show=False, icon="keyboard"),
+        Action("Help", id="app.help", action="key_help", shortcut="f1", description="Show the key bindings", show=True, bar_priority=1),
         Action("Invert Selection", id="selection.invert", action="invert_selection", description="Invert the current selection", shortcut="ctrl+s i", show=True),
         Action("Select All", id="selection.select_all", action="select_all", description="Select all items in the current directory", shortcut="ctrl+s a", show=True),
         Action("Select None", id="selection.select_none", action="select_none", description="Deselect all items in the current directory", shortcut="ctrl+s n", show=True),
@@ -238,6 +245,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         self._terminal_mode = self._TerminalMode.MINIMIZED
         self._sync_state = None
         self._compare_config = None
+        self._menu_focus: Widget | None = None
         self._terminal_pool = TerminalPool()
         self._provisioning: set[int] = set()
         _config_dir = config_dir if config_dir is not None else app_config_dir()
@@ -260,6 +268,7 @@ class MainScreen(ActionsSupport, Screen[None]):
             self._act("app.settings"),
             self._act("app.keybindings"),
             mc.separator(),
+            self._act("app.help"),
             mc.action("About", icon="info", action="about"),
             mc.separator(),
             self._act("app.quit"),
@@ -1010,8 +1019,26 @@ class MainScreen(ActionsSupport, Screen[None]):
             await self.app.run_action(action.action, self)
 
     async def _on_menu_triggered(self, event: Menu.Triggered) -> None:
-        if event.action and event.action:
-            await self._run_action(event.action)
+        if event.action:
+            self._menu_focus = self._menu_bar.focus_before_menu
+            try:
+                await self._run_action(event.action)
+            finally:
+                self._menu_focus = None
+
+    def _passes_to_terminal(self, action_id: str) -> bool:
+        return action_id in _TERMINAL_PASS_THROUGH and isinstance(self.focused, Terminal)
+
+    def _action_key_help(self) -> None:
+        previous = self._menu_focus if self._menu_focus is not None else self.focused
+        actions = [*type(self).ACTIONS, *DirectoryBrowser.ACTIONS, *editor_key_actions()]
+        groups = build_key_help(actions, self._keymap_config, conf_.settings.general.key_display_style)
+
+        def restore(_result: Response | None) -> None:
+            if previous is not None and previous.is_attached:
+                previous.focus()
+
+        self.app.push_screen(KeyHelpDialog(groups), restore)
 
     def _set_show_hidden(self, value: bool) -> None:
         self._act("view.show_hidden_files").set_checked(value)
@@ -1295,7 +1322,7 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
             if event.key == "backspace" and event.character == "\x08":
                 event.key = "ctrl+h"
             screen = self.screen
-            if isinstance(screen, MainScreen) and screen._keymap_registry is not None and await screen._keymap_registry.handle_key(event.key, self):
+            if isinstance(screen, MainScreen) and screen._keymap_registry is not None and await screen._keymap_registry.handle_key(event.key, self, pass_through=screen._passes_to_terminal):
                 return
             if isinstance(screen, EditorScreen) and not event.is_forwarded and await screen.press_key(event.key):
                 return

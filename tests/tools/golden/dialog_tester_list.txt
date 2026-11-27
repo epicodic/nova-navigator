@@ -83,3 +83,6 @@ FileDialog (dir)
 UserMenuInputDialog
   Collects the input fields of a user menu entry before it runs.
 
+KeyHelpDialog
+  F1 key help list
+
