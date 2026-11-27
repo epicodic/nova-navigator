@@ -451,6 +451,7 @@ EditorScreen(
     poll_seconds: float = 2.0,
     quit_wait_seconds: float = 2.0,
     start_hex: bool = False,
+    view_only: bool = False,
 ) -> None:
 ```
 
@@ -470,6 +471,29 @@ EditorScreen(
 - `poll_seconds` — Interval of the check for a change of the file on disk (default 2.0).
 - `quit_wait_seconds` — Longest wait for a cancelled save before the quit question (default 2.0).
 - `start_hex` — Show the first document in the hex view whatever its content; Open uses the binary detection (default `False`).
+- `view_only` — Show the file without any way to change or write it (default `False`); see "View-only screen".
+
+### View-only screen
+
+`EditorScreen(view_only=True)` shows a file and never writes it; with the default nothing changes.
+
+Three layers guard the file, each sufficient for the paths it covers:
+
+1. The widget is `read_only`, and the hex view follows it.
+2. The document is edit-locked, also after a reload, so undo, redo and programmatic edits are refused.
+3. `NovaTextArea.save` returns `False` and writes nothing.
+
+The screen does not build the actions `editor.open`, `editor.save`, `editor.save_as`, `editor.undo`, `editor.redo`, `editor.cut` and `editor.paste`, so they are absent from the menus, the hint bar and the keymap.
+Reload, Copy, Select All, search, Go to and the View items remain.
+The widget's own bindings for Ctrl+Z, Ctrl+Y, Ctrl+X and Ctrl+V still exist and are refused by the first two layers.
+
+F10 closes the screen through a screen binding that is active only when `view_only`.
+No action keeps a binding that starts with F10, neither a default nor a user override.
+Wrap Mode therefore has no default key; it stays in the View menu and works with a user-assigned key.
+Escape, Close and Quit work as in the embedded editor, and no question appears because the document is never modified.
+Escape and F10 close a visible Find or Go to popup first, and Escape cancels a running search or a pending jump before that.
+
+A change of the file on disk asks with Keep and Reload only; Save As and Overwrite are not offered.
 
 ### Architecture
 

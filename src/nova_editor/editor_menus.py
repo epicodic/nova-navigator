@@ -10,7 +10,7 @@ def build_menu_bar(actions: dict[str, Action], *, standalone: bool) -> MenuBar:
     """Build the menu bar with the four menus.
 
     Args:
-        actions: Dict of action id → Action object (built by build_editor_actions, keyed by id).
+        actions: Dict of action id → Action object (built by build_editor_actions, keyed by id); an action that is missing is left out of its menu.
         standalone: `True` for nova_edit, `False` for navigator integration.
 
     Returns:
@@ -18,39 +18,12 @@ def build_menu_bar(actions: dict[str, Action], *, standalone: bool) -> MenuBar:
     """
     menu_bar = MenuBar()
 
-    # File menu
-    file_items = [actions["editor.open"], actions["editor.save"], actions["editor.save_as"], actions["editor.reload"]]
-    file_items.append(actions["editor.quit"] if standalone else actions["editor.close"])
-    menu_bar.add_menu("File", *file_items, name="file")
+    def items(*action_ids: str) -> list[Action]:
+        return [actions[i] for i in action_ids if i in actions]
 
-    # Edit menu
-    edit_items = [
-        actions["editor.undo"],
-        actions["editor.redo"],
-        actions["editor.cut"],
-        actions["editor.copy"],
-        actions["editor.paste"],
-        actions["editor.select_all"],
-    ]
-    menu_bar.add_menu("Edit", *edit_items, name="edit")
-
-    # Search menu
-    search_items = [
-        actions["editor.find"],
-        actions["editor.find_next"],
-        actions["editor.find_previous"],
-        actions["editor.goto"],
-    ]
-    menu_bar.add_menu("Search", *search_items, name="search")
-
-    # View menu
-    view_items = [
-        actions["editor.line_numbers"],
-        actions["editor.wrap_mode"],
-        actions["editor.hex_mode"],
-    ]
-    if "editor.keyboard_shortcuts" in actions:
-        view_items.append(actions["editor.keyboard_shortcuts"])
-    menu_bar.add_menu("View", *view_items, name="view")
+    menu_bar.add_menu("File", *items("editor.open", "editor.save", "editor.save_as", "editor.reload", "editor.quit" if standalone else "editor.close"), name="file")
+    menu_bar.add_menu("Edit", *items("editor.undo", "editor.redo", "editor.cut", "editor.copy", "editor.paste", "editor.select_all"), name="edit")
+    menu_bar.add_menu("Search", *items("editor.find", "editor.find_next", "editor.find_previous", "editor.goto"), name="search")
+    menu_bar.add_menu("View", *items("editor.line_numbers", "editor.wrap_mode", "editor.hex_mode", "editor.keyboard_shortcuts"), name="view")
 
     return menu_bar
