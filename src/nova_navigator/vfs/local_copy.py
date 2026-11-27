@@ -210,6 +210,19 @@ class LocalCopy:
         self._baseline = Baseline(SourceFingerprint.of(self._source), "")
         self._download(progress)
 
+    def _write_target(self) -> VPath:
+        """The file a write-back replaces: the target of a link, so that the link stays."""
+        filesystem = self._source.filesystem
+        try:
+            if not filesystem.stat_uncached(self._source).is_symlink:
+                return self._source
+        except FileNotFoundError:
+            return self._source
+        try:
+            return filesystem.real_path(self._source) or self._source
+        except FileNotFoundError:
+            return filesystem.resolve_link(self._source)  # dangling link: create the file it names (docs/editor.md)
+
     def write_back(self, progress: ProgressCallback | None = None) -> None:
         """Replace the source with the local file's content and advance the baseline.
 
@@ -220,7 +233,8 @@ class LocalCopy:
             raise PermissionError(f"Local copy is read-only: {self._source.uri}")
         if self._pass_through:
             return
-        writer = self._source.filesystem.write_atomic(self._source)
+        filesystem = self._source.filesystem
+        writer = filesystem.write_atomic(self._write_target())
         digest = hashlib.sha256()
         try:
             with self._path.open("rb") as reader:
@@ -233,6 +247,7 @@ class LocalCopy:
             writer.abort()
             raise
         writer.close()
+        filesystem.refresh(filesystem.parent(self._source))  # the writer refreshes only the target's directory
         self._baseline = Baseline(SourceFingerprint.of(self._source), digest.hexdigest())
 
     def rebase_container(self) -> None:
