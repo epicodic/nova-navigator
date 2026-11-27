@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from nova_widgets.action import Action
 from nova_widgets.keybindings_config import KeybindingsConfig
-from nova_widgets.keymap.key_sequence import KeyFormatStyle
+from nova_widgets.keymap.key_sequence import KeyChord, KeyFormatStyle
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,7 @@ _GROUP_ORDER: tuple[str, ...] = (
     "File list",
     "Terminal",
     "Editor",
+    "Viewer",
 )
 
 _EXCEPTIONS: dict[str, str] = {
@@ -80,7 +81,14 @@ _FIXED_ROWS: dict[str, list[HelpRow]] = {
     "Editor": [
         HelpRow("Esc", "Close the editor"),
     ],
+    "Viewer": [
+        HelpRow("Esc", "Close viewer"),
+        HelpRow("F10", "Close viewer"),
+    ],
 }
+
+_VIEWER_CLOSE_ACTIONS: tuple[str, ...] = ("editor.quit", "editor.close")
+"""Editor actions that close the viewer too; their effective keys are listed in the Viewer group."""
 
 
 def _group_of(action_id: str) -> str:
@@ -114,4 +122,9 @@ def build_key_help(actions: list[Action], config: KeybindingsConfig, key_display
         rows[_group_of(action_id)].append(HelpRow(bindings[action_id].format(key_display_style), action.text, action_id))
     for title, fixed in _FIXED_ROWS.items():
         rows[title].extend(fixed)
+    f10 = KeyChord.parse("f10")  # already listed; the viewer drops every action binding that starts with it
+    for action_id in _VIEWER_CLOSE_ACTIONS:
+        keys = bindings.get(action_id)
+        if keys is not None and keys.chords[0] != f10:
+            rows["Viewer"].append(HelpRow(keys.format(key_display_style), "Close viewer"))
     return [HelpGroup(title, rows[title]) for title in (*_GROUP_ORDER, "Other") if rows[title]]

@@ -8,9 +8,10 @@ import os
 import shlex
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import partial
 from pathlib import Path, PurePath, PurePosixPath
 from typing import ClassVar, NamedTuple, cast
 
@@ -57,7 +58,8 @@ from nova_navigator.embedded_editor_keys import editor_key_actions
 from nova_navigator.filemanager.compare import CompareMode, compare_directories, identical_file_names
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
 from nova_navigator.key_help import build_key_help
-from nova_navigator.local_copies.editor_session import EditorTarget, finish_editing, open_for_editing
+from nova_navigator.local_copies.editor_session import EditorTarget, SessionNotice, finish_editing, open_for_editing
+from nova_navigator.local_copies.viewer_session import ViewTarget, finish_viewing, open_for_viewing
 from nova_navigator.nova_navigator_core import (
     NovaNavigatorCore,
     PanelRef,
@@ -119,7 +121,7 @@ def _store_show_hidden(value: bool) -> None:
         _logger.exception("Could not save the show_hidden_files setting")
 
 
-_TERMINAL_PASS_THROUGH = frozenset({"app.help", "browser.view_file"})  # the second id arrives with the viewer
+_TERMINAL_PASS_THROUGH = frozenset({"app.help", "browser.view_file"})
 
 
 class CommandInput(Input):
@@ -170,6 +172,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         Action("Rename", id="browser.rename", action="rename", description="Rename the file or directory under the cursor", shortcut="shift+f6", show=False),
         Action("User Menu", id="app.user_menu", action="user_menu", description="Open the user menu", shortcut="f2", show=True, bar_priority=5),
         Action("Edit User Menu File", id="app.edit_user_menu", action="edit_user_menu", description="Open the user menu file in the editor", show=False),
+        Action("View", id="browser.view_file", action="view_file", description="Show the file under the cursor read-only", shortcut="f3", show=True, bar_priority=10),
         Action("Edit", id="browser.open_editor", action="open_editor", description="Open the file under the cursor in an editor", shortcut="f4", show=True, bar_priority=15),
         Action("Copy", id="browser.copy", action="copy_or_move_files(False)", description="Copy selected files to the other panel", shortcut="f5", show=True, bar_priority=20),
         Action("Move", id="browser.move", action="copy_or_move_files(True)", description="Move selected files to the other panel", shortcut="f6", show=True, bar_priority=25),
@@ -285,6 +288,7 @@ class MainScreen(ActionsSupport, Screen[None]):
             self._act("file.open"),
             self._act("file.open_in_other_panel"),
             self._act("browser.follow_symlink"),
+            self._act("browser.view_file"),
             self._act("browser.open_editor"),
             mc.separator(),
             self._act("file.copy"),
@@ -952,6 +956,7 @@ class MainScreen(ActionsSupport, Screen[None]):
             (AKey(is_directory=True, is_file=True), self._act("file.open")),
             (AKey(is_directory=True), self._act("file.open_in_other_panel")),
             (AKey(is_symlink=True), self._act("browser.follow_symlink")),
+            (AKey(is_file=True), self._act("browser.view_file")),
             (AKey(is_file=True), self._act("browser.open_editor")),
             (AKey(is_directory=True, is_file=True), self._act("file.cut")),
             (AKey(is_directory=True, is_file=True), self._act("file.copy")),
@@ -1052,6 +1057,13 @@ class MainScreen(ActionsSupport, Screen[None]):
     def _action_show_hidden_files(self) -> None:
         # the menu flips the checked state, but a key bound to this action does not, so toggle from the panels
         self._action_toggle_hidden()
+
+    async def _action_view_file(self) -> None:
+        # the key registry ignores `Action.enabled`, so a directory (also `..` and a link to one) is refused here
+        path = self.active_panel().path_item_under_cursor
+        if isinstance(path, UpPath) or path.stat.is_directory:
+            return
+        await self.app.open_viewer(path)
 
     async def _action_open_editor(self) -> None:
         path = self.active_panel().path_item_under_cursor
@@ -1289,11 +1301,14 @@ class MainScreen(ActionsSupport, Screen[None]):
 
 @dataclass(frozen=True)
 class _EditorSession:
-    """One open editor screen with what the host needs to end it."""
+    """One open editor or viewer screen with what the host needs to end it."""
 
     screen: EditorScreen
-    target: EditorTarget
     previous_sub_title: str
+    finish: Callable[[], Awaitable[SessionNotice | None]]
+    """Ends the file side of the session after the screen is gone."""
+    reload_panels: bool = True
+    """False when the session cannot have changed a file."""
 
 
 class NovaNavigator(NovaNavigatorCore, App[None]):
@@ -1492,7 +1507,7 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
                 screen.keymap_registry.set_key_display_style(conf_.settings.general.key_display_style)
                 if target.read_only:
                     screen.document.editor.read_only = True
-                self._editor_session = _EditorSession(screen, target, self.sub_title)
+                self._editor_session = _EditorSession(screen, self.sub_title, partial(finish_editing, self.local_copies, target))
                 self.push_screen(screen)
                 pushed = True
             except Exception:
@@ -1517,6 +1532,52 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
                 f"Local copy of {target.entry.key}. Saves are written back to the source.",
                 title="Local copy",
             )
+
+    async def open_viewer(self, path: VPath) -> None:
+        """Show *path* read-only in the editor screen: a local file in place, any other file through a private copy.
+
+        The source is never written. Pushes the screen and returns; `on_editor_screen_closed` ends the session.
+        A request while an editor or viewer session is opening, open or ending is ignored.
+        """
+        if self._editor_busy:
+            return
+        self._editor_busy = True
+        pushed = False
+        target: ViewTarget | None = None
+        try:
+            # A worker for the same reason as in `open_editor`: the download job may have to ask a question.
+            worker = self.run_worker(
+                open_for_viewing(self.local_copies, path),
+                group="editor_open",
+                exit_on_error=False,
+            )
+            try:
+                target = await worker.wait()
+            except WorkerFailed as failed:
+                raise failed.error from None
+            if target is None:
+                return
+            try:
+                screen = EditorScreen(path=target.path, view_only=True, keybindings=self._main_screen.keymap_config, keyboard_shortcuts_item=False)
+                screen.keymap_registry.set_key_display_style(conf_.settings.general.key_display_style)
+                self._editor_session = _EditorSession(screen, self.sub_title, partial(self._finish_viewer, target), reload_panels=False)
+                self.push_screen(screen)
+                pushed = True
+            except Exception:
+                self._editor_session = None
+                finish_viewing(self.local_copies, target)
+                raise
+        finally:
+            if not pushed:
+                self._editor_busy = False
+        if target.directory is not None:
+            # markup=False: a file name may contain brackets
+            self.notify(f"{target.key} is shown read-only.", title="Viewer", markup=False)
+
+    async def _finish_viewer(self, target: ViewTarget) -> SessionNotice | None:
+        """End a viewer session; there is nothing to tell the user."""
+        finish_viewing(self.local_copies, target)
+        return None
 
     def on_editor_screen_closed(self, message: EditorScreen.Closed) -> None:
         """The editor asked to close: end the session in a worker."""
@@ -1551,10 +1612,11 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
                 if session.screen in self.screen_stack:
                     self.sub_title = session.previous_sub_title
                     await self.pop_screen()
-                    self._main_screen.reload_panels()
+                    if session.reload_panels:
+                        self._main_screen.reload_panels()
             finally:
-                # Always run finish_editing (final sync and release) even when pop/reload fails.
-                notice = await finish_editing(self.local_copies, session.target)
+                # Always finish the session (final sync and release, or removal of the view copy) even when pop/reload fails.
+                notice = await session.finish()
                 if notice is not None:
                     self.notify(notice.message, title="Local copy", severity=notice.severity, timeout=15)
         finally:

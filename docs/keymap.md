@@ -176,7 +176,7 @@ Returns `True` if the key was consumed.
 
 `pass_through` is an optional predicate on the matched action id.
 When it returns `True`, the key is left unconsumed (`False`) and no action runs, so the focused widget receives the key.
-`MainScreen` uses it so that a focused terminal keeps F1 (sent to the shell) and the help action is not run there.
+`MainScreen` uses it so that a focused terminal keeps F1 and F3 (sent to the shell) and neither the help nor the viewer action is run there.
 
 `key` is a Textual key name string such as `"ctrl+x"` or `"f5"`.
 It is converted to a `KeyChord` internally before being fed to the state machine.

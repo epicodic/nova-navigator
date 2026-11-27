@@ -34,6 +34,14 @@ If the final write-back fails, a notice says so, the copy keeps your changes, th
 A copy that is never written back (see Read-only sources) opens view-only with a notice: typing, Cut, Paste and Ctrl+S change nothing, and Save As writes a local file.
 A Save As to another path leaves the copy, and later saves there are not written back.
 
+### Viewing in the built-in viewer
+
+F3 on a file, and File > View, show it read-only in the editor screen.
+A file on the local filesystem is viewed in place.
+A file from SSH, Azure, or an archive is downloaded completely into a private viewer copy, and a notice names the source.
+A viewer copy is not listed in the Local Copies dialog, not watched and never written back, and it is removed when the viewer closes.
+The viewer shows the source as it is now, also while an editor copy of the same file holds changes that were not synced yet; that copy is left alone.
+
 ### The Local Copies dialog
 
 Press **Ctrl+E**, or use **Command → Local Copies**, to see every currently open local copy.
@@ -217,6 +225,8 @@ A directory raises `IsADirectoryError`; a local file is checked by `check_readab
 Any other file is downloaded by `LocalCopyManager.create_view_copy()` into its own unique directory below `<root>/view/`, with `read_only=True`.
 A view copy is never registered, watched or synced, so viewing a file never writes it back and never touches an F4 copy of the same source.
 `finish_viewing(manager, target)` removes the view copy's directory through `discard_view_copy()`; a failed download removes its directory before returning.
+`NovaNavigator.open_viewer` runs `open_for_viewing` in a Textual worker and calls `finish_viewing` when the viewer screen is gone, or when the screen could not be pushed.
+Directories left behind by a crash are covered by the cleanup of the process root (see "Where the files live").
 
 ### Writable archives
 

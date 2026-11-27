@@ -37,3 +37,15 @@ def test_override_key_is_shown_instead_of_default(tmp_path: Path) -> None:
     groups = build_key_help(_all_actions(), config, KeyFormatStyle.CLASSIC)
     rows = {row.action_id: row for g in groups for row in g.rows}
     assert rows["browser.copy"].keys == "F9"
+
+
+def test_viewer_group_lists_the_effective_close_keys(tmp_path: Path) -> None:
+    config = KeybindingsConfig(tmp_path)
+    config.save({"editor.quit": KeySequence.parse("f9"), "editor.close": None})
+    groups = build_key_help(_all_actions(), config, KeyFormatStyle.CLASSIC)
+    viewer = next(g for g in groups if g.title == "Viewer")
+    assert [(row.keys, row.label, row.action_id) for row in viewer.rows] == [
+        ("Esc", "Close viewer", None),
+        ("F10", "Close viewer", None),
+        ("F9", "Close viewer", None),
+    ]
