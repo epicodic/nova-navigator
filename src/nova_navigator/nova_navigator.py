@@ -22,7 +22,6 @@ from textual.logging import TextualHandler
 from textual.screen import Screen
 from textual.widgets import Input
 from textual.worker import WorkerFailed
-from tomlkit.exceptions import TOMLKitError
 
 from nova_editor.screen import EditorScreen
 from nova_navigator import debug_analytics
@@ -67,7 +66,7 @@ from nova_navigator.remotes.ssh import SSH_PLUGIN
 from nova_navigator.runtime_patches import apply_runtime_patches
 from nova_navigator.scheduler import Job, ResponseRequest, skipped_summary
 from nova_navigator.session_state import PanelState, SessionState, load_session_state, usable_directory
-from nova_navigator.session_state import save_session_state as store_session_state
+from nova_navigator.session_state import save_session_state as write_session_state_file
 from nova_navigator.terminal import Terminal, TerminalPool
 from nova_navigator.usermenu import (
     USER_MENU_FILENAME,
@@ -113,8 +112,8 @@ def _store_show_hidden(value: bool) -> None:
         stored = Settings.load()
         stored.general.show_hidden_files = value
         stored.save()
-    except (OSError, TOMLKitError, TypeError, ValueError, KeyError, AttributeError):
-        _logger.warning("Could not save the show_hidden_files setting", exc_info=True)
+    except Exception:
+        _logger.exception("Could not save the show_hidden_files setting")
 
 
 class CommandInput(Input):
@@ -416,7 +415,11 @@ class MainScreen(ActionsSupport, Screen[None]):
     async def on_mount(self) -> None:
         self._keymap_registry = KeymapRegistry(self._hint_bar)
         self._reload_keymap()
-        for panel, state in ((self._left_panel, self._session_state.left), (self._right_panel, self._session_state.right)):
+        panels_state = (
+            (self._left_panel, self._session_state.left),
+            (self._right_panel, self._session_state.right),
+        )
+        for panel, state in panels_state:
             if state.sort_column is not None:
                 panel.sort_column = SortKey[state.sort_column.upper()]
             if state.sort_ascending is not None:
@@ -427,7 +430,7 @@ class MainScreen(ActionsSupport, Screen[None]):
     def save_session_state(self) -> None:
         """Store the sort orders and the right panel's last local directory."""
         left, right = self._left_panel, self._right_panel
-        store_session_state(
+        write_session_state_file(
             SessionState(
                 left=PanelState(left.sort_column.name.lower(), left.sort_ascending),
                 right=PanelState(right.sort_column.name.lower(), right.sort_ascending),
@@ -1020,9 +1023,8 @@ class MainScreen(ActionsSupport, Screen[None]):
         _store_show_hidden(self._left_panel.show_hidden_files)
 
     def _action_show_hidden_files(self) -> None:
-        value = self._act("view.show_hidden_files").checked  # the menu has already flipped it
-        self._set_show_hidden(value)
-        _store_show_hidden(value)
+        # the menu flips the checked state, but a key bound to this action does not, so toggle from the panels
+        self._action_toggle_hidden()
 
     async def _action_open_editor(self) -> None:
         path = self.active_panel().path_item_under_cursor

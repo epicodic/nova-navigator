@@ -36,7 +36,11 @@ def test_save_load_round_trip() -> None:
     assert load_session_state() == state
 
 
-@pytest.mark.parametrize("stored", ["ssh://h/x", "projects/relative", "/home/user/a\\u0000b"], ids=["uri", "relative", "nul"])
+@pytest.mark.parametrize(
+    "stored",
+    ["ssh://h/x", "projects/relative", "/home/user/a\\u0000b"],
+    ids=["uri", "relative", "nul"],
+)
 def test_uri_as_stored_path_is_ignored(stored: str) -> None:
     _write_state(f'[right]\nsort_column = "size"\npath = "{stored}"\n')
 
@@ -61,8 +65,20 @@ def test_damaged_state_gives_defaults(content: bytes | None) -> None:
 
 def test_bad_values_are_ignored_individually() -> None:
     session_state._STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    session_state._STATE_FILE.write_text('[left]\nsort_column = "colour"\nsort_ascending = false\n[right]\nsort_column = "size"\nsort_ascending = "no"\npath = 5\n')
-    assert load_session_state() == SessionState(left=PanelState(sort_ascending=False), right=PanelState(sort_column="size"))
+    lines = [
+        "[left]",
+        'sort_column = "colour"',
+        "sort_ascending = false",
+        "[right]",
+        'sort_column = "size"',
+        'sort_ascending = "no"',
+        "path = 5",
+    ]
+    session_state._STATE_FILE.write_text("\n".join(lines) + "\n")
+    assert load_session_state() == SessionState(
+        left=PanelState(sort_ascending=False),
+        right=PanelState(sort_column="size"),
+    )
 
 
 def test_non_table_section_is_ignored() -> None:
@@ -75,7 +91,11 @@ def test_sort_column_names_match_sort_keys() -> None:
     assert set(SORT_COLUMN_NAMES) == {key.name.lower() for key in SortKey}
 
 
-def test_save_failure_is_logged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+def test_save_failure_is_logged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     (tmp_path / "file").write_text("")
     monkeypatch.setattr(session_state, "_STATE_FILE", tmp_path / "file" / "state.toml")
 

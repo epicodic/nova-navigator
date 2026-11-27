@@ -5,10 +5,11 @@ Each test starts a real app, toggles hidden files through the UI and reads ``set
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import copy
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -38,6 +39,16 @@ def _assert_hidden(screen: MainScreen, expected: bool) -> None:
     assert screen._left_panel.show_hidden_files is expected
     assert screen._right_panel.show_hidden_files is expected
     assert screen._act(_ACTION_ID).checked is expected
+
+
+async def _wait_for(predicate: Callable[[], bool], max_wait: float = 5.0) -> None:
+    """Yield to the event loop until *predicate* holds, failing when *max_wait* seconds pass first."""
+    steps = round(max_wait / 0.05)
+    for _ in range(steps):
+        if predicate():
+            return
+        await asyncio.sleep(0.05)
+    assert predicate()
 
 
 @pytest.fixture
@@ -94,12 +105,24 @@ async def test_ctrl_h_saves_setting(config_dir: Path) -> None:
 @pytest.mark.integration
 @pytest.mark.usefixtures("settings_file")
 async def test_menu_toggle_saves_setting(config_dir: Path) -> None:
-    async with _session(config_dir) as (_app, pilot, screen):
+    async with _session(config_dir) as (_app, _pilot, screen):
         action = screen._act(_ACTION_ID)
         action.set_checked(True)  # the menu flips the checked state before running the handler
         with patch.object(Menu, "exec", new=AsyncMock(return_value=action)):
             screen._left_panel.post_message(DirectoryBrowser.ContextMenu(screen._left_panel, None))
-            await pilot.pause(delay=0.3)
+            await _wait_for(lambda: Settings.load().general.show_hidden_files is True)
+        _assert_hidden(screen, True)
+        assert Settings.load().general.show_hidden_files is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.usefixtures("settings_file")
+async def test_action_dispatch_without_menu_toggles_and_saves(config_dir: Path) -> None:
+    """A key bound to the action (not the menu) must toggle, because the menu does not flip the checked state."""
+    async with _session(config_dir) as (app, _pilot, screen):
+        _assert_hidden(screen, False)
+        await app.run_action("show_hidden_files", screen)
         _assert_hidden(screen, True)
         assert Settings.load().general.show_hidden_files is True
 
@@ -123,6 +146,27 @@ async def test_settings_dialog_applies_at_once_and_after_restart(config_dir: Pat
 
     async with _session(config_dir) as (_app, _pilot, screen):
         _assert_hidden(screen, True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.usefixtures("settings_file")
+async def test_unreadable_settings_on_load_does_not_break_toggle(
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def _raise() -> Settings:
+        raise RuntimeError("settings reader failed")
+
+    caplog.set_level(logging.WARNING)
+    async with _session(config_dir) as (app, pilot, screen):
+        monkeypatch.setattr(Settings, "load", _raise)
+        await pilot.press("ctrl+h")
+        await pilot.pause()
+        assert app.is_running
+        _assert_hidden(screen, True)
+    assert any("show_hidden_files" in record.getMessage() for record in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -151,7 +195,11 @@ async def test_non_boolean_setting_counts_as_off(config_dir: Path, settings_file
 @pytest.mark.asyncio
 @pytest.mark.integration
 @pytest.mark.usefixtures("settings_file")
-async def test_unwritable_settings_does_not_break_toggle(config_dir: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+async def test_unwritable_settings_does_not_break_toggle(
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     def _raise(_self: Settings) -> None:
         raise PermissionError("read-only")
 
