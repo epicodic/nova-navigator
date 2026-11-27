@@ -20,7 +20,7 @@ DOCKER_COMMAND = "docker"
 CALL_TIMEOUT = 90.0  # below the 120 s per-test limit
 PREPARE_TIMEOUT = 600.0
 AZURITE_IMAGE = "mcr.microsoft.com/azure-storage/azurite:3.38.0@sha256:c26024d62bf4a5b88a40968afd217234c00e1fc9a4790dc6105d1ca7979f6eec"
-IMAGES_DIR = Path(__file__).resolve().parents[2] / "images"
+IMAGES_DIR = Path(__file__).resolve().parent / "images"
 
 
 class ServerUnavailable(Exception):

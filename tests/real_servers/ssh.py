@@ -22,7 +22,13 @@ from tests.real_servers.docker import ServerUnavailable, build_image, run_docker
 LOOPBACK = "127.0.0.1"
 FLAVOURS: tuple[Literal["gnu", "busybox"], ...] = ("gnu", "busybox")
 READY_DEADLINE = 30.0
-SSHD_COMMAND = "ssh-keygen -A && exec timeout 1800 /usr/sbin/sshd -D -e -o AllowTcpForwarding=yes -o PasswordAuthentication=yes"
+SSHD_OPTIONS = "-o AllowTcpForwarding=yes -o PasswordAuthentication=yes"
+# OpenSSH 10 (busybox image) enables PerSourcePenalties by default. Every test client comes from one address, so a few
+# failed logins would make sshd refuse the later tests. OpenSSH 9.2 (gnu image) does not know the option at all.
+SSHD_OPTIONS_BY_FLAVOUR: dict[str, str] = {
+    "gnu": SSHD_OPTIONS,
+    "busybox": f"{SSHD_OPTIONS} -o PerSourcePenalties=no",
+}
 
 
 @dataclass(frozen=True)
@@ -81,7 +87,7 @@ def _start(flavour: Literal["gnu", "busybox"], network: str, identity: Path, pub
         f"nova-rs-{flavour}",
         "sh",
         "-c",
-        SSHD_COMMAND,
+        f"ssh-keygen -A && exec timeout 1800 /usr/sbin/sshd -D -e {SSHD_OPTIONS_BY_FLAVOUR[flavour]}",
     )
     atexit.register(_remove_container, container)
     password = secrets.token_urlsafe(16)
