@@ -102,7 +102,8 @@ def test_ssh_config_user_registers_password(tmp_path: Path) -> None:
 
 def test_loading_bookmarks_registers_uri_password(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
-    (tmp_path / "bookmarks.toml").write_text(f'[[groups]]\nname = "g"\n[[groups.bookmarks]]\nname = "b"\npath = "ssh://user:{TYPED}@host/p"\n')
+    text = f'[[groups]]\nname = "g"\n[[groups.bookmarks]]\nname = "b"\npath = "ssh://user:{TYPED}@host/p"\n'
+    (tmp_path / "bookmarks.toml").write_text(text)
     config = BookmarkConfig.load()
     assert config.groups[0].bookmarks[0].path.startswith("ssh://")
     _assert_registered()
@@ -110,7 +111,13 @@ def test_loading_bookmarks_registers_uri_password(tmp_path: Path, monkeypatch: p
 
 def test_loading_remotes_registers_passwords(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
-    (tmp_path / "remotes.toml").write_text('[a.ssh]\nhost = "h"\nuser = "u:zq9user7k"\n[b.ssh]\nhost = "u:zq9host7k@h"\n[c.azure]\naccount_url = "https://u:zq9azure7k@acc"\ncontainer = "c"\n')
+    sections = [
+        '[a.ssh]\nhost = "h"\nuser = "u:zq9user7k"\n',
+        '[b.ssh]\nhost = "u:zq9host7k@h"\n',
+        '[c.azure]\naccount_url = "https://u:zq9azure7k@acc"\ncontainer = "c"\n',
+    ]
+    text = "".join(sections)
+    (tmp_path / "remotes.toml").write_text(text)
     RemoteConfig.load()
     for secret in ("zq9user7k", "zq9host7k", "zq9azure7k"):
         _assert_registered(secret)
@@ -131,6 +138,12 @@ async def test_edit_bookmarks_dialog_registers_uri_password() -> None:
     _assert_registered()
 
 
+def _is_password_keyword(node: ast.AST) -> bool:
+    if not isinstance(node, ast.keyword) or node.arg != "password":
+        return False
+    return isinstance(node.value, ast.Constant) and node.value.value is True
+
+
 def test_only_known_password_inputs_exist() -> None:
     """A new password field must register its value; extend this list only together with a registration test."""
     source = Path(__file__).parent.parent / "src"
@@ -139,6 +152,6 @@ def test_only_known_password_inputs_exist() -> None:
         for package in ("nova_navigator", "nova_widgets", "nova_editor")
         for path in (source / package).rglob("*.py")
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
-        if isinstance(node, ast.keyword) and node.arg == "password" and isinstance(node.value, ast.Constant) and node.value.value is True
+        if _is_password_keyword(node)
     }
     assert found == {"nova_navigator/dialogs/credentials_dialog.py"}

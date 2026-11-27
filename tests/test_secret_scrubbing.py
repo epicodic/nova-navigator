@@ -7,7 +7,7 @@ import re
 import sys
 from collections.abc import Callable, Generator
 from pathlib import Path
-from types import SimpleNamespace
+from types import CodeType, FunctionType, SimpleNamespace
 from typing import cast
 
 import pytest
@@ -131,6 +131,32 @@ def test_crash_scrubs_source_lines(reports: _Reports) -> None:
 
     text = reports.crash(_caught(fail))
     assert "src" + "only7q" not in text
+    assert REDACTED in text
+
+
+def test_crash_keeps_source_line_with_markup_text(reports: _Reports) -> None:
+    register_secret("mksrc" + "only8w")
+
+    def fail() -> None:
+        raise RuntimeError("boom")  # markup [/] and mksrconly8w
+
+    text = reports.crash(_caught(fail))
+    assert "markup [/] and" in text
+    assert "mksrconly8w" not in text
+    assert REDACTED in text
+
+
+def test_crash_scrubs_local_variable_name(reports: _Reports) -> None:
+    register_secret("ghost" + "9zq")
+    generated = "def boom():\n    ghost" + "9zq = 1\n    raise RuntimeError('boom')\n"
+
+    def fail() -> None:
+        code = compile(generated, "<generated>", "exec")
+        boom = FunctionType(next(const for const in code.co_consts if isinstance(const, CodeType)), {})
+        boom()
+
+    text = reports.crash(_caught(fail))
+    assert "ghost9zq" not in text
     assert REDACTED in text
 
 

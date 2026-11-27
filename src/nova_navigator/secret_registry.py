@@ -33,7 +33,8 @@ def _with_quote_variants(forms: set[str]) -> set[str]:
 
 
 def _forms_of(secret: str) -> set[str]:
-    once = _with_quote_variants({_escape_str(secret), _escape_bytes(secret), "".join(ascii(char)[1:-1] for char in secret)})
+    ascii_form = "".join(ascii(char)[1:-1] for char in secret)
+    once = _with_quote_variants({_escape_str(secret), _escape_bytes(secret), ascii_form})
     twice = _with_quote_variants({_escape_str(form) for form in once})
     return {secret} | once | twice
 

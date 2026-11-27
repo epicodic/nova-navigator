@@ -67,7 +67,11 @@ def _render_frame_source(console: Console, frame: types.FrameType, lineno: int) 
                 continue
             prefix = ">>>" if line_no == lineno else "   "
             style = "bold white on dark_red" if line_no == lineno else "dim"
-            console.print(f"    [dim]{line_no:4d}[/] [{style}]{prefix} {scrub(src_line.rstrip())}[/]")
+            source_text = Text()
+            source_text.append(f"    {line_no:4d}", style="dim")
+            source_text.append(" ")
+            source_text.append(f"{prefix} {scrub(src_line.rstrip())}", style=style)
+            console.print(source_text)
     except Exception:  # noqa: BLE001, S110
         pass
 
@@ -126,7 +130,7 @@ def _render_frame_locals(console: Console, frame: types.FrameType) -> None:
     for k, v in local_items:
         r = format_local(k, v)
         key_text = Text()
-        key_text.append(f"    {k}", style="bold magenta")
+        key_text.append(f"    {scrub(k)}", style="bold magenta")
         key_text.append(" = ", style="dim")
         key_text.append(r, style="white")
         console.print(key_text)
