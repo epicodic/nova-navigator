@@ -1091,9 +1091,6 @@ name = "nova-navigator"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "azure-identity" },
-    { name = "azure-storage-blob" },
-    { name = "debugpy" },
     { name = "paramiko" },
     { name = "pygments" },
     { name = "pyte" },
@@ -1103,9 +1100,18 @@ dependencies = [
     { name = "watchdog" },
 ]
 
+[package.optional-dependencies]
+azure = [
+    { name = "azure-identity" },
+    { name = "azure-storage-blob" },
+]
+
 [package.dev-dependencies]
 dev = [
+    { name = "debugpy" },
     { name = "hypothesis" },
+    { name = "nova-navigator", extra = ["azure"] },
+    { name = "nova-navigator-devtools" },
     { name = "nuitka" },
     { name = "pre-commit" },
     { name = "pre-commit-hooks" },
@@ -1120,9 +1126,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "azure-identity", specifier = ">=1.25.1" },
-    { name = "azure-storage-blob", specifier = ">=12.27.1" },
-    { name = "debugpy", specifier = ">=1.8.20" },
+    { name = "azure-identity", marker = "extra == 'azure'", specifier = ">=1.25.1" },
+    { name = "azure-storage-blob", marker = "extra == 'azure'", specifier = ">=12.27.1" },
     { name = "paramiko", specifier = ">=4.0.0" },
     { name = "pygments", specifier = ">=2.19.2" },
     { name = "pyte", specifier = ">=0.8.2" },
@@ -1131,10 +1136,14 @@ requires-dist = [
     { name = "tomlkit", specifier = ">=0.13.3" },
     { name = "watchdog", specifier = ">=6.0.0" },
 ]
+provides-extras = ["azure"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "debugpy", specifier = ">=1.8.20" },
     { name = "hypothesis", specifier = ">=6.168.3" },
+    { name = "nova-navigator", extras = ["azure"] },
+    { name = "nova-navigator-devtools", editable = "devtools" },
     { name = "nuitka", specifier = ">=2.8.9" },
     { name = "pre-commit", specifier = ">=4.3.0" },
     { name = "pre-commit-hooks", specifier = ">=6.0.0" },
@@ -1146,6 +1155,11 @@ dev = [
     { name = "ty", specifier = ">=0.0.26" },
     { name = "types-paramiko", specifier = ">=4.0.0.20250822" },
 ]
+
+[[package]]
+name = "nova-navigator-devtools"
+version = "0"
+source = { editable = "devtools" }
 
 [[package]]
 name = "nuitka"

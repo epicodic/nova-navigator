@@ -1,9 +1,20 @@
 [project]
 name = "nova-navigator"
 version = "0.1.0"
-description = "Add your description here"
+description = "Terminal file manager with two panels, a text editor and local, SSH, archive and Azure Blob file systems"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "src/nova_editor/LICENSE.textual"]
 requires-python = ">=3.12"
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: System :: Filesystems",
+]
 dependencies = [
     "pyte>=0.8.2",
     "textual[syntax]>=8.2",
@@ -11,29 +22,34 @@ dependencies = [
     "watchdog>=6.0.0",
     "paramiko>=4.0.0",
     "pygments>=2.19.2",
-    "azure-storage-blob>=12.27.1",
-    "azure-identity>=1.25.1",
     "rich>=14.2.0",
-    "debugpy>=1.8.20",
 ]
+
+[project.optional-dependencies]
+azure = ["azure-storage-blob>=12.27.1", "azure-identity>=1.25.1"]
+
+[project.urls]
+Homepage = "https://github.com/epicodic/nova-navigator"
+Repository = "https://github.com/epicodic/nova-navigator"
+Issues = "https://github.com/epicodic/nova-navigator/issues"
 
 [project.scripts]
 nn = "nova_navigator.main:main"
 ned = "nova_editor.app:main"
-qa = "tools.qa:main"
-dialog_tester = "tools.dialog_tester:main"
-widget_tester = "tools.widget_tester:main"
-ssh_terminal_demo = "tools.ssh_terminal_demo:main"
-local_copy_probe = "tools.local_copy_probe:main"
-gen_reference_files = "tools.gen_reference_files:main"
 
 [build-system]
-requires = ["uv_build"]
+requires = ["uv_build>=0.11.6,<0.12"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = ["nova_navigator", "nova_editor", "nova_widgets"]
 
 [dependency-groups]
 dev = [
+    "debugpy>=1.8.20",
     "hypothesis>=6.168.3",
+    "nova-navigator-devtools",
+    "nova-navigator[azure]",
     "nuitka>=2.8.9",
     "pre-commit>=4.3.0",
     "pre-commit-hooks>=6.0.0",
@@ -51,6 +67,9 @@ dev = [
 [tool.uv]
 default-groups = ["dev"]
 package = true
+
+[tool.uv.sources]
+nova-navigator-devtools = { path = "devtools", editable = true }
 
 #######################################
 # ruff 
@@ -159,9 +178,6 @@ ignore = [
 "src/nova_editor/document/_wrapped_document.py" = ["D205", "D301", "D415", "SIM102", "W291", "W293"]
 "src/nova_editor/document/_syntax_aware_document.py" = ["D205", "D301", "D415", "ANN202", "W291", "W293", "D417", "SIM102"]
 "src/nova_editor/document/_history.py" = ["D205", "D301", "D415", "W291", "W293"]
-"src/tools/ssh_terminal_demo.py" = [
-    "S507", # AutoAddPolicy is intentional behind the --accept-new-key flag
-]
 "src/nova_navigator/usermenu/evaluate.py" = [
     "S307", # eval() of user menu conditions is the feature; the config file is trusted user input
 ]
