@@ -6,10 +6,12 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from nova_navigator.filemanager.tasks import move_files
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_navigator.vfs.filesystems.remote import RemoteFilesystem
 from nova_navigator.vfs.vpath import VPath
 from tests._utils.mock_filesystem import MockFilesystem
+from tests.filemanager.common import run_task
 
 
 def _make(name: str = "prod", files: dict[str, bytes | None] | None = None) -> tuple[MockFilesystem, RemoteFilesystem]:
@@ -254,3 +256,55 @@ def test_home_is_the_inner_login_directory() -> None:
     assert str(fs.home().path) == "/srv/users/alice"
     assert fs.home().filesystem is fs
     assert VPath("/srv/users/alice/docs", fs).compact_path_str == "~/docs"
+
+
+def _exists(inner: MockFilesystem, path: str) -> bool:
+    try:
+        inner.stat(VPath(path, inner))
+    except FileNotFoundError:
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Two-path methods — a path on another filesystem keeps its own filesystem
+# ---------------------------------------------------------------------------
+
+
+def test_is_same_device_false_for_path_on_local_filesystem(tmp_path: Path) -> None:
+    _, fs = _make()
+    local = LocalFilesystem()
+    assert not fs.is_same_device(VPath("/home/user", fs), local.path(str(tmp_path)))
+
+
+def test_is_same_device_true_for_two_wrappers_around_same_inner() -> None:
+    inner = MockFilesystem()
+    first = RemoteFilesystem("first", inner)
+    second = RemoteFilesystem("second", inner)
+    assert first.is_same_device(VPath("/a", first), VPath("/b", second))
+
+
+def test_is_same_device_false_for_wrappers_around_different_inner() -> None:
+    first = RemoteFilesystem("first", MockFilesystem())
+    second = RemoteFilesystem("second", MockFilesystem())
+    assert not first.is_same_device(VPath("/a", first), VPath("/b", second))
+
+
+@pytest.mark.asyncio
+async def test_move_files_remote_to_local_directory_lands_locally(tmp_path: Path) -> None:
+    inner, fs = _make(files={"/src/one.txt": b"payload"})
+    local = LocalFilesystem()
+    dst_dir = local.path(str(tmp_path))
+    await run_task(lambda ctx: move_files(ctx, [VPath("/src/one.txt", fs)], dst_dir))
+    assert (tmp_path / "one.txt").read_bytes() == b"payload"
+    assert not _exists(inner, "/src/one.txt")
+
+
+@pytest.mark.asyncio
+async def test_move_files_remote_to_other_remote_moves_content_across() -> None:
+    src_inner, src_fs = _make(files={"/src/one.txt": b"payload"})
+    dst_inner = MockFilesystem()
+    dst_fs = RemoteFilesystem("other", dst_inner)
+    await run_task(lambda ctx: move_files(ctx, [VPath("/src/one.txt", src_fs)], dst_fs.root()))
+    assert _exists(dst_inner, "/one.txt")
+    assert not _exists(src_inner, "/src/one.txt")

@@ -18,6 +18,7 @@ from nova_navigator.local_copies.manager import CopyStatus, LocalCopyManager
 from nova_navigator.remotes.azure import AzureConnector, connect_azure
 from nova_navigator.vfs.filesystems.azure import AzureFilesystem
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
+from nova_navigator.vfs.filesystems.remote import RemoteFilesystem
 from nova_navigator.vfs.vpath import VPath
 from nova_widgets import Response
 from tests._utils.local_copy_helpers import ScriptedRunner
@@ -276,6 +277,29 @@ async def test_move_between_containers(azurite: Azurite, new_container: Callable
     src_fs = _fs(azurite, source)
     dst_fs = _fs(azurite, target)
     await run_task(lambda ctx: move_files(ctx, [src_fs.path("/a.txt")], dst_fs.path("/")))
+    assert not _exists(azurite, source, "a.txt")
+    assert _get(azurite, target, "a.txt") == PAYLOAD
+
+
+@pytest.mark.asyncio
+async def test_move_remote_file_to_local_directory(azurite: Azurite, container: str, tmp_path: Path) -> None:
+    _put(azurite, container, "a.txt", PAYLOAD)
+    remote = RemoteFilesystem("box", _fs(azurite, container))
+    dst = tmp_path / "dst"
+    dst.mkdir()
+    await run_task(lambda ctx: move_files(ctx, [remote.path("/a.txt")], _local(dst)))
+    assert (dst / "a.txt").read_bytes() == PAYLOAD
+    assert not _exists(azurite, container, "a.txt")
+    assert not _exists(azurite, container, str(dst).lstrip("/") + "/a.txt")
+
+
+@pytest.mark.asyncio
+async def test_move_remote_file_to_other_remote_container(azurite: Azurite, new_container: Callable[[], str]) -> None:
+    source, target = new_container(), new_container()
+    _put(azurite, source, "a.txt", PAYLOAD)
+    src = RemoteFilesystem("one", _fs(azurite, source))
+    dst = RemoteFilesystem("two", _fs(azurite, target))
+    await run_task(lambda ctx: move_files(ctx, [src.path("/a.txt")], dst.root()))
     assert not _exists(azurite, source, "a.txt")
     assert _get(azurite, target, "a.txt") == PAYLOAD
 

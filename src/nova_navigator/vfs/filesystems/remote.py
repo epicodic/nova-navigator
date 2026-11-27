@@ -18,6 +18,13 @@ from nova_navigator.vfs.types import ExecResult, Stat
 from nova_navigator.vfs.vpath import VPath
 
 
+def _rebind(path: VPath, filesystem: Filesystem) -> VPath:
+    """Return a copy of *path* bound to *filesystem*, keeping its cached stat."""
+    bound = VPath(path.path, filesystem)
+    bound._stat = path._stat
+    return bound
+
+
 class RemoteFilesystem(Filesystem):
     """Wraps a concrete Filesystem and presents it under a ``remote://name`` URI.
 
@@ -53,10 +60,24 @@ class RemoteFilesystem(Filesystem):
     # ------------------------------------------------------------------
 
     def _to_inner(self, path: VPath) -> VPath:
-        """Return a copy of *path* bound to the inner filesystem."""
-        inner_path = VPath(path.path, self._inner)
-        inner_path._stat = path._stat
-        return inner_path
+        """Return *path* rebound to the inner filesystem when it belongs to this wrapper.
+
+        A path on any other filesystem is returned unchanged, so the inner filesystem sees the real location.
+        """
+        if path.filesystem != self:
+            return path
+        return _rebind(path, self._inner)
+
+    def _to_peer_inner(self, path: VPath) -> VPath:
+        """Return *path* rebound to the inner filesystem of its own wrapper, for paths that may belong to another remote.
+
+        Used by the two-path methods: a destination on another named remote is judged by that remote's inner
+        filesystem, and a path on a plain filesystem is returned unchanged.
+        """
+        fs = path.filesystem
+        if isinstance(fs, RemoteFilesystem):
+            return _rebind(path, fs._inner)
+        return path
 
     def _from_inner(self, path: VPath) -> VPath:
         """Return a copy of *path* bound to this filesystem."""
@@ -101,7 +122,7 @@ class RemoteFilesystem(Filesystem):
 
     @override
     def is_same_device(self, path1: VPath, path2: VPath) -> bool:
-        return self._inner.is_same_device(self._to_inner(path1), self._to_inner(path2))
+        return self._inner.is_same_device(self._to_peer_inner(path1), self._to_peer_inner(path2))
 
     @override
     def cwd(self) -> VPath:
@@ -147,7 +168,7 @@ class RemoteFilesystem(Filesystem):
 
     @override
     def rename(self, src_path: VPath, dst_path: VPath) -> None:
-        self._inner.rename(self._to_inner(src_path), self._to_inner(dst_path))
+        self._inner.rename(self._to_inner(src_path), self._to_peer_inner(dst_path))
 
     @override
     def rmdir(self, path: VPath) -> None:
