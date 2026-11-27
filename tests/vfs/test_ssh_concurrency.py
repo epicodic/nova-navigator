@@ -17,6 +17,7 @@ from pathlib import Path
 import paramiko
 import pytest
 from paramiko.channel import ChannelFile, ChannelStderrFile, ChannelStdinFile
+from paramiko.sftp import CMD_READ
 
 from nova_navigator.filemanager.tasks import copy_file, erase_files
 from nova_navigator.scheduler import TaskCancelled, TaskContext, TaskStatus
@@ -74,8 +75,9 @@ def _run_all(*jobs: Callable[[], None], timeout: float = 20.0) -> None:
     threads = [threading.Thread(target=guard, args=(job,), daemon=True) for job in jobs]
     for thread in threads:
         thread.start()
+    deadline = time.monotonic() + timeout  # one deadline for all, below the per-test limit
     for thread in threads:
-        thread.join(timeout)
+        thread.join(max(0.0, deadline - time.monotonic()))
     assert not any(thread.is_alive() for thread in threads), "deadlock on the shared SFTP session"
     assert errors == []
 
@@ -194,7 +196,7 @@ def test_packets_stay_whole_while_a_download_sends_requests(fs: SSHFilesystem, t
     monkeypatch.setattr(channel, "send", split_send)
 
     def job() -> None:
-        reader = fs.read(VPath(tmp_path / "src", fs))  # its prefetch thread sends while the upload below does
+        reader = fs.read(VPath(tmp_path / "src", fs))
         _upload(fs, tmp_path / "up", data)
         reader.close()
 
@@ -246,6 +248,132 @@ def test_cancel_during_a_download_leaves_the_session_usable(fs: SSHFilesystem, t
     _run_all(job)
 
 
+def _download(fs: SSHFilesystem, path: Path, chunk_size: int = _CHUNK) -> bytes:
+    reader = fs.read(VPath(path, fs))
+    received = bytearray()
+    while chunk := reader.read(chunk_size):
+        received += chunk
+    reader.close()
+    return bytes(received)
+
+
+def test_paused_download_requests_only_a_bounded_amount_ahead(fs: SSHFilesystem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Requesting a whole large file at once fills the server's input window; the next request then never gets out.
+    data = os.urandom(16 * 1024 * 1024)
+    (tmp_path / "src").write_bytes(data)
+    requested: list[int] = []
+    send = vars(fs._sftp_client)["_send_packet"]
+
+    def counting_send(t: int, packet: paramiko.Message) -> None:
+        if t == CMD_READ:
+            requested.append(t)
+        send(t, packet)
+
+    monkeypatch.setattr(fs._sftp_client, "_send_packet", counting_send)
+
+    def job() -> None:
+        reader = fs.read(VPath(tmp_path / "src", fs))
+        first = reader.read(_CHUNK)
+        time.sleep(0.5)  # paused: nothing may go on requesting
+        assert fs.stat_uncached(VPath(tmp_path / "src", fs)).size == len(data)
+        assert len(requested) * 32 * 1024 - len(first) <= 4 * 1024 * 1024
+        rest = bytearray(first)
+        while chunk := reader.read(_CHUNK):
+            rest += chunk
+        reader.close()
+        assert bytes(rest) == data
+
+    _run_all(job)
+
+
+def test_closing_a_paused_download_leaves_no_thread_and_a_usable_session(fs: SSHFilesystem, tmp_path: Path) -> None:
+    data = os.urandom(_LARGE)
+    (tmp_path / "src").write_bytes(data)
+    before = set(threading.enumerate())
+
+    def job() -> None:
+        reader = fs.read(VPath(tmp_path / "src", fs))
+        assert reader.read(_CHUNK) == data[:_CHUNK]
+        reader.close()
+        assert _download(fs, tmp_path / "src") == data
+
+    _run_all(job)
+    assert [thread.name for thread in set(threading.enumerate()) - before if "prefetch" in thread.name] == []
+
+
+@pytest.mark.parametrize("size", [0, 1, 32767, 32768, 32769, 128 * 32768 - 1, 128 * 32768, 128 * 32768 + 1, 200 * 32768 + 7])
+def test_download_is_exact_at_request_and_window_boundaries(fs: SSHFilesystem, tmp_path: Path, size: int) -> None:
+    data = os.urandom(size)
+    (tmp_path / "src").write_bytes(data)
+
+    def job() -> None:
+        assert _download(fs, tmp_path / "src") == data
+        assert _download(fs, tmp_path / "src", 1000 * 1000) == data
+        reader = fs.read(VPath(tmp_path / "src", fs))
+        assert reader.read(-1) == data
+        assert reader.read(_CHUNK) == b""
+        reader.close()
+
+    _run_all(job)
+
+
+@pytest.mark.parametrize("new_size", [100, _LARGE + _LARGE // 2 + 5, 2 * _LARGE + 100_000])
+def test_download_of_a_file_that_changes_size(fs: SSHFilesystem, tmp_path: Path, new_size: int) -> None:
+    size = 2 * _LARGE  # more than is requested ahead
+    data = os.urandom(max(new_size, size))
+    (tmp_path / "src").write_bytes(data[:size])
+
+    def job() -> None:
+        reader = fs.read(VPath(tmp_path / "src", fs))
+        received = bytearray(reader.read(_CHUNK))
+        assert fs.stat_uncached(VPath(tmp_path / "src", fs)).size == size  # collects the replies already under way
+        with (tmp_path / "src").open("r+b") as file:
+            file.truncate(new_size)
+            file.seek(min(new_size, size))
+            file.write(data[size:new_size])
+        while chunk := reader.read(_CHUNK):
+            received += chunk
+        reader.close()
+        # What was already on its way when the file shrank may still arrive, but never altered or out of place.
+        assert bytes(received) == data[: len(received)]
+        if new_size >= size:
+            assert len(received) == new_size
+        else:
+            assert new_size <= len(received) < size
+
+    _run_all(job)
+
+
+def test_download_with_a_server_that_answers_short(fs: SSHFilesystem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    data = os.urandom(512 * 1024 + 3)
+    (tmp_path / "src").write_bytes(data)
+    read = StubSFTPHandle.read
+    monkeypatch.setattr(StubSFTPHandle, "read", lambda self, offset, length: read(self, offset, min(length, 10_000)))
+
+    def job() -> None:
+        assert _download(fs, tmp_path / "src") == data
+
+    _run_all(job)
+
+
+def test_download_error_in_the_middle_reaches_the_reader(fs: SSHFilesystem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    data = os.urandom(_LARGE)
+    (tmp_path / "src").write_bytes(data)
+    read = StubSFTPHandle.read
+
+    def failing_read(self: StubSFTPHandle, offset: int, length: int) -> bytes | int:
+        return paramiko.sftp.SFTP_FAILURE if offset >= _LARGE // 2 else read(self, offset, length)
+
+    monkeypatch.setattr(StubSFTPHandle, "read", failing_read)
+
+    def job() -> None:
+        with pytest.raises(OSError, match="Failure"):
+            _download(fs, tmp_path / "src")
+        assert fs.stat_uncached(VPath(tmp_path / "src", fs)).size == len(data)
+
+    _run_all(job)
+
+
 def test_listing_command_sends_its_eof_before_reading_the_output(fs: SSHFilesystem, monkeypatch: pytest.MonkeyPatch) -> None:
     # An EOF left to the garbage collector can follow the close of the channel; sshd then drops the whole connection.
     execute = fs._ssh_client.exec_command
@@ -266,3 +394,24 @@ def test_listing_command_sends_its_eof_before_reading_the_output(fs: SSHFilesyst
     fs._run_command("true")
 
     assert eof_sent_at_read == [True]
+
+
+def test_many_copies_within_one_connection_do_not_hang(fs: SSHFilesystem, tmp_path: Path) -> None:
+    # Together the uploads must not leave more unanswered than the server's input window holds.
+    data = os.urandom(_LARGE)
+    (tmp_path / "src").write_bytes(data)
+
+    def copy(target: Path) -> Callable[[], None]:
+        def job() -> None:
+            reader = fs.read(VPath(tmp_path / "src", fs))
+            writer = fs.write(VPath(target, fs))
+            while chunk := reader.read(_CHUNK):
+                writer.write(chunk)
+            writer.close()
+            reader.close()
+
+        return job
+
+    targets = [tmp_path / f"dst{index}" for index in range(8)]
+    _run_all(*(copy(target) for target in targets), timeout=60.0)
+    assert all(target.read_bytes() == data for target in targets)

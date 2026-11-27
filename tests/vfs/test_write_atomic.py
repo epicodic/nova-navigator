@@ -3,6 +3,7 @@
 import os
 import stat
 import threading
+from collections import deque
 from pathlib import Path
 from typing import cast
 
@@ -208,6 +209,7 @@ class _TestSSH(SSHFilesystem):
         self._ssh_client = cast("paramiko.SSHClient", sftp)
         self._sftp_client = cast("paramiko.SFTPClient", sftp)
         self._sftp_lock = threading.RLock()
+        self._unacknowledged_writes = deque()
 
     def refresh(self, path: VPath | None = None) -> None:
         pass
