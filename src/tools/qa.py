@@ -63,7 +63,7 @@ def main() -> None:
             (
                 "Tests",
                 "magenta",
-                ["uv", "run", "pytest", "-m", f"not wall_clock{integration_filter}"],
+                ["uv", "run", "pytest", "-m", f"not wall_clock and not real_server{integration_filter}"],
                 (0,),
             )
         )
@@ -75,6 +75,17 @@ def main() -> None:
                 (0, 5) if args.no_integration_tests else (0,),
             )
         )
+        # Real-server tests start Docker containers, so they run serially after the parallel pass.
+        # All of them are integration tests, hence the step is skipped with --no-integration-tests.
+        if not args.no_integration_tests:
+            steps.append(
+                (
+                    "Real-server tests (serial)",
+                    "magenta",
+                    ["uv", "run", "pytest", "-m", "real_server", "-n", "0"],
+                    (0,),
+                )
+            )
 
     failed = [label for label, style, cmd, ok_codes in steps if not run_step(label, style, cmd, ok_codes)]
 
