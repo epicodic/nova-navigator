@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import ClassVar, Self, override
 
 from nova_navigator.config.loader import ListConfig
 from nova_navigator.config.model import BaseModel, key_field
+from nova_navigator.secret_registry import register_uri_secrets, register_userinfo
 
 
 @dataclass
@@ -56,3 +57,19 @@ class RemoteConfig(ListConfig):
     @classmethod
     def default_items(cls) -> list[BaseModel]:
         return []
+
+    @classmethod
+    @override
+    def load(cls) -> Self:
+        """Load the connections and register passwords written into their settings."""
+        config = super().load()
+        for item in config._items:
+            if not isinstance(item, RemoteConnection):
+                continue
+            if item.ssh is not None:
+                register_userinfo(item.ssh.user)
+                if "@" in item.ssh.host:
+                    register_userinfo(item.ssh.host.rsplit("@", 1)[0])
+            if item.azure is not None:
+                register_uri_secrets(item.azure.account_url)
+        return config

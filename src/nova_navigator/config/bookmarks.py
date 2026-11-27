@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import ClassVar, Self, override
 
 from nova_navigator.config.loader import ModelConfig
 from nova_navigator.config.model import BaseModel
+from nova_navigator.secret_registry import register_uri_secrets
 
 
 @dataclass
@@ -50,3 +51,13 @@ class BookmarkConfig(BaseModel, ModelConfig):
     CONFIG_NAME: ClassVar[str] = "bookmarks"
 
     groups: list[Group] = field(default_factory=_default_groups)
+
+    @classmethod
+    @override
+    def load(cls) -> Self:
+        """Load the bookmarks and register passwords contained in their URIs."""
+        config = super().load()
+        for group in config.groups:
+            for bookmark in group.bookmarks:
+                register_uri_secrets(bookmark.path)
+        return config

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import ClassVar, cast
+from typing import ClassVar, cast, override
 
 from textual import on
 from textual.app import ComposeResult
+from textual.await_complete import AwaitComplete
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Label, ListItem, ListView, Tree
@@ -15,6 +16,7 @@ from nova_navigator.config.bookmarks import Bookmark, BookmarkConfig, Group
 from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.icons import ICONS
+from nova_navigator.secret_registry import register_uri_secrets
 from nova_widgets import Button, ButtonBox, Dialog, Input, PopupWidget, Response
 
 # Tag types stored in tree node data
@@ -450,6 +452,14 @@ class EditBookmarksDialog(Dialog):
     @property
     def config(self) -> BookmarkConfig:
         return self._config
+
+    @override
+    def dismiss(self, result: Response | None = None) -> AwaitComplete:
+        """Register passwords typed into bookmark URIs, whichever way the dialog is closed."""
+        for group in self._config.groups:
+            for bookmark in group.bookmarks:
+                register_uri_secrets(bookmark.path)
+        return super().dismiss(result)
 
     def action_accept_dialog(self) -> None:
         self._action_ok()
