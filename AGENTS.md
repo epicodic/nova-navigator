@@ -34,7 +34,7 @@ It supports a virtual file system (VFS) abstraction for local, SSH, and archive 
 ## Setup
 
 No setup step is required before running the app.
-The only prerequisite is `zsh`, which the tests need (`sudo apt-get install zsh`), because the stub SSH server runs commands with it.
+The tests also need `zsh` (`sudo apt-get install zsh`), because the stub SSH server runs commands with it.
 
 `uv run` syncs the development environment, which includes the `azure` extra and the local `devtools/` project.
 
