@@ -210,6 +210,14 @@ A directory raises `IsADirectoryError`; a local file is checked by `check_readab
 `NovaNavigator.open_editor` runs `open_for_editing` in a Textual worker.
 The watcher of a copy starts its sync jobs from the context of the call that started it, and a job can only show its Overwrite/Skip question from a context that belongs to a worker.
 
+### Viewer session (`local_copies/viewer_session.py`)
+
+`open_for_viewing(manager, source)` returns a `ViewTarget` (the local path to show, the private copy's directory, and the source key) or `None` when the download failed or was cancelled.
+A directory raises `IsADirectoryError`; a local file is checked by `check_readable()` and viewed in place.
+Any other file is downloaded by `LocalCopyManager.create_view_copy()` into its own unique directory below `<root>/view/`, with `read_only=True`.
+A view copy is never registered, watched or synced, so viewing a file never writes it back and never touches an F4 copy of the same source.
+`finish_viewing(manager, target)` removes the view copy's directory through `discard_view_copy()`; a failed download removes its directory before returning.
+
 ### Writable archives
 
 `ArchiveFilesystem.write(member)` (`vfs/filesystems/archive.py`) spools the new content to a private temporary file, then on `close()` rebuilds the archive with that member substituted or appended and commits it through an `ArchiveBacking` (`archive/backing.py`).
