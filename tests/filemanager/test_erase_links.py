@@ -1,15 +1,20 @@
 """Erase must remove links themselves and never follow them (local and SSH)."""
 
 import asyncio
+import shutil
+import threading
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
 import pytest
 
 from nova_navigator.filemanager.tasks import erase_files
+from nova_navigator.scheduler import AsyncTaskScheduler, ResponseRequest
 from nova_navigator.vfs.filesystem import Filesystem
+from nova_navigator.vfs.vpath import VPath
 from nova_widgets import Response
 
-from .common import run_task
+from .common import make_status, run_task
 
 
 def _outside(tmp_path: Path) -> Path:
@@ -149,3 +154,90 @@ async def test_erase_path_vanished_after_selection_completes(link_fs: Filesystem
     gone.unlink()
     await run_task(lambda ctx: erase_files(ctx, selected))
     assert not other.exists()
+
+
+async def _erase_changing_on_question(paths: list[VPath], change: Callable[[], None]) -> list[ResponseRequest]:
+    """Erase *paths*, running *change* while the recursive-delete question is open, then answer yes."""
+    requests: list[ResponseRequest] = []
+
+    async def answer(request: ResponseRequest, future: asyncio.Future[Response]) -> None:
+        requests.append(request)
+        change()
+        future.set_result(Response.YES)
+
+    await AsyncTaskScheduler.execute(answer, lambda ctx: erase_files(ctx, paths), make_status())
+    return requests
+
+
+def _change_after_first_removal(monkeypatch: pytest.MonkeyPatch, filesystem: Filesystem, name: str, change: Callable[[], None]) -> None:
+    """List entries by name and run *change* right after the entry called *name* is removed."""
+    original_iterdir = filesystem.iterdir
+    original_remove = filesystem.remove
+
+    async def sorted_iterdir(
+        path: VPath,
+        *,
+        cancel: threading.Event | None = None,
+    ) -> AsyncIterator[VPath]:
+        for child in sorted([c async for c in original_iterdir(path, cancel=cancel)], key=lambda c: c.name):
+            yield child
+
+    def remove_then_change(path: VPath) -> None:
+        original_remove(path)
+        if path.name == name:
+            change()
+
+    monkeypatch.setattr(filesystem, "iterdir", sorted_iterdir)
+    monkeypatch.setattr(filesystem, "remove", remove_then_change)
+
+
+def _swap_for_link(directory: Path, target: Path) -> None:
+    shutil.rmtree(directory)
+    directory.symlink_to(target, target_is_directory=True)
+
+
+@pytest.mark.asyncio
+async def test_subfolder_swapped_for_link_while_question_open(link_fs: Filesystem, tmp_path: Path) -> None:
+    outside = _outside(tmp_path)
+    tree = tmp_path / "tree"
+    (tree / "folder").mkdir(parents=True)
+    (tree / "folder" / "x.txt").write_text("x")
+    before = _snapshot(outside)
+    try:
+        requests = await _erase_changing_on_question([link_fs.path(tree)], lambda: _swap_for_link(tree / "folder", outside))
+    finally:
+        assert _snapshot(outside) == before
+    assert len(requests) == 1
+    assert not tree.exists()
+
+
+@pytest.mark.asyncio
+async def test_selected_dir_swapped_for_link_while_question_open(link_fs: Filesystem, tmp_path: Path) -> None:
+    outside = _outside(tmp_path)
+    tree = tmp_path / "tree"
+    (tree / "sub").mkdir(parents=True)
+    (tree / "sub" / "deep.txt").write_text("x")
+    (tree / "keep.txt").write_text("x")
+    before = _snapshot(outside)
+    try:
+        await _erase_changing_on_question([link_fs.path(tree)], lambda: _swap_for_link(tree, outside))
+    finally:
+        assert _snapshot(outside) == before
+    assert not tree.is_symlink()
+    assert not tree.exists()
+
+
+@pytest.mark.asyncio
+async def test_subfolder_swapped_for_link_while_earlier_entries_are_deleted(link_fs: Filesystem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    outside = _outside(tmp_path)
+    tree = tmp_path / "tree"
+    (tree / "z_folder").mkdir(parents=True)
+    (tree / "z_folder" / "x.txt").write_text("x")
+    (tree / "a.txt").write_text("a")
+    before = _snapshot(outside)
+    _change_after_first_removal(monkeypatch, link_fs, "a.txt", lambda: _swap_for_link(tree / "z_folder", outside))
+    try:
+        await run_task(lambda ctx: erase_files(ctx, [link_fs.path(tree)]), [Response.YES])
+    finally:
+        assert _snapshot(outside) == before
+    assert not tree.exists()
