@@ -5,17 +5,24 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from textual.markup import escape
+
 from nova_navigator.config import conf_
 from nova_navigator.config.remotes import RemoteConnection
 from nova_navigator.plugins import FilesystemPlugin
 from nova_navigator.terminal.terminal import Terminal
 from nova_navigator.terminal.vfs_shell import VfsShellDriver, VirtualPtyBackend
 from nova_navigator.vfs.filesystem import Filesystem
-from nova_navigator.vfs.filesystems import AzureFilesystem
+from nova_navigator.vfs.filesystems import AzureFilesystem, MissingAzureExtraError
 from nova_navigator.vfs.vpath import VPath
 from nova_widgets import MessageBox
 
 _logger = logging.getLogger(__name__)
+
+
+async def _show_missing_extra(error: MissingAzureExtraError) -> None:
+    _logger.warning("%s", error)
+    await MessageBox(escape(str(error)), title="Azure support not installed", variant="error").run()
 
 
 async def connect_azure(conn: RemoteConnection) -> AzureFilesystem | None:
@@ -45,6 +52,9 @@ async def connect_azure(conn: RemoteConnection) -> AzureFilesystem | None:
             proxy_url=proxy_url,
             managed_identity=azure.use_managed_identity,
         )
+    except MissingAzureExtraError as exc:
+        await _show_missing_extra(exc)
+        return None
     except Exception as exc:
         _logger.exception(
             "Azure connection failed for %r (account_url=%r container=%r): %s",
@@ -84,7 +94,11 @@ class AzureConnector:
         blob_path = "/" + parts[1] if len(parts) > 1 else "/"
         if blob_path in ("//", "/"):
             blob_path = "/"
-        fs = AzureFilesystem(account_url, container)
+        try:
+            fs = AzureFilesystem(account_url, container)
+        except MissingAzureExtraError as exc:
+            await _show_missing_extra(exc)
+            return None
         return fs.path(blob_path)
 
 
