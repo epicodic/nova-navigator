@@ -353,7 +353,14 @@ class StubSSHServerInterface(paramiko.ServerInterface):
         def _run() -> None:
             if self._exec_delay > 0:
                 time.sleep(self._exec_delay)
-            result = subprocess.run(["zsh", "-c", command.decode()], capture_output=True, check=False, env=self._exec_env)
+            try:
+                result = subprocess.run(["zsh", "-c", command.decode()], capture_output=True, check=False, env=self._exec_env)
+            except OSError as error:
+                # Without an exit status the client waits forever, so a missing tool must be answered.
+                channel.sendall_stderr(f"stub ssh server cannot run zsh: {error}\n".encode())
+                channel.send_exit_status(127)
+                channel.close()
+                return
             channel.sendall(result.stdout)
             if result.stderr:
                 channel.sendall_stderr(result.stderr)
