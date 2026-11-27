@@ -56,6 +56,8 @@ def test_secret_name_parts_are_the_agreed_list() -> None:
         "pkey",
         "api_key",
         "auth",
+        "pwd",
+        "creds",
     )
 
 

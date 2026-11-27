@@ -17,6 +17,8 @@ from rich.logging import RichHandler
 from rich.rule import Rule
 from rich.text import Text
 
+from nova_navigator.secret_registry import REDACTED
+
 _logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -79,6 +81,8 @@ SECRET_NAME_PARTS: tuple[str, ...] = (
     "pkey",
     "api_key",
     "auth",
+    "pwd",
+    "creds",
 )
 """Case-insensitive substrings that mark a local variable name as holding a secret."""
 
@@ -92,8 +96,6 @@ SECRET_TYPE_NAMES: frozenset[str] = frozenset(
 
 Matched by name instead of ``isinstance`` so this module imports neither the dialogs package nor paramiko.
 """
-
-REDACTED = "<redacted>"
 
 
 def is_secret_local(name: str, value: object) -> bool:
