@@ -245,6 +245,7 @@ async def test_no_further_digests_after_settle_while_untouched(target: Path) -> 
         await detector.stop()
 
 
+@pytest.mark.wall_clock
 @pytest.mark.asyncio
 async def test_change_settles_in_one_round(target: Path) -> None:
     """Regression test: a stale poll re-mark during the settle window must not add a round.

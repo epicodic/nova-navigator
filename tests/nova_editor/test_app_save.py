@@ -241,6 +241,7 @@ async def test_ctrl_q_during_a_save_cancels_then_asks_and_quit_anyway_exits(tmp_
     assert path.read_text() == "a" * 100 + "\n"
 
 
+@pytest.mark.wall_clock
 @pytest.mark.asyncio
 async def test_poll_runs_in_a_thread_and_does_not_delay_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     app = NovaEditApp(file_path=make_file(tmp_path))

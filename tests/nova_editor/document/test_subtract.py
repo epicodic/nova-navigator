@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from collections.abc import Sequence
 
+import pytest
+
 from nova_editor.document import _lazy_document
 
 SCALE = 40_000
@@ -76,6 +78,7 @@ def _interleaved() -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
     return ranges, cut
 
 
+@pytest.mark.wall_clock
 def test_subtract_scales_linearly() -> None:
     ranges, cut = _interleaved()
     started = time.monotonic()
@@ -85,6 +88,7 @@ def test_subtract_scales_linearly() -> None:
     assert elapsed < 2.0, elapsed
 
 
+@pytest.mark.wall_clock
 def test_subtract_each_scales_linearly() -> None:
     ranges, cut = _interleaved()
     started = time.monotonic()

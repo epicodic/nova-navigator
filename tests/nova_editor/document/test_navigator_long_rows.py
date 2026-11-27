@@ -283,6 +283,7 @@ class Frozen:
         self.rig.doc.close()
 
 
+@pytest.mark.wall_clock
 @pytest.mark.parametrize("width", _WIDTHS, ids=["nowrap", "wrap20"])
 def test_unknown_frontier_returns_without_waiting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, width: int) -> None:
     frozen = Frozen(tmp_path, width)

@@ -199,6 +199,7 @@ timeout_method = "thread"
 markers = [
     "integration: full-stack tests that launch a real NovaNavigator app and use the real local filesystem",
     "ssh: integration tests that require a running stub SSH server (subset of integration)",
+    "wall_clock: asserts an elapsed-time budget; run without parallel load",
 ]
 
 [tool.coverage.run]

@@ -28,6 +28,7 @@ def make_sparse(tmp_path: Path) -> Path:
     return path
 
 
+@pytest.mark.wall_clock
 def test_one_byte_in_an_8_gib_sparse_file(tmp_path: Path) -> None:
     path = make_sparse(tmp_path)
     before = os.stat(path)

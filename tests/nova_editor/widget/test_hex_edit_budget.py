@@ -36,6 +36,7 @@ def check_edit_budget(view: HexView, source: CountingSource, log: ReadLog, calls
     assert sum(size for _, size in reads) <= limit + 64, reads
 
 
+@pytest.mark.wall_clock
 @pytest.mark.asyncio
 async def test_one_byte_edits_at_the_end_of_an_unscanned_8_gib_file(tmp_path: Path) -> None:
     with budget_view(make_sparse(tmp_path)) as (document, source, log, view):
