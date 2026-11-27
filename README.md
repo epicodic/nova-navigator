@@ -118,7 +118,7 @@ The ones that cannot are `Insert`, `Ctrl+A`, `Ctrl+F`, `Tab` and `Shift+Tab`.
 When the terminal has focus, `F1` and `F3` go to the shell.
 Help is then reached by clicking the first menu.
 
-`F1` shows the key bindings, except `Tab` and `Shift+Tab`, which are fixed.
+`F1` shows the key bindings; some fixed keys, such as `Tab`, `Shift+Tab` and `Ctrl+Down`, are not listed.
 
 ## SSH, archives and Azure Blob Storage
 
@@ -153,7 +153,7 @@ The directory does not follow the `XDG_CONFIG_HOME` variable.
 
 The shipped defaults are in the installed package, in `nova_navigator/_default/` (`icons.csv` and `usermenu.toml`).
 
-Passwords you type are not saved.
+Passwords you enter in the login dialog are not saved.
 A password written into a URI in `remotes.toml` or `bookmarks.toml` stays on disk in that file.
 Add to Bookmarks stores the address of the current folder, so a folder opened with a password in its URI keeps that password in `bookmarks.toml`.
 

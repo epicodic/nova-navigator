@@ -48,6 +48,7 @@
 - On an SSH server that uses uutils tools and has no SFTP, a directory whose listing contains non-UTF-8 names (or the character U+FFFD) cannot be listed.
 - `ssh://user:password@host` is not supported: `user:password` is sent as the user name and shown in the login dialog.
   Add to Bookmarks can store such an address, password included, in `bookmarks.toml`.
+  The password also appears in the folder names of local copies.
 - Wildcard, negated and `@cert-authority` entries in `known_hosts` are not matched, so you are asked to confirm such a host again.
   A second key of the same type for a host is reported as a changed key.
 - A new host key is stored even if you then cancel the login.
@@ -75,7 +76,7 @@
 - Azure Blob Storage is tested against the Azurite emulator.
   It has not yet been verified with a real storage account.
 - Renaming a large Azure blob whose server-side copy takes more than 300 seconds fails; the source is kept.
-- The first access to Azure can take about 95 seconds (seen with default settings on a development host with proxy environment variables).
+- The first access to Azure can take about 90 seconds (seen with default settings on a development host with proxy environment variables).
 - `azure://` addresses work with host-style endpoints only.
   A `.keep` file marks directories and may show as a hidden file.
   A change made just while a blob is saved can be overwritten.
@@ -106,7 +107,7 @@
   When the editor creates a new file, hard links, owner, group, ACLs and extended attributes are not kept; only permission bits are restored.
   See the [Known Limits section of the editor documentation](https://github.com/epicodic/nova-navigator/blob/main/docs/editor.md#known-limits-1).
 - The viewer has no default key for Wrap Mode.
-- F1 help does not list the text-editing keys.
+- F1 help does not list the editor's cursor movement, selection and other fixed text keys.
 
 #### Settings and layout
 
