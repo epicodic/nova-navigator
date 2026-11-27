@@ -384,6 +384,8 @@ class Terminal(ScrollView, can_focus=True):
         self._nav_stashed: bool = False
         # Resolved when the transaction chain completes; awaited by set_terminal_directory.
         self._nav_future: Future[PurePath] | None = None
+        # A plain-shell cd was written; the precmd that follows is not a user navigation.
+        self._plain_cd_sent: bool = False
         # Fires when no precmd follows a cd (hook lost); see _on_nav_timeout.
         self._nav_watchdog: TimerHandle | None = None
         # The precmd hook was re-installed once this shell session.
@@ -688,11 +690,10 @@ class Terminal(ScrollView, can_focus=True):
             return
         if not self._nav_busy and self._nav_target is None and path == self._cwd:
             return
-        if not self._driver.supports_line_editing:
-            self._backend.write((" " + self._driver.cd_command(str(path)) + "\n").encode())
-            return
         self._nav_target = path
-        if self._nav_future is None or self._nav_future.done():
+        # Only line-editing shells run the awaitable transaction; a plain shell
+        # gets its cd on an empty prompt and nobody waits for it.
+        if self._driver.supports_line_editing and (self._nav_future is None or self._nav_future.done()):
             self._nav_future = asyncio.get_running_loop().create_future()
         if not self._nav_busy and self._at_prompt:
             self._start_nav()
@@ -779,6 +780,9 @@ class Terminal(ScrollView, can_focus=True):
         line editor's buffer using whatever keystrokes that shell needs.  The
         stash/kill happens at most once per transaction chain.
         """
+        if not self._driver.supports_line_editing:
+            self._send_plain_cd()
+            return
         assert self._nav_target is not None
         if self._nav_target == self._nav_last_sent_target:
             self._nav_same_target_attempts += 1
@@ -793,6 +797,18 @@ class Terminal(ScrollView, can_focus=True):
             self._stash_input()
         self._backend.write((" " + self._driver.cd_command(str(self._nav_target)) + "\n").encode())
         self._arm_watchdog()
+
+    def _send_plain_cd(self) -> None:
+        """Write the pending ``cd`` for a shell without line editing, only onto an empty line.
+
+        With typed input the target is kept and tried again at the next precmd.
+        """
+        if self._nav_target is None or self.has_input():
+            return
+        target, self._nav_target = self._nav_target, None
+        self._at_prompt = False
+        self._plain_cd_sent = True
+        self._backend.write((" " + self._driver.cd_command(str(target)) + "\n").encode())
 
     def _finish_nav(self, cwd: PurePath) -> None:
         """Complete the transaction chain: restore stashed text, end draining, resolve."""
@@ -871,6 +887,7 @@ class Terminal(ScrollView, can_focus=True):
         self._nav_target = None
         self._nav_busy = False
         self._nav_stashed = False
+        self._plain_cd_sent = False
         self._at_prompt = False
         self._hook_repaired = False
         self._input_since_precmd = False
@@ -996,7 +1013,8 @@ class Terminal(ScrollView, can_focus=True):
         if not from_nn:
             return
         cwd = PurePath(raw.strip())
-        cwd_changed = cwd != self._cwd
+        plain_cd_sent, self._plain_cd_sent = self._plain_cd_sent, False
+        cwd_changed = cwd != self._cwd and not plain_cd_sent
         is_bootstrap_precmd = self._cwd is None
         self._cwd = cwd
         self._at_prompt = True

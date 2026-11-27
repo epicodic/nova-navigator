@@ -1780,10 +1780,66 @@ async def test_request_cd_fallback_driver_writes_cd_without_draining() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         terminal._started = True
+        terminal._at_prompt = True
         terminal.request_cd(PurePath("/target/path"))
         assert len(backend.writes) >= 1
         assert b"".join(backend.writes).endswith(b"\n")
         assert terminal._draining is False
+
+
+def _fallback() -> tuple[FakePtyBackend, Terminal]:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=FallbackDriver())
+    terminal._started = True
+    terminal._cwd = PurePath("/w")
+    return backend, terminal
+
+
+class _PathChangeRecorder(TerminalTestApp):
+    def __init__(self, terminal: Terminal) -> None:
+        super().__init__(terminal)
+        self.changes: list[PurePath] = []
+
+    def on_terminal_path_changed(self, message: Terminal.PathChanged) -> None:
+        self.changes.append(message.cwd)
+
+
+@pytest.mark.asyncio
+async def test_fallback_cd_waits_while_a_command_runs() -> None:
+    backend, terminal = _fallback()
+    terminal._at_prompt = False
+    terminal.request_cd(PurePath("/target"))
+    assert backend.writes == []
+    terminal._handle_pre_cmd("/w")
+    assert b"".join(backend.writes).endswith(b"\n")
+
+
+@pytest.mark.asyncio
+async def test_fallback_cd_never_joins_typed_input() -> None:
+    backend, terminal = _fallback()
+    terminal._at_prompt = True
+    _feed_and_snapshot(terminal, "$ ")
+    terminal._note_user_input("r")
+    _feed_and_snapshot(terminal, "r")
+    terminal.request_cd(PurePath("/target"))
+    assert backend.writes == []
+
+
+@pytest.mark.asyncio
+async def test_fallback_cd_precmd_posts_no_path_changed() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=FallbackDriver())
+    app = _PathChangeRecorder(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._started = True
+        terminal._cwd = PurePath("/w")
+        terminal._at_prompt = True
+        terminal.request_cd(PurePath("/target"))
+        assert b"".join(backend.writes).endswith(b"\n")
+        terminal._handle_pre_cmd("/target")
+        await pilot.pause()
+        assert app.changes == []
 
 
 @pytest.mark.asyncio

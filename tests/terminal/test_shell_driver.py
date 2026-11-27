@@ -197,6 +197,10 @@ def test_fallback_driver_init_code_ends_with_newline() -> None:
     assert code.endswith("\n")
 
 
+def test_fallback_driver_init_code_sets_erase_to_backspace() -> None:
+    assert "stty erase '^H'" in FallbackDriver().init_code()
+
+
 def test_fallback_driver_cd_command_is_self_contained() -> None:
     driver = FallbackDriver()
     cmd = driver.cd_command("/var/data")

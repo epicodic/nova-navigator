@@ -112,6 +112,9 @@ The hook emits an OSC 7 CWD sequence.
 **FallbackDriver** — generic POSIX sh driver.
 Installs a `PS1`-based hook that emits OSC 7.
 Has no line editor, so directory navigation writes a visible `cd` without input preservation.
+A `cd` is written only at a prompt whose line is empty; otherwise the target is kept and tried again at the next precmd, so a command that is running or typed text is never joined by a `cd`.
+No `_nav_future` is created for this driver, so `set_terminal_directory` returns at once and `run_command` never waits for a plain `cd`.
+The init code sets `stty erase '^H'` so that Backspace erases in shells that do not use the PTY's `^?` default.
 Uses `printf '%b_'` with octal escapes for cd commands (Midnight Commander technique).
 
 ### Quoting

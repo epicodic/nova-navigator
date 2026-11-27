@@ -228,7 +228,7 @@ class FallbackDriver(ShellDriver):
         super().__init__(line_editing=False)
 
     def init_code(self) -> str:
-        return f" _nn_precmd() {{ {self._hook_body()} >/dev/tty; }}; PS1='$(_nn_precmd)'\"$PS1\"\n"
+        return f" stty erase '^H'; _nn_precmd() {{ {self._hook_body()} >/dev/tty; }}; PS1='$(_nn_precmd)'\"$PS1\"\n"
 
     def quote(self, arg: str) -> str:
         return _ansi_c_quote(arg)
