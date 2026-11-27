@@ -25,6 +25,7 @@ import shutil
 import socket
 import struct
 import subprocess
+import sys
 import tempfile
 import termios
 import threading
@@ -51,7 +52,19 @@ def make_host_key(kind: str = "rsa") -> paramiko.PKey:
     return paramiko.RSAKey.generate(bits=2048)
 
 
-type NonGnuMode = Literal["illegal-option", "missing", "silent-failure"]
+type NonGnuMode = Literal["illegal-option", "missing", "silent-failure", "replaces-invalid-bytes"]
+
+_REAL_STAT = shutil.which("stat") or "/usr/bin/stat"
+# A `stat` that works but writes U+FFFD for bytes that are not UTF-8, as uutils `stat` (Ubuntu 26.04) does with `%n`.
+_REPLACING_STAT = f"""#!{sys.executable} -I
+import subprocess
+import sys
+
+result = subprocess.run([{_REAL_STAT!r}, *sys.argv[1:]], capture_output=True, check=False)
+sys.stdout.buffer.write(result.stdout.decode("utf-8", "replace").encode("utf-8"))
+sys.stderr.buffer.write(result.stderr)
+sys.exit(result.returncode)
+"""
 
 # A `stat` that cannot print a format, as on BSD, macOS or BusyBox; find itself stays in place, so an empty directory
 # still lists with exit 0 and a non-empty one fails with empty stdout (the shape a real non-GNU remote has).
@@ -60,6 +73,7 @@ _STAT_SHIMS: dict[str, str] = {
     "missing": '#!/bin/sh\necho "stat: command not found" >&2\nexit 127\n',
     # A BusyBox-style `find` that reports the failed `stat` on stderr but still exits 0: exit 0, empty stdout, error text.
     "silent-failure": '#!/bin/sh\necho "stat: unrecognized option: printf" >&2\nexit 0\n',
+    "replaces-invalid-bytes": _REPLACING_STAT,
 }
 
 

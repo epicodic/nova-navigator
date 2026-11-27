@@ -6,6 +6,7 @@ import os
 from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import NoReturn
 from unittest.mock import patch
 
 import paramiko
@@ -585,3 +586,61 @@ async def test_dir_stat_refused_exec_switches_to_sftp(fs: SSHFilesystem, refusin
         assert len(commands) == 1  # sticky: no further exec attempts
     assert set(via_sftp) >= {"file.txt", "run.sh", ".hidden", "folder", "link_to_file", "link_to_folder", "broken", "loop"}
     assert via_sftp == await _snapshot(fs, tmp_path)
+
+
+@pytest.fixture(scope="module")
+def replacing_server(tmp_path_factory: pytest.TempPathFactory) -> Generator[StubSSHServer, None, None]:
+    server = StubSSHServer(
+        root_dir=tmp_path_factory.mktemp("ssh_replacing_stat_root"),
+        non_gnu="replaces-invalid-bytes",
+    )
+    server.start()
+    yield server
+    server.stop()
+
+
+@pytest.fixture
+def replacing_fs(replacing_server: StubSSHServer) -> Generator[SSHFilesystem, None, None]:
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(_AcceptAnyHostKey())
+    filesystem = SSHFilesystem(
+        hostname=replacing_server.host,
+        port=replacing_server.port,
+        username="testuser",
+        password=_LOGIN_WORD,
+        ssh_client=client,
+    )
+    yield filesystem
+    client.close()
+
+
+@pytest.mark.usefixtures("stub_surrogateescape")
+@pytest.mark.asyncio
+async def test_names_that_stat_replaced_are_listed_with_their_real_bytes(replacing_fs: SSHFilesystem, tmp_path: Path) -> None:
+    raw_dir = os.fsencode(tmp_path)
+    _write_bytes_named(raw_dir + b"/bad\xffname", b"a")
+    _write_bytes_named(raw_dir + b"/bad\xfename", b"bb")
+    expected = sorted([os.fsdecode(b"bad\xffname"), os.fsdecode(b"bad\xfename")])
+    assert sorted(await _names(replacing_fs, tmp_path)) == expected
+    assert replacing_fs._listing_via_sftp is False  # decided per directory, not for the connection
+
+
+@pytest.mark.asyncio
+async def test_a_listing_without_replacement_characters_does_not_use_sftp(replacing_fs: SSHFilesystem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def forbidden(*_args: object) -> NoReturn:
+        raise AssertionError("SFTP listing used for a plain directory")
+
+    monkeypatch.setattr(ssh_module, "_sftp_readdir", forbidden)
+    (tmp_path / "plain").write_text("x")
+    assert await _names(replacing_fs, tmp_path) == ["plain"]
+
+
+@pytest.mark.asyncio
+async def test_replaced_names_without_sftp_raise_and_list_nothing(replacing_fs: SSHFilesystem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def unavailable(*_args: object) -> NoReturn:
+        raise paramiko.SSHException("no sftp")
+
+    monkeypatch.setattr(ssh_module, "_sftp_readdir", unavailable)
+    _write_bytes_named(os.fsencode(tmp_path) + b"/bad\xffname", b"a")
+    with pytest.raises(OSError, match="no sftp"):
+        await _names(replacing_fs, tmp_path)
