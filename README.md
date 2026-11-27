@@ -155,7 +155,7 @@ The shipped defaults are in the installed package, in `nova_navigator/_default/`
 
 Passwords you enter in the login dialog are not saved.
 A password written into a URI in `remotes.toml` or `bookmarks.toml` stays on disk in that file.
-Add to Bookmarks stores the address of the current folder, so a folder opened with a password in its URI keeps that password in `bookmarks.toml`.
+Add to Bookmarks stores the address of the item under the cursor, so on a connection opened with a password in its URI, that password is written to `bookmarks.toml`.
 
 The session state, such as the right panel's folder and sort order, is kept in `~/.local/state/nova-navigator/state.toml`.
 
