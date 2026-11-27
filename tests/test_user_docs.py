@@ -1,6 +1,7 @@
 """Static checks of the project documents."""
 
 import re
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,7 @@ def _read(name: str) -> str:
     return (_ROOT / name).read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("name", ["AGENTS.md", "src/CLAUDE.md"])
+@pytest.mark.parametrize("name", ["AGENTS.md", "src/CLAUDE.md", "README.md"])
 def test_the_old_default_directory_is_not_mentioned(name: str) -> None:
     assert "config/default" not in _read(name)
 
@@ -45,3 +46,53 @@ def test_changelog_has_one_release_section_with_known_issues() -> None:
 
 def test_changelog_links_are_absolute() -> None:
     assert [target for target in _targets("CHANGELOG.md") if not target.startswith("https://")] == []
+
+
+_REPOSITORY_FILES = "https://github.com/epicodic/nova-navigator/blob/main/"
+
+
+def test_the_readme_is_the_package_description() -> None:
+    assert tomllib.loads(_read("pyproject.toml"))["project"]["readme"] == "README.md"
+
+
+def test_readme_links_and_images_are_absolute() -> None:
+    assert [target for target in _targets("README.md") if not target.startswith("https://")] == []
+
+
+def test_readme_has_no_raw_html() -> None:
+    assert [token.content for token in _tokens("README.md") if token.type in ("html_block", "html_inline")] == []
+
+
+def test_readme_links_to_repository_files_that_exist() -> None:
+    paths = [target.removeprefix(_REPOSITORY_FILES).split("#")[0] for target in _targets("README.md") if target.startswith(_REPOSITORY_FILES)]
+    assert paths
+    assert [path for path in paths if not (_ROOT / path).is_file()] == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "uv tool install nova-navigator",
+        "pipx install nova-navigator",
+        "uv tool install 'nova-navigator[azure]'",
+        "pipx install 'nova-navigator[azure]'",
+        "Ubuntu 24.04",
+        "26.04",
+        "3.12",
+        "3.13",
+        "3.14",
+        "zsh",
+        "`F1`",
+        "`F3`",
+        "docs/development.md",
+        "CHANGELOG.md",
+    ],
+)
+def test_readme_names(text: str) -> None:
+    assert text in _read("README.md")
+
+
+def test_readme_needs_no_source_checkout() -> None:
+    text = _read("README.md")
+    assert "uv sync" not in text
+    assert "uv run" not in text
