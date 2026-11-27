@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from nova_navigator.filemanager.tasks import erase_files
-from nova_navigator.scheduler import AsyncTaskScheduler, ResponseRequest
+from nova_navigator.scheduler import AsyncTaskScheduler, ResponseRequest, TaskStatus
 from nova_navigator.vfs.filesystem import Filesystem
 from nova_navigator.vfs.vpath import VPath
 from nova_widgets import Response
@@ -156,23 +156,44 @@ async def test_erase_path_vanished_after_selection_completes(link_fs: Filesystem
     assert not other.exists()
 
 
-async def _erase_changing_on_question(paths: list[VPath], change: Callable[[], None]) -> list[ResponseRequest]:
-    """Erase *paths*, running *change* while the recursive-delete question is open, then answer yes."""
+async def _erase_changing_on_question(
+    paths: list[VPath],
+    change: Callable[[], None],
+    response: Response = Response.YES,
+    status: TaskStatus | None = None,
+) -> list[ResponseRequest]:
+    """Erase *paths*, running *change* while the recursive-delete question is open, then answer *response*.
+
+    Asserts that exactly one question was asked and that *change* ran while it was open.
+    """
     requests: list[ResponseRequest] = []
+    changed: list[bool] = []
 
     async def answer(request: ResponseRequest, future: asyncio.Future[Response]) -> None:
         requests.append(request)
         change()
-        future.set_result(Response.YES)
+        changed.append(True)
+        future.set_result(response)
 
-    await AsyncTaskScheduler.execute(answer, lambda ctx: erase_files(ctx, paths), make_status())
+    await AsyncTaskScheduler.execute(answer, lambda ctx: erase_files(ctx, paths), status or make_status())
+    assert len(requests) == 1
+    assert changed == [True]
     return requests
 
 
-def _change_after_first_removal(monkeypatch: pytest.MonkeyPatch, filesystem: Filesystem, name: str, change: Callable[[], None]) -> None:
-    """List entries by name and run *change* right after the entry called *name* is removed."""
+def _change_after_first_removal(
+    monkeypatch: pytest.MonkeyPatch,
+    filesystem: Filesystem,
+    name: str,
+    change: Callable[[], None],
+) -> list[str]:
+    """List entries by name and run *change* right after the entry called *name* is removed.
+
+    Returns the list that gets the name appended each time *change* runs, so a test can assert it ran.
+    """
     original_iterdir = filesystem.iterdir
     original_remove = filesystem.remove
+    fired: list[str] = []
 
     async def sorted_iterdir(
         path: VPath,
@@ -186,9 +207,11 @@ def _change_after_first_removal(monkeypatch: pytest.MonkeyPatch, filesystem: Fil
         original_remove(path)
         if path.name == name:
             change()
+            fired.append(path.name)
 
     monkeypatch.setattr(filesystem, "iterdir", sorted_iterdir)
     monkeypatch.setattr(filesystem, "remove", remove_then_change)
+    return fired
 
 
 def _swap_for_link(directory: Path, target: Path) -> None:
@@ -235,11 +258,12 @@ async def test_subfolder_swapped_for_link_while_earlier_entries_are_deleted(link
     (tree / "z_folder" / "x.txt").write_text("x")
     (tree / "a.txt").write_text("a")
     before = _snapshot(outside)
-    _change_after_first_removal(monkeypatch, link_fs, "a.txt", lambda: _swap_for_link(tree / "z_folder", outside))
+    fired = _change_after_first_removal(monkeypatch, link_fs, "a.txt", lambda: _swap_for_link(tree / "z_folder", outside))
     try:
         await run_task(lambda ctx: erase_files(ctx, [link_fs.path(tree)]), [Response.YES])
     finally:
         assert _snapshot(outside) == before
+    assert fired == ["a.txt"]
     assert not tree.exists()
 
 
@@ -277,8 +301,9 @@ async def test_subfolder_vanished_while_earlier_entries_are_deleted(link_fs: Fil
     (tree / "z_folder").mkdir(parents=True)
     (tree / "z_folder" / "x.txt").write_text("x")
     (tree / "a.txt").write_text("a")
-    _change_after_first_removal(monkeypatch, link_fs, "a.txt", lambda: shutil.rmtree(tree / "z_folder"))
+    fired = _change_after_first_removal(monkeypatch, link_fs, "a.txt", lambda: shutil.rmtree(tree / "z_folder"))
     await run_task(lambda ctx: erase_files(ctx, [link_fs.path(tree)]), [Response.YES])
+    assert fired == ["a.txt"]
     assert not tree.exists()
 
 
@@ -295,3 +320,89 @@ async def test_not_found_error_for_an_existing_entry_is_reported(link_fs: Filesy
     with pytest.raises(FileNotFoundError):
         await run_task(lambda ctx: erase_files(ctx, [link_fs.path(empty)]))
     assert empty.is_dir()
+
+
+@pytest.mark.asyncio
+async def test_declined_dir_swapped_for_link_is_left_alone(link_fs: Filesystem, tmp_path: Path) -> None:
+    outside = _outside(tmp_path)
+    tree = tmp_path / "tree"
+    (tree / "sub").mkdir(parents=True)
+    (tree / "sub" / "deep.txt").write_text("x")
+    (tree / "keep.txt").write_text("x")
+    other = tmp_path / "other.txt"
+    other.write_text("o")
+    status = make_status()
+    before = _snapshot(outside)
+    try:
+        requests = await _erase_changing_on_question(
+            [link_fs.path(tree), link_fs.path(other)],
+            lambda: _swap_for_link(tree, outside),
+            response=Response.NO,
+            status=status,
+        )
+    finally:
+        assert _snapshot(outside) == before
+    assert len(requests) == 1
+    assert tree.is_symlink()
+    assert not other.exists()
+    assert status.progress.total == 2
+    assert status.progress.completed == 2
+
+
+@pytest.mark.asyncio
+async def test_declined_dir_vanished_does_not_abort_job(link_fs: Filesystem, tmp_path: Path) -> None:
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "f.txt").write_text("f")
+    other = tmp_path / "other.txt"
+    other.write_text("o")
+    status = make_status()
+    await _erase_changing_on_question(
+        [link_fs.path(tree), link_fs.path(other)],
+        lambda: shutil.rmtree(tree),
+        response=Response.NO,
+        status=status,
+    )
+    assert not tree.exists()
+    assert not other.exists()
+    assert status.progress.total == 2
+    assert status.progress.completed == 2
+
+
+@pytest.mark.asyncio
+async def test_swapped_dir_counts_completed_once_per_entry(link_fs: Filesystem, tmp_path: Path) -> None:
+    outside = _outside(tmp_path)
+    tree = tmp_path / "tree"
+    (tree / "sub").mkdir(parents=True)
+    (tree / "sub" / "deep.txt").write_text("x")
+    other = tmp_path / "other.txt"
+    other.write_text("o")
+    status = make_status()
+    before = _snapshot(outside)
+    try:
+        await _erase_changing_on_question(
+            [link_fs.path(tree), link_fs.path(other)],
+            lambda: _swap_for_link(tree, outside),
+            status=status,
+        )
+    finally:
+        assert _snapshot(outside) == before
+    assert not tree.is_symlink()
+    assert not tree.exists()
+    assert status.progress.total == 2
+    assert status.progress.completed == 2
+
+
+@pytest.mark.asyncio
+async def test_vanished_dir_counts_completed_once_per_entry(link_fs: Filesystem, tmp_path: Path) -> None:
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "f.txt").write_text("f")
+    other = tmp_path / "other.txt"
+    other.write_text("o")
+    status = make_status()
+    await _erase_changing_on_question([link_fs.path(tree), link_fs.path(other)], lambda: shutil.rmtree(tree), status=status)
+    assert not tree.exists()
+    assert not other.exists()
+    assert status.progress.total == 2
+    assert status.progress.completed == 2
