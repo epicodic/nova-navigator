@@ -1,0 +1,154 @@
+# Changelog
+
+## 0.1.0
+
+### Added
+
+- Two independent file panels side by side.
+- Browse SSH servers as if they were local folders.
+  SSH is tested with OpenSSH servers on Debian and on Alpine (BusyBox) in containers: password and key-file login, identity files from `~/.ssh/config`, ProxyJump, host key prompts, listing, copy, move, delete, symbolic links and editing.
+- Open tar and zip archives as folders.
+- A live shell in the same window.
+- Copy (F5), move (F6) and delete (F8), with progress and conflict resolution.
+- Long operations run in the background and can be cancelled.
+- View and cancel running jobs in the Jobs dialog.
+- Bookmarks for frequently used folders.
+- Icons and file types set in a configuration file.
+- Icons from a Nerd Font when one is installed; Unicode icons otherwise.
+- A menu bar that works from the keyboard.
+- F1 opens help.
+- F3 views a file read-only.
+- The right panel's folder and sort order are restored when the application starts again.
+- Azure Blob Storage, installed with the optional `azure` extra.
+  Sign in with `az login` is the expected way; this has not been verified.
+
+### Known issues
+
+#### Possible data loss
+
+- The same file reached through two separate SSH connections is not recognised, so copying or moving it onto itself can destroy it.
+- In the built-in shell, `cp` of a file onto itself is not refused and can destroy it.
+  This was not reproduced.
+- Copying a folder into its own subfolder is not refused.
+  The effect has not been verified.
+- Two hard-linked names on SSH are not recognised as one file, so copying or moving one onto the other may destroy data.
+  This was not tested.
+- With a dialog open, after Ctrl+S has been pressed and the application waits for the next key, or with Quit rebound, Ctrl+Q quits without asking and deletes local copies that were not written back.
+  Those edits are lost.
+- If a directory is replaced by a symbolic link while it is being deleted, moved, or removed with `rm -r` in the built-in shell, the operation can follow the link.
+- Killing the application while it replaces a link can leave the destination missing.
+  Changes made by other programs during a copy are not detected.
+- An interrupted save can damage a configuration file: list files such as bookmarks always, and `settings.toml` when its directory is read-only.
+
+#### SSH
+
+- Login through ssh-agent and passphrase-protected keys are not tested.
+- A command on an SSH server that never reports an exit status blocks until you cancel it.
+- On an SSH server that uses uutils tools and has no SFTP, a directory whose listing contains non-UTF-8 names (or the character U+FFFD) cannot be listed.
+- `ssh://user:password@host` is not supported: `user:password` is sent as the user name and shown in the login dialog.
+- Wildcard, negated and `@cert-authority` entries in `known_hosts` are not matched, so you are asked to confirm such a host again.
+  A second key of the same type for a host is reported as a changed key.
+- A new host key is stored even if you then cancel the login.
+  If storing it fails after a failed login, there is no warning.
+- Of `~/.ssh/config`, `ProxyCommand` and `Include` are ignored, and `Match` blocks with other than the basic keywords never apply.
+- A hanging name lookup can delay a connection beyond the configured SSH timeout.
+- Reading a non-UTF-8 link target needs `readlink` and `od` on the server.
+  A server that omits file attributes gets default values.
+- On SSH files and TAR members, a change that keeps the size and happens within the same second is not detected.
+- Nothing stops another writer from racing the write-back.
+  Write-back needs the `posix-rename@openssh.com` SFTP extension.
+  Write-back into a nested archive on a remote host is untested.
+- Large directories on SSH are slow to list, copy, move and delete, especially with many links or non-GNU servers.
+- A remote command that writes very much to its error output can stall.
+- Unusual server tools can make a directory show as empty or fail with an input/output error.
+- Every move to or from an SSH server, also within one server, copies and then deletes.
+- An empty path in "Go to path" on an SSH panel opens `/`, not the login directory.
+- If a server cannot resolve links, a link loop is followed up to 16 levels.
+- Some connection error texts are formatted oddly.
+- A host name is stored as typed.
+
+#### Azure
+
+- Azure Blob Storage is tested against the Azurite emulator.
+  It has not yet been verified with a real storage account.
+- Renaming a large Azure blob whose server-side copy takes more than 300 seconds fails; the source is kept.
+- The first access to Azure can take about 90 seconds (seen on the development host with a proxy set).
+- `azure://` addresses work with host-style endpoints only.
+  A `.keep` file marks directories and may show as a hidden file.
+  A change made just while a blob is saved can be overwritten.
+  Deleting a missing path reports nothing.
+
+#### Archives
+
+- A zip member that you edit and save back keeps its old date.
+- A zip directory without its own entry may show no date.
+- Archives do not keep empty directories.
+- `.jar`, `.war`, `.ear`, `.apk`, `.whl` and single compressed files are read-only.
+- Writing into a large archive rebuilds it for every file.
+  Opening a large `.gz`, `.bz2` or `.xz` blocks while it is decompressed.
+- Hard links in a TAR are copied as separate files.
+- A panel inside an archive can show old sizes and members until it is refreshed.
+
+#### Viewer and editor
+
+- While a large remote file downloads for F3 or F4, the application accepts no keys and the download cannot be interrupted midway.
+- With a menu open in the viewer, F10, Ctrl+W or Ctrl+Q closes the viewer at once.
+  Esc closes the menu first.
+- A failed download for F3 or F4 shows no message, only a failed job.
+- Choosing "Abort" in the error dialog for an unreadable file ends the application.
+- "Quit and keep files" while a file is still downloading for viewing can make that download fail.
+- Cancelling F4 just after the download may leave a local copy behind.
+  This was not reproduced.
+- Saving in the editor creates a new file, except for a plain save of an unchanged file that can be patched in place.
+  When the editor creates a new file, hard links, owner, group, ACLs and extended attributes are not kept; only permission bits are restored.
+  See the [Known Limits section of the editor documentation](https://github.com/epicodic/nova-navigator/blob/main/docs/editor.md#known-limits-1).
+
+#### Settings and layout
+
+- A `settings.toml` with a syntax error stops the start.
+  If the file is read-only, OK in the settings dialog fails.
+- Closing the terminal window, SIGTERM (a termination signal) or a crash loses this session's right-panel folder and sort order.
+- A right-panel folder whose name is not valid UTF-8 is not remembered.
+- Three file-panel actions are not listed in the Key Bindings dialog and cannot be rebound there.
+- Ctrl+F1 opens Settings, so the terminal's "Ctrl+F1 leaves focus" appears not to work.
+  This was seen in the code and not tried.
+- With several instances open, the last one to quit wins.
+  Restoring a local folder can mount it or wait on a stale network mount.
+- The hidden-files setting does not apply to the side bar or the file dialog, which has its own switch.
+- Hide Identical keeps its setting while compare is off, and the other panel can update late.
+  No files are affected.
+- The numpad + and - keys are not bound.
+- Old settings lines are ignored.
+
+#### Security and crash reports
+
+- Crash reports do not hide passwords typed or pasted into the embedded terminal or a user-menu prompt.
+- Crash reports can still contain a password that was being typed at the time of the crash, that is part of a URI and contains `/`, that appears in unusual nested or split forms, or that is in a configuration file being read at that moment.
+  Check a crash report before sharing it.
+- Crash reports may hide more than necessary.
+- Typed passwords are not saved.
+  Passwords written into a URI in `remotes.toml` or `bookmarks.toml` stay on disk.
+
+#### Other
+
+- On a slow shell, Enter pressed before the typed command appears may act on the file panel instead of the terminal.
+  This was seen in the code, but not reproduced in the application.
+- A move that follows links skips, as broken, a link that points into the moved folder.
+- Relative links copied to another host keep their text even with the stable-links option.
+- The built-in shell's `cp` and `mv` have no link options.
+- With stable links, `..` after a linked directory is read textually.
+- A followed link target that disappears during a copy can fail the job.
+- The overwrite question for a folder says "File".
+  A followed file keeps the link's date and counts the link's length in the progress.
+- A move within one device renames, so relative links can end up pointing elsewhere.
+  Link modification times are not kept.
+  A cross-device move leaves skipped links and their folder behind.
+- Some skipped entries are not listed in the Jobs dialog.
+- A file you answered No for is not listed as skipped.
+  Rows hidden by Hide Identical lose their selection.
+- There is no "Preserve attributes" switch; attributes are always copied.
+- There is no "Dive into subdir if exists" switch.
+- There are no rename masks for copy and move.
+- The copy and move dialog has no "Background" button; jobs already run in the background.
+- The developer script `create_bundle_shiv.sh` does not include the Azure SDK in the bundle it builds.
+- The embedded terminal needs zsh at `/usr/bin/zsh`; your login shell is not used for it.
