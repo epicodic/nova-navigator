@@ -12,6 +12,7 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Label
 
+from nova_navigator.config.remotes import RemoteConnection, SshSettings
 from nova_navigator.remotes import ssh as ssh_module
 from nova_navigator.remotes.known_hosts import fingerprint, read_known_hosts
 from nova_navigator.remotes.ssh import changed_host_message, connect_ssh, save_failure_message
@@ -236,3 +237,17 @@ async def test_changed_message_is_displayed_with_brackets() -> None:
         await pilot.pause()
         rendered = [str(label.render()) for label in app.screen.query(Label)]
     assert any("[h.example]:2222" in line for line in rendered)
+
+
+@pytest.mark.asyncio
+async def test_password_prompt_without_any_key_or_agent(flow_env: FlowEnv) -> None:
+    connection = RemoteConnection(name="stub", ssh=SshSettings(host=flow_env.server.host, port=flow_env.server.port, user="testuser"))
+
+    fs = await connect_ssh(connection)
+
+    assert fs is not None
+    try:
+        assert FakeCredentialsDialog.runs == 1
+        assert fs.home() is not None
+    finally:
+        fs._ssh_client.close()

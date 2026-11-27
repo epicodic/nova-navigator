@@ -413,6 +413,19 @@ class HopAuthenticationError(paramiko.AuthenticationException):
         self.count = len(route)
 
 
+class NoAuthenticationMethodError(paramiko.SSHException):
+    """No password, key or agent was left to try on a hop: paramiko's plain SSHException, typed so the password prompt can follow.
+
+    It is deliberately not an ``AuthenticationException``, which callers treat as a rejected login.
+    """
+
+    def __init__(self, route: Sequence[SshHop], index: int) -> None:
+        super().__init__(f"No password, key or agent is available for {_hop_role(index, len(route))} {_hop_label(route[index])}.")
+        self.hop = route[index]
+        self.index = index
+        self.count = len(route)
+
+
 def _hop_failure(route: Sequence[SshHop], index: int, cause: BaseException) -> SshHopError:
     text = str(cause) or type(cause).__name__
     label = _hop_label(route[index])
@@ -629,6 +642,8 @@ def _translate_hop_error(exc: BaseException, route: Sequence[SshHop], index: int
     transport_error = isinstance(exc, (OSError, paramiko.SSHException, EOFError))
     if transport_error and deadline.expired:
         return SshConnectTimeoutError(route, index, deadline.seconds)
+    if type(exc) is paramiko.SSHException and str(exc) == "No authentication methods available":
+        return NoAuthenticationMethodError(route, index)  # paramiko's only signal for "nothing to try": the password prompt follows
     if isinstance(exc, paramiko.AuthenticationException):
         return HopAuthenticationError(route, index)
     if transport_error and len(route) > 1:
@@ -1368,6 +1383,8 @@ class SSHFilesystem(Filesystem):
         self._assert_vpath(path)
         try:
             resolved = self._sftp_client.normalize(_sftp_path(path))
+            # normalize resolves a dangling link to its missing target without an error; lstat reports it.
+            self._sftp_client.lstat(resolved)
         except UnicodeDecodeError:
             return None  # a non-UTF-8 path cannot be read back; callers rely on the copy depth guard
         except (paramiko.SSHException, paramiko.SFTPError) as exc:

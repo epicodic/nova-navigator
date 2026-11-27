@@ -27,6 +27,7 @@ from nova_navigator.vfs.filesystems import (
     ConfirmedKeyMismatchError,
     HopAuthenticationError,
     HostKeyError,
+    NoAuthenticationMethodError,
     RevokedHostKeyError,
     SSHFilesystem,
     SshHopError,
@@ -127,7 +128,7 @@ async def _connect(name: str, attempt: _Attempt) -> SSHFilesystem | None:
             _logger.warning("Host key refused for %r: %s %s %s", name, type(exc).__name__, exc.key_type, exc.fingerprint)
             await _show_refusal(exc)
             return None
-        except HopAuthenticationError as exc:
+        except (HopAuthenticationError, NoAuthenticationMethodError) as exc:  # nothing to try, or a rejected login: both ask for a password
             if exc.index in attempt.credentials:  # the typed credentials were wrong: no second prompt
                 _logger.warning("SSH password auth failed for hop %d of %r", exc.index, name)
                 await _report_failure(name, exc)
