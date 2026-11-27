@@ -77,8 +77,8 @@ def run_docker(*args: str, input: bytes | None = None, timeout: float = CALL_TIM
     except OSError as exc:
         raise ServerUnavailable(f"docker {step} could not be started: {exc}") from exc
     if result.returncode != 0:
-        stderr = _tail(result.stderr.decode(errors="replace").strip())
-        raise ServerUnavailable(f"docker {step} failed with exit code {result.returncode}: {stderr}")
+        output = result.stderr.decode(errors="replace").strip() or result.stdout.decode(errors="replace").strip()
+        raise ServerUnavailable(f"docker {step} failed with exit code {result.returncode}: {_tail(output)}")
     return result.stdout
 
 

@@ -44,6 +44,20 @@ def test_failed_command_reports_only_the_last_lines_of_its_output(tmp_path: Path
     assert "DEPRECATED" not in message
 
 
+def test_failed_command_with_only_stdout_reports_the_last_lines_of_stdout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    output = "\n".join(f"step {n}" for n in range(1, 31))
+    fake = tmp_path / "docker"
+    fake.write_text(f"#!{sys.executable}\nimport sys\nsys.stdout.write({output!r} + chr(10))\nsys.exit(1)\n")
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setattr(docker, "DOCKER_COMMAND", str(fake))
+    with pytest.raises(ServerUnavailable) as info:
+        run_docker("build")
+    message = str(info.value)
+    assert message.endswith("step 30")
+    assert "step 16" in message
+    assert "step 15\n" not in message
+
+
 def test_image_build_removes_intermediate_containers_of_failed_steps(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, ...]] = []
 
