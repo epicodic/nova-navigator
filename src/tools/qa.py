@@ -82,7 +82,7 @@ def main() -> None:
                 (
                     "Real-server tests (serial)",
                     "magenta",
-                    ["uv", "run", "pytest", "-m", "real_server", "-n", "0"],
+                    ["uv", "run", "pytest", "-m", "real_server", "-n", "0", "-rs"],
                     (0,),
                 )
             )

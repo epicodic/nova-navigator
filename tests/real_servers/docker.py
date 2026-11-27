@@ -20,6 +20,7 @@ import pytest
 DOCKER_ENV: dict[str, str] = dict(os.environ)
 DOCKER_COMMAND = "docker"
 CALL_TIMEOUT = 90.0  # below the 120 s per-test limit
+OUTPUT_TAIL_LINES = 15  # a failed command ends with its reason; its first lines are usually notices
 PREPARE_TIMEOUT = 600.0
 AZURITE_IMAGE = "mcr.microsoft.com/azure-storage/azurite:3.38.0@sha256:c26024d62bf4a5b88a40968afd217234c00e1fc9a4790dc6105d1ca7979f6eec"
 IMAGES_DIR = Path(__file__).resolve().parent / "images"
@@ -54,6 +55,11 @@ def start_once[T](start: Callable[[], T]) -> Callable[[], T]:
     return _shared
 
 
+def _tail(text: str, lines: int = OUTPUT_TAIL_LINES) -> str:
+    """Return the last *lines* lines of *text*."""
+    return "\n".join(text.splitlines()[-lines:])
+
+
 def run_docker(*args: str, input: bytes | None = None, timeout: float = CALL_TIMEOUT) -> bytes:
     """Run ``docker <args>`` and return its stdout; any failure raises `ServerUnavailable` naming the step."""
     step = " ".join(args[:1]) or "docker"
@@ -71,7 +77,7 @@ def run_docker(*args: str, input: bytes | None = None, timeout: float = CALL_TIM
     except OSError as exc:
         raise ServerUnavailable(f"docker {step} could not be started: {exc}") from exc
     if result.returncode != 0:
-        stderr = result.stderr.decode(errors="replace").strip()
+        stderr = _tail(result.stderr.decode(errors="replace").strip())
         raise ServerUnavailable(f"docker {step} failed with exit code {result.returncode}: {stderr}")
     return result.stdout
 
@@ -80,13 +86,13 @@ def unavailable(reason: str, env: Mapping[str, str]) -> NoReturn:
     """Fail when the run requires real servers (CI or ``NOVA_REQUIRE_REAL_SERVERS``), otherwise skip with the reason."""
     if env.get("CI") or env.get("NOVA_REQUIRE_REAL_SERVERS"):
         pytest.fail(f"Real server required but unavailable: {reason}")
-    pytest.skip(f"Docker is not available: {reason}")
+    pytest.skip(f"Real server unavailable: {reason}")
 
 
 def build_image(flavour: str, timeout: float = CALL_TIMEOUT) -> str:
     """Build the image of *flavour* (``gnu`` or ``busybox``) and return its tag."""
     tag = f"nova-rs-{flavour}"
-    run_docker("build", "--quiet", "-t", tag, str(IMAGES_DIR / flavour), timeout=timeout)
+    run_docker("build", "--quiet", "--force-rm", "-t", tag, str(IMAGES_DIR / flavour), timeout=timeout)
     return tag
 
 
