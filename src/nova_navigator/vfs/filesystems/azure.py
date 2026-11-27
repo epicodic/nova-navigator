@@ -413,7 +413,7 @@ class AzureFilesystem(Filesystem):
                 if prefix not in self._emptied:
                     raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path.path)) from None
         self._emptied.discard(prefix)
-        self._emptied.add(_parent_prefix(marker))
+        self._emptied.add(_parent_prefix(_blob_name(path)))
 
     @override
     def mkdir(self, path: VPath) -> None:

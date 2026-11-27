@@ -361,6 +361,24 @@ def test_rmdir_after_removing_the_last_blob_succeeds() -> None:
     fs.rmdir(fs.path("/d"))
 
 
+def test_second_rmdir_of_the_same_directory_raises_file_not_found() -> None:
+    fs, mock_client = _make_fs()
+    mock_client.list_blobs.return_value = []
+    mock_client.get_blob_client.return_value.delete_blob.side_effect = [None, ResourceNotFoundError]
+    fs.rmdir(fs.path("/d"))
+    with pytest.raises(FileNotFoundError):
+        fs.rmdir(fs.path("/d"))
+
+
+def test_rmdir_of_parent_succeeds_after_its_emptied_subdirectory_is_removed() -> None:
+    fs, mock_client = _make_fs()
+    mock_client.list_blobs.return_value = []
+    mock_client.get_blob_client.return_value.delete_blob.side_effect = [None, None, ResourceNotFoundError]
+    fs.remove(fs.path("/p/d/a.txt"))
+    fs.rmdir(fs.path("/p/d"))
+    fs.rmdir(fs.path("/p"))
+
+
 def test_is_same_device_is_false_for_another_container() -> None:
     fs, mock_client = _make_fs()
     other = AzureFilesystem("https://test.blob.core.windows.net", "othercontainer", client=mock_client)

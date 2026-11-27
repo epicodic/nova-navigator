@@ -163,6 +163,26 @@ async def test_listing_errors_are_raised(azurite: Azurite) -> None:
         await _names(fs, "/")
 
 
+# ── directories ───────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_mkdir(azurite: Azurite, container: str) -> None:
+    fs = _fs(azurite, container)
+    fs.mkdir(fs.path("/made"))
+    assert _exists(azurite, container, "made/.keep")
+    assert "/made" in await _names(fs, "/")
+    assert fs.stat(fs.path("/made")).is_directory
+    assert await _names(fs, "/made") <= {"/made/.keep"}
+    with pytest.raises(FileExistsError):
+        fs.mkdir(fs.path("/made"))
+    fs.rmdir(fs.path("/made"))
+    assert not _exists(azurite, container, "made/.keep")
+    assert "/made" not in await _names(fs, "/")
+    with pytest.raises(FileNotFoundError):
+        fs.rmdir(fs.path("/made"))
+
+
 # ── copy ──────────────────────────────────────────────────────────────────────
 
 
