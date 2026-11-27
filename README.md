@@ -22,8 +22,8 @@ Built with Python and [Textual](https://github.com/Textualize/textual).
 
 | | |
 |---|---|
-| OS | Ubuntu 24.04 (macOS and Windows are not supported) |
-| Python | 3.12 or later |
+| OS | Ubuntu 24.04 and 26.04 (macOS and Windows are not supported) |
+| Python | 3.12 or later (tested on 3.12, 3.13 and 3.14) |
 | Package manager | [`uv`](https://github.com/astral-sh/uv) |
 
 ## Installation

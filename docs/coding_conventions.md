@@ -1,6 +1,7 @@
 # Coding Conventions
 
-This project is **Python 3.12 only**.
+This project requires **Python 3.12 or later** (`requires-python = ">=3.12"`) and CI tests 3.12, 3.13 and 3.14.
+Code must still run on 3.12, so do not use syntax or standard-library features that only later versions provide.
 
 ## Python
 
