@@ -27,9 +27,9 @@
 
 #### Possible data loss
 
-- The same storage reached in another way, for example under another host name, user or port, is not recognised, so copying or moving a file onto itself that way can destroy it.
+- The same storage reached in another way, for example under another host name, user or port, is not recognised, so copying or moving a file or folder onto itself that way can destroy it.
 - Servers with the same address, port and user name behind different jump hosts are treated as one machine.
-  So copying or moving a file to the same path between them is skipped.
+  So copying or moving a file or folder between them to the same path, or a folder to a path inside it, is skipped.
 - Two hard-linked names on SSH are not recognised as one file, so copying or moving one onto the other may destroy data.
   This was not tested.
 - If a directory is replaced by a symbolic link while it is being deleted, moved, or removed with `rm -r` in the built-in shell, the operation can follow the link.

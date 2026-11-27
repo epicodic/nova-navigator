@@ -95,8 +95,10 @@ Quitting Nova Navigator while any local copy has unsynced, failed, or conflictin
 
 With nothing unsynced, Nova Navigator quits immediately and removes its local-copy directory.
 
-`Ctrl+Q` asks in every state, also with a dialog open, after a pending key chord, and when Quit is bound to another key.
-While a quit is under way, further quit keys are ignored; cancel a hanging sync in the Jobs dialog.
+`Ctrl+Q` asks only when a local copy is unsynced.
+With the built-in editor or viewer open, `Ctrl+Q` first closes that screen and asks about its unsaved text; the quit prompt for the copies is asked by a later `Ctrl+Q`.
+While a quit is under way, a quit key is ignored.
+A running sync cannot be interrupted, so the application stays open until the sync finishes or fails.
 Any other way the application ends, such as a crash, keeps the local files whenever a copy is unsynced.
 
 ### Reopening a changed file
