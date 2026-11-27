@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import logging
+import os
 from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 from typing import Literal
@@ -11,6 +12,7 @@ from nova_widgets import Response
 from ..file_filter import FileFilter
 from ..vfs import VPath
 from ..vfs.filesystem import Filesystem, StreamReaderLike, StreamWriterLike
+from ..vfs.filesystems.local import LocalFilesystem
 from ..vfs.types import Stat
 from .link_target import stable_link_target
 
@@ -26,6 +28,7 @@ SKIP_BROKEN_LINK = "broken link"
 SKIP_LINK_LOOP = "link loop"
 SKIP_UNREADABLE_LINK = "unreadable link"
 SKIP_FOLDER_EXISTS = "folder exists"
+SKIP_SAME_FILE = "same file"
 _MAX_LINK_DEPTH = 16
 
 
@@ -65,6 +68,58 @@ class EraseFilesOptions:
     ask_before_erase: bool = True
     refresh_stat: bool = True
     """Refresh the cached stat of each path before erasing; internal children listings turn it off."""
+
+
+def _is_same_entry(a: VPath, b: VPath) -> bool:
+    """Return whether *a* and *b* name the same existing entry; a final link is not followed.
+
+    Local paths compare by inode, so symlinked parent folders and hard links count.
+    Elsewhere the paths must be equal, or the names equal and the parent folders resolve to the same folder.
+    """
+    filesystem = a.filesystem.unwrap()
+    if filesystem != b.filesystem.unwrap() and not a.filesystem.is_same_device(a, b):
+        return False
+    try:
+        if isinstance(filesystem, LocalFilesystem):
+            return os.path.samestat(os.lstat(a.path), os.lstat(b.path))
+        if a.name != b.name:
+            return False
+        b.filesystem.stat(b)  # raises when there is nothing at *b*; does not cache on the VPath
+        if a.path == b.path:
+            return True
+        real_a = a.filesystem.real_path(a.parent)
+        real_b = b.filesystem.real_path(b.parent)
+    except OSError:
+        return False
+    return real_a is not None and real_b is not None and real_a.path == real_b.path
+
+
+def _is_onto_itself(src: VPath, dst: VPath) -> bool:
+    """Return whether writing *src* to *dst* would destroy what is being copied or moved.
+
+    That is the case when *dst* is *src* itself, or when *src* is a link and *dst* is on its way to the target.
+    """
+    if _is_same_entry(src, dst):
+        return True
+    if not src.stat.is_symlink:
+        return False
+    hop = src
+    for _ in range(_MAX_LINK_DEPTH):
+        try:
+            hop = hop.parent / hop.filesystem.readlink(hop)
+        except OSError:  # the end of the chain: not a link any more
+            return False
+        if _is_same_entry(hop, dst):
+            return True
+    return False
+
+
+def _skip_onto_itself(ctx: TaskContext, src: VPath, dst: VPath) -> bool:
+    """Report *src* as skipped and return True when it must not be written to *dst*."""
+    if not _is_onto_itself(src, dst):
+        return False
+    ctx.report_skipped(src.uri, SKIP_SAME_FILE)
+    return True
 
 
 async def _overwrite_allowed(ctx: TaskContext, src: VPath, dst: VPath, options: FileCopyOptions, label: str) -> bool:
@@ -218,6 +273,8 @@ async def copy_file(
 
     _logger.debug("copy_file %s -> %s", src_path.path, dst_path.path)
     ctx.status.set_current_item(src_path.uri)
+    if _skip_onto_itself(ctx, src_path, dst_path):
+        return False
     reader = None
     writer = None
     claim = _Claim(proceed=False)
@@ -318,6 +375,8 @@ async def _recreate_link(
     source_root: PurePosixPath | None,
 ) -> bool:
     """Create at *dst* a link with the same target text as *link*; never reads or descends into the target."""
+    if _skip_onto_itself(ctx, link, dst):
+        return False
     try:
         text = link.filesystem.readlink(link)
     except OSError:
@@ -529,8 +588,12 @@ async def _copy_dir(
 ) -> bool:
     """Copy the folder *src_path* into *dst_path*.
 
-    Return False only when the root was skipped by the overwrite policy.
+    Return False only when the root was skipped, by the overwrite policy or because *dst_path* is the folder itself.
     """
+    if _skip_onto_itself(ctx, src_path, dst_path):
+        if count_root:
+            ctx.status.update_progress(inc_completed=1)
+        return False
     root_outcome = await _ensure_directory(ctx, src_path, dst_path, options)
     if root_outcome == "skipped":
         if count_root:
@@ -667,6 +730,8 @@ async def _move_entry(
     ctx.status.set_current_item(f.uri)
     if options.filter is not None and not options.filter.matches(f):
         return
+    if _skip_onto_itself(ctx, f, f_dst):
+        return
     if same_device:
         f_dst_stat = f_dst.stat_or_none
         if f_dst_stat is not None and _is_real_dir(f_dst_stat):
@@ -790,6 +855,11 @@ async def _move_path(
     # Filter check — skip non-matching files (directories are always traversed).
     if not is_dir and options.filter is not None and not options.filter.matches(src_path):
         _logger.debug("move_path filter skip %s", src_path.path)
+        ctx.status.update_progress(inc_completed=1)
+        return
+
+    # Before any branch: each of them removes or truncates the destination.
+    if _skip_onto_itself(ctx, src_path, actual_dst):
         ctx.status.update_progress(inc_completed=1)
         return
 
