@@ -152,3 +152,20 @@ async def test_cp_r_into_itself_is_refused(tmp_path: Path, destination: str) -> 
     assert (tmp_path / "d" / "f").read_bytes() == b"data-f"
     assert sorted(p.name for p in (tmp_path / "d").iterdir()) == ["f", "sub"]
     assert list((tmp_path / "d" / "sub").iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_cp_through_a_chain_of_twenty_links_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "f").write_bytes(b"data-f")
+    (tmp_path / "l0").symlink_to("f")
+    for i in range(1, 20):
+        (tmp_path / f"l{i}").symlink_to(f"l{i - 1}")
+    local = LocalFilesystem()
+    interp = VfsShellInterpreter(local, local.path(tmp_path), cols=80, rows=24)
+    output: list[str] = []
+
+    exit_code = await interp.execute("cp f l19", output.append, output.append)
+
+    assert exit_code == 1
+    assert "are the same file" in "".join(output)
+    assert (tmp_path / "f").read_bytes() == b"data-f"

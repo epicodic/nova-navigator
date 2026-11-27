@@ -32,6 +32,7 @@ SKIP_FOLDER_EXISTS = "folder exists"
 SKIP_SAME_FILE = "same file"
 SKIP_INTO_ITSELF = "into itself"
 _MAX_LINK_DEPTH = 16
+_MAX_LINK_HOPS = 40  # Linux refuses to open a longer chain of links (ELOOP), so no write can go through one
 
 
 @dataclass(frozen=True)
@@ -105,19 +106,9 @@ def _is_onto_itself(src: VPath, dst: VPath) -> bool:
 
     That is the case when *dst* is *src* itself, or when *src* is a link and *dst* is on its way to the target.
     """
-    if _is_same_entry(src, dst):
-        return True
     if not src.stat.is_symlink:
-        return False
-    hop = src
-    for _ in range(_MAX_LINK_DEPTH):
-        try:
-            hop = hop.parent / hop.filesystem.readlink(hop)
-        except OSError:  # the end of the chain: not a link any more
-            return False
-        if _is_same_entry(hop, dst):
-            return True
-    return False
+        return _is_same_entry(src, dst)
+    return any(_is_same_entry(hop, dst) for hop in _walk_links(src))
 
 
 def _skip_onto_itself(ctx: TaskContext, src: VPath, dst: VPath) -> bool:
@@ -128,17 +119,23 @@ def _skip_onto_itself(ctx: TaskContext, src: VPath, dst: VPath) -> bool:
     return True
 
 
-def _link_chain(path: VPath) -> Iterator[VPath]:
-    """Yield *path* and then, while it is a link, each next step towards its target."""
+def _walk_links(path: VPath) -> Iterator[VPath]:
+    """Yield *path* and then, while it is a link, each next step towards its target (at most _MAX_LINK_HOPS steps)."""
     yield path
-    if not path.filesystem.supports_symlinks():
-        return
-    for _ in range(_MAX_LINK_DEPTH):
+    for _ in range(_MAX_LINK_HOPS):
         try:
             path = path.parent / path.filesystem.readlink(path)
         except OSError:  # the end of the chain: not a link any more
             return
         yield path
+
+
+def _link_chain(path: VPath) -> Iterator[VPath]:
+    """Yield *path* and then, on a filesystem with links, each next step towards its target."""
+    if not path.filesystem.supports_symlinks():
+        yield path
+        return
+    yield from _walk_links(path)
 
 
 def would_overwrite_source(src: VPath, dst: VPath) -> bool:
@@ -165,9 +162,25 @@ def is_into_itself(src: VPath, dst: VPath) -> bool:
     return _is_same_storage(src, dst) and _resolved(dst).is_relative_to(_resolved(src))
 
 
+def _is_into_itself_for_write(src: VPath, dst: VPath) -> bool:
+    """Return whether writing the folder *src* to *dst* would put it inside itself.
+
+    Unlike ``is_into_itself``, a final *dst* that is a link is not followed: writing a folder replaces that link
+    (see ``_ensure_directory``), so only its parent is resolved.
+    """
+    if not _is_same_storage(src, dst):
+        return False
+    dst_stat = _fresh_stat_or_none(dst.filesystem, dst)
+    if dst_stat is not None and dst_stat.is_symlink:
+        destination = _resolved(dst.parent) / dst.name
+    else:
+        destination = _resolved(dst)
+    return destination.is_relative_to(_resolved(src))
+
+
 def _skip_into_itself(ctx: TaskContext, src: VPath, dst: VPath) -> bool:
     """Report the folder *src* as skipped and return True when *dst* lies inside it."""
-    if not is_into_itself(src, dst):
+    if not _is_into_itself_for_write(src, dst):
         return False
     ctx.report_skipped(src.uri, SKIP_INTO_ITSELF)
     return True

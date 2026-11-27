@@ -8,7 +8,7 @@ from pathlib import Path
 import paramiko
 import pytest
 
-from nova_navigator.filemanager.tasks import FileCopyOptions, copy_files, move_files
+from nova_navigator.filemanager.tasks import FileCopyOptions, OverwritePolicy, copy_files, move_files
 from nova_navigator.scheduler import TaskStatus
 from nova_navigator.vfs.filesystem import Filesystem
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
@@ -61,6 +61,13 @@ def _names(root: Path) -> list[str]:
     return sorted(str(Path(folder, name).relative_to(root)) for folder, folders, files in os.walk(root) for name in (*folders, *files))
 
 
+async def _run_with_policy(operation: Callable[..., object], sources: list[object], destination: object, policy: OverwritePolicy) -> TaskStatus:
+    status = make_status()
+    options = FileCopyOptions(overwrite=policy)
+    await asyncio.wait_for(run_task(lambda ctx: operation(ctx, sources, destination, options), [Response.ALL] * 5, status), timeout=20)
+    return status
+
+
 async def _run(operation: Callable[..., object], sources: list[object], destination: object, follow_links: bool = False) -> TaskStatus:
     status = make_status()
     options = FileCopyOptions(overwrite="overwrite", follow_links=follow_links)
@@ -111,3 +118,62 @@ async def test_a_followed_link_whose_target_holds_the_destination_is_refused(tre
 
     assert _names(tree) == before
     assert [item.reason for item in status.skipped] == ["into itself"]
+
+
+@pytest.fixture
+def linked_destination(tmp_path: Path) -> Path:
+    """A/d/f, and B/d -> A/d: the destination entry is a link that points at the source folder."""
+    (tmp_path / "A" / "d").mkdir(parents=True)
+    (tmp_path / "A" / "d" / "f").write_bytes(b"data-f")
+    (tmp_path / "B").mkdir()
+    (tmp_path / "B" / "d").symlink_to(tmp_path / "A" / "d", target_is_directory=True)
+    return tmp_path
+
+
+@pytest.mark.parametrize("policy", ["overwrite", "ask", "skip"])
+@pytest.mark.parametrize("operation", _OPERATIONS)
+async def test_a_destination_link_into_the_source_is_replaced_not_refused(
+    pair: tuple[Filesystem, Filesystem], linked_destination: Path, operation: Callable[..., object], policy: OverwritePolicy
+) -> None:
+    root = linked_destination
+    source = pair[0].path(root / "A" / "d")
+
+    status = await _run_with_policy(operation, [source], pair[1].path(root / "B"), policy)
+
+    if policy == "skip":
+        assert (root / "B" / "d").is_symlink()
+        assert (root / "A" / "d" / "f").read_bytes() == b"data-f"
+        assert all(item.reason != "into itself" for item in status.skipped)
+        return
+    assert not (root / "B" / "d").is_symlink()
+    assert (root / "B" / "d" / "f").read_bytes() == b"data-f"
+    assert status.skipped == ()
+    if operation is move_files:
+        assert not (root / "A" / "d").exists()
+    else:
+        assert (root / "A" / "d" / "f").read_bytes() == b"data-f"
+
+
+@pytest.fixture
+def followed_destination(tmp_path: Path) -> Path:
+    """A/l -> T and B/l -> T: the destination link points at the same folder as the followed source link."""
+    (tmp_path / "T").mkdir()
+    (tmp_path / "T" / "t").write_bytes(b"data-t")
+    (tmp_path / "A").mkdir()
+    (tmp_path / "A" / "l").symlink_to(tmp_path / "T", target_is_directory=True)
+    (tmp_path / "B").mkdir()
+    (tmp_path / "B" / "l").symlink_to(tmp_path / "T", target_is_directory=True)
+    return tmp_path
+
+
+async def test_a_followed_link_onto_a_destination_link_to_the_same_folder_replaces_the_link(followed_destination: Path) -> None:
+    root = followed_destination
+    fs = LocalFilesystem()
+
+    status = await _run(copy_files, [fs.path(root / "A" / "l")], fs.path(root / "B"), follow_links=True)
+
+    assert status.skipped == ()
+    assert not (root / "B" / "l").is_symlink()
+    assert (root / "B" / "l" / "t").read_bytes() == b"data-t"
+    assert (root / "T" / "t").read_bytes() == b"data-t"
+    assert (root / "A" / "l").is_symlink()
