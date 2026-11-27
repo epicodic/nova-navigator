@@ -164,7 +164,7 @@ def _assert_asking(app: NovaNavigator, fake: _FakeLocalCopyManager) -> None:
     assert app.is_running
     assert fake.shutdown_calls == []
     assert len(_quit_prompts(app)) == 1
-    assert app.screen.query_one("#IGNORE", widgets.Button) is not None
+    assert len(app.screen.query("#IGNORE")) == 1
 
 
 _STATES = {

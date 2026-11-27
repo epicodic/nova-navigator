@@ -80,3 +80,55 @@ async def test_the_storage_is_the_host_port_and_user(connect: Connect) -> None:
 
 async def test_the_effective_host_of_the_route_counts_not_the_typed_name(connect: Connect) -> None:
     assert connect(requested="localhost").is_same_storage(connect())
+
+
+@pytest.fixture
+def direct() -> Generator[Callable[..., SSHFilesystem], None, None]:
+    """Open a connection to *hostname* and *port* as typed; a *route* sets the effective values for the storage."""
+    clients: list[paramiko.SSHClient] = []
+
+    def make(hostname: str, port: int, *, username: str = _LOGIN[0], route: list[SshHop] | None = None) -> SSHFilesystem:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(_AcceptAnyHostKey())
+        clients.append(client)
+        return SSHFilesystem(hostname=hostname, port=port, username=username, password=_LOGIN[1], ssh_client=client, route=route)
+
+    yield make
+    for client in clients:
+        client.close()
+
+
+async def test_another_host_name_for_the_same_server_is_another_storage(ssh_server: StubSSHServer, direct: Callable[[str, int], SSHFilesystem]) -> None:
+    by_address = direct(ssh_server.host, ssh_server.port)
+    by_name = direct("localhost", ssh_server.port)
+
+    assert by_name.is_same_storage(by_name)
+    assert not by_name.is_same_storage(by_address)
+    assert not by_address.is_same_storage(by_name)
+
+
+async def test_another_port_on_the_same_host_is_another_storage(ssh_server: StubSSHServer, direct: Callable[[str, int], SSHFilesystem], tmp_path: Path) -> None:
+    other_server = StubSSHServer(root_dir=tmp_path)
+    other_server.start()
+    try:
+        by_port = direct(ssh_server.host, ssh_server.port)
+        by_other_port = direct(other_server.host, other_server.port)
+
+        assert not by_port.is_same_storage(by_other_port)
+        assert not by_other_port.is_same_storage(by_port)
+    finally:
+        other_server.stop()
+
+
+async def test_the_effective_port_of_the_route_counts_not_the_requested_one(ssh_server: StubSSHServer, direct: Callable[..., SSHFilesystem], tmp_path: Path) -> None:
+    other_server = StubSSHServer(root_dir=tmp_path)
+    other_server.start()
+    try:
+        route = [SshHop("alias", ssh_server.host, other_server.port, _LOGIN[0], ())]
+
+        with_route = direct(ssh_server.host, ssh_server.port, route=route)
+
+        assert with_route.is_same_storage(direct(other_server.host, other_server.port))
+        assert not with_route.is_same_storage(direct(ssh_server.host, ssh_server.port))
+    finally:
+        other_server.stop()
