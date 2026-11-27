@@ -39,7 +39,7 @@
 - If a directory is replaced by a symbolic link while it is being deleted, moved, or removed with `rm -r` in the built-in shell, the operation can follow the link.
 - Killing the application while it replaces a link can leave the destination missing.
   Changes made by other programs during a copy are not detected.
-- An interrupted save can damage a configuration file: `remotes.toml` and `filetypes.toml` always, `settings.toml` and `bookmarks.toml` when the directory is read-only.
+- An interrupted save can damage a configuration file: `remotes.toml` and `keybindings.toml` always, `settings.toml` and `bookmarks.toml` when the directory is read-only.
 
 #### SSH
 
@@ -115,7 +115,7 @@
   If the file is read-only, OK in the settings dialog fails.
 - Closing the terminal window, SIGTERM (a termination signal) or a crash loses this session's right-panel folder and sort order.
 - A right-panel folder whose name is not valid UTF-8 is not remembered.
-- Three file-panel actions, Insert, Ctrl+A and Ctrl+F, are not listed in the Key Bindings dialog and cannot be rebound there.
+- Three file-panel keys, Insert, Ctrl+A and Ctrl+F, are not listed in the Key Bindings dialog. They can only be changed by hand in `keybindings.toml`, using the quoted action name, for example `"browser.insert_select"`; any save in the Key Bindings dialog removes such entries.
   Tab and Shift+Tab are fixed keys.
 - Ctrl+F1 opens Settings, so the terminal's "Ctrl+F1 leaves focus" appears not to work.
   This was seen in the code and not tried.
