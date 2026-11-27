@@ -173,7 +173,8 @@ def test_hop_whose_watchdog_fired_during_the_last_step_fails_with_the_timeout(tm
 
 
 def _watchdogs() -> list[threading.Thread]:
-    return [t for t in threading.enumerate() if isinstance(t, threading.Timer)]
+    """Live timers of a hop deadline; other timers, such as the one of pytest-timeout, do not count."""
+    return [t for t in threading.enumerate() if isinstance(t, threading.Timer) and isinstance(getattr(t.function, "__self__", None), _Deadline)]
 
 
 def test_fast_connect_leaves_no_watchdog_threads(tmp_path: Path, locations: KnownHostsLocations) -> None:
