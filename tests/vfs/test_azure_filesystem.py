@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
-from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
+from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError, ServiceRequestError
 from azure.storage.blob import BlobPrefix, BlobProperties, ContainerClient
 
 from nova_navigator.vfs.filesystems.azure import AzureFilesystem
@@ -224,6 +224,7 @@ def test_rename_copies_then_deletes() -> None:
     fs, mock_client = _make_fs()
     src_blob_client = MagicMock()
     dst_blob_client = MagicMock()
+    dst_blob_client.start_copy_from_url.return_value = {"copy_status": "success"}
     src_blob_client.url = "https://test.blob.core.windows.net/testcontainer/old.txt"
 
     def _get_client(name: str) -> MagicMock:
@@ -327,6 +328,7 @@ def test_rename_moves_every_blob_under_a_directory() -> None:
     def _get_client(name: str) -> MagicMock:
         if name not in clients:
             clients[name] = MagicMock(url=f"https://test.blob.core.windows.net/testcontainer/{name}")
+            clients[name].start_copy_from_url.return_value = {"copy_status": "success"}
         return clients[name]
 
     mock_client.get_blob_client.side_effect = _get_client
@@ -369,3 +371,70 @@ def test_is_same_device_is_true_for_another_instance_of_the_same_container() -> 
     fs, mock_client = _make_fs()
     again = AzureFilesystem("https://test.blob.core.windows.net/", "testcontainer", client=mock_client)
     assert fs.is_same_device(fs.path("/a"), again.path("/b")) is True
+
+
+# ── regressions A4-A6: errors reach the caller, a failed move keeps the source ──
+
+
+@pytest.mark.asyncio
+async def test_iterdir_raises_the_listing_error() -> None:
+    fs, mock_client = _make_fs()
+    mock_client.walk_blobs.side_effect = ResourceNotFoundError
+    with pytest.raises(FileNotFoundError):
+        async for _ in fs.iterdir(fs.path("/")):
+            pass
+
+
+def test_stat_maps_connection_errors_to_oserror() -> None:
+    fs, mock_client = _make_fs()
+    mock_client.get_blob_client.return_value.get_blob_properties.side_effect = ServiceRequestError("no route to host")
+    with pytest.raises(OSError, match="no route to host") as exc_info:
+        fs.stat(fs.path("/file.txt"))
+    assert exc_info.value.errno == errno.EIO
+
+
+def test_write_maps_upload_errors_to_oserror() -> None:
+    fs, mock_client = _make_fs()
+    mock_client.get_blob_client.return_value.upload_blob.side_effect = ServiceRequestError("no route to host")
+    writer = fs.write(fs.path("/out.txt"))
+    writer.write(b"hello")
+    with pytest.raises(OSError, match="no route to host") as exc_info:
+        writer.close()
+    assert exc_info.value.errno == errno.EIO
+
+
+def _copy_properties(status: str) -> MagicMock:
+    props = MagicMock()
+    props.copy.status = status
+    return props
+
+
+def test_rename_keeps_the_source_when_the_copy_fails() -> None:
+    fs, mock_client = _make_fs()
+    src_blob_client = MagicMock()
+    dst_blob_client = MagicMock()
+    dst_blob_client.start_copy_from_url.return_value = {"copy_status": "failed"}
+
+    def _get_client(name: str) -> MagicMock:
+        return src_blob_client if name == "old.txt" else dst_blob_client
+
+    mock_client.get_blob_client.side_effect = _get_client
+    with pytest.raises(OSError, match="did not complete"):
+        fs.rename(fs.path("/old.txt"), fs.path("/new.txt"))
+    src_blob_client.delete_blob.assert_not_called()
+
+
+def test_rename_waits_for_a_pending_copy() -> None:
+    fs, mock_client = _make_fs()
+    src_blob_client = MagicMock()
+    dst_blob_client = MagicMock()
+    dst_blob_client.start_copy_from_url.return_value = {"copy_status": "pending"}
+    dst_blob_client.get_blob_properties.side_effect = [_copy_properties("pending"), _copy_properties("success")]
+
+    def _get_client(name: str) -> MagicMock:
+        return src_blob_client if name == "old.txt" else dst_blob_client
+
+    mock_client.get_blob_client.side_effect = _get_client
+    fs.rename(fs.path("/old.txt"), fs.path("/new.txt"))
+    assert dst_blob_client.get_blob_properties.call_count == 2
+    src_blob_client.delete_blob.assert_called_once()

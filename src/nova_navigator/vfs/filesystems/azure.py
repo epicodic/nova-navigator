@@ -8,7 +8,9 @@ import importlib
 import io
 import logging
 import threading
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
 from pathlib import PurePath, PurePosixPath
 from types import ModuleType
 from typing import TYPE_CHECKING, override
@@ -21,6 +23,9 @@ if TYPE_CHECKING:
     from azure.storage.blob import BlobPrefix, BlobProperties, ContainerClient, StorageStreamDownloader
 
 _logger = logging.getLogger(__name__)
+
+_COPY_TIMEOUT = 300.0  # seconds to wait for a server-side copy that is still pending
+_COPY_POLL = 0.2  # seconds between two checks of a pending copy
 
 MISSING_AZURE_EXTRA_MESSAGE = """\
 Azure Blob support is not installed. Install the extra 'nova-navigator[azure]', for example: \
@@ -46,6 +51,24 @@ def _sdk() -> ModuleType:
         if exc.name is None or exc.name.split(".")[0] != "azure":
             raise
         raise MissingAzureExtraError from exc
+
+
+@contextmanager
+def _as_oserror(path: str) -> Iterator[None]:
+    """Re-raise an Azure SDK error from the block as the OSError that matches it."""
+    sdk = _sdk()
+    try:
+        yield
+    except sdk.ResourceNotFoundError as exc:
+        raise FileNotFoundError(errno.ENOENT, "No such file or directory", path) from exc
+    except sdk.ClientAuthenticationError as exc:
+        raise PermissionError(errno.EACCES, str(exc), path) from exc
+    except sdk.HttpResponseError as exc:
+        if exc.status_code in (401, 403):
+            raise PermissionError(errno.EACCES, str(exc), path) from exc
+        raise OSError(errno.EIO, str(exc), path) from exc
+    except sdk.AzureError as exc:
+        raise OSError(errno.EIO, str(exc), path) from exc
 
 
 def _blob_name(path: VPath) -> str:
@@ -119,7 +142,8 @@ class AzureFilesystem(Filesystem):
         def close(self) -> None:
             content = self._buf.getvalue()
             self._buf.close()
-            self._client.get_blob_client(self._blob_name).upload_blob(io.BytesIO(content), overwrite=True)
+            with _as_oserror(self._blob_name):
+                self._client.get_blob_client(self._blob_name).upload_blob(io.BytesIO(content), overwrite=True)
 
     _client: ContainerClient
     _emptied: set[str]
@@ -235,7 +259,7 @@ class AzureFilesystem(Filesystem):
             return
 
         loop = asyncio.get_running_loop()
-        queue: asyncio.Queue[VPath | None] = asyncio.Queue()
+        queue: asyncio.Queue[VPath | OSError | None] = asyncio.Queue()
 
         def _item_to_vpath(item: BlobProperties | BlobPrefix) -> VPath | None:
             if isinstance(item, _sdk().BlobProperties):
@@ -261,22 +285,27 @@ class AzureFilesystem(Filesystem):
 
         def _produce() -> None:
             try:
-                for item in self._client.walk_blobs(name_starts_with=prefix or None, delimiter="/"):
-                    if cancel is not None and cancel.is_set():
-                        break
-                    vp = _item_to_vpath(item)
-                    if vp is not None:
-                        loop.call_soon_threadsafe(queue.put_nowait, vp)
+                with _as_oserror(str(path.path)):
+                    for item in self._client.walk_blobs(name_starts_with=prefix or None, delimiter="/"):
+                        if cancel is not None and cancel.is_set():
+                            break
+                        vp = _item_to_vpath(item)
+                        if vp is not None:
+                            loop.call_soon_threadsafe(queue.put_nowait, vp)
+            except OSError as exc:
+                loop.call_soon_threadsafe(queue.put_nowait, exc)
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
 
         threading.Thread(target=_produce, daemon=True).start()
 
         while True:
-            vp = await queue.get()
-            if vp is None or (cancel is not None and cancel.is_set()):
+            item = await queue.get()
+            if isinstance(item, OSError):
+                raise item
+            if item is None or (cancel is not None and cancel.is_set()):
                 break
-            yield vp
+            yield item
 
     @override
     def stat(self, path: VPath) -> Stat:
@@ -286,33 +315,29 @@ class AzureFilesystem(Filesystem):
             # root is always a virtual directory
             return Stat(is_directory=True, size=0)
         sdk = _sdk()
-        try:
-            props = self._client.get_blob_client(blob_name).get_blob_properties()
+        with _as_oserror(str(path.path)):
+            try:
+                props = self._client.get_blob_client(blob_name).get_blob_properties()
+            except sdk.ResourceNotFoundError:
+                props = None
+            if props is None:
+                # might be a virtual directory — check for any blobs with this prefix
+                prefix = blob_name + "/"
+                for _ in self._client.list_blobs(name_starts_with=prefix):
+                    return Stat(is_directory=True, size=0)
+                raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path.path)) from None
             modified = props.last_modified.timestamp() if props.last_modified else -1.0
             return Stat(
                 size=props.size or 0,
                 modified=modified,
             )
-        except sdk.ResourceNotFoundError:
-            # might be a virtual directory — check for any blobs with this prefix
-            prefix = blob_name + "/"
-            for _ in self._client.list_blobs(name_starts_with=prefix):
-                return Stat(is_directory=True, size=0)
-            raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path.path)) from None
-        except sdk.HttpResponseError as exc:
-            if exc.status_code in (401, 403):
-                raise PermissionError(errno.EACCES, str(exc), str(path.path)) from exc
-            raise OSError(errno.EIO, str(exc), str(path.path)) from exc
 
     @override
     def read(self, path: VPath) -> StreamReaderLike:
         self._assert_vpath(path)
-        sdk = _sdk()
-        try:
+        with _as_oserror(str(path.path)):
             downloader = self._client.get_blob_client(_blob_name(path)).download_blob(encoding=None)
             return self._BlobReader(downloader)
-        except sdk.ResourceNotFoundError:
-            raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path.path)) from None
 
     @override
     def write(self, path: VPath) -> StreamWriterLike:
@@ -323,11 +348,8 @@ class AzureFilesystem(Filesystem):
     def remove(self, path: VPath) -> None:
         self._assert_vpath(path)
         blob_name = _blob_name(path)
-        sdk = _sdk()
-        try:
+        with _as_oserror(str(path.path)):
             self._client.get_blob_client(blob_name).delete_blob()
-        except sdk.ResourceNotFoundError:
-            raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path.path)) from None
         self._emptied.add(_parent_prefix(blob_name))
 
     @override
@@ -337,27 +359,40 @@ class AzureFilesystem(Filesystem):
             raise OSError(errno.EXDEV, "Cannot rename across containers", str(src_path.path))
         src_name = _blob_name(src_path)
         dst_name = _blob_name(dst_path)
-        try:
-            self._move_blob(src_name, dst_name)
-            return
-        except _sdk().ResourceNotFoundError:
-            pass  # not a blob: a directory moves blob by blob under its prefix
-        src_prefix = src_name + "/"
-        dst_prefix = dst_name + "/"
-        names = [item.name for item in self._client.list_blobs(name_starts_with=src_prefix)]
-        if not names:
-            raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(src_path.path))
-        if dst_prefix.startswith(src_prefix):
-            raise OSError(errno.EINVAL, "Cannot move a directory into itself", str(src_path.path))
-        for name in names:
-            self._move_blob(name, dst_prefix + name.removeprefix(src_prefix))
+        sdk = _sdk()
+        with _as_oserror(str(src_path.path)):
+            try:
+                self._move_blob(src_name, dst_name)
+                return
+            except sdk.ResourceNotFoundError:
+                pass  # not a blob: a directory moves blob by blob under its prefix
+            src_prefix = src_name + "/"
+            dst_prefix = dst_name + "/"
+            names = [item.name for item in self._client.list_blobs(name_starts_with=src_prefix)]
+            if not names:
+                raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(src_path.path))
+            if dst_prefix.startswith(src_prefix):
+                raise OSError(errno.EINVAL, "Cannot move a directory into itself", str(src_path.path))
+            for name in names:
+                self._move_blob(name, dst_prefix + name.removeprefix(src_prefix))
 
     def _move_blob(self, src_name: str, dst_name: str) -> None:
-        """Copy one blob and delete the source; raises ResourceNotFoundError when the source is missing."""
+        """Copy one blob, wait for the server-side copy, then delete the source.
+
+        Raises:
+            ResourceNotFoundError: When the source blob is missing.
+            OSError: When the copy does not complete; the source is kept.
+        """
         src_client = self._client.get_blob_client(src_name)
         dst_client = self._client.get_blob_client(dst_name)
         # Note: copy + delete is not atomic; another client may observe both names briefly.
-        dst_client.start_copy_from_url(src_client.url)
+        status = dst_client.start_copy_from_url(src_client.url).get("copy_status")
+        deadline = time.monotonic() + _COPY_TIMEOUT
+        while status == "pending" and time.monotonic() < deadline:
+            time.sleep(_COPY_POLL)
+            status = dst_client.get_blob_properties().copy.status
+        if status != "success":
+            raise OSError(errno.EIO, f"Server-side copy did not complete (status: {status}); the source was kept", src_name)
         src_client.delete_blob()
 
     @override
@@ -365,17 +400,18 @@ class AzureFilesystem(Filesystem):
         self._assert_vpath(path)
         prefix = _blob_prefix(path)
         marker = prefix + ".keep"
-        # Check for non-marker blobs — refuse if any exist
-        for item in self._client.list_blobs(name_starts_with=prefix):
-            if isinstance(item, _sdk().BlobProperties) and item.name != marker:
-                raise OSError(errno.ENOTEMPTY, "Directory not empty", str(path.path))
-        # Delete the marker blob if it exists; a marker removed as a child of an erase is not missing
         sdk = _sdk()
-        try:
-            self._client.get_blob_client(marker).delete_blob()
-        except sdk.ResourceNotFoundError:
-            if prefix not in self._emptied:
-                raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path.path)) from None
+        with _as_oserror(str(path.path)):
+            # Check for non-marker blobs — refuse if any exist
+            for item in self._client.list_blobs(name_starts_with=prefix):
+                if isinstance(item, _sdk().BlobProperties) and item.name != marker:
+                    raise OSError(errno.ENOTEMPTY, "Directory not empty", str(path.path))
+            # Delete the marker blob if it exists; a marker removed as a child of an erase is not missing
+            try:
+                self._client.get_blob_client(marker).delete_blob()
+            except sdk.ResourceNotFoundError:
+                if prefix not in self._emptied:
+                    raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path.path)) from None
         self._emptied.discard(prefix)
         self._emptied.add(_parent_prefix(marker))
 
@@ -385,10 +421,11 @@ class AzureFilesystem(Filesystem):
         prefix = _blob_prefix(path)
         marker = prefix + ".keep"
         sdk = _sdk()
-        try:
-            self._client.get_blob_client(marker).upload_blob(b"", overwrite=False)
-        except sdk.ResourceExistsError:
-            raise FileExistsError(errno.EEXIST, "File exists", str(path.path)) from None
+        with _as_oserror(str(path.path)):
+            try:
+                self._client.get_blob_client(marker).upload_blob(b"", overwrite=False)
+            except sdk.ResourceExistsError:
+                raise FileExistsError(errno.EEXIST, "File exists", str(path.path)) from None
         self._emptied.discard(prefix)
 
     @override
@@ -417,10 +454,7 @@ class AzureFilesystem(Filesystem):
     @override
     def version_tag(self, path: VPath) -> str | None:
         self._assert_vpath(path)
-        sdk = _sdk()
-        try:
+        with _as_oserror(str(path.path)):
             props = self._client.get_blob_client(_blob_name(path)).get_blob_properties()
-        except sdk.ResourceNotFoundError:
-            raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path.path)) from None
         etag = props.etag
         return etag if isinstance(etag, str) else None

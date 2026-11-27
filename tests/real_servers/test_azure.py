@@ -156,6 +156,13 @@ async def test_listing_nested_and_special_names(azurite: Azurite, container: str
     assert await _names(fs, "/sp ace") == {"/sp ace/ü & 'q'.txt"}
 
 
+@pytest.mark.asyncio
+async def test_listing_errors_are_raised(azurite: Azurite) -> None:
+    fs = _fs(azurite, f"nova-missing-{uuid.uuid4().hex[:12]}")
+    with pytest.raises(FileNotFoundError):
+        await _names(fs, "/")
+
+
 # ── copy ──────────────────────────────────────────────────────────────────────
 
 
