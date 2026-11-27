@@ -56,7 +56,7 @@ def _status(code: int) -> paramiko.Message:
 
 def test_sftp_client_members() -> None:
     client = _client()
-    for name in ("_send_packet", "_read_response", "_async_request", "_convert_status"):
+    for name in ("_send_packet", "_request", "_read_response", "_async_request", "_convert_status"):
         assert callable(getattr(client, name)), name
     members = vars(client)
     # weak values: the entries of an abandoned file vanish with it
