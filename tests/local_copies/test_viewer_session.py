@@ -92,3 +92,39 @@ async def test_a_failed_download_returns_none_and_leaves_no_copy(tmp_path: Path)
     views = tmp_path / "copies" / "view"
     assert not views.exists() or list(views.iterdir()) == []
     assert manager.entries == []
+
+
+@pytest.mark.asyncio
+async def test_shutdown_that_keeps_files_removes_view_copies_but_keeps_editor_copies(tmp_path: Path) -> None:
+    fs = SchemeFs({"/d/viewed.txt": b"viewed", "/d/edited.txt": b"edited"})
+    manager = _manager(tmp_path, ScriptedRunner())
+    entry = await manager.open(fs.path("/d/edited.txt"))
+    assert entry is not None
+    entry.copy.path.write_bytes(b"unsynced edit")
+    view = await open_for_viewing(manager, fs.path("/d/viewed.txt"))
+    assert view is not None
+
+    await manager.shutdown(remove_files=False)
+
+    assert not (tmp_path / "copies" / "view").exists()
+    assert entry.copy.path.read_bytes() == b"unsynced edit"
+
+
+@pytest.mark.asyncio
+async def test_a_view_directory_that_cannot_be_made_private_is_removed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fs = SchemeFs({"/d/f.txt": b"remote"})
+    manager = _manager(tmp_path, ScriptedRunner())
+    views = tmp_path / "copies" / "view"
+    chmod = Path.chmod
+
+    def refuse(path: Path, mode: int, *, follow_symlinks: bool = True) -> None:
+        if path.parent == views:
+            raise PermissionError("chmod refused")
+        chmod(path, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "chmod", refuse)
+
+    with pytest.raises(PermissionError, match="chmod refused"):
+        await open_for_viewing(manager, fs.path("/d/f.txt"))
+
+    assert list(views.iterdir()) == []

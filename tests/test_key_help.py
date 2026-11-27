@@ -24,6 +24,16 @@ def test_every_bound_action_is_listed_once_in_a_named_group(tmp_path: Path) -> N
     assert sorted(listed) == sorted(config.resolve(actions))
 
 
+def test_related_actions_share_a_group(tmp_path: Path) -> None:
+    config = KeybindingsConfig(tmp_path)
+    config.save({"file.copy": KeySequence.parse("f9")})  # without a key it is not listed
+    groups = build_key_help(_all_actions(), config, KeyFormatStyle.CLASSIC)
+    group_of = {row.action_id: g.title for g in groups for row in g.rows if row.action_id is not None}
+    assert group_of["browser.copy"] == group_of["file.copy"] == "File operations"
+    assert group_of["browser.sort_name"] == group_of["browser.sort_size"] == "Sort and view"
+    assert group_of["browser.go_back"] == group_of["browser.go_forward"] == "Navigation"
+
+
 def test_unmapped_action_is_omitted(tmp_path: Path) -> None:
     config = KeybindingsConfig(tmp_path)
     config.save({"browser.copy": None})

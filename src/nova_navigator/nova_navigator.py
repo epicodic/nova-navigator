@@ -23,7 +23,7 @@ from textual.logging import TextualHandler
 from textual.screen import Screen
 from textual.widget import Widget
 from textual.widgets import Input
-from textual.worker import WorkerFailed
+from textual.worker import Worker, WorkerFailed
 
 from nova_editor.screen import EditorScreen
 from nova_navigator import debug_analytics
@@ -1543,7 +1543,7 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
             return
         self._editor_busy = True
         pushed = False
-        target: ViewTarget | None = None
+        worker: Worker[ViewTarget | None] | None = None
         try:
             # A worker for the same reason as in `open_editor`: the download job may have to ask a question.
             worker = self.run_worker(
@@ -1565,11 +1565,13 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
                 pushed = True
             except Exception:
                 self._editor_session = None
-                finish_viewing(self.local_copies, target)
                 raise
         finally:
             if not pushed:
                 self._editor_busy = False
+                # The worker keeps its result when a cancellation makes `wait` drop it, so a private copy is removed also then.
+                if worker is not None and worker.result is not None:
+                    finish_viewing(self.local_copies, worker.result)
         if target.directory is not None:
             # markup=False: a file name may contain brackets
             self.notify(f"{target.key} is shown read-only.", title="Viewer", markup=False)

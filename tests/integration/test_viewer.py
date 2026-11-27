@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
 import zipfile
 from pathlib import Path
 
 import pytest
 from textual import events
+from textual.worker import WorkerCancelled
 
 from nova_editor.screen import EditorScreen
+from nova_navigator.local_copies import LocalCopyManager
+from nova_navigator.local_copies.viewer_session import ViewTarget, open_for_viewing
 from nova_navigator.nova_navigator import MainScreen
 from nova_navigator.terminal import Terminal
 from nova_navigator.vfs.filesystems import ArchiveFilesystem, LocalFilesystem
 from nova_navigator.vfs.local_copy import LocalCopy
+from nova_navigator.vfs.vpath import VPath
 from nova_widgets.keymap.key_sequence import KeySequence
 from nova_widgets.menu import Menu
 from nova_widgets.menu._menu_bar import MenuBarItem
+from nova_widgets.message_box import MessageBox
 from tests._utils.local_copy_helpers import SchemeFs, ScriptedRunner
 from tests.integration.conftest import AppCtx, poll_until, set_panels
 from tests.integration.test_editor_integration import back_in_the_list, capture_notices, editor_of, install_manager
@@ -441,3 +447,61 @@ async def test_failed_viewer_start_removes_the_view_copy(app_ctx: AppCtx, tmp_pa
     assert not manager.entries
     assert no_write_back == []
     assert isinstance(app_ctx.app.screen, MainScreen)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_viewer_start_cancelled_after_the_download_removes_the_view_copy(app_ctx: AppCtx, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = install_manager(app_ctx, tmp_path, ScriptedRunner())
+    fs = SchemeFs({"/d/f.txt": b"remote"})
+    produced: list[ViewTarget] = []
+    opening: list[asyncio.Task[None]] = []
+
+    async def cancel_when_ready(copies: LocalCopyManager, source: VPath) -> ViewTarget | None:
+        target = await open_for_viewing(copies, source)
+        assert target is not None
+        assert target.path.exists()
+        produced.append(target)
+        # runs after this worker has finished and before `open_viewer` resumes
+        asyncio.get_running_loop().call_soon(opening[0].cancel)
+        return target
+
+    monkeypatch.setattr("nova_navigator.nova_navigator.open_for_viewing", cancel_when_ready)
+    opening.append(asyncio.create_task(app_ctx.app.open_viewer(fs.path("/d/f.txt"))))
+
+    with pytest.raises((asyncio.CancelledError, WorkerCancelled)):
+        await opening[0]
+
+    assert len(produced) == 1
+    assert not produced[0].path.exists()
+    assert view_directories(tmp_path / "copies") == []
+    assert not app_ctx.app._editor_busy
+    assert app_ctx.app._editor_session is None
+    assert not manager.entries
+    assert isinstance(app_ctx.app.screen, MainScreen)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("case", ["broken_symlink", "unreadable", "vanished"])
+async def test_f3_on_a_file_that_cannot_be_read_shows_the_error_dialog_and_opens_nothing(app_ctx: AppCtx, case: str) -> None:
+    file = app_ctx.src_dir / "a.txt"
+    if case == "broken_symlink":
+        file.symlink_to(app_ctx.src_dir / "nowhere")
+    else:
+        file.write_text(TEXT)
+    if case == "unreadable":
+        file.chmod(0)
+    await set_panels(app_ctx)
+    if case == "vanished":
+        file.unlink()
+
+    await app_ctx.pilot.press("f3")
+    await poll_until(app_ctx.pilot, lambda: isinstance(app_ctx.app.screen, MessageBox))
+
+    assert isinstance(app_ctx.app.screen, MessageBox)
+    assert not any(isinstance(s, EditorScreen) for s in app_ctx.app.screen_stack)
+    assert not app_ctx.app._editor_busy
+    await app_ctx.pilot.press("escape")
+    await back_in_the_list(app_ctx)
+    assert app_ctx.app.is_running

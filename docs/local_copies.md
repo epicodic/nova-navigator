@@ -40,6 +40,7 @@ F3 on a file, and File > View, show it read-only in the editor screen.
 A file on the local filesystem is viewed in place.
 A file from SSH, Azure, or an archive is downloaded completely into a private viewer copy, and a notice names the source.
 A viewer copy is not listed in the Local Copies dialog, not watched and never written back, and it is removed when the viewer closes.
+Quitting removes viewer copies also with **Quit and keep files**.
 The viewer shows the source as it is now, also while an editor copy of the same file holds changes that were not synced yet; that copy is left alone.
 
 ### The Local Copies dialog
@@ -89,7 +90,7 @@ A read-only copy shows status `read-only`, is created with restricted permission
 Quitting Nova Navigator while any local copy has unsynced, failed, or conflicting changes asks:
 
 - **Sync and quit** — sync every such copy, then quit. If any copy still cannot be synced, the dialog reports it and Nova Navigator stays open.
-- **Quit and keep files** — quit without syncing; the local files are left in place.
+- **Quit and keep files** — quit without syncing; the local files are left in place, except private viewer copies.
 - **Cancel** — do nothing.
 
 With nothing unsynced, Nova Navigator quits immediately and removes its local-copy directory.
@@ -224,8 +225,9 @@ The watcher of a copy starts its sync jobs from the context of the call that sta
 A directory raises `IsADirectoryError`; a local file is checked by `check_readable()` and viewed in place.
 Any other file is downloaded by `LocalCopyManager.create_view_copy()` into its own unique directory below `<root>/view/`, with `read_only=True`.
 A view copy is never registered, watched or synced, so viewing a file never writes it back and never touches an F4 copy of the same source.
-`finish_viewing(manager, target)` removes the view copy's directory through `discard_view_copy()`; a failed download removes its directory before returning.
-`NovaNavigator.open_viewer` runs `open_for_viewing` in a Textual worker and calls `finish_viewing` when the viewer screen is gone, or when the screen could not be pushed.
+`finish_viewing(manager, target)` removes the view copy's directory through `discard_view_copy()`; a failed download or a failed directory setup removes its directory before `create_view_copy()` ends.
+`shutdown()` removes `<root>/view/` also with `remove_files=False`.
+`NovaNavigator.open_viewer` runs `open_for_viewing` in a Textual worker and calls `finish_viewing` when the viewer screen is gone, or when the screen could not be pushed, including a cancellation after the download finished.
 Directories left behind by a crash are covered by the cleanup of the process root (see "Where the files live").
 
 ### Writable archives

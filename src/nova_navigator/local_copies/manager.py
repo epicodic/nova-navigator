@@ -314,6 +314,8 @@ class LocalCopyManager:
     async def shutdown(self, remove_files: bool = True) -> None:
         """Stop all detectors, await any running syncs, close cached archive mounts, and optionally remove the local-copy root.
 
+        Viewer copies are removed also when *remove_files* is false: they hold no changes and no later session would list them.
+
         Idempotent: a first call decides *remove_files* for the whole process, and every later
         call (e.g. the app's unconditional cleanup on unmount, after a quit prompt already shut
         things down explicitly) is a no-op, so an earlier "keep files" decision is never undone
@@ -333,8 +335,8 @@ class LocalCopyManager:
         for archive_fs in self._archive_mounts.values():
             archive_fs.close()
         self._archive_mounts.clear()
-        if remove_files:
-            await asyncio.to_thread(shutil.rmtree, self._root, ignore_errors=True)
+        doomed = self._root if remove_files else self._root / "view"
+        await asyncio.to_thread(shutil.rmtree, doomed, ignore_errors=True)
 
     # -- Viewer copies -------------------------------------------------------
 
@@ -345,13 +347,13 @@ class LocalCopyManager:
         """
         views = self._root / "view"
         directory = views / uuid.uuid4().hex
-        directory.mkdir(mode=0o700, parents=True)
-        for private in (self._root, views, directory):
-            private.chmod(0o700)
-        result = TaskResult()
-        job = Job(f"View: {source.name}", create_copy_task, source, directory, True, result)
         created: ViewCopy | None = None
         try:
+            directory.mkdir(mode=0o700, parents=True)
+            for private in (self._root, views, directory):
+                private.chmod(0o700)
+            result = TaskResult()
+            job = Job(f"View: {source.name}", create_copy_task, source, directory, True, result)
             await self._start_job(job)
             if result.opened and job.state is Job.State.COMPLETED and result.copy is not None:
                 created = ViewCopy(result.copy, directory, _key(source))
