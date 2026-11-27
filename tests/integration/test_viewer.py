@@ -1,4 +1,4 @@
-"""F3 shows a file read-only in the editor screen: nothing the user presses writes to the source (REQ-17, REQ-18)."""
+"""F3 shows a file read-only in the editor screen: nothing the user presses writes to the source."""
 
 from __future__ import annotations
 

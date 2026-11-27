@@ -1,4 +1,4 @@
-"""SSH integration tests: F3 on a remote file never writes it back and never touches an F4 copy of it (REQ-17).
+"""SSH integration tests: F3 on a remote file never writes it back and never touches an F4 copy of it.
 
 Runs against the local stub SFTP server of the ssh fixtures; no real host is contacted.
 """
