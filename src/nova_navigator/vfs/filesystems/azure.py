@@ -4,22 +4,48 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import importlib
 import io
 import logging
 import threading
 from collections.abc import AsyncIterator
 from pathlib import PurePath, PurePosixPath
-from typing import override
-
-from azure.core.exceptions import HttpResponseError, ResourceExistsError, ResourceNotFoundError
-from azure.identity import DefaultAzureCredential
-from azure.storage.blob import BlobPrefix, BlobProperties, ContainerClient, StorageStreamDownloader
+from types import ModuleType
+from typing import TYPE_CHECKING, override
 
 from ..filesystem import Filesystem, FilesystemCapabilities, StreamReaderLike, StreamWriterLike
 from ..types import Stat
 from ..vpath import VPath
 
+if TYPE_CHECKING:
+    from azure.storage.blob import BlobPrefix, BlobProperties, ContainerClient, StorageStreamDownloader
+
 _logger = logging.getLogger(__name__)
+
+MISSING_AZURE_EXTRA_MESSAGE = """\
+Azure Blob support is not installed. Install the extra 'nova-navigator[azure]', for example: \
+uv tool install 'nova-navigator[azure]' (or pipx install 'nova-navigator[azure]')."""
+
+
+class MissingAzureExtraError(RuntimeError):
+    """The Azure SDK, shipped by the `azure` extra, is not installed."""
+
+    def __init__(self) -> None:
+        super().__init__(MISSING_AZURE_EXTRA_MESSAGE)
+
+
+def _sdk() -> ModuleType:
+    """Import the Azure SDK on first use.
+
+    Raises:
+        MissingAzureExtraError: If the SDK is not installed.
+    """
+    try:
+        return importlib.import_module("._azure_sdk", __package__)
+    except ModuleNotFoundError as exc:
+        if exc.name is None or exc.name.split(".")[0] != "azure":
+            raise
+        raise MissingAzureExtraError from exc
 
 
 def _blob_name(path: VPath) -> str:
@@ -112,6 +138,7 @@ class AzureFilesystem(Filesystem):
                 :class:`~azure.identity.DefaultAzureCredential`.
         """
         if client is None:
+            sdk = _sdk()
             _logger.info(
                 "Connecting to Azure Blob Storage: account_url=%r container=%r proxy=%r managed_identity=%r",
                 account_url,
@@ -125,11 +152,11 @@ class AzureFilesystem(Filesystem):
             # link-local address that can never be reached through a proxy; the SDK
             # retries with exponential back-off (~20 s) before giving up otherwise.
             exclude_mi = proxy_url is not None and not managed_identity
-            credential = DefaultAzureCredential(
+            credential = sdk.DefaultAzureCredential(
                 exclude_managed_identity_credential=exclude_mi,
                 proxies=proxies,
             )
-            self._client = ContainerClient(account_url, container, credential=credential, proxies=proxies)
+            self._client = sdk.ContainerClient(account_url, container, credential=credential, proxies=proxies)
             _logger.info("ContainerClient created for %r / %r", account_url, container)
         else:
             self._client = client
@@ -195,7 +222,7 @@ class AzureFilesystem(Filesystem):
         queue: asyncio.Queue[VPath | None] = asyncio.Queue()
 
         def _item_to_vpath(item: BlobProperties | BlobPrefix) -> VPath | None:
-            if isinstance(item, BlobProperties):
+            if isinstance(item, _sdk().BlobProperties):
                 name = item.name
                 if name == prefix:
                     return None
@@ -209,7 +236,7 @@ class AzureFilesystem(Filesystem):
                 )
                 return vpath
             else:
-                assert isinstance(item, BlobPrefix)
+                assert isinstance(item, _sdk().BlobPrefix)
                 vdir = item.name
                 vpath = self.path("/" + vdir.rstrip("/"))
                 basename = PurePosixPath(vdir.rstrip("/")).name
@@ -242,6 +269,7 @@ class AzureFilesystem(Filesystem):
         if not blob_name:
             # root is always a virtual directory
             return Stat(is_directory=True, size=0)
+        sdk = _sdk()
         try:
             props = self._client.get_blob_client(blob_name).get_blob_properties()
             modified = props.last_modified.timestamp() if props.last_modified else -1.0
@@ -249,13 +277,13 @@ class AzureFilesystem(Filesystem):
                 size=props.size or 0,
                 modified=modified,
             )
-        except ResourceNotFoundError:
+        except sdk.ResourceNotFoundError:
             # might be a virtual directory — check for any blobs with this prefix
             prefix = blob_name + "/"
             for _ in self._client.list_blobs(name_starts_with=prefix):
                 return Stat(is_directory=True, size=0)
             raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path.path)) from None
-        except HttpResponseError as exc:
+        except sdk.HttpResponseError as exc:
             if exc.status_code in (401, 403):
                 raise PermissionError(errno.EACCES, str(exc), str(path.path)) from exc
             raise OSError(errno.EIO, str(exc), str(path.path)) from exc
@@ -263,10 +291,11 @@ class AzureFilesystem(Filesystem):
     @override
     def read(self, path: VPath) -> StreamReaderLike:
         self._assert_vpath(path)
+        sdk = _sdk()
         try:
             downloader = self._client.get_blob_client(_blob_name(path)).download_blob(encoding=None)
             return self._BlobReader(downloader)
-        except ResourceNotFoundError:
+        except sdk.ResourceNotFoundError:
             raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path.path)) from None
 
     @override
@@ -277,9 +306,10 @@ class AzureFilesystem(Filesystem):
     @override
     def remove(self, path: VPath) -> None:
         self._assert_vpath(path)
+        sdk = _sdk()
         try:
             self._client.get_blob_client(_blob_name(path)).delete_blob()
-        except ResourceNotFoundError:
+        except sdk.ResourceNotFoundError:
             raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path.path)) from None
 
     @override
@@ -291,11 +321,12 @@ class AzureFilesystem(Filesystem):
         src_client = self._client.get_blob_client(src_name)
         dst_client = self._client.get_blob_client(dst_name)
         src_url = src_client.url
+        sdk = _sdk()
         try:
             # Note: copy + delete is not atomic; another client may observe both names briefly.
             dst_client.start_copy_from_url(src_url)
             src_client.delete_blob()
-        except ResourceNotFoundError:
+        except sdk.ResourceNotFoundError:
             raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(src_path.path)) from None
 
     @override
@@ -305,21 +336,23 @@ class AzureFilesystem(Filesystem):
         marker = prefix + ".keep"
         # Check for non-marker blobs — refuse if any exist
         for item in self._client.list_blobs(name_starts_with=prefix):
-            if isinstance(item, BlobProperties) and item.name != marker:
+            if isinstance(item, _sdk().BlobProperties) and item.name != marker:
                 raise OSError(errno.ENOTEMPTY, "Directory not empty", str(path.path))
         # Delete the marker blob if it exists
+        sdk = _sdk()
         try:
             self._client.get_blob_client(marker).delete_blob()
-        except ResourceNotFoundError:
+        except sdk.ResourceNotFoundError:
             raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path.path)) from None
 
     @override
     def mkdir(self, path: VPath) -> None:
         self._assert_vpath(path)
         marker = _blob_prefix(path) + ".keep"
+        sdk = _sdk()
         try:
             self._client.get_blob_client(marker).upload_blob(b"", overwrite=False)
-        except ResourceExistsError:
+        except sdk.ResourceExistsError:
             raise FileExistsError(errno.EEXIST, "File exists", str(path.path)) from None
 
     @override
@@ -348,9 +381,10 @@ class AzureFilesystem(Filesystem):
     @override
     def version_tag(self, path: VPath) -> str | None:
         self._assert_vpath(path)
+        sdk = _sdk()
         try:
             props = self._client.get_blob_client(_blob_name(path)).get_blob_properties()
-        except ResourceNotFoundError:
+        except sdk.ResourceNotFoundError:
             raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path.path)) from None
         etag = props.etag
         return etag if isinstance(etag, str) else None

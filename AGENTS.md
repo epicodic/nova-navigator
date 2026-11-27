@@ -35,6 +35,8 @@ It supports a virtual file system (VFS) abstraction for local, SSH, and archive 
 
 No setup step is required before running commands.
 
+`uv run` syncs the development environment, which includes the `azure` extra and the local `devtools/` project.
+
 ---
 
 ## Commands
@@ -69,6 +71,13 @@ uv run ty check .         # type check
 ```
 
 Always run `uv run qa` after changes and confirm zero failures before claiming work is complete.
+
+### Install check
+
+```sh
+uv run install_check              # build, then install wheel and sdist into empty environments and start nn and ned
+uv run install_check --dist DIR   # check an existing build
+```
 
 ---
 
@@ -203,7 +212,8 @@ For implementing long-running async operations: see `docs/scheduler.md` for the 
 
 | File | Purpose |
 |------|---------|
-| `pyproject.toml` | uv project config, ruff/ty/pytest settings, script entry points (`nn`, `qa`) |
+| `pyproject.toml` | uv project config, distribution metadata, ruff/ty/pytest settings; only the product commands `nn` and `ned` |
+| `devtools/pyproject.toml` | development commands (`qa`, `dialog_tester`, `install_check`, ...) implemented in `src/tools/`; not part of the distribution |
 | `src/nova_navigator/` | Main application package |
 | `src/nova_widgets/` | Reusable Textual widgets package |
 | `config/default/` | Default TOML config files (bookmarks, filetypes, icons) |
