@@ -13,7 +13,7 @@ It shows two file panels side by side, with an embedded shell.
 - **File operations**: copy (`F5`), move (`F6`), rename (`Shift+F6`), delete (`F8`), with progress, cancellation and conflict handling.
 - **Background jobs**: long operations run in the background, and the Jobs dialog lists and cancels them.
 - **Bookmarks**, a **user menu** (`F2`) and **file type** icons and openers, all set in configuration files.
-- **Keyboard driven**: a menu bar, rebindable key bindings and a key help screen (`F1`).
+- **Keyboard driven**: rebindable key bindings and a key help screen (`F1`); the menu bar is opened with the mouse.
 
 ## Requirements
 
@@ -72,7 +72,8 @@ ned [file] [--config-dir DIR] [--hex]
 ## Key bindings
 
 These are the default bindings.
-You can change them in the Key Bindings dialog, which is in the first menu.
+Most of them can be changed in the Key Bindings dialog, which is in the first menu.
+The ones that cannot are `Insert`, `Ctrl+A`, `Ctrl+F`, `Tab` and `Shift+Tab`.
 
 | Key | Action |
 |---|---|
@@ -86,7 +87,7 @@ You can change them in the Key Bindings dialog, which is in the first menu.
 | `F7` | Create a new folder |
 | `F8` | Delete the selected files |
 | `Ctrl+Q` | Quit |
-| `Ctrl+O` | Maximize the terminal |
+| `Ctrl+O` | Toggle the terminal between full screen and the panels |
 | `Ctrl+L` | Enlarge the terminal |
 | `Ctrl+B` | Open bookmarks |
 | `Ctrl+E` | Manage local copies of remote files |
@@ -112,12 +113,12 @@ You can change them in the Key Bindings dialog, which is in the first menu.
 | `Ctrl+A` | Select all visible items |
 | `Ctrl+F` | Filter the files in the folder |
 | `Tab` | Switch between the panels |
-| `Shift+Tab` | Move to the terminal |
+| `Shift+Tab` | Send Tab to the shell (command completion) |
 
 When the terminal has focus, `F1` and `F3` go to the shell.
-Help is then reached through the first menu.
+Help is then reached by clicking the first menu.
 
-`F1` shows all key bindings.
+`F1` shows the key bindings, except `Tab` and `Shift+Tab`, which are fixed.
 
 ## SSH, archives and Azure Blob Storage
 
@@ -154,6 +155,7 @@ The shipped defaults are in the installed package, in `nova_navigator/_default/`
 
 Passwords you type are not saved.
 A password written into a URI in `remotes.toml` or `bookmarks.toml` stays on disk in that file.
+Add to Bookmarks stores the address of the current folder, so a folder opened with a password in its URI keeps that password in `bookmarks.toml`.
 
 The session state, such as the right panel's folder and sort order, is kept in `~/.local/state/nova-navigator/state.toml`.
 
@@ -167,7 +169,9 @@ When enabled, each run writes to `~/.cache/nova-navigator/debug-analytics/<pid>/
 - `app.log`: the full debug log.
 - `crash.txt`: a crash report with stack frames, source context and local variables.
 
-The directory is deleted on a clean exit, so only crash runs leave files behind.
+The directory is deleted when `nn` ends, also after most crashes inside the application.
+Only an exit that skips this, such as a killed process or an error outside the application's own error handling, leaves it behind.
+While an error dialog is open, `crash.txt` is already written: choose Continue to keep `nn` running, and copy `crash.txt` before you choose Abort, because Abort ends `nn` and deletes the directory.
 
 | Variable | Effect |
 |---|---|

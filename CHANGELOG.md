@@ -16,7 +16,7 @@
 - Bookmarks for frequently used folders.
 - Icons and file types set in a configuration file.
 - Icons from a Nerd Font when one is installed; Unicode icons otherwise.
-- A menu bar that works from the keyboard.
+- A menu bar; arrow keys, Enter and Esc work once a menu is open.
 - F1 opens help.
 - F3 views a file read-only.
 - The right panel's folder and sort order are restored when the application starts again.
@@ -47,6 +47,7 @@
 - A command on an SSH server that never reports an exit status blocks until you cancel it.
 - On an SSH server that uses uutils tools and has no SFTP, a directory whose listing contains non-UTF-8 names (or the character U+FFFD) cannot be listed.
 - `ssh://user:password@host` is not supported: `user:password` is sent as the user name and shown in the login dialog.
+  Add to Bookmarks can store such an address, password included, in `bookmarks.toml`.
 - Wildcard, negated and `@cert-authority` entries in `known_hosts` are not matched, so you are asked to confirm such a host again.
   A second key of the same type for a host is reported as a changed key.
 - A new host key is stored even if you then cancel the login.
@@ -56,6 +57,7 @@
 - Reading a non-UTF-8 link target needs `readlink` and `od` on the server.
   A server that omits file attributes gets default values.
 - On SSH files and TAR members, a change that keeps the size and happens within the same second is not detected.
+  A ZIP or TAR file on SSH inherits this for the whole archive.
 - Nothing stops another writer from racing the write-back.
   Write-back needs the `posix-rename@openssh.com` SFTP extension.
   Write-back into a nested archive on a remote host is untested.
@@ -63,17 +65,17 @@
 - A remote command that writes very much to its error output can stall.
 - Unusual server tools can make a directory show as empty or fail with an input/output error.
 - Every move to or from an SSH server, also within one server, copies and then deletes.
-- An empty path in "Go to path" on an SSH panel opens `/`, not the login directory.
-- If a server cannot resolve links, a link loop is followed up to 16 levels.
+- Entering an `ssh://` address without a path in "Go to path", on a panel of that server, opens `/`, not the login directory.
+- When following links and a path cannot be resolved (for example non-UTF-8), a link loop is followed up to 16 levels.
 - Some connection error texts are formatted oddly.
-- A host name is stored as typed.
+- Host names in `known_hosts` are stored and matched as typed, so another spelling (such as different letter case) is asked about again.
 
 #### Azure
 
 - Azure Blob Storage is tested against the Azurite emulator.
   It has not yet been verified with a real storage account.
 - Renaming a large Azure blob whose server-side copy takes more than 300 seconds fails; the source is kept.
-- The first access to Azure can take about 90 seconds (seen on the development host with a proxy set).
+- The first access to Azure can take about 95 seconds (seen with default settings on a development host with proxy environment variables).
 - `azure://` addresses work with host-style endpoints only.
   A `.keep` file marks directories and may show as a hidden file.
   A change made just while a blob is saved can be overwritten.
@@ -81,7 +83,7 @@
 
 #### Archives
 
-- A zip member that you edit and save back keeps its old date.
+- A zip or TAR member that you edit and save back keeps its old date.
 - A zip directory without its own entry may show no date.
 - Archives do not keep empty directories.
 - `.jar`, `.war`, `.ear`, `.apk`, `.whl` and single compressed files are read-only.
@@ -100,9 +102,11 @@
 - "Quit and keep files" while a file is still downloading for viewing can make that download fail.
 - Cancelling F4 just after the download may leave a local copy behind.
   This was not reproduced.
-- Saving in the editor creates a new file, except for a plain save of an unchanged file that can be patched in place.
+- Saving in the editor creates a new file, except for a plain Save that only overwrites bytes (same length, nothing moved) in a file not changed on disk, which is patched in place.
   When the editor creates a new file, hard links, owner, group, ACLs and extended attributes are not kept; only permission bits are restored.
   See the [Known Limits section of the editor documentation](https://github.com/epicodic/nova-navigator/blob/main/docs/editor.md#known-limits-1).
+- The viewer has no default key for Wrap Mode.
+- F1 help does not list the text-editing keys.
 
 #### Settings and layout
 
@@ -111,34 +115,35 @@
 - Closing the terminal window, SIGTERM (a termination signal) or a crash loses this session's right-panel folder and sort order.
 - A right-panel folder whose name is not valid UTF-8 is not remembered.
 - Three file-panel actions are not listed in the Key Bindings dialog and cannot be rebound there.
+  Tab and Shift+Tab are fixed keys.
 - Ctrl+F1 opens Settings, so the terminal's "Ctrl+F1 leaves focus" appears not to work.
   This was seen in the code and not tried.
-- With several instances open, the last one to quit wins.
+- With several instances open, the last one to quit decides the stored right-panel folder and sort orders.
   Restoring a local folder can mount it or wait on a stale network mount.
 - The hidden-files setting does not apply to the side bar or the file dialog, which has its own switch.
 - Hide Identical keeps its setting while compare is off, and the other panel can update late.
   No files are affected.
 - The numpad + and - keys are not bound.
-- Old settings lines are ignored.
+- A leftover `proxy` entry under `[network]` in `settings.toml` is ignored.
 
 #### Security and crash reports
 
-- Crash reports do not hide passwords typed or pasted into the embedded terminal or a user-menu prompt.
+- Crash reports do not hide passwords typed or pasted into the embedded terminal, a user-menu prompt or another free-text field.
+- The crash report is deleted when `nn` ends after most crashes inside the application.
 - Crash reports can still contain a password that was being typed at the time of the crash, that is part of a URI and contains `/`, that appears in unusual nested or split forms, or that is in a configuration file being read at that moment.
   Check a crash report before sharing it.
 - Crash reports may hide more than necessary.
-- Typed passwords are not saved.
-  Passwords written into a URI in `remotes.toml` or `bookmarks.toml` stay on disk.
+- Passwords written into a URI in `remotes.toml` or `bookmarks.toml` stay on disk.
 
 #### Other
 
 - On a slow shell, Enter pressed before the typed command appears may act on the file panel instead of the terminal.
   This was seen in the code, but not reproduced in the application.
-- A move that follows links skips, as broken, a link that points into the moved folder.
+- A move across devices that follows links (or to a destination without links) can skip, as broken, a link whose target was already moved in the same move.
 - Relative links copied to another host keep their text even with the stable-links option.
 - The built-in shell's `cp` and `mv` have no link options.
 - With stable links, `..` after a linked directory is read textually.
-- A followed link target that disappears during a copy can fail the job.
+- A followed directory target that disappears can fail the job when its real path cannot be determined.
 - The overwrite question for a folder says "File".
   A followed file keeps the link's date and counts the link's length in the progress.
 - A move within one device renames, so relative links can end up pointing elsewhere.
@@ -153,3 +158,5 @@
 - The copy and move dialog has no "Background" button; jobs already run in the background.
 - The developer script `create_bundle_shiv.sh` does not include the Azure SDK in the bundle it builds.
 - The embedded terminal needs zsh at `/usr/bin/zsh`; your login shell is not used for it.
+- While the terminal is focused, F1 and F3 go to the shell, not to help or the viewer.
+- The menu bar cannot be opened from the keyboard.
