@@ -299,3 +299,36 @@ def test_ssh_version_tag_is_none() -> None:
     sftp = _FakeSftp({"/d/f.txt": b"old"})
     fs = _ssh_with(sftp)
     assert fs.version_tag(VPath("/d/f.txt", fs)) is None
+
+
+def test_local_write_atomic_read_only_target_raises_and_keeps_file(tmp_path: Path) -> None:
+    target = tmp_path / "f.txt"
+    target.write_bytes(b"old")
+    target.chmod(0o444)
+    fs = LocalFilesystem.singleton()
+    try:
+        with pytest.raises(PermissionError):
+            fs.write_atomic(fs.path(target))
+        assert target.read_bytes() == b"old"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["f.txt"]
+    finally:
+        target.chmod(0o644)
+
+
+def test_local_write_atomic_abort_removes_tmp_when_close_raises(tmp_path: Path) -> None:
+    target = tmp_path / "f.txt"
+    target.write_bytes(b"old")
+    fs = LocalFilesystem.singleton()
+    writer = cast("local_module._LocalAtomicWriter", fs.write_atomic(fs.path(target)))
+    writer.write(b"partial")
+    real_file = writer._file
+
+    class _CloseFails:
+        def close(self) -> None:
+            real_file.close()
+            raise OSError(28, "No space left on device")
+
+    writer._file = _CloseFails()
+    writer.abort()
+    assert target.read_bytes() == b"old"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["f.txt"]

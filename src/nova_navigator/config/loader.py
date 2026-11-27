@@ -7,6 +7,7 @@ config files in the application config directory.
 from __future__ import annotations
 
 import abc
+import errno
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,17 +30,33 @@ _APP_CONFIG_DIR: Path = Path.home() / ".config" / "nova-navigator"
 _DEFAULT_CONFIG_DIR: Path = Path(__file__).parent.parent / "_default"
 
 
+def _can_write_in_place(target: Path) -> bool:
+    """Tell whether *target* can be rewritten directly: it is writable but its directory is not."""
+    return os.access(target, os.W_OK) and not os.access(target.parent, os.W_OK | os.X_OK)
+
+
 def _write_atomic(path: Path, data: bytes) -> None:
     """Replace ``path`` with ``data`` so that a failure leaves the previous file intact.
 
     A symlink is resolved first so the link stays in place and its target is updated.
     Raises ``FileNotFoundError`` when the parent directory is missing, as a plain write would.
+    A symlink loop, which cannot be resolved, raises ``OSError`` (``ELOOP``).
+    When the temporary file cannot be created because the directory is read-only but the
+    existing file is writable, the file is rewritten in place instead.
     """
     target = Path(os.path.realpath(path))
     if not target.parent.is_dir():
         raise FileNotFoundError(f"No such directory: {target.parent}")
+    if target.is_symlink():
+        raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(path))
     filesystem = LocalFilesystem.singleton()
-    writer = filesystem.write_atomic(VPath(str(target), filesystem))
+    try:
+        writer = filesystem.write_atomic(VPath(str(target), filesystem))
+    except PermissionError:
+        if not _can_write_in_place(target):
+            raise
+        target.write_bytes(data)
+        return
     try:
         writer.write(data)
     except BaseException:

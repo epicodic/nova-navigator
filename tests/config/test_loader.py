@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import dataclasses
+import errno
 from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 
@@ -440,3 +442,89 @@ def test_model_config_save_missing_config_dir_still_raises(tmp_path: Path, monke
     with pytest.raises(FileNotFoundError, match="No such"):
         instance.save()
     assert not missing_dir.exists()
+
+
+def test_save_read_only_file_raises_and_keeps_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+    instance = AtomicConfig.load()
+    path = tmp_path / "test_atomic.toml"
+    before = path.read_bytes()
+    path.chmod(0o444)
+    try:
+        instance.name = "updated"
+        with pytest.raises(PermissionError):
+            instance.save()
+        assert path.read_bytes() == before
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["test_atomic.toml"]
+    finally:
+        path.chmod(0o644)
+
+
+def test_save_in_read_only_dir_writes_directly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+    instance = AtomicConfig.load()
+    path = tmp_path / "test_atomic.toml"
+    path.chmod(0o640)
+    tmp_path.chmod(0o555)
+    try:
+        instance.name = "updated"
+        instance.save()
+        assert 'name = "updated"' in path.read_text()
+        assert path.stat().st_mode & 0o777 == 0o640
+    finally:
+        tmp_path.chmod(0o755)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["test_atomic.toml"]
+
+
+def test_save_write_then_close_error_keeps_original_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+    from nova_navigator.vfs.filesystems import local as local_module
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+    instance = AtomicConfig.load()
+    instance.name = "updated"
+    before = (tmp_path / "test_atomic.toml").read_bytes()
+
+    class _FullDiskFile:
+        def __init__(self, inner: BinaryIO) -> None:
+            self._inner = inner
+
+        def fileno(self) -> int:
+            return self._inner.fileno()
+
+        def flush(self) -> None:
+            self._inner.flush()
+
+        def close(self) -> None:
+            self._inner.close()
+            raise OSError(errno.ENOSPC, "No space left on device (close)")
+
+    def _write_fails(self: local_module._LocalAtomicWriter, _data: bytes) -> int:
+        self._file = _FullDiskFile(self._file)
+        raise OSError(errno.ENOSPC, "No space left on device (write)")
+
+    monkeypatch.setattr(local_module._LocalAtomicWriter, "write", _write_fails)
+    with pytest.raises(OSError, match="write") as excinfo:
+        instance.save()
+    assert excinfo.value.errno == errno.ENOSPC
+    assert (tmp_path / "test_atomic.toml").read_bytes() == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["test_atomic.toml"]
+
+
+def test_model_config_save_symlink_loop_raises_oserror(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.config import loader
+
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
+    loop = tmp_path / "test_atomic.toml"
+    loop.symlink_to(loop)
+    instance = AtomicConfig()
+    object.__setattr__(instance, "_toml_doc", None)
+
+    with pytest.raises(OSError, match="symbolic links"):
+        instance.save()
+    assert loop.is_symlink()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["test_atomic.toml"]
