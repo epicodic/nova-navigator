@@ -53,12 +53,26 @@ def _blob_name(path: VPath) -> str:
     return str(path.path).lstrip("/")
 
 
+def _location_of(path: VPath) -> tuple[str, str] | None:
+    """Return the (account URL, container) a path lives in, or None if it is not on an AzureFilesystem."""
+    fs = path.filesystem
+    if not isinstance(fs, AzureFilesystem):
+        return None
+    return fs._account_url.rstrip("/"), fs._container
+
+
 def _blob_prefix(path: VPath) -> str:
     """Return the blob prefix for a directory VPath (empty string for root, otherwise 'dir/name/')."""
     name = _blob_name(path)
     if not name:
         return ""
     return name if name.endswith("/") else name + "/"
+
+
+def _parent_prefix(blob_name: str) -> str:
+    """Return the prefix of the directory that holds *blob_name* ('' for the container root)."""
+    parent = str(PurePosixPath(blob_name).parent)
+    return "" if parent == "." else parent + "/"
 
 
 class AzureFilesystem(Filesystem):
@@ -108,6 +122,7 @@ class AzureFilesystem(Filesystem):
             self._client.get_blob_client(self._blob_name).upload_blob(io.BytesIO(content), overwrite=True)
 
     _client: ContainerClient
+    _emptied: set[str]
 
     def __init__(
         self,
@@ -162,6 +177,8 @@ class AzureFilesystem(Filesystem):
             self._client = client
         self._account_url = account_url
         self._container = container
+        # Prefixes of directories that lost a child since they were last created: their marker may be gone already.
+        self._emptied = set()
 
     @override
     def cwd(self) -> VPath:
@@ -188,9 +205,8 @@ class AzureFilesystem(Filesystem):
 
     @override
     def is_same_device(self, path1: VPath, path2: VPath) -> bool:
-        self._assert_vpath(path1)
-        self._assert_vpath(path2)
-        return True
+        location = _location_of(path1)
+        return location is not None and location == _location_of(path2)
 
     @property
     @override
@@ -306,28 +322,43 @@ class AzureFilesystem(Filesystem):
     @override
     def remove(self, path: VPath) -> None:
         self._assert_vpath(path)
+        blob_name = _blob_name(path)
         sdk = _sdk()
         try:
-            self._client.get_blob_client(_blob_name(path)).delete_blob()
+            self._client.get_blob_client(blob_name).delete_blob()
         except sdk.ResourceNotFoundError:
             raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path.path)) from None
+        self._emptied.add(_parent_prefix(blob_name))
 
     @override
     def rename(self, src_path: VPath, dst_path: VPath) -> None:
         self._assert_vpath(src_path)
-        self._assert_vpath(dst_path)
+        if not self.is_same_device(src_path, dst_path):
+            raise OSError(errno.EXDEV, "Cannot rename across containers", str(src_path.path))
         src_name = _blob_name(src_path)
         dst_name = _blob_name(dst_path)
+        try:
+            self._move_blob(src_name, dst_name)
+            return
+        except _sdk().ResourceNotFoundError:
+            pass  # not a blob: a directory moves blob by blob under its prefix
+        src_prefix = src_name + "/"
+        dst_prefix = dst_name + "/"
+        names = [item.name for item in self._client.list_blobs(name_starts_with=src_prefix)]
+        if not names:
+            raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(src_path.path))
+        if dst_prefix.startswith(src_prefix):
+            raise OSError(errno.EINVAL, "Cannot move a directory into itself", str(src_path.path))
+        for name in names:
+            self._move_blob(name, dst_prefix + name.removeprefix(src_prefix))
+
+    def _move_blob(self, src_name: str, dst_name: str) -> None:
+        """Copy one blob and delete the source; raises ResourceNotFoundError when the source is missing."""
         src_client = self._client.get_blob_client(src_name)
         dst_client = self._client.get_blob_client(dst_name)
-        src_url = src_client.url
-        sdk = _sdk()
-        try:
-            # Note: copy + delete is not atomic; another client may observe both names briefly.
-            dst_client.start_copy_from_url(src_url)
-            src_client.delete_blob()
-        except sdk.ResourceNotFoundError:
-            raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(src_path.path)) from None
+        # Note: copy + delete is not atomic; another client may observe both names briefly.
+        dst_client.start_copy_from_url(src_client.url)
+        src_client.delete_blob()
 
     @override
     def rmdir(self, path: VPath) -> None:
@@ -338,22 +369,27 @@ class AzureFilesystem(Filesystem):
         for item in self._client.list_blobs(name_starts_with=prefix):
             if isinstance(item, _sdk().BlobProperties) and item.name != marker:
                 raise OSError(errno.ENOTEMPTY, "Directory not empty", str(path.path))
-        # Delete the marker blob if it exists
+        # Delete the marker blob if it exists; a marker removed as a child of an erase is not missing
         sdk = _sdk()
         try:
             self._client.get_blob_client(marker).delete_blob()
         except sdk.ResourceNotFoundError:
-            raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path.path)) from None
+            if prefix not in self._emptied:
+                raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path.path)) from None
+        self._emptied.discard(prefix)
+        self._emptied.add(_parent_prefix(marker))
 
     @override
     def mkdir(self, path: VPath) -> None:
         self._assert_vpath(path)
-        marker = _blob_prefix(path) + ".keep"
+        prefix = _blob_prefix(path)
+        marker = prefix + ".keep"
         sdk = _sdk()
         try:
             self._client.get_blob_client(marker).upload_blob(b"", overwrite=False)
         except sdk.ResourceExistsError:
             raise FileExistsError(errno.EEXIST, "File exists", str(path.path)) from None
+        self._emptied.discard(prefix)
 
     @override
     def copy_stat(self, path: VPath, stat: Stat) -> None:

@@ -315,3 +315,57 @@ def test_version_tag_missing_blob_raises_file_not_found() -> None:
     mock_client.get_blob_client.return_value.get_blob_properties.side_effect = ResourceNotFoundError
     with pytest.raises(FileNotFoundError):
         fs.version_tag(fs.path("/missing.txt"))
+
+
+# ── regressions A1-A3: directory rename, erase of directories, same device ────
+
+
+def test_rename_moves_every_blob_under_a_directory() -> None:
+    fs, mock_client = _make_fs()
+    clients: dict[str, MagicMock] = {}
+
+    def _get_client(name: str) -> MagicMock:
+        if name not in clients:
+            clients[name] = MagicMock(url=f"https://test.blob.core.windows.net/testcontainer/{name}")
+        return clients[name]
+
+    mock_client.get_blob_client.side_effect = _get_client
+    _get_client("dst").start_copy_from_url.side_effect = ResourceNotFoundError  # the copy finds no source blob
+    names = ["src/.keep", "src/a.txt", "src/deep/b.txt"]
+    mock_client.list_blobs.return_value = [_make_blob_properties(name) for name in names]
+
+    fs.rename(fs.path("/src"), fs.path("/dst"))
+
+    mock_client.list_blobs.assert_called_with(name_starts_with="src/")
+    for name in names:
+        moved = "dst/" + name.removeprefix("src/")
+        _get_client(moved).start_copy_from_url.assert_called_once_with(_get_client(name).url)
+        _get_client(name).delete_blob.assert_called_once()
+
+
+def test_rmdir_after_removing_the_marker_succeeds() -> None:
+    fs, mock_client = _make_fs()
+    mock_client.list_blobs.return_value = []
+    mock_client.get_blob_client.return_value.delete_blob.side_effect = [None, ResourceNotFoundError]
+    fs.remove(fs.path("/d/.keep"))
+    fs.rmdir(fs.path("/d"))
+
+
+def test_rmdir_after_removing_the_last_blob_succeeds() -> None:
+    fs, mock_client = _make_fs()
+    mock_client.list_blobs.return_value = []
+    mock_client.get_blob_client.return_value.delete_blob.side_effect = [None, ResourceNotFoundError]
+    fs.remove(fs.path("/d/a.txt"))
+    fs.rmdir(fs.path("/d"))
+
+
+def test_is_same_device_is_false_for_another_container() -> None:
+    fs, mock_client = _make_fs()
+    other = AzureFilesystem("https://test.blob.core.windows.net", "othercontainer", client=mock_client)
+    assert fs.is_same_device(fs.path("/a"), other.path("/a")) is False
+
+
+def test_is_same_device_is_true_for_another_instance_of_the_same_container() -> None:
+    fs, mock_client = _make_fs()
+    again = AzureFilesystem("https://test.blob.core.windows.net/", "testcontainer", client=mock_client)
+    assert fs.is_same_device(fs.path("/a"), again.path("/b")) is True
