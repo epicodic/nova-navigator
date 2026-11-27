@@ -75,7 +75,7 @@ The codebase lives under `src/` and contains two packages:
 
 **Archive support:** `nova_navigator/archive/` - tar/zip archive filesystem support (`ArchiveFilesystem` used in `vfs/archive.py`).
 
-**Config:** `nova_navigator/config.py`, `nova_navigator/toml_config.py` - TOML-based config; defaults in `config/default/`.
+**Config:** `nova_navigator/config.py`, `nova_navigator/toml_config.py` - TOML-based config; shipped defaults in `src/nova_navigator/_default/`, user files in `~/.config/nova-navigator/`.
 
 ### Threading model
 

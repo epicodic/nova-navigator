@@ -66,38 +66,7 @@ See [local copies](docs/local_copies.md) for how Nova Navigator mirrors SSH, Azu
 
 ## Development
 
-### Running tests
-
-```sh
-uv run pytest                                   # all tests
-uv run pytest tests/test_archives.py           # single file
-uv run pytest tests/test_archives.py::test_foo # single test
-```
-
-The tests need `zsh` installed (`sudo apt-get install zsh`).
-Every test has a limit of 120 s, and a timeout ends a run without `-n`.
-Run in parallel with `uv run pytest -n 4 --dist worksteal -m "not wall_clock"`, then run the wall-clock tests serially with `uv run pytest -m wall_clock`.
-Wall-clock budget tests carry `@pytest.mark.wall_clock`, because they assert an elapsed-time budget that parallel load can break.
-`uv run qa` runs two test passes.
-The first runs the unmarked tests in parallel only when `PYTEST_ADDOPTS="-n 4 --dist worksteal"` is set, as in CI; a bare `uv run qa` runs them serially.
-The second runs the wall-clock tests serially with `-n 0`.
-New elapsed-time assertions must carry the marker.
-CI runs `uv run qa` and `uv run install_check` on Ubuntu 24.04 and 26.04 with Python 3.12, 3.13 and 3.14, with a limit of 15 minutes per job.
-
-### Quality checks
-
-```sh
-uv run qa          # lint, type check, and tests
-uv run qa --fix    # same with auto-fixes applied
-```
-
-Individual tools:
-
-```sh
-uv run ruff check .   # lint
-uv run ruff format .  # format
-uv run ty check .     # type check
-```
+Setup, tests, quality checks and continuous integration are described in [docs/development.md](https://github.com/epicodic/nova-navigator/blob/main/docs/development.md).
 
 ## Debug Analytics
 

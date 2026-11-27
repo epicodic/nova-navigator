@@ -60,9 +60,10 @@ Every test has a limit of 120 s.
 A timeout ends a run without `-n` after printing all stacks; with `-n` only that worker is lost, the test is reported by name and the run continues.
 Run in parallel with `uv run pytest -n 4 --dist worksteal -m "not wall_clock"`, then run the wall-clock tests serially with `uv run pytest -m wall_clock`.
 Wall-clock budget tests carry `@pytest.mark.wall_clock`, because they assert an elapsed-time budget that parallel load can break.
-`uv run qa` runs two test passes.
-The first runs the unmarked tests in parallel only when `PYTEST_ADDOPTS="-n 4 --dist worksteal"` is set, as in CI; a bare `uv run qa` runs them serially.
-The second runs the wall-clock tests serially with `-n 0`.
+`uv run qa` runs the quality checks, then three test passes.
+The first runs the tests that are neither `wall_clock` nor `real_server` in parallel only when `PYTEST_ADDOPTS="-n 4 --dist worksteal"` is set, as in CI; a bare `uv run qa` runs them serially.
+The second runs the `wall_clock` tests serially with `-n 0`.
+The third runs the `real_server` tests serially with `-n 0`, because they start Docker containers; `--no-integration-tests` skips it.
 New elapsed-time assertions must carry the marker.
 
 CI runs `uv run qa` in parallel and `uv run install_check` on Ubuntu 24.04 and 26.04 with Python 3.12, 3.13 and 3.14.
@@ -101,6 +102,7 @@ Key documents in `docs/` — read every one whose topic overlaps with your task:
 | File | Topic |
 |------|-------|
 | `docs/coding_conventions.md` | Naming, style, and code patterns for this project |
+| `docs/development.md` | Source checkout setup, tests, quality checks, install check and continuous integration |
 | `docs/editor.md` | Text editor package (`nova_editor`) — architecture, layering, vendoring policy, and update instructions; also read before touching `NovaNavigator.open_editor` |
 | `docs/dialog.md` | Dialog base class — read before creating new dialogs |
 | `docs/scheduler.md` | Async task scheduler framework — read before touching `scheduler/` or long-running operations |
@@ -166,7 +168,7 @@ See `docs/editor.md` ("Embedding in the navigator") and `docs/local_copies.md`.
 
 **Archive support:** `nova_navigator/archive/` — tar/zip archive filesystem support (`ArchiveFilesystem` used in `vfs/archive.py`).
 
-**Config:** `nova_navigator/config.py`, `nova_navigator/toml_config.py` — TOML-based config; defaults in `config/default/`.
+**Config:** `nova_navigator/config.py`, `nova_navigator/toml_config.py` — TOML-based config; shipped defaults in `src/nova_navigator/_default/`, user files in `~/.config/nova-navigator/`.
 
 ### Threading model
 
@@ -231,7 +233,7 @@ For implementing long-running async operations: see `docs/scheduler.md` for the 
 | `devtools/pyproject.toml` | development commands (`qa`, `dialog_tester`, `install_check`, ...) implemented in `src/tools/`; not part of the distribution |
 | `src/nova_navigator/` | Main application package |
 | `src/nova_widgets/` | Reusable Textual widgets package |
-| `config/default/` | Default TOML config files (bookmarks, filetypes, icons) |
+| `src/nova_navigator/_default/` | Shipped default config files (icons, user menu); user files live in `~/.config/nova-navigator/` |
 | `tests/` | Test suite (pytest) |
 
 ---
