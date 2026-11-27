@@ -14,12 +14,13 @@ from typing import Protocol, cast
 
 import paramiko
 import pytest
-from paramiko.sftp import CMD_DATA, CMD_WRITE, SFTP_EOF
+from paramiko.sftp import CMD_DATA, CMD_READDIR, CMD_STAT, CMD_WRITE, SFTP_EOF, SFTP_FAILURE
 
 from nova_navigator.vfs.filesystem import StreamReaderLike, StreamWriterLike
 from nova_navigator.vfs.filesystems.ssh import SSHFilesystem
+from nova_navigator.vfs.types import Stat
 from nova_navigator.vfs.vpath import VPath
-from tests._utils.stub_ssh_server import StubSFTPHandle, StubSSHServer
+from tests._utils.stub_ssh_server import StubSFTPHandle, StubSFTPServerInterface, StubSSHServer
 
 _CHUNK = 64 * 1024
 _LARGE = 4 * 1024 * 1024
@@ -424,3 +425,130 @@ def test_the_handle_of_an_abandoned_stream_is_closed_with_the_next_open(fs: SSHF
         reader.close()
 
     _finishes(job)
+
+
+# ── a request that cannot be sent is never an answer ──────────────────────────
+
+
+def _drop_sends_of(fs: SSHFilesystem, monkeypatch: pytest.MonkeyPatch, command: int) -> None:
+    """Accept no byte of the packets of type *command*, as a channel that is closing does."""
+    send = fs._sftp_client.sock.send
+
+    def partial_send(data: bytes) -> int:
+        return 0 if data[4] == command else send(data)
+
+    monkeypatch.setattr(fs._sftp_client.sock, "send", partial_send)
+
+
+@pytest.mark.parametrize("command", [CMD_READDIR, CMD_STAT], ids=["readdir", "link-target"])
+def test_a_listing_request_that_cannot_be_sent_is_not_a_short_listing(fs: SSHFilesystem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: int) -> None:
+    (tmp_path / "file").write_bytes(b"data")
+    (tmp_path / "link").symlink_to("file")
+    fs._listing_via_sftp = True
+
+    def job() -> None:
+        _drop_sends_of(fs, monkeypatch, command)
+        with pytest.raises(OSError, match=_LOST):
+            fs.stat(VPath(tmp_path / "file", fs))
+
+    _finishes(job)
+
+
+# ── errors outside the streams ────────────────────────────────────────────────
+
+_Operation = Callable[[SSHFilesystem, Path], object]
+
+_OPERATIONS: dict[str, _Operation] = {
+    "read": lambda fs, root: fs.read(VPath(root / "file", fs)),
+    "write": lambda fs, root: fs.write(VPath(root / "new", fs)),
+    "write_atomic": lambda fs, root: fs.write_atomic(VPath(root / "new", fs)),
+    "remove": lambda fs, root: fs.remove(VPath(root / "file", fs)),
+    "rename": lambda fs, root: fs.rename(VPath(root / "file", fs), VPath(root / "new", fs)),
+    "rmdir": lambda fs, root: fs.rmdir(VPath(root / "folder", fs)),
+    "mkdir": lambda fs, root: fs.mkdir(VPath(root / "new", fs)),
+    "copy_stat": lambda fs, root: fs.copy_stat(VPath(root / "file", fs), Stat(modified=1.0, mode=0o600)),
+    "symlink": lambda fs, root: fs.symlink(VPath(root / "new", fs), "file"),
+    "readlink": lambda fs, root: fs.readlink(VPath(root / "link", fs)),
+    "real_path": lambda fs, root: fs.real_path(VPath(root / "link", fs)),
+    "stat_uncached": lambda fs, root: fs.stat_uncached(VPath(root / "file", fs)),
+}
+
+
+@pytest.mark.parametrize("drop", [_drop_replies, _drop_sends], ids=["replies", "sends"])
+@pytest.mark.parametrize("name", list(_OPERATIONS))
+def test_a_dropped_connection_raises_oserror_from_every_operation(
+    fs: SSHFilesystem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, drop: Callable[[SSHFilesystem, pytest.MonkeyPatch], None]
+) -> None:
+    (tmp_path / "file").write_bytes(b"data")
+    (tmp_path / "folder").mkdir()
+    (tmp_path / "link").symlink_to("file")
+
+    def job() -> None:
+        drop(fs, monkeypatch)
+        with pytest.raises(OSError, match=_LOST):
+            _OPERATIONS[name](fs, tmp_path)
+
+    _finishes(job)
+
+
+# ── abandoned handles and the server's handle limit ───────────────────────────
+
+
+def _limit_handles(monkeypatch: pytest.MonkeyPatch, limit: int) -> list[str]:
+    """Let the server refuse to open more than *limit* files at once; returns the open ones."""
+    held: list[str] = []
+    open_file = StubSFTPServerInterface.open
+    close = StubSFTPHandle.close
+
+    def limited_open(self: StubSFTPServerInterface, path: str, flags: int, attr: paramiko.SFTPAttributes) -> StubSFTPHandle | int:
+        if len(held) >= limit:
+            return SFTP_FAILURE
+        held.append(path)
+        return open_file(self, path, flags, attr)
+
+    def counting_close(self: StubSFTPHandle) -> None:
+        close(self)
+        held.pop()
+
+    monkeypatch.setattr(StubSFTPServerInterface, "open", limited_open)
+    monkeypatch.setattr(StubSFTPHandle, "close", counting_close)
+    return held
+
+
+def test_abandoned_handles_that_use_up_the_server_limit_are_closed_before_an_open(server: StubSSHServer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    held = _limit_handles(monkeypatch, 2)
+    (tmp_path / "file").write_bytes(b"data")
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(_AcceptAnyHostKey())
+    fs = SSHFilesystem(hostname=server.host, port=server.port, username=_LOGIN[0], password=_LOGIN[1], ssh_client=client)
+
+    def job() -> None:
+        abandoned = [fs.read(VPath(tmp_path / "file", fs)) for _ in range(2)]
+        assert len(held) == 2
+        del abandoned
+        gc.collect()
+        reader = fs.read(VPath(tmp_path / "file", fs))
+        assert reader.read(_CHUNK) == b"data"
+        reader.close()
+
+    try:
+        _finishes(job)
+    finally:
+        fs.close()
+        client.close()
+
+
+def test_a_directory_listing_closes_abandoned_handles(fs: SSHFilesystem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    held = _limit_handles(monkeypatch, 8)
+    (tmp_path / "file").write_bytes(b"data")
+
+    def job() -> None:
+        abandoned = fs.read(VPath(tmp_path / "file", fs))
+        del abandoned
+        gc.collect()
+        assert len(held) == 1
+        fs.stat(VPath(tmp_path / "file", fs))  # lists the folder
+        while held:  # the close is answered asynchronously
+            time.sleep(0.01)
+
+    _finishes(job, timeout=5.0)
