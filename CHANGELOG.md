@@ -39,13 +39,13 @@
 - If a directory is replaced by a symbolic link while it is being deleted, moved, or removed with `rm -r` in the built-in shell, the operation can follow the link.
 - Killing the application while it replaces a link can leave the destination missing.
   Changes made by other programs during a copy are not detected.
-- An interrupted save can damage a configuration file: list files such as bookmarks always, and `settings.toml` when its directory is read-only.
+- An interrupted save can damage a configuration file: `remotes.toml` and `filetypes.toml` always, `settings.toml` and `bookmarks.toml` when the directory is read-only.
 
 #### SSH
 
 - Login through ssh-agent and passphrase-protected keys are not tested.
 - A command on an SSH server that never reports an exit status blocks until you cancel it.
-- On an SSH server that uses uutils tools and has no SFTP, a directory whose listing contains non-UTF-8 names (or the character U+FFFD) cannot be listed.
+- SSH servers need SFTP. On a server with uutils tools, a directory with non-UTF-8 names (or U+FFFD) cannot be listed if the SFTP listing fails.
 - `ssh://user:password@host` is not supported: `user:password` is sent as the user name and shown in the login dialog.
   Add to Bookmarks can store such an address, password included, in `bookmarks.toml`.
   The password also appears in the folder names of local copies.
@@ -121,10 +121,10 @@
   This was seen in the code and not tried.
 - With several instances open, the last one to quit decides the stored right-panel folder and sort orders.
   Restoring a local folder can mount it or wait on a stale network mount.
-- The hidden-files setting does not apply to the side bar or the file dialog, which has its own switch.
+- The hidden-files setting does not apply to the file dialog, which has its own switch.
 - Hide Identical keeps its setting while compare is off, and the other panel can update late.
   No files are affected.
-- The numpad + and - keys are not bound.
+- In terminals that use the kitty keyboard protocol, the numpad + and - keys do not work after Ctrl+S; use the main-keyboard keys.
 - A leftover `proxy` entry under `[network]` in `settings.toml` is ignored.
 
 #### Security and crash reports
@@ -146,14 +146,13 @@
 - With stable links, `..` after a linked directory is read textually.
 - A followed directory target that disappears can fail the job when its real path cannot be determined.
 - The overwrite question for a folder says "File".
-  A followed file keeps the link's date and counts the link's length in the progress.
 - A move within one device renames, so relative links can end up pointing elsewhere.
   Link modification times are not kept.
   A cross-device move leaves skipped links and their folder behind.
 - Some skipped entries are not listed in the Jobs dialog.
 - A file you answered No for is not listed as skipped.
   Rows hidden by Hide Identical lose their selection.
-- There is no "Preserve attributes" switch; attributes are always copied.
+- There is no "Preserve attributes" switch; permission bits and modification time are copied where the destination supports them; owner, group, ACLs and extended attributes are not.
 - There is no "Dive into subdir if exists" switch.
 - There are no rename masks for copy and move.
 - The copy and move dialog has no "Background" button; jobs already run in the background.
