@@ -22,14 +22,6 @@ class _HintBarTestApp(App[None]):
 
 
 @pytest.mark.asyncio
-async def test_hint_bar_mounts_without_error() -> None:
-    app = _HintBarTestApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        assert app.query(HintBar).first() is not None
-
-
-@pytest.mark.asyncio
 async def test_hint_bar_shows_normal_hints() -> None:
     actions = [
         Action("Copy", id="browser.copy", shortcut="f5", show=True, bar_priority=10),

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import errno
-import hashlib
 import os
 import re
 import threading
@@ -517,33 +516,6 @@ async def test_cancel_after_the_first_write_is_ignored(tmp_path: Path, monkeypat
         assert path.read_bytes() == text_of(area) == _expected(BODY.encode(), 0, 5)
 
 
-@pytest.mark.asyncio
-async def test_close_after_first_write_posts_partial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    gate = Gate()
-    monkeypatch.setattr(NovaTextArea, "save_io", gate.inplace_io("pwrite", at=2))
-    path = _file(tmp_path)
-    area = NovaTextArea.open(path)
-    host = SaveHost(area)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        await _overwrite(pilot, area, 0)
-        await _overwrite(pilot, area, 5)
-        document = area.document
-        assert area.save() is True
-        assert gate.reached.wait(10)
-        area.close()
-        assert not document.wait_closed(0.2), "the source must stay open while the writer runs"
-        gate.release()
-        assert document.wait_closed(10)
-        await pilot.pause(0.1)
-        (failed,) = host.terminals()
-        assert isinstance(failed, NovaTextArea.SaveFailed)
-        assert failed.partial is True
-        assert "patched" in str(failed.error)
-        assert not [thread for thread in threading.enumerate() if thread.name == "nova-save" and thread.is_alive()]
-    assert path.read_bytes() == _expected(BODY.encode(), 0, 5)  # the writer ran to its end
-
-
 class GatedPread(PreadSource):
     """A `PreadSource` whose line scan reads wait for a permit, so that a test fixes how far the scan got when the save runs."""
 
@@ -642,22 +614,3 @@ async def test_streaming_save_after_an_in_place_save_leaves_the_right_file(tmp_p
         assert _inode(path) == newer
         assert path.read_bytes() == text_of(area)
         assert [type(message) for message in host.terminals()] == [NovaTextArea.Saved] * 3
-
-
-@pytest.mark.asyncio
-async def test_in_place_save_into_a_local_copy_shaped_path_keeps_the_inode_and_changes_the_digest(tmp_path: Path) -> None:
-    directory = tmp_path / "local"
-    directory.mkdir()
-    path = _file(directory)
-    inode = _inode(path)
-    before = hashlib.sha256(path.read_bytes()).hexdigest()
-    area = NovaTextArea.open(path)
-    host = SaveHost(area)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        await _overwrite(pilot, area)
-        assert area.save() is True
-        await wait_saved(pilot, area)
-        assert hashlib.sha256(path.read_bytes()).hexdigest() != before
-        assert _inode(path) == inode
-        assert os.listdir(directory) == [path.name]

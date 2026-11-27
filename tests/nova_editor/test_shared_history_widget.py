@@ -78,23 +78,6 @@ async def test_undo_after_save_and_modified_follow_the_shared_flag(tmp_path: Pat
         assert area.modified == area.document.history.modified is False
 
 
-@pytest.mark.asyncio
-async def test_references_roundtrip_through_the_history_api() -> None:
-    area = NovaTextArea("hello world\nsecond")
-    host = HostApp(area)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        area.delete((0, 0), (0, 6))
-        area.select_all()
-        area.action_copy()
-        record = area._clipboard_record
-        assert record is not None
-        reachable = area._reachable_contents()
-        assert reachable == [*area.history.references(), record.content]
-        area._apply_translated(list(reachable))
-        assert area._reachable_contents() == reachable
-
-
 EMPTY = Content.from_pieces((), 0)
 
 

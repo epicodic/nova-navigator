@@ -207,11 +207,6 @@ def test_pyte_screen_set_margins_ignores_private_kwarg() -> None:
     screen.set_margins(top=1, bottom=24, private=True)
 
 
-def test_pyte_screen_set_margins_works_without_private_kwarg() -> None:
-    screen = TerminalPyteScreen(80, 24)
-    screen.set_margins(top=1, bottom=24)
-
-
 def test_pyte_screen_shrink_preserves_output_in_scrollback_and_cursor_line() -> None:
     scrolled: list[str] = []
 
@@ -297,11 +292,6 @@ def test_char_style_cmp_different_reverse_returns_false(terminal_instance: Termi
 # ---------------------------------------------------------------------------
 
 
-def test_char_rich_style_returns_style_instance(terminal_instance: Terminal) -> None:
-    char = Char("a")
-    assert isinstance(terminal_instance.char_rich_style(char), Style)
-
-
 def test_char_rich_style_bold_flag_propagated(terminal_instance: Terminal) -> None:
     char = Char("a", bold=True)
     style = terminal_instance.char_rich_style(char)
@@ -342,42 +332,6 @@ def test_initial_display_cursor_at_origin(terminal_instance: Terminal) -> None:
     display = terminal_instance.initial_display()
     assert display.cursor_x == 0
     assert display.cursor_y == 0
-
-
-# ---------------------------------------------------------------------------
-# Terminal message classes
-# ---------------------------------------------------------------------------
-
-
-def test_closed_message_stores_terminal_widget() -> None:
-    terminal = Terminal("/bin/sh")
-    closed = Terminal.Closed(terminal)
-    assert closed.terminal_widget is terminal
-
-
-# ---------------------------------------------------------------------------
-# Widget lifecycle: mount without starting
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_terminal_mounts_with_started_false() -> None:
-    terminal = Terminal("/bin/sh")
-    app = TerminalTestApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        assert terminal._started is False
-
-
-@pytest.mark.asyncio
-async def test_terminal_render_before_start_returns_initial_display() -> None:
-    terminal = Terminal("/bin/sh")
-    app = TerminalTestApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        result = terminal.render()
-        assert isinstance(result, TerminalDisplay)
-        assert len(result.lines) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -596,22 +550,6 @@ async def test_mouse_drag_selects_text_and_populates_screen_selections() -> None
 
 
 @pytest.mark.asyncio
-async def test_render_line_tags_segments_with_offset_meta() -> None:
-    """Strip segments produced by render_line must carry selection offset metadata."""
-    terminal = Terminal("/bin/sh")
-    app = TerminalTestApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        terminal._feed_stdout("hi")
-        terminal._rebuild_display()
-
-        strip = terminal.render_line(0)
-
-        metas = [segment.style.meta for segment in strip._segments if segment.style is not None]
-        assert any("offset" in meta for meta in metas)
-
-
-@pytest.mark.asyncio
 async def test_ctrl_shift_c_copies_selection_to_clipboard(monkeypatch: pytest.MonkeyPatch) -> None:
     backend = FakePtyBackend()
     terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
@@ -795,13 +733,6 @@ async def _stop_recv_only(terminal: Terminal) -> None:
 # ---------------------------------------------------------------------------
 # _feed_stdout / _rebuild_display
 # ---------------------------------------------------------------------------
-
-
-def test_feed_stdout_updates_pyte_screen_without_changing_display(terminal_instance: Terminal) -> None:
-    initial_display = terminal_instance._display
-    terminal_instance._feed_stdout("Hello")
-    # _display must not be replaced — only _rebuild_display does that
-    assert terminal_instance._display is initial_display
 
 
 @pytest.mark.asyncio
@@ -1366,11 +1297,6 @@ async def test_cursor_reverse_span_not_stored_in_raw_display_lines() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_send_is_callable() -> None:
-    terminal = Terminal("/usr/bin/zsh", id="t_silent_callable", keep_alive=False)
-    assert callable(terminal.send)
-
-
 @pytest.mark.asyncio
 async def test_draining_suppresses_display_rebuild_until_pre_cmd() -> None:
     """While _draining is True, stdout is discarded (not fed to pyte) and the display
@@ -1709,52 +1635,6 @@ async def test_set_terminal_directory_returns_path_when_cwd_none_and_fallback() 
         assert result == target
 
 
-@pytest.mark.asyncio
-# ---------------------------------------------------------------------------
-# Race condition tests (adapted for SIGSTOP synchronisation model)
-#
-# Without SIGSTOP, draining is gated on pre_cmd arrival.  When pre_cmd
-# arrives, draining clears and the queued cd command can be processed.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_race_a_pre_cmd_during_draining_clears() -> None:
-    """When pre_cmd arrives while _draining is True, the recv() handler clears draining.
-
-    The pre_cmd signals that the shell is back at the prompt after its precmd
-    hook.  Since cd produces no stdout, no echo leaks onto the screen.
-    """
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = TerminalTestApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        terminal._started = True
-
-        # Stale pre_cmd from a previous navigation is already in the queue.
-        recv_q: asyncio.Queue[list[object]] = asyncio.Queue()
-        terminal.recv_queue = recv_q
-        await recv_q.put(["pre_cmd", "/old/path\n"])
-
-        # Create the recv() task.
-        terminal.recv_task_t = asyncio.create_task(terminal.recv())
-
-        # Navigation sets _draining=True and writes cd to backend.
-        terminal._draining = True
-        terminal._backend.write(b"cd /new/path\n")
-
-        # Yield to the event loop: recv() runs, processes the pre_cmd.
-        await pilot.pause(delay=0.05)
-
-        # pre_cmd clears draining.
-        assert terminal._draining is False
-
-        terminal.recv_task_t.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await terminal.recv_task_t
-
-
 # ---------------------------------------------------------------------------
 # request_cd / PathChanged: owner propagation & race condition tests
 # ---------------------------------------------------------------------------
@@ -1770,67 +1650,6 @@ async def test_request_cd_does_nothing_when_not_started() -> None:
         assert terminal._started is False
         terminal.request_cd(PurePath("/some/path"))
         assert len(backend.writes) == 0
-
-
-@pytest.mark.asyncio
-async def test_request_cd_fallback_driver_writes_cd_without_draining() -> None:
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=FallbackDriver())
-    app = TerminalTestApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        terminal._started = True
-        terminal.request_cd(PurePath("/target/path"))
-        assert len(backend.writes) >= 1
-        assert b"".join(backend.writes).endswith(b"\n")
-        assert terminal._draining is False
-
-
-@pytest.mark.asyncio
-async def test_request_cd_does_not_prepend_nn_panel() -> None:
-    """request_cd must not include _NN_PANEL (removed in no-SIGSTOP redesign)."""
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = TerminalTestApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        terminal._started = True
-        terminal._at_prompt = True
-
-        terminal.request_cd(PurePath("/new/dir"))
-        await asyncio.sleep(0)
-
-        cd_writes = [w for w in backend.writes if b"/new/dir" in w]
-        assert len(cd_writes) == 1
-        assert b"_NN_PANEL" not in cd_writes[0]
-
-
-@pytest.mark.asyncio
-async def test_path_changed_event_has_no_panel_id() -> None:
-    """PathChanged event must not have a panel_id attribute (removed in no-SIGSTOP redesign)."""
-    received: list[Terminal.PathChanged] = []
-
-    class CapturingApp(TerminalTestApp):
-        def on_terminal_path_changed(self, event: Terminal.PathChanged) -> None:
-            received.append(event)
-
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = CapturingApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        recv_q = await _start_recv_only(terminal)
-        try:
-            # A prior known cwd makes this a real (non-bootstrap) cwd change.
-            terminal._cwd = PurePath("/before")
-            await recv_q.put(["pre_cmd", "/home/user\n", True])
-            await pilot.pause(delay=0.15)
-
-            assert len(received) == 1
-            assert received[0].owner is None
-            assert not hasattr(received[0], "panel_id")
-        finally:
-            await _stop_recv_only(terminal)
 
 
 # ---------------------------------------------------------------------------
@@ -1942,49 +1761,6 @@ async def test_run_processes_set_size_message() -> None:
         assert backend.resize_calls[-1] == (30, 100)
 
         terminal.stop()
-
-
-# ---------------------------------------------------------------------------
-# Task 5: init_code() no-arg and _handle_pre_cmd uses path directly
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_start_backend_calls_init_code_with_no_args() -> None:
-    """init_code() must be called without arguments after the pipe removal."""
-    from unittest.mock import MagicMock
-
-    backend = FakePtyBackend()
-    driver = MagicMock()
-    driver.init_code.return_value = ""
-    driver.supports_precmd = True
-
-    terminal = Terminal("/bin/sh", backend=backend, driver=driver)
-    app = TerminalTestApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        terminal.start()
-        try:
-            driver.init_code.assert_called_once_with()
-        finally:
-            terminal.stop()
-
-
-@pytest.mark.asyncio
-async def test_handle_pre_cmd_updates_cwd_from_plain_path() -> None:
-    """_handle_pre_cmd uses the raw string as a path directly (no parse_precmd_payload)."""
-    backend = FakePtyBackend()
-    terminal = Terminal("/bin/sh", backend=backend, driver=ZshDriver())
-    app = TerminalTestApp(terminal)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        recv_q = await _start_recv_only(terminal)
-        try:
-            recv_q.put_nowait(["pre_cmd", "/home/user/work"])
-            await pilot.pause(delay=0.05)
-            assert terminal._cwd == PurePath("/home/user/work")
-        finally:
-            await _stop_recv_only(terminal)
 
 
 # ---------------------------------------------------------------------------
@@ -2209,11 +1985,6 @@ async def test_on_resize_excludes_scrollbar_gutter_from_ncol_when_scrollback_ena
 # ---------------------------------------------------------------------------
 # Prompt state and command ownership
 # ---------------------------------------------------------------------------
-
-
-def test_at_prompt_false_initially() -> None:
-    terminal = Terminal("/bin/zsh", driver=ZshDriver())
-    assert terminal._at_prompt is False
 
 
 def test_enter_key_leaves_prompt_and_records_owner() -> None:

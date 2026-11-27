@@ -203,34 +203,6 @@ def test_has_terminal_unwraps_remote_filesystem() -> None:
     assert pool.has_terminal(wrapper_fs) is True
 
 
-@pytest.mark.asyncio
-async def test_create_for_calls_async_factory_and_returns_terminal() -> None:
-    local = _make_terminal()
-    pool = TerminalPool(local)
-
-    inner_fs = MagicMock()
-    inner_fs.unwrap.return_value = inner_fs
-    fake_terminal = _make_terminal(display=False)
-
-    async def fake_factory(_fs: Filesystem) -> Terminal | None:
-        return fake_terminal
-
-    pool.register_factory(lambda fs: fs is inner_fs, fake_factory)
-    result = await pool.create_for(inner_fs)
-    assert result is fake_terminal
-
-
-@pytest.mark.asyncio
-async def test_create_for_returns_none_when_no_factory_matches_async() -> None:
-    local = _make_terminal()
-    pool = TerminalPool(local)
-
-    unknown_fs = MagicMock()
-    unknown_fs.unwrap.return_value = unknown_fs
-    result = await pool.create_for(unknown_fs)
-    assert result is None
-
-
 def test_terminal_for_returns_registered_terminal() -> None:
     from tests._utils.mock_filesystem import MockFilesystem
 

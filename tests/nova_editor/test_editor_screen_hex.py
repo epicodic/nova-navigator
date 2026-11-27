@@ -10,7 +10,6 @@ import pytest
 from textual.pilot import Pilot
 
 from nova_editor.app import NovaEditApp, build_app
-from nova_editor.editor_actions import build_editor_actions
 from nova_editor.screen import EditorScreen
 from nova_editor.status_line import StatusLine
 from nova_editor.widget import HexView, NovaTextArea
@@ -67,26 +66,6 @@ def note_of(app: NovaEditApp) -> str | None:
 
 
 # The action
-
-
-def test_the_hex_mode_action() -> None:
-    action = next(a for a in build_editor_actions() if a.id == "editor.hex_mode")
-    assert action.text == "Hex Mode"
-    assert action.action == "hex_mode"
-    assert action.shortcut == KeySequence.parse("f4")
-    assert action.checkable
-    assert not action.checked
-
-
-@pytest.mark.asyncio
-async def test_the_action_is_in_the_screen_and_the_third_view_item() -> None:
-    host = EditorScreenHost(standalone=True)
-    async with host.run_test(size=WIDE) as pilot:
-        await pilot.pause()
-        screen = host.screen_instance
-        assert screen is not None
-        assert "editor.hex_mode" in [a.id for a in screen.ACTIONS]
-        assert [a.id for a in screen.menu_bar.actions[3].actions][2] == "editor.hex_mode"
 
 
 @pytest.mark.asyncio
@@ -210,21 +189,6 @@ async def test_edits_modified_and_history_survive_a_toggle(tmp_path: Path) -> No
         assert history.redo_stack == redo_before
         editor.undo()
         assert editor.text == TEXT
-
-
-@pytest.mark.asyncio
-async def test_toggle_checkpoints(tmp_path: Path) -> None:
-    app = NovaEditApp(file_path=make_file(tmp_path))
-    async with app.run_test(size=WIDE) as pilot:
-        await pilot.pause()
-        screen = screen_of(app)
-        history = screen.document.editor.document.history
-        with patch.object(history, "checkpoint", wraps=history.checkpoint) as spy:
-            await toggle(pilot, screen)
-            after_first = spy.call_count
-            await toggle(pilot, screen)
-        assert after_first >= 1
-        assert spy.call_count >= after_first + 1
 
 
 @pytest.mark.asyncio
@@ -460,33 +424,6 @@ async def test_find_and_goto_still_open_their_popups_in_text_mode(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_line_numbers_and_wrap_do_nothing_in_hex_mode(tmp_path: Path) -> None:
-    app = NovaEditApp(file_path=make_file(tmp_path))
-    async with app.run_test(size=WIDE) as pilot:
-        await pilot.pause()
-        screen = screen_of(app)
-        editor = screen.document.editor
-        await toggle(pilot, screen)
-        wrap, numbers = editor.soft_wrap, editor.show_line_numbers
-        await pilot.press("f10", "f11")
-        await pilot.pause()
-        assert editor.soft_wrap is wrap
-        assert editor.show_line_numbers is numbers
-        assert screen.document.hex_mode is True
-        assert screen.focused is screen.document.hex_view
-
-
-@pytest.mark.asyncio
-async def test_nova_edit_exposes_hex_view(tmp_path: Path) -> None:
-    app = NovaEditApp(file_path=make_file(tmp_path))
-    async with app.run_test(size=WIDE) as pilot:
-        await pilot.pause()
-        screen = screen_of(app)
-        assert app.hex_view is screen.document.hex_view
-        assert app.editor is screen.document.editor
-
-
-@pytest.mark.asyncio
 async def test_two_hex_mode_actions_before_a_refresh_keep_the_hex_cursor(tmp_path: Path) -> None:
     """Two F4 handled in one batch (key repeat): the second switch must not read the text cursor the first one has not placed yet."""
     app = NovaEditApp(file_path=make_file(tmp_path, "".join(f"row {n:04d}\n" for n in range(400))))
@@ -549,22 +486,3 @@ async def test_the_hex_action_is_ignored_while_only_the_hex_view_is_removed(tmp_
         await pilot.pause()
         assert document.hex_mode is False
         assert document.editor.display is True
-
-
-@pytest.mark.asyncio
-async def test_a_hex_edit_and_the_insert_key_refresh_the_status_line(tmp_path: Path) -> None:
-    app = app_for(tmp_path, make_file(tmp_path))
-    async with app.run_test(size=WIDE) as pilot:
-        screen = screen_of(app)
-        await wait_until(pilot, lambda: screen.focused is screen.document.shown)
-        await toggle(pilot, screen)
-        with patch.object(StatusLine, "request") as request:
-            await pilot.press("1")
-            await pilot.pause()
-            assert request.call_count >= 1
-            request.reset_mock()
-            await pilot.press("insert")
-            await pilot.pause()
-            assert request.call_count >= 1
-        assert screen.document.hex_view.insert_mode is True
-        assert screen.document.editor.document.read_bytes(0, 3) == bytes([0x1F, 0x6E, 0x65])

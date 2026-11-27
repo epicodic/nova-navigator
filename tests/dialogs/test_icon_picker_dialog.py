@@ -103,14 +103,6 @@ async def test_dialog_mounts_icon_cells() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dialog_has_status_label() -> None:
-    dialog, _App = _make_dialog_app()
-    async with _App().run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        assert dialog.query_one("#icon_status", Label) is not None
-
-
-@pytest.mark.asyncio
 async def test_initial_icon_is_selected_on_mount() -> None:
     dialog, _App = _make_dialog_app(initial_icon="folder")
     async with _App().run_test(size=(120, 40)) as pilot:
@@ -127,17 +119,6 @@ async def test_no_initial_selection_when_none() -> None:
         await pilot.pause()
         selected = [c for c in dialog.query(_IconCell) if c.has_class("-selected")]
         assert selected == []
-
-
-@pytest.mark.asyncio
-async def test_clicking_cell_updates_selected_icon() -> None:
-    dialog, _App = _make_dialog_app()
-    async with _App().run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        file_cell = next(c for c in dialog.query(_IconCell) if c._icon_name == "file")
-        await pilot.click(file_cell)
-        await pilot.pause()
-        assert dialog._selected_icon == "file"
 
 
 @pytest.mark.asyncio

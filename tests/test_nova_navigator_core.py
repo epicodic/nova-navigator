@@ -6,7 +6,6 @@ from pathlib import Path, PurePath
 
 import pytest
 
-from nova_navigator.dialogs import JobRegistry
 from nova_navigator.local_copies import CopyEntry, CopyStatus, LocalCopyManager
 from nova_navigator.nova_navigator_core import (
     NovaNavigatorCore,
@@ -72,11 +71,6 @@ def _make_copy_entry(source: VPath, local_path: Path) -> CopyEntry:
     baseline = Baseline(SourceFingerprint(size=0, modified=0.0, tag=None), "")
     copy = LocalCopy(source, local_path, baseline, read_only=False, pass_through=False)
     return CopyEntry(copy=copy, status=CopyStatus.SYNCED)
-
-
-def test_nova_navigator_core_has_job_registry() -> None:
-    core = _StubCore()
-    assert isinstance(core.job_registry, JobRegistry)
 
 
 def test_open_path_directory_sets_panel_directory() -> None:

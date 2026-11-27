@@ -114,10 +114,3 @@ def test_skipped_property_returns_snapshot() -> None:
     assert isinstance(snapshot, tuple)
     assert snapshot == (SkippedItem("a", "r"),)
     assert len(status.skipped) == 2
-
-
-def test_task_context_report_skipped_delegates() -> None:
-    status = MagicMock()
-    ctx = TaskContext(status, MagicMock(), MagicMock())
-    ctx.report_skipped("item", "why")
-    status.report_skipped.assert_called_once_with("item", "why")

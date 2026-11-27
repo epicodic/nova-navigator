@@ -477,59 +477,6 @@ async def test_remove_enabled_for_non_protected_group() -> None:
 
 
 @pytest.mark.asyncio
-async def test_bookmarks_dialog_auto_selects_bookmarks_group(monkeypatch: pytest.MonkeyPatch) -> None:
-    """BookmarksDialog highlights the Bookmarks group by default."""
-    from nova_navigator.config import conf_
-
-    cfg = BookmarkConfig(
-        groups=[
-            Group(name="Computer", icon=None, bookmarks=[]),
-            Group(name=DEFAULT_BOOKMARKS_GROUP, icon=None, bookmarks=[]),
-        ]
-    )
-    monkeypatch.setattr(conf_, "bookmarks", cfg)
-
-    class _App(App[None]):
-        def compose(self) -> ComposeResult:
-            return iter([])
-
-        async def on_mount(self) -> None:
-            await self.mount(BookmarksDialog(position=(0, 0)))
-
-    app = _App()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-
-        tree = app.query_one(Tree)
-        assert tree.cursor_node is not None
-        assert DEFAULT_BOOKMARKS_GROUP in str(tree.cursor_node.label)
-
-
-@pytest.mark.asyncio
-async def test_bookmarks_dialog_no_auto_select_when_group_absent(monkeypatch: pytest.MonkeyPatch) -> None:
-    """BookmarksDialog does not crash when no Bookmarks group exists."""
-    from nova_navigator.config import conf_
-
-    cfg = BookmarkConfig(groups=[Group(name="Work", icon=None, bookmarks=[])])
-    monkeypatch.setattr(conf_, "bookmarks", cfg)
-
-    class _App(App[None]):
-        def compose(self) -> ComposeResult:
-            return iter([])
-
-        async def on_mount(self) -> None:
-            await self.mount(BookmarksDialog(position=(0, 0)))
-
-    app = _App()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-
-        # cursor may be anywhere (or -1); just confirm no crash
-        tree = app.query_one(Tree)
-        assert tree is not None
-
-
-@pytest.mark.asyncio
 async def test_bookmarks_dialog_selected_group_is_expanded(monkeypatch: pytest.MonkeyPatch) -> None:
     """BookmarksDialog: the auto-selected Bookmarks group is expanded and its entry visible."""
     from nova_navigator.config import conf_

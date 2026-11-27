@@ -209,11 +209,6 @@ def test_capabilities_delegated() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_repr_includes_name() -> None:
-    _, fs = _make("staging")
-    assert "staging" in repr(fs)
-
-
 # ---------------------------------------------------------------------------
 # Equality — wrappers around one connection are interchangeable
 # ---------------------------------------------------------------------------

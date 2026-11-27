@@ -34,17 +34,9 @@ def test_there_are_exactly_the_nineteen_actions() -> None:
     assert len(ids) == 19
 
 
-def test_every_id_starts_with_editor() -> None:
-    assert all(action.id is not None and action.id.startswith("editor.") for action in build_editor_actions())
-
-
 def test_defaults_equal_the_req4_table() -> None:
     actual = {action.id: action.shortcut for action in build_editor_actions()}
     assert actual == {action_id: KeySequence.parse(key) for action_id, key in REQ4_DEFAULTS.items()}
-
-
-def test_the_initial_shortcut_equals_the_shortcut() -> None:
-    assert all(action.shortcut == action.initial_shortcut for action in build_editor_actions())
 
 
 def test_only_the_view_toggles_are_checkable() -> None:

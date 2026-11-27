@@ -11,7 +11,6 @@ from nova_navigator.commands import Command, CommandMode
 from nova_navigator.usermenu.context import FileInfo
 from nova_navigator.usermenu.popup import UserMenuPopup
 from nova_widgets import Response
-from nova_widgets.key_types import KeySequence
 from nova_widgets.menu import Action
 from tests.integration.conftest import AppCtx, poll_until, set_panels
 
@@ -176,13 +175,6 @@ async def test_placeholder_io_error_shows_message_instead_of_crashing(app_ctx: A
     message = message_box_cls.call_args.args[0]
     assert "gone" in message
     assert app_ctx.app.is_running
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_rename_moved_to_shift_f6(app_ctx: AppCtx) -> None:
-    assert app_ctx.screen._act("browser.rename").initial_shortcut == KeySequence.parse("shift+f6")
-    assert app_ctx.screen._act("app.user_menu").initial_shortcut == KeySequence.parse("f2")
 
 
 @pytest.mark.asyncio

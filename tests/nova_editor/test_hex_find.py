@@ -403,19 +403,6 @@ async def test_a_match_in_an_unscanned_file_is_selected_without_waiting_for_the_
 
 
 @pytest.mark.asyncio
-async def test_find_and_f3_no_longer_show_the_interim_note(tmp_path: Path) -> None:
-    app = app_for(tmp_path, make_file(tmp_path))
-    async with app.run_test(size=WIDE) as pilot:
-        screen = await hex_screen(pilot, app)
-        screen.document.needle = "a"
-        for key in ("f3", "shift+f3", "ctrl+f"):
-            await pilot.press(key)
-            await pilot.pause(0.1)
-            assert note_of(app) != NOTE
-        assert screen.find_popup.display
-
-
-@pytest.mark.asyncio
 async def test_reopening_after_a_hex_search_turns_the_hex_box_on_again(tmp_path: Path) -> None:
     app = app_for(tmp_path, make_file(tmp_path))
     async with app.run_test(size=WIDE) as pilot:

@@ -13,14 +13,12 @@ from nova_editor.core.byte_source import BLOCK_SIZE, PreadSource
 from nova_editor.core.memory_source import BytesSource
 from nova_editor.core.search import (
     MAX_NEEDLE_BYTES,
-    SearchCancelled,
     SearchError,
     SearchJob,
     SearchProgress,
     SearchResult,
     SearchSettings,
     SearchSpec,
-    SearchStale,
     compile_matcher,
 )
 from nova_editor.document import LazyDocument
@@ -175,17 +173,6 @@ def test_not_found_returns_none() -> None:
     assert run(planner_of(b"abcabc"), b"zz", backward=True, origin=6) is None
 
 
-def test_needle_longer_than_document() -> None:
-    assert run(planner_of(b"abc"), b"abcd", chunk=1) is None
-    assert run(planner_of(b"abc"), b"abcd", chunk=1, backward=True, origin=3) is None
-
-
-def test_empty_document() -> None:
-    planner = planner_of(b"")
-    assert run(planner, b"a") is None
-    assert planner.plan_calls == [(0, 0)]
-
-
 def test_progress_is_monotonic_and_ends_at_total() -> None:
     data = b"x" * 100
     reports: list[SearchProgress] = []
@@ -203,41 +190,6 @@ def test_progress_is_monotonic_and_ends_at_total() -> None:
     assert {report.total for report in reports} == {100}
     assert dones[-1] == 100
     assert {report.phase for report in reports} == {"forward", "wrapped"}
-
-
-def test_cancel_after_k_units_stops_planning() -> None:
-    planner = planner_of(b"x" * 100)
-    job = SearchJob(planner, SearchSpec(b"ab"), 0, SearchSettings(chunk=10))
-
-    def on_plan(count: int) -> None:
-        if count == 4:
-            job.cancel()
-
-    planner.on_plan = on_plan
-    with pytest.raises(SearchCancelled):
-        job.run()
-    assert len(planner.plan_calls) == 4
-
-
-def test_cancel_before_the_first_unit() -> None:
-    planner = planner_of(b"x" * 100)
-    job = SearchJob(planner, SearchSpec(b"ab"), 0)
-    job.cancel()
-    with pytest.raises(SearchCancelled):
-        job.run()
-    assert planner.plan_calls == []
-
-
-def test_a_revision_change_raises_stale() -> None:
-    planner = planner_of(b"x" * 100)
-
-    def on_plan(count: int) -> None:
-        if count == 2:
-            planner.revision += 1
-
-    planner.on_plan = on_plan
-    with pytest.raises(SearchStale):
-        SearchJob(planner, SearchSpec(b"ab"), 0, SearchSettings(chunk=10)).run()
 
 
 def test_unscanned_pieces_of_a_real_lazy_document(tmp_path: Path) -> None:

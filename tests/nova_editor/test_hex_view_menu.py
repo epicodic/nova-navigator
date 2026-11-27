@@ -98,18 +98,6 @@ async def test_the_two_items_are_disabled_in_hex_and_enabled_in_text(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_the_hex_mode_item_stays_enabled(tmp_path: Path) -> None:
-    app = NovaEditApp(file_path=make_binary(tmp_path))
-    async with app.run_test(size=NARROW) as pilot:
-        await pilot.pause()
-        screen = screen_of(app)
-        assert screen.document.hex_mode
-        assert screen._by_id["editor.hex_mode"].enabled
-        await toggle(pilot, screen)
-        assert screen._by_id["editor.hex_mode"].enabled
-
-
-@pytest.mark.asyncio
 async def test_disabled_items_are_drawn_disabled_and_keep_their_check_state(tmp_path: Path) -> None:
     app = NovaEditApp(file_path=make_text(tmp_path))
     async with app.run_test(size=NARROW) as pilot:

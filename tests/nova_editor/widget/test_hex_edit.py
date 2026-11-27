@@ -64,13 +64,6 @@ async def session(tmp_path: Path, data: bytes, *, size: tuple[int, int] = (80, 2
 
 
 @pytest.mark.asyncio
-async def test_a_new_view_starts_in_overwrite_mode_and_is_writable(tmp_path: Path) -> None:
-    async with session(tmp_path, bytes(4)) as s:
-        assert s.view.insert_mode is False
-        assert s.view.is_read_only() is False
-
-
-@pytest.mark.asyncio
 async def test_insert_toggles_the_mode_and_posts_mode_changed(tmp_path: Path) -> None:
     async with session(tmp_path, bytes(4)) as s:
         await s.press("insert")
@@ -167,15 +160,6 @@ async def test_typing_with_a_selection_collapses_it_to_its_start(tmp_path: Path)
         assert await s.press("a") == HexCursor(1, 1, "hex")
         assert s.view.selection is None
         assert s.data() == bytes([0x11, 0xA2, 0x33, 0x44])
-
-
-@pytest.mark.asyncio
-async def test_two_digits_typed_in_insert_mode_undo_together(tmp_path: Path) -> None:
-    async with session(tmp_path, bytes([0x10, 0x20])) as s:
-        await s.press("insert", "4", "1")
-        assert s.data() == bytes([0x41, 0x10, 0x20])
-        assert s.document.history.undo(s.document) is not None
-        assert s.data() == bytes([0x10, 0x20])
 
 
 @pytest.mark.asyncio

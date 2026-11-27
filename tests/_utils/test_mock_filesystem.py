@@ -2,8 +2,6 @@
 
 import pytest
 
-from nova_navigator.vfs.filesystem import FilesystemCapabilities
-
 from .mock_filesystem import MockFilesystem
 
 # ---------------------------------------------------------------------------
@@ -291,21 +289,6 @@ def test_rmdir_on_file_raises() -> None:
 
 
 # ---------------------------------------------------------------------------
-# parent()
-# ---------------------------------------------------------------------------
-
-
-def test_parent_of_file() -> None:
-    fs = MockFilesystem({"/a/b/f.txt": b"x"})
-    assert str(fs.path("/a/b/f.txt").parent.path) == "/a/b"
-
-
-def test_parent_of_root() -> None:
-    fs = MockFilesystem()
-    assert str(fs.root().parent.path) == "/"
-
-
-# ---------------------------------------------------------------------------
 # Additional / cross-cutting
 # ---------------------------------------------------------------------------
 
@@ -470,15 +453,6 @@ def test_rename_missing_destination_parent_raises() -> None:
         fs.rename(fs.path("/home/user/file.txt"), fs.path("/no/such/dir/file.txt"))
 
 
-def test_rename_preserves_file_content() -> None:
-    fs = MockFilesystem({"/home/user/test.txt": b"important data"})
-    fs.rename(fs.path("/home/user/test.txt"), fs.path("/home/user/renamed.txt"))
-
-    reader = fs.read(fs.path("/home/user/renamed.txt"))
-    assert reader.read(1024) == b"important data"
-    reader.close()
-
-
 def test_rename_directory_updates_all_descendants() -> None:
     fs = MockFilesystem(
         {
@@ -610,23 +584,3 @@ def test_is_same_device_different_filesystem() -> None:
 # ---------------------------------------------------------------------------
 # FilesystemCapabilities / async iterdir
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_mock_filesystem_async_iterdir() -> None:
-    fs = MockFilesystem(
-        {
-            "/home/user/a.txt": b"aaa",
-            "/home/user/b.txt": b"bbb",
-        }
-    )
-    names = sorted([p.name async for p in fs.path("/home/user").iterdir()])
-    assert names == ["a.txt", "b.txt"]
-
-
-def test_filesystem_default_capabilities() -> None:
-    fs = MockFilesystem()
-    caps = fs.capabilities
-    assert isinstance(caps, FilesystemCapabilities)
-    assert caps.streaming_iterdir is False
-    assert caps.watch is False

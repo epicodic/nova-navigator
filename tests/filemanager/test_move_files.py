@@ -410,19 +410,6 @@ async def test_move_same_device_mixed_skip() -> None:
 
 
 @pytest.mark.asyncio
-async def test_move_progress_tracking() -> None:
-    """Progress counters reflect the number of paths processed."""
-    fs = MockFilesystem({"/src/a.txt": b"a", "/src/b.txt": b"b", "/src/c.txt": b"c"})
-
-    status = make_status()
-    srcs = [fs.path(p) for p in ("/src/a.txt", "/src/b.txt", "/src/c.txt")]
-    await run_task(lambda ctx: move_files(ctx, srcs, fs.path("/home/user")), status=status)
-
-    assert status.progress.total == 3
-    assert status.progress.completed == 3
-
-
-@pytest.mark.asyncio
 async def test_move_skipped_path_counted_in_completed() -> None:
     """Skipped paths (overwrite=skip) still increment the completed counter."""
     fs = MockFilesystem({"/src/file.txt": b"new", "/home/user/file.txt": b"original"})

@@ -15,7 +15,6 @@ from nova_editor.core import Content
 from nova_editor.document import DocumentChange
 from nova_editor.document._document import EditResult
 from nova_editor.document._errors import EditsLocked, RowUnavailable
-from nova_editor.document._history import EditHistory
 from nova_editor.document._lazy_document import LazyDocument
 from tests.nova_editor.document.helpers_save import JOIN_SECONDS, Session, open_pread_document
 from tests.nova_editor.document.test_byte_edit import hex_edit
@@ -33,15 +32,6 @@ def watch(doc: LazyDocument) -> list[DocumentChange]:
     changes: list[DocumentChange] = []
     doc.add_change_listener(changes.append)
     return changes
-
-
-def test_document_owns_one_history() -> None:
-    doc = make_doc()
-    assert isinstance(doc.history, EditHistory)
-    assert doc.history is doc.history
-    assert doc.history.undo_stack == []
-    assert doc.history.redo_stack == []
-    assert not doc.history.modified
 
 
 def test_importing_the_history_module_first_works() -> None:

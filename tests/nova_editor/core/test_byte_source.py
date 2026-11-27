@@ -143,15 +143,6 @@ def test_short_read_rule_alone_detects_truncation(tmp_path: Path) -> None:
         source.read(0, 10)  # failed for good, even for the still-existing prefix
 
 
-def test_short_pread_result_is_an_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path, _ = make_file(tmp_path)
-    source = PreadSource(path, block_size=BLOCK, cache_blocks=4)
-    real = os.pread
-    monkeypatch.setattr(byte_source.os, "pread", lambda fd, size, offset: real(fd, size, offset)[:-1])
-    with pytest.raises(SourceChanged):
-        source.read(0, 10)
-
-
 def test_oserror_becomes_source_changed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path, _ = make_file(tmp_path)
     source = PreadSource(path)

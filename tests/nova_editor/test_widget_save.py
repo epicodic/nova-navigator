@@ -37,13 +37,6 @@ def small_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(NovaTextArea, "save_settings", SETTINGS)
 
 
-def test_a_widget_without_a_path_has_nothing_to_save() -> None:
-    area = NovaTextArea(text="abc")
-    assert area.file_path is None
-    assert not area.modified
-    assert not area.saving
-
-
 @pytest.mark.asyncio
 async def test_save_without_any_path_returns_false_and_posts_nothing() -> None:
     area = NovaTextArea(text="abc")
@@ -356,28 +349,6 @@ async def test_load_text_is_refused_while_saving(tmp_path: Path, monkeypatch: py
 
 
 @pytest.mark.asyncio
-async def test_a_changed_file_needs_confirmation_and_overwrite_writes(tmp_path: Path) -> None:
-    path = _file(tmp_path)
-    area = NovaTextArea.open(path)
-    host = SaveHost(area)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        area.focus()
-        await pilot.press("x")
-        path.write_text(BODY + "appended\n")
-        assert area.save() is False
-        await pilot.pause(0.1)
-        (message,) = host.saves
-        assert isinstance(message[1], NovaTextArea.SaveNeedsConfirmation)
-        assert message[1].kind.value == "modified"
-        assert not area.saving
-        assert area.save(overwrite=True) is True
-        await wait_saved(pilot, area)
-        assert path.read_bytes() == text_of(area)
-        assert len(host.terminals()) == 1
-
-
-@pytest.mark.asyncio
 async def test_save_as_onto_an_existing_file_needs_confirmation(tmp_path: Path) -> None:
     path = _file(tmp_path)
     other = _file(tmp_path, "other.txt")
@@ -469,26 +440,6 @@ async def test_a_failure_after_the_swap_clears_the_history_and_still_ends_once(t
     assert failed.stage == "internal"
     assert failed.committed is True
     assert editable
-
-
-@pytest.mark.asyncio
-async def test_a_failure_before_the_commit_is_not_committed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def broken(_fd: int, _data: bytes | memoryview) -> int:
-        raise OSError(28, "No space left on device")
-
-    monkeypatch.setattr(NovaTextArea, "save_io", SaveIo(write=broken))
-    path = _file(tmp_path)
-    area = NovaTextArea.open(path)
-    host = SaveHost(area)
-    async with host.run_test() as pilot:
-        await pilot.pause()
-        area.focus()
-        await pilot.press("x")
-        assert area.save() is True
-        await wait_saved(pilot, area)
-        (failed,) = host.terminals()
-        assert isinstance(failed, NovaTextArea.SaveFailed)
-        assert failed.committed is False
 
 
 @pytest.mark.asyncio

@@ -73,15 +73,6 @@ async def _run_job(move: bool, dialog: MagicMock) -> tuple[Job | None, MagicMock
 
 
 @pytest.mark.asyncio
-async def test_copy_job_returns_none_when_user_cancels() -> None:
-    src = [_vpath("file.txt")]
-    dst = _vpath("dest")
-    with patch("nova_navigator.filemanager.jobs.CopyMoveFilesDialog", return_value=_mock_copy_dialog(Response.CANCEL)):
-        result = await copy_or_move_files_job(src, dst, move=False)  # type: ignore
-    assert result is None
-
-
-@pytest.mark.asyncio
 async def test_copy_job_returns_copy_job_on_ok() -> None:
     src = [_vpath("a.txt"), _vpath("b.txt")]
     dst = _vpath("dest")
@@ -128,15 +119,6 @@ async def test_copy_job_single_file_no_rename_when_filename_is_none() -> None:
         result = await copy_or_move_files_job(src, dst, move=False)  # type: ignore
     assert result is not None
     dst.__truediv__.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_move_job_returns_none_when_user_cancels() -> None:
-    src = [_vpath("file.txt")]
-    dst = _vpath("dest")
-    with patch("nova_navigator.filemanager.jobs.CopyMoveFilesDialog", return_value=_mock_copy_dialog(Response.CANCEL)):
-        result = await copy_or_move_files_job(src, dst, move=True)  # type: ignore
-    assert result is None
 
 
 # ── link options ──────────────────────────────────────────────────────────────
@@ -267,15 +249,6 @@ async def test_delete_job_without_confirmation_keeps_non_empty_directory_prompt(
         await delete_files_job(paths)
     assert job_cls.call_args.args[:2] == ("Erase Files", erase_files)
     assert len(job_cls.call_args.args) == 3
-
-
-@pytest.mark.asyncio
-async def test_delete_job_with_confirmation_default_shows_dialog() -> None:
-    dialog = _mock_delete_dialog(Response.YES)
-    with patch("nova_navigator.filemanager.jobs.DeleteFilesDialog", return_value=dialog):
-        result = await delete_files_job(cast("list[VPath]", [_vpath("file.txt")]))
-    dialog.run.assert_awaited_once()
-    assert isinstance(result, Job)
 
 
 @pytest.mark.asyncio

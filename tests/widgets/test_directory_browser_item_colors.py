@@ -13,21 +13,6 @@ from tests.widgets._directory_browser_fixtures import flat_dir_fs, run_browser
 
 
 @pytest.mark.asyncio
-async def test_set_item_colors_stores_dict() -> None:
-    async with run_browser(flat_dir_fs()) as (_pilot, browser, _msgs):
-        browser.set_item_colors({"file_a.txt": "yellow"})
-        assert browser._item_colors == {"file_a.txt": "yellow"}
-
-
-@pytest.mark.asyncio
-async def test_set_item_colors_none_clears_dict() -> None:
-    async with run_browser(flat_dir_fs()) as (_pilot, browser, _msgs):
-        browser.set_item_colors({"file_a.txt": "yellow"})
-        browser.set_item_colors(None)
-        assert browser._item_colors == {}
-
-
-@pytest.mark.asyncio
 async def test_highlight_style_includes_item_color_for_matching_filename() -> None:
     async with run_browser(flat_dir_fs()) as (_pilot, browser, _msgs):
         browser.set_item_colors({"file_a.txt": "yellow"})

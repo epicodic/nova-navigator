@@ -5,17 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from nova_navigator.config import app_config_dir
 from nova_navigator.usermenu import DEFAULT_MENU_PATH, UserMenuStore, compile_menu, parse_menu
 
 
 def _bump_mtime(path: Path) -> None:
     stat = path.stat()
     os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
-
-
-def test_app_config_dir_is_nova_navigator_dir() -> None:
-    assert app_config_dir().name == "nova-navigator"
 
 
 def test_default_menu_parses_and_compiles_cleanly() -> None:

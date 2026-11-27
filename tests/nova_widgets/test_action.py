@@ -3,46 +3,6 @@ import pytest
 from nova_widgets.action import Action, ActionCollection, ActionGroup
 
 
-def test_action_default_enabled() -> None:
-    a = Action("Open")
-    assert a.enabled is True
-
-
-def test_action_default_not_checkable() -> None:
-    a = Action("Open")
-    assert a.checkable is False
-
-
-def test_action_default_not_checked() -> None:
-    a = Action("Open")
-    assert a.checked is False
-
-
-def test_action_default_not_separator() -> None:
-    a = Action("Open")
-    assert a.is_separator is False
-
-
-def test_action_default_no_group() -> None:
-    a = Action("Open")
-    assert a.group is None
-
-
-def test_action_default_no_name() -> None:
-    a = Action("Open")
-    assert a.id is None
-
-
-def test_action_default_no_shortcut() -> None:
-    a = Action("Open")
-    assert a.shortcut is None
-
-
-def test_action_default_no_icon() -> None:
-    a = Action("Open")
-    assert a.icon is None
-
-
 def test_action_set_enabled_false() -> None:
     a = Action("Open")
     a.set_enabled(False)
@@ -78,21 +38,6 @@ def test_action_set_checked_raises_when_not_checkable() -> None:
     a = Action("Open")
     with pytest.raises(AssertionError):
         a.set_checked(True)
-
-
-def test_action_default_description_empty() -> None:
-    a = Action("Open")
-    assert a.description == ""
-
-
-def test_action_default_show_in_bar_false() -> None:
-    a = Action("Open")
-    assert a.show_in_bar is False
-
-
-def test_action_default_bar_priority_100() -> None:
-    a = Action("Open")
-    assert a.bar_priority == 100
 
 
 def test_action_custom_description() -> None:

@@ -10,7 +10,7 @@ import pytest
 
 from nova_editor.app import NovaEditApp
 from nova_editor.screen import EditorScreen
-from nova_editor.status_line import HEX_DROP_ORDER, HexStatusState, StatusLine, StatusState, format_hex_status, format_size, format_status
+from nova_editor.status_line import HexStatusState, StatusLine, StatusState, format_hex_status, format_size, format_status
 from tests.nova_editor.helpers_view import wait_until
 from tests.nova_editor.widget.hex_helpers import forbid, logged_reads, make_sparse
 
@@ -94,14 +94,6 @@ def test_eof_and_unreadable_byte_are_not_named() -> None:
     assert "12%  ?  OVR" in format_hex_status(hex_state(byte=None), 200)
 
 
-def test_eof_at_the_end_of_the_document() -> None:
-    assert "100%  EOF  OVR" in format_hex_status(hex_state(offset=LENGTH, byte=None), 200)
-
-
-def test_unreadable_byte_shows_a_question_mark() -> None:
-    assert "12%  ?  OVR" in format_hex_status(hex_state(byte=None), 200)
-
-
 def test_ovr_and_ins() -> None:
     assert "  OVR  " in format_hex_status(hex_state(insert=False), 200)
     text = format_hex_status(hex_state(insert=True), 200)
@@ -152,10 +144,6 @@ WIDTH_TABLE = [
     (16, "data.bin  OVR"),
     (14, "…ta.bin  OVR"),
 ]
-
-
-def test_the_drop_order_is_explicit() -> None:
-    assert HEX_DROP_ORDER == ("byte", "offset", "hex", "size", "modified", "mode")
 
 
 @pytest.mark.parametrize(("width", "expected"), WIDTH_TABLE)

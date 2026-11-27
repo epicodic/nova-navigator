@@ -17,17 +17,6 @@ def test_filetypes_default_construction_has_default_section(tmp_path: Path, monk
     assert cfg._default_section.section_name == "default"
 
 
-def test_filetypes_writes_file_on_first_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from nova_navigator.config import loader
-
-    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
-
-    from nova_navigator.config.filetypes import FileTypeConfig
-
-    FileTypeConfig.load()
-    assert (tmp_path / "filetypes.toml").exists()
-
-
 def test_filetypes_get_icon_for_video(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from nova_navigator.config import loader
 

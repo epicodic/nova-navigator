@@ -82,68 +82,6 @@ def test_model_config_reads_existing_file(tmp_path: Path, monkeypatch: pytest.Mo
     assert instance.count == 7
 
 
-def test_model_config_save_updates_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from nova_navigator.config import loader
-
-    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
-
-    from nova_navigator.config.loader import ModelConfig
-
-    class TConfig(SimpleSettings, ModelConfig):
-        CONFIG_NAME = "test_simple3"
-
-    instance = TConfig.load()
-    instance.name = "updated"
-    instance.save()
-
-    content = (tmp_path / "test_simple3.toml").read_text()
-    assert "updated" in content
-
-
-def test_model_config_save_updates_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """save() rewrites the file from scratch; updated values must be present."""
-    from nova_navigator.config import loader
-
-    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
-
-    from nova_navigator.config.loader import ModelConfig
-
-    class TConfig(SimpleSettings, ModelConfig):
-        CONFIG_NAME = "test_simple4"
-
-    config_file = tmp_path / "test_simple4.toml"
-    config_file.write_text("# user comment\nname = 'old'\ncount = 0\n")
-
-    instance = TConfig.load()
-    instance.name = "new"
-    instance.save()
-
-    content = (tmp_path / "test_simple4.toml").read_text()
-    assert "new" in content
-
-
-def test_model_config_save_updates_count(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """save() rewrites the file; the updated field value must be present."""
-    from nova_navigator.config import loader
-
-    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", tmp_path)
-
-    from nova_navigator.config.loader import ModelConfig
-
-    class TConfig(SimpleSettings, ModelConfig):
-        CONFIG_NAME = "test_inline_comment"
-
-    config_file = tmp_path / "test_inline_comment.toml"
-    config_file.write_text('name = "old"  # inline comment\ncount = 3\n')
-
-    instance = TConfig.load()
-    instance.count = 99
-    instance.save()
-
-    content = (tmp_path / "test_inline_comment.toml").read_text()
-    assert "99" in content
-
-
 def test_model_config_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from nova_navigator.config import loader
 

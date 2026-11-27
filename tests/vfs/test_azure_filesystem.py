@@ -25,16 +25,6 @@ def test_cwd_returns_root() -> None:
     assert str(fs.cwd().path) == "/"
 
 
-def test_root_returns_slash() -> None:
-    fs, _ = _make_fs()
-    assert str(fs.root().path) == "/"
-
-
-def test_home_returns_slash() -> None:
-    fs, _ = _make_fs()
-    assert str(fs.home().path) == "/"
-
-
 def test_parent_returns_parent_directory() -> None:
     fs, _ = _make_fs()
     p = fs.path("/foo/bar/baz.txt")

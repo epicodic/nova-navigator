@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fnmatch
 import pathlib
 from pathlib import Path, PurePath
 
@@ -11,7 +10,7 @@ from textual.app import App, ComposeResult
 from textual.css.query import NoMatches
 from textual.widgets import Input, Static
 
-from nova_widgets import FileDialog, FileDialogMode, FileTypeFilter, Icon, InMemoryFileProvider, Select
+from nova_widgets import FileDialog, FileDialogMode, FileTypeFilter, InMemoryFileProvider, Select
 from nova_widgets.file_dialog import _FileListing
 from nova_widgets.file_provider import default_file_provider
 
@@ -79,18 +78,6 @@ class _CapturingApp(App[str]):
 
 
 # ── Task 1: FileDialogMode and FileTypeFilter ──────────────────────────────────
-
-
-def test_file_dialog_mode_values() -> None:
-    assert FileDialogMode.OPEN.value == "open"
-    assert FileDialogMode.SAVE.value == "save"
-    assert FileDialogMode.DIR.value == "dir"
-
-
-def test_file_type_filter_pattern_matching() -> None:
-    f = FileTypeFilter(label="Python files", patterns=["*.py", "*.pyi"])
-    assert fnmatch.fnmatch("foo.py", f.patterns[0])
-    assert not fnmatch.fnmatch("foo.txt", f.patterns[0])
 
 
 def test_file_type_filter_matches() -> None:
@@ -429,22 +416,6 @@ async def test_navigation_updates_path_bar(tmp_path: pathlib.Path) -> None:
 # ── New tests for nova_widgets refactoring ─────────────────────────────────────
 
 
-def test_file_dialog_imports() -> None:
-    """Verify FileDialog can be imported from nova_widgets."""
-    assert FileDialog is not None
-    assert FileDialogMode.OPEN is FileDialogMode.OPEN
-    assert FileDialogMode.SAVE is FileDialogMode.SAVE
-    assert FileDialogMode.DIR is FileDialogMode.DIR
-
-
-def test_file_type_filter_matches_with_new_api() -> None:
-    """Verify FileTypeFilter pattern matching."""
-    f = FileTypeFilter("Text Files", ["*.txt", "*.md"])
-    assert f.matches("readme.txt")
-    assert f.matches("document.md")
-    assert not f.matches("image.png")
-
-
 def test_file_dialog_with_custom_provider() -> None:
     """Verify FileDialog accepts a custom provider."""
     provider = InMemoryFileProvider()
@@ -457,36 +428,6 @@ def test_file_dialog_with_custom_provider() -> None:
         start_path=Path.home(),
         title="Test",
         provider=provider,
-    )
-    assert dialog is not None
-
-
-def test_file_dialog_with_icon_provider() -> None:
-    """Verify FileDialog accepts an icon_provider callback."""
-
-    def custom_icon_provider(name: str) -> Icon:
-        return Icon.of(">") if name == "folder" else Icon.of("-")
-
-    dialog = FileDialog(
-        mode=FileDialogMode.OPEN,
-        start_path=Path.home(),
-        title="Test",
-        icon_provider=custom_icon_provider,
-    )
-    assert dialog is not None
-
-
-def test_file_dialog_with_filters() -> None:
-    """Verify FileDialog accepts file type filters."""
-    filters = [
-        FileTypeFilter("Text", ["*.txt"]),
-        FileTypeFilter("Images", ["*.png", "*.jpg"]),
-    ]
-    dialog = FileDialog(
-        mode=FileDialogMode.OPEN,
-        start_path=Path.home(),
-        title="Test",
-        filters=filters,
     )
     assert dialog is not None
 

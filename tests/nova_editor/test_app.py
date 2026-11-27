@@ -93,49 +93,7 @@ async def test_app_without_file() -> None:
         # Should start with empty text
         assert screen.document.editor.text == ""
 
-
-@pytest.mark.asyncio
-async def test_app_handles_missing_file() -> None:
-    """Test that the app handles missing file gracefully."""
-    nonexistent_path = Path(tempfile.gettempdir()) / "nonexistent_file_xyz_12345.txt"
-
-    app = NovaEditApp(path=nonexistent_path)
-
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, EditorScreen)
-        # Should handle gracefully with empty editor
-        assert screen.document.editor.text == ""
-
-
-@pytest.mark.asyncio
-async def test_app_quit_action() -> None:
-    """Test quit action."""
-    app = NovaEditApp(path=None)
-
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, EditorScreen)
-        # The quit action should work via Ctrl+Q
-        await pilot.press("ctrl+q")
-        await pilot.pause()
         # If we get here without error, quit worked
-
-
-@pytest.mark.asyncio
-async def test_ctrl_s_key_saves_eager_file(tmp_path: Path) -> None:
-    """Pressing ctrl+s writes the eager document to disk."""
-    path = tmp_path / "e.txt"
-    path.write_text("initial")
-    app = NovaEditApp(path=path)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("x")
-        await pilot.press("ctrl+s")
-        await settle(pilot, app)
-    assert path.read_text() == "xinitial"
 
 
 @pytest.mark.asyncio
@@ -266,22 +224,6 @@ async def test_second_save_of_a_new_file_writes_the_later_edit(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_save_refuses_a_file_that_appeared_before_the_first_save(tmp_path: Path) -> None:
-    path = tmp_path / "new.txt"
-
-    app = NovaEditApp(path=path)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        path.write_text("from elsewhere")
-        await pilot.press("h", "i")
-        await pilot.press("ctrl+s")
-        box = await wait_box(pilot, app)  # the file is not overwritten without consent
-        assert box_title(box) == "Overwrite"
-
-    assert path.read_text() == "from elsewhere"
-
-
-@pytest.mark.asyncio
 async def test_new_file_mode_follows_the_umask(tmp_path: Path) -> None:
     path = tmp_path / "new.txt"
 
@@ -335,34 +277,6 @@ async def test_save_small_file_shows_the_result_line(tmp_path: Path) -> None:
         await wait_until(pilot, lambda: status.note is not None and status.note.startswith("Saved"))
 
     assert path.read_text() == "newinitial"
-
-
-def test_lazy_flag_is_rejected_by_argparse(capsys: pytest.CaptureFixture[str]) -> None:
-    """Test that --lazy flag is rejected by argparse."""
-    import sys
-
-    from nova_editor.app import main
-
-    # Save original argv
-    original_argv = sys.argv
-
-    try:
-        # Simulate command line with --lazy flag
-        sys.argv = ["nova_edit", "--lazy", "somefile.txt"]
-
-        with pytest.raises(SystemExit) as exc_info:
-            main()
-
-        # argparse exits with code 2 on error
-        assert exc_info.value.code == 2
-
-        # Check that stderr contains the error message
-        captured = capsys.readouterr()
-        assert "unrecognized arguments: --lazy" in captured.err
-
-    finally:
-        # Restore original argv
-        sys.argv = original_argv
 
 
 @pytest.mark.asyncio

@@ -4,17 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from nova_editor.core.binary_detect import HEAD_LIMIT, head_is_binary
+from nova_editor.core.binary_detect import head_is_binary
 from nova_editor.core.byte_source import ChangeKind, SourceChanged
 from nova_editor.core.memory_source import BytesSource
 
 
 def reader_of(data: bytes) -> Callable[[int, int], bytes]:
     return lambda offset, size: data[offset : offset + size]
-
-
-def test_limit_is_64_kib() -> None:
-    assert HEAD_LIMIT == 65536
 
 
 def test_nul_at_offset_65535_is_binary() -> None:

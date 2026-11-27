@@ -282,20 +282,6 @@ def test_a_cached_long_index_is_rebased_and_keeps_its_answers(tmp_path: Path) ->
         _finish(session)
 
 
-def test_subscribers_follow_the_new_line_index(tmp_path: Path) -> None:
-    session = _session(tmp_path)
-    try:
-        calls: list[int] = []
-        session.doc.subscribe(lambda: calls.append(1))
-        session.edit((0, 0), (0, 1), "A")
-        calls.clear()
-        session.save(tmp_path / "doc.bin")
-        assert calls  # a subscriber of a completed index is told once
-        assert session.doc._line_index._subscribers
-    finally:
-        _finish(session)
-
-
 def test_edit_contents_and_rewrite_use_one_order() -> None:
     doc = LazyDocument.from_text("abc\ndef", SMALL)
     try:

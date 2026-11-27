@@ -336,25 +336,6 @@ async def test_jobs_dialog_shows_job_after_tick() -> None:
         assert job_list._jobs[0].title == "My Job"
 
 
-@pytest.mark.asyncio
-async def test_jobs_dialog_has_no_job_row_widgets() -> None:
-    """Confirm old JobRow widgets are gone."""
-    from nova_navigator.dialogs.job_registry import JobRegistry
-
-    registry = MagicMock(spec=JobRegistry)
-    registry.running_jobs = [_make_job()]
-    registry.finished_jobs = []
-
-    dialog = JobsDialog(position=(0, 0), registry=registry)
-    app = _DialogApp(dialog)
-    async with app.run_test(size=(80, 30)) as pilot:
-        await pilot.pause()
-        dialog.show()
-        await pilot.pause(delay=0.1)
-        # No widget called JobRow should exist in the DOM
-        assert dialog.query(JobListView)  # JobListView IS present
-
-
 # ── _generate_bar_segments ───────────────────────────────────────────────────
 
 

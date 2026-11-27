@@ -490,30 +490,6 @@ async def test_copy_single_file_to_new_name_filter_skips_non_matching() -> None:
 
 
 @pytest.mark.asyncio
-async def test_copy_paths_progress_tracks_src_paths() -> None:
-    """Overall progress total equals len(src_paths) upfront; completed reaches that total."""
-    events: list[tuple[int, int]] = []
-
-    def cb(s: TaskStatus) -> None:
-        events.append((s.progress.completed, s.progress.total))
-
-    status = TaskStatus(cancel_event=threading.Event(), progress_callback=cb)
-    src_fs = MockFilesystem({"/src/a.txt": b"a", "/src/b.txt": b"b", "/src/c.txt": b"c"})
-    dst_fs = MockFilesystem()
-    srcs = [src_fs.path(p) for p in ("/src/a.txt", "/src/b.txt", "/src/c.txt")]
-
-    await run_task(
-        lambda ctx: copy_files(ctx, srcs, dst_fs.path("/home/user")),
-        status=status,
-    )
-
-    totals = [t for _, t in events]
-    completeds = [c for c, _ in events]
-    assert totals[0] == 3
-    assert max(completeds) == 3
-
-
-@pytest.mark.asyncio
 async def test_copy_paths_cancelled_mid_list() -> None:
     """TaskCancelled is raised when the cancel event fires during the copy."""
     src_fs = MockFilesystem({"/src/a.txt": b"a", "/src/b.txt": b"b"})

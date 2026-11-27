@@ -143,12 +143,6 @@ def test_listdir_returns_only_direct_children(archive: Archive) -> None:
     assert entries == {"file11.txt", "file12.txt"}
 
 
-def test_listdir_does_not_bleed_into_same_prefix_sibling(archive: Archive) -> None:
-    """Listing 'dir1' must not include entries from 'dir11'."""
-    entries = {p.as_posix() for p in archive.listdir(PurePath("dir1"))}
-    assert entries == {"file11.txt", "file12.txt"}
-
-
 def test_listdir_nested_dir_returns_subdirectory(archive: Archive) -> None:
     entries = {p.as_posix() for p in archive.listdir(PurePath("dir2"))}
     assert entries == {"dir21"}

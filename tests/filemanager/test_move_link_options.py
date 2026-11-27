@@ -166,16 +166,6 @@ async def test_move_follow_target_moved_earlier_in_same_move_is_skipped_not_fail
 
 
 @pytest.mark.asyncio
-async def test_move_follow_ssh_same_connection(
-    link_fs: Filesystem,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    await _scenario_file_link((link_fs, link_fs), tmp_path / "file", monkeypatch)
-    await _scenario_dir_link((link_fs, link_fs), tmp_path / "dir", monkeypatch)
-
-
-@pytest.mark.asyncio
 async def test_move_same_device_ignores_follow_and_stable(tmp_path: Path) -> None:
     local = LocalFilesystem()
     # Case A: destination folder exists, the moved folder does not: whole-folder rename.

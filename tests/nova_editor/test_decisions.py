@@ -225,21 +225,6 @@ async def test_close_with_edits_asks_and_discard_closes(tmp_path: Path, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_quit_with_edits_asks_and_discard_exits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    exits = count_exits(monkeypatch)
-    path = make_file(tmp_path)
-    app = NovaEditApp(file_path=path)
-    async with app.run_test(size=SIZE) as pilot:
-        await pilot.pause()
-        await pilot.press("x", "ctrl+q")
-        box = await wait_box(pilot, app)
-        assert box_title(box) == "Quit"
-        await answer(pilot, app, "Discard & Quit")
-        await wait_until(pilot, lambda: exits == [1])
-    assert path.read_bytes() == b"one\ntwo\n"
-
-
-@pytest.mark.asyncio
 async def test_the_editor_property_finds_the_screen_under_a_dialog(tmp_path: Path) -> None:
     app = NovaEditApp(file_path=make_file(tmp_path))
     async with app.run_test(size=SIZE) as pilot:

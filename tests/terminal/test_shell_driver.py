@@ -114,12 +114,6 @@ def test_posix_octal_escape_non_ascii_by_utf8_byte_not_codepoint() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_zsh_driver_init_code_does_not_contain_kill_stop() -> None:
-    driver = ZshDriver()
-    code = driver.init_code()
-    assert "kill -STOP $$" not in code
-
-
 def test_zsh_driver_init_code_uses_precmd_functions() -> None:
     driver = ZshDriver()
     code = driver.init_code()
@@ -154,12 +148,6 @@ def test_zsh_driver_cd_command() -> None:
 # ---------------------------------------------------------------------------
 # BashDriver
 # ---------------------------------------------------------------------------
-
-
-def test_bash_driver_init_code_does_not_contain_kill_stop() -> None:
-    driver = BashDriver()
-    code = driver.init_code()
-    assert "kill -STOP $$" not in code
 
 
 def test_bash_driver_init_code_uses_prompt_command() -> None:
@@ -299,13 +287,6 @@ def test_zsh_driver_init_code_defines_raw_eol_widget_bound_to_private_sequence()
     assert r"\e[96~" in code
 
 
-def test_fallback_driver_does_not_override_kill_or_yank_sequence() -> None:
-    """FallbackDriver has no line editor (supports_line_editing is False) and never
-    reaches hidden navigation's kill/yank step, so it relies on the base class."""
-    assert "kill_line_sequence" not in FallbackDriver.__dict__
-    assert "yank_sequence" not in FallbackDriver.__dict__
-
-
 # ---------------------------------------------------------------------------
 # supports_line_editing
 # ---------------------------------------------------------------------------
@@ -351,52 +332,12 @@ def test_fallback_driver_supports_editor_protocol_is_false() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_hook_body_includes_panel_prefix() -> None:
-    """_hook_body() printf must include panel= prefix for from_nn detection."""
-    driver = ZshDriver()
-    body = driver._hook_body()
-    assert "panel=" in body
-
-
 def test_hook_body_osc7_format_has_panel_prefix() -> None:
     """_hook_body() must emit panel=;file:// format so the parser can detect NN origin."""
     driver = ZshDriver()
     body = driver._hook_body()
     assert "panel=" in body
     assert "file://" in body
-
-
-def test_hook_body_does_not_include_nn_panel_variable() -> None:
-    """_hook_body() must NOT reference $_NN_PANEL (removed in no-SIGSTOP redesign)."""
-    driver = ZshDriver()
-    body = driver._hook_body()
-    assert "_NN_PANEL" not in body
-
-
-def test_bash_hook_body_does_not_include_nn_panel_variable() -> None:
-    driver = BashDriver()
-    body = driver._hook_body()
-    assert "_NN_PANEL" not in body
-
-
-def test_hook_body_does_not_contain_kill_stop() -> None:
-    """_hook_body() must not contain kill -STOP (removed in no-SIGSTOP redesign)."""
-    driver = ZshDriver()
-    body = driver._hook_body()
-    assert "kill -STOP" not in body
-
-
-def test_zsh_driver_init_code_has_no_prompt_marker_or_zle_hook() -> None:
-    code = ZshDriver().init_code()
-    assert "133" not in code
-    assert "zle-line-init" not in code
-    assert "add-zle-hook-widget" not in code
-
-
-def test_bash_driver_init_code_has_no_prompt_marker() -> None:
-    code = BashDriver().init_code()
-    assert "133" not in code
-    assert "PS1" not in code
 
 
 def test_bash_driver_init_code_ends_with_prompt_command_and_newline() -> None:
@@ -420,34 +361,16 @@ def test_detect_driver_command_with_arguments() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_zsh_driver_init_code_takes_no_arguments() -> None:
-    driver = ZshDriver()
-    code = driver.init_code()  # must not raise TypeError
-    assert isinstance(code, str)
-
-
 def test_zsh_driver_init_code_contains_osc7_printf() -> None:
     driver = ZshDriver()
     code = driver.init_code()
     assert r"\033]7;panel=;file://%s\007" in code
 
 
-def test_bash_driver_init_code_takes_no_arguments() -> None:
-    driver = BashDriver()
-    code = driver.init_code()
-    assert isinstance(code, str)
-
-
 def test_bash_driver_init_code_contains_osc7_printf() -> None:
     driver = BashDriver()
     code = driver.init_code()
     assert r"\033]7;panel=;file://%s\007" in code
-
-
-def test_fallback_driver_init_code_takes_no_arguments() -> None:
-    driver = FallbackDriver()
-    code = driver.init_code()
-    assert isinstance(code, str)
 
 
 def test_fallback_driver_init_code_contains_osc7_printf() -> None:
@@ -462,18 +385,3 @@ def test_fallback_driver_init_code_redirects_to_dev_tty() -> None:
     driver = FallbackDriver()
     code = driver.init_code()
     assert ">/dev/tty" in code
-
-
-def test_detect_driver_zsh_returns_zsh_driver() -> None:
-    driver = detect_driver("/usr/bin/zsh")
-    assert isinstance(driver, ZshDriver)
-
-
-def test_detect_driver_bash_returns_bash_driver() -> None:
-    driver = detect_driver("/bin/bash")
-    assert isinstance(driver, BashDriver)
-
-
-def test_detect_driver_fallback_returns_fallback_driver() -> None:
-    driver = detect_driver("/bin/sh")
-    assert isinstance(driver, FallbackDriver)

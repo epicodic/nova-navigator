@@ -73,14 +73,6 @@ def test_make_response_dialog_returns_generic_dialog_when_no_type() -> None:
     assert type(dialog) is ResponseDialog
 
 
-# ── ResponseDialog._details_content ──────────────────────────────────────────
-
-
-def test_response_dialog_details_content_is_empty() -> None:
-    dialog = ResponseDialog(_BASIC_REQUEST)
-    assert dialog._details_content() == []
-
-
 # ── ResponseDialog compose: buttons ──────────────────────────────────────────
 
 
@@ -109,15 +101,6 @@ async def test_dialog_negative_response_button_has_error_variant() -> None:
         await pilot.pause()
         no_btn = dialog.query_one("#NO", widgets.Button)
         assert no_btn.variant == "error"
-
-
-@pytest.mark.asyncio
-async def test_dialog_message_label_is_present() -> None:
-    dialog = ResponseDialog(_BASIC_REQUEST)
-    async with _make_app(dialog).run_test(size=(80, 20)) as pilot:
-        await pilot.pause()
-        label = dialog.query_one(widgets.Label)
-        assert label is not None
 
 
 @pytest.mark.asyncio
@@ -181,49 +164,7 @@ async def test_action_abort_dismisses_with_response_no() -> None:
         mock_dismiss.assert_called_once_with(Response.NO)
 
 
-# ── OverwriteResponseDialog._details_content ─────────────────────────────────
-
-
-def test_overwrite_details_content_returns_single_static() -> None:
-    dialog = OverwriteResponseDialog(_OVERWRITE_REQUEST)
-    content = dialog._details_content()
-    assert len(content) == 1
-    assert isinstance(content[0], widgets.Static)
-
-
-def test_overwrite_details_content_static_has_file_info_id() -> None:
-    dialog = OverwriteResponseDialog(_OVERWRITE_REQUEST)
-    content = dialog._details_content()
-    assert content[0].id == "file_info"
-
-
-def test_overwrite_details_content_includes_src_and_dst_names() -> None:
-    """File names appear in the constructed file_info text (verified via mounted dialog)."""
-    dialog = OverwriteResponseDialog(_OVERWRITE_REQUEST)
-    # Verify a Static widget is returned with the expected id — content is
-    # checked in test_overwrite_dialog_shows_file_info_text below.
-    content = dialog._details_content()
-    assert len(content) == 1
-    assert content[0].id == "file_info"
-
-
-def test_overwrite_details_content_uses_fallback_when_keys_absent() -> None:
-    request = ResponseRequest("t", [], "m", dialog_type="overwrite", details={})
-    dialog = OverwriteResponseDialog(request)
-    # Must not raise; fallback "?" values are used for missing keys
-    content = dialog._details_content()
-    assert len(content) == 1
-
-
 # ── OverwriteResponseDialog mounts ────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_overwrite_dialog_mounts_file_info_widget() -> None:
-    dialog = OverwriteResponseDialog(_OVERWRITE_REQUEST)
-    async with _make_app(dialog).run_test(size=(80, 24)) as pilot:
-        await pilot.pause()
-        assert dialog.query_one("#file_info", widgets.Static) is not None
 
 
 @pytest.mark.asyncio

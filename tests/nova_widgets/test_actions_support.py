@@ -31,12 +31,6 @@ def test_act_returns_action_by_name() -> None:
     assert a.text == "Open"
 
 
-def test_act_returns_action_by_name_close() -> None:
-    w = SimpleWidget()
-    a = w._act("close")
-    assert a.text == "Close"
-
-
 def test_act_unknown_name_raises_key_error() -> None:
     w = SimpleWidget()
     with pytest.raises(KeyError):
@@ -59,13 +53,6 @@ def test_widget_with_no_actions_raises_key_error() -> None:
     w = WidgetWithNoActions()
     with pytest.raises(KeyError):
         w._act("anything")
-
-
-def test_actions_by_id_is_class_var() -> None:
-    """Two instances share the same dict — it's a ClassVar, not per-instance."""
-    w1 = SimpleWidget()
-    w2 = SimpleWidget()
-    assert w1._actions_by_id is w2._actions_by_id
 
 
 def test_child_actions_by_id_does_not_equal_parent() -> None:

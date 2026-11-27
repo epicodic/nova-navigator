@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 from pathlib import Path
 
 import pytest
@@ -148,9 +147,3 @@ async def test_document_view_show_hex_false_cancels_a_running_search(tmp_path: P
         view.show_hex(False)
         await pilot.pause()
         assert cancelled == [1]
-
-
-def test_needle_hex_is_not_a_dataclass_field() -> None:
-    view, _ = DocumentView.open(None, editor_class=TimedNovaTextArea, soft_wrap=False, show_line_numbers=True, config=None, timing_file=None)
-    assert "needle_hex" not in {field.name for field in dataclasses.fields(DocumentView)}
-    assert view.needle_hex is False

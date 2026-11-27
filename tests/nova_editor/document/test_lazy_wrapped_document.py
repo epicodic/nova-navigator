@@ -247,13 +247,6 @@ class TestGridWrap:
 
 
 class TestVerticalEstimate:
-    def test_height_is_exact_without_wrap_and_grows_with_measured_rows(self, opened: Path) -> None:
-        doc, lazy = build(opened, 20)
-        assert lazy.height >= doc.line_count
-        before = lazy.height
-        lazy.row_of_y(lazy.height - 1)
-        assert lazy.height >= before
-
     def test_small_document_is_exact_after_measuring_its_only_block(self, opened: Path) -> None:
         doc, lazy = build(opened, 20)
         exact = sum(lazy.row_sections(r) for r in range(doc.line_count))

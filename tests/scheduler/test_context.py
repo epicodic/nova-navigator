@@ -4,11 +4,6 @@ from unittest.mock import AsyncMock
 from nova_navigator.scheduler.context import Progress, TaskContext, TaskStatus, _SubtaskTracker
 
 
-def test_progress_current_item_default() -> None:
-    p = Progress()
-    assert p.current_item == ""
-
-
 def test_set_current_item_updates_progress() -> None:
     calls: list[str] = []
 

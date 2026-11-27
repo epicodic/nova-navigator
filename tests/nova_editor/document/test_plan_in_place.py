@@ -21,10 +21,6 @@ def _overwrite(doc: LazyDocument, start: int, data: bytes) -> None:
     doc.splice_bytes(start, start + len(data), doc._table.add(data))
 
 
-def test_the_row_constant_matches_the_data() -> None:
-    assert len(DATA) == 12 * ROW
-
-
 def test_an_unedited_document_has_a_plan_without_ranges(tmp_path: Path) -> None:
     doc, _ = open_pread_document(tmp_path, DATA)
     try:
