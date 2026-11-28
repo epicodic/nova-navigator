@@ -8,7 +8,8 @@ import os
 import shlex
 import subprocess
 import sys
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import partial
@@ -48,6 +49,7 @@ from nova_navigator.dialogs import (
     JobsDialog,
     LocalCopiesDialog,
     SelectByPatternDialog,
+    WriteBackRunningDialog,
 )
 from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
 from nova_navigator.dialogs.key_help_dialog import KeyHelpDialog
@@ -1333,6 +1335,9 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         self._showing_exception_dialog = False
         self._editor_busy = False
         self._editor_session: _EditorSession | None = None
+        self._quit_awaits_write_back = False
+        self._write_back_dialog: WriteBackRunningDialog | None = None
+        self._forced_quit = False
         register_remote_scheme(conf_.remotes)
 
     def action_help_quit(self) -> None:
@@ -1365,10 +1370,50 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         self.start_quit()
 
     def start_quit(self) -> None:
-        """Run :meth:`request_quit` in a worker, unless a quit request is already under way."""
+        """Run :meth:`request_quit` in a worker, unless a quit request is already under way.
+
+        While the request under way waits for a write-back, ask whether to stop waiting instead.
+        """
         if any(worker.group == "quit" and not worker.is_finished for worker in self.workers):
+            self._offer_forced_quit()
             return
         self.run_worker(self.request_quit(), group="quit")
+
+    def _offer_forced_quit(self) -> None:
+        """Open the write-back dialog, if a quit waits for a write-back and the dialog is not open yet."""
+        if not self._quit_awaits_write_back or self._write_back_dialog is not None:
+            return
+        writing = self.local_copies.writing()
+        if not writing:
+            return  # the quit is not held up by a write-back
+        dialog = WriteBackRunningDialog([entry.copy.source.name for entry in writing], self.local_copies.root)
+        self._write_back_dialog = dialog
+        self.run_worker(self._ask_forced_quit(dialog), group="forced_quit")
+
+    async def _ask_forced_quit(self, dialog: WriteBackRunningDialog) -> None:
+        try:
+            answer = await dialog.run()
+        finally:
+            self._write_back_dialog = None
+        # With the write-back over meanwhile, the quit goes on as chosen before.
+        if answer == Response.IGNORE and self._quit_awaits_write_back and self.local_copies.writing():
+            self._force_quit()
+
+    def _force_quit(self) -> None:
+        """Exit without waiting for the running write-backs, keeping every local copy."""
+        self._forced_quit = True
+        self.local_copies.abandon()  # first: from here on nothing removes a local copy
+        self._main_screen.save_session_state()
+        self.exit()
+
+    @contextmanager
+    def _awaiting_write_back(self) -> Iterator[None]:
+        """Mark the part of a quit during which the quit key offers to stop waiting."""
+        self._quit_awaits_write_back = True
+        try:
+            yield
+        finally:
+            self._quit_awaits_write_back = False
 
     def _handle_exception(self, error: Exception) -> None:
         sys.settrace(debug_analytics.trace_handler)
@@ -1446,11 +1491,16 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         cleanup so ``on_unmount``'s later call is a no-op, see ``LocalCopyManager.shutdown``).
         Otherwise ask **Sync and quit**, **Quit and keep files**, or **Cancel**. A failed or
         still-conflicting sync after "Sync and quit" is reported and the app stays open.
+
+        While this waits for a write-back, the quit key offers to quit and keep the local copies
+        (see :meth:`start_quit`). Once the user chose that, nothing more is done here.
         """
         pending = self.local_copies.unsynced()
         if not pending:
-            await self.local_copies.shutdown()
-            self.exit()
+            with self._awaiting_write_back():
+                await self.local_copies.shutdown()
+            if not self._forced_quit:
+                self.exit()
             return
 
         dialog = MessageBox(
@@ -1464,15 +1514,22 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         )
         answer = await dialog.run()
         if answer == Response.SAVE:
-            for entry in pending:
-                await self.local_copies.sync_now(entry)
+            with self._awaiting_write_back():
+                for entry in pending:
+                    await self.local_copies.sync_now(entry)
+            if self._forced_quit:
+                return
             if self.local_copies.unsynced():
+                if self._write_back_dialog is not None:
+                    self._write_back_dialog.withdraw()
                 self.notify("Some local copies could not be synced; Nova Navigator stays open.", title="Quit", severity="error")
                 return
         elif answer != Response.IGNORE:
             return
-        await self.local_copies.shutdown(remove_files=answer != Response.IGNORE)
-        self.exit()
+        with self._awaiting_write_back():
+            await self.local_copies.shutdown(remove_files=answer != Response.IGNORE)
+        if not self._forced_quit:
+            self.exit()
 
     async def on_unmount(self) -> None:
         """Stop local-copy detectors/syncs and remove this process's local-copy directory on exit.

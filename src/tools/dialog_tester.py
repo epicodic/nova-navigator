@@ -37,6 +37,7 @@ from nova_navigator.dialogs.response_dialog import OverwriteResponseDialog, Resp
 from nova_navigator.dialogs.select_by_pattern_dialog import SelectByPatternDialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
 from nova_navigator.dialogs.user_menu_input_dialog import InputField, UserMenuInputDialog
+from nova_navigator.dialogs.write_back_running_dialog import WriteBackRunningDialog
 from nova_navigator.key_help import HelpGroup, HelpRow
 from nova_navigator.local_copies import CopyEntry, CopyStatus, LocalCopyManager
 from nova_navigator.nova_navigator_core import NovaNavigatorCore
@@ -176,6 +177,11 @@ class DialogEntry:
 # ── dialog registry ───────────────────────────────────────────────────────────
 
 _ENTRIES: list[DialogEntry] = [
+    DialogEntry(
+        "WriteBackRunningDialog",
+        "Quit key while a quit waits for a write-back.",
+        lambda: WriteBackRunningDialog(["report.txt"], Path(tempfile.gettempdir()) / "nova-navigator" / "4211"),
+    ),
     DialogEntry(
         "ConnectToDialog",
         "Pick a saved remote connection (uses real config).",
