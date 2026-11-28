@@ -50,7 +50,7 @@ def _ansi_c_quote(arg: str) -> str:
     *arg* is encoded to UTF-8 first and escaped byte by byte, not by Unicode
     codepoint: a codepoint above ``0x7f`` spans multiple UTF-8 bytes, so escaping
     by codepoint would emit the wrong (single, invalid) byte for it.
-    Every 250 bytes the quote is split as ``'\\<newline>$'``: the quote is closed,
+    Every 250 bytes the quote is split as ``'\<newline>$'``: the quote is closed,
     a backslash and newline are written outside it, and ``$'`` reopens it.  The
     shell reads the result as one word, and each physical line stays within the
     kernel cooked-mode buffer limit on some platforms.  A backslash and newline

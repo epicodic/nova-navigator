@@ -141,7 +141,9 @@
 
 - Text typed while a command is still running is not detected, even when it was already entered, so a later panel change can write its `cd` into that text and the combined line may run.
   In shells without bracketed paste (sh, dash), further lines of a multi-line paste at a prompt are not detected either.
-- If you type or paste into the terminal while its shell is still starting, the shell stops following the panels until you press Enter in it once more after the shell is ready, even if you cleared the line.
+- If you type or paste into the terminal, or keys are passed to it from a file panel (such as typed characters or inserted file names), while its shell is still starting, the shell stops following the panels until you press Enter in it once more after it is ready, even if you cleared the line.
+  Once it is ready and until that Enter, Enter in a file panel goes to the terminal, and runs any early text still on the line.
+  Ctrl+C pressed before the shell is ready can discard its setup; the shell then does not follow the panels until it is restarted (for the local shell, type `exit`).
 - On a slow shell, Enter pressed before the typed command appears may act on the file panel instead of the terminal.
   This was seen in the code, but not reproduced in the application.
 - A move across devices that follows links (or to a destination without links) can skip, as broken, a link whose target was already moved in the same move.

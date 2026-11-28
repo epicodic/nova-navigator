@@ -350,7 +350,9 @@ At the first report, and at every later one while the flag is set:
 
 An Enter (or any input containing a newline) forwarded after the first report clears the flag.
 The kept target is applied at the next precmd, also when the entered command changed the directory itself.
-Until that Enter the state stays, even if the early input already ended with Enter (for example an answer to a question in an rc file) or the line was cleared with Ctrl+U or Ctrl+C: panel changes are not followed, and one Enter, also on an empty line, resumes them.
+Until that Enter the state stays, even if the early input already ended with Enter (for example an answer to a question in an rc file) or the line was cleared with Ctrl+U, or with Ctrl+C after the first report: panel changes are not followed, and one Enter, also on an empty line, resumes them.
+Ctrl+C pressed before the shell is ready can discard the setup line that installs the hooks.
+No report then arrives, Enter does not help, and the shell does not follow the panels until it is restarted (a local shell restarts after `exit`).
 A restart of the shell clears the flag.
 
 ---

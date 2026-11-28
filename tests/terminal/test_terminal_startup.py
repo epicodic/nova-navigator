@@ -398,10 +398,9 @@ async def test_automatic_writes_before_the_first_report_do_not_occupy_the_line(h
         await pilot.pause()
         terminal.start()
         try:
+            # Neither the cd request nor the resize is user input.
             terminal.request_cd(home / "dest")
             await pilot.resize_terminal(60, 20)
-            assert terminal.recv_queue is not None
-            terminal.recv_queue.put_nowait(["stdout", "\x1b[6n\x1b[c"])  # terminal queries
             await _report_prompt(terminal, home)
             assert backend.cd_written()
         finally:
