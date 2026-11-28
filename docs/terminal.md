@@ -133,8 +133,8 @@ The hook emits an OSC 7 CWD sequence.
 Installs a `PS1`-based hook that emits OSC 7.
 Has no line editor, so directory navigation writes a visible `cd` without input preservation.
 A `cd` is written only at a prompt whose line looks empty to the terminal; otherwise the target is kept and tried again at the next precmd.
-The check covers a command that is running and, at a ready prompt, text visible on the prompt line.
-It does not detect input typed while the shell is still starting or while a command is still running, whether or not it was entered, nor further lines of a multi-line paste in shells without bracketed paste (sh, dash).
+The check covers a command that is running, text typed at a ready prompt that is still on the line, and input sent before the shell's first hook report (see [Input typed before the first hook report](#input-typed-before-the-first-hook-report)).
+It does not detect input typed while a command is still running, whether or not it was entered, nor further lines of a multi-line paste made at a prompt in shells without bracketed paste (sh, dash).
 A panel change then can write the `cd` into that input, so the combined line may run.
 No `_nav_future` is created for this driver, so `set_terminal_directory` returns at once and `run_command` never waits for a plain `cd`.
 The init code sets `stty erase '^H'` so that Backspace erases in shells that do not use the PTY's `^?` default.
@@ -185,7 +185,8 @@ The stored lines in `_display` are never mutated.
 | `send_queue` | `asyncio.Queue \| None` | Commands from the widget to the PTY writer task |
 | `recv_queue` | `asyncio.Queue \| None` | Events from the backend readers, consumed by `recv()` |
 | `_draining` | `bool` | When True, stdout is discarded (not fed to pyte) |
-| `_input_since_precmd` | `bool` | True once any user-originated byte was sent since the last precmd |
+| `_input_since_precmd` | `bool` | True once any user-originated byte was sent since the last precmd, or while `_startup_input` is set |
+| `_startup_input` | `bool` | User input was sent before the first hook report and no Enter has followed that report |
 | `_prompt_snapshot` | `tuple[int, int, str] \| None` | Cursor row, column, and row text captured after every stdout chunk until the first user byte |
 | `_at_prompt` | `bool` | True while the shell waits for a command line |
 | `owner` | `object \| None` | Token set by the host (the active pane); recorded on command submission |
@@ -325,7 +326,7 @@ If no hook report arrives in time, `_reveal_startup_output()` shows the buffer a
 The revealed output can include the echoed init code (the setup line that `_start_backend()` wrote); it is shown as it was printed and is not stripped.
 The terminal is then a plain terminal: `_at_prompt` stays False, the terminal itself writes no `cd` to the shell, a waiting navigation is resolved with the last known directory (after a restart, the previous shell's) or, when none is known, the requested path, and `run_command()` reports busy.
 The newest navigation target is kept, both one requested before the timeout and one requested after it, except that before the timeout a request equal to the last known directory, with no other target pending, is not stored.
-No future is created for it and nothing is written; a hook report that arrives later enables the integration and applies the kept target through the normal path (the plain driver's empty-line check, or the line-editing transaction), which does not detect text typed while the shell was still starting.
+No future is created for it and nothing is written; a hook report that arrives later enables the integration and applies the kept target through the normal path (the plain driver's empty-line check, or the line-editing transaction), unless user input was forwarded before that report (see below).
 Giving up or restarting the shell drops the kept target.
 A hook report that arrives later still enables the integration.
 A restart also discards the output held back for the previous shell, so a shell that exits quickly without a hook report leaves nothing of its output on screen; only the give-up keeps it visible.
@@ -333,6 +334,24 @@ A restart also discards the output held back for the previous shell, so a shell 
 A shell that exits within `_EARLY_EXIT_SECONDS` (2 s) without any hook report counts as a quick exit.
 After `_MAX_EARLY_EXITS` (3) quick exits in a row the shell is not restarted (`_give_up()`): its output and a message stay visible, the reader and run task are removed, `send()` is ignored, and `teardown()` reaps the child only if it has already exited when it checks (`WNOHANG`); a child that exits later is not reaped by it.
 Any hook report resets the count.
+
+### Input typed before the first hook report
+
+The terminal cannot tell what became of input sent to a shell that has not reported yet: the text may sit unentered on the first prompt line, or behind commands that were entered ahead of it.
+`_note_user_input` therefore sets `_startup_input` for every user path (keys, paste, `send()` such as file-name insertion, Enter from a pane) while the shell is held back or revealed without a report.
+Init code, `cd` writes, resizes and mouse reports do not set it.
+
+At the first report, and at every later one while the flag is set:
+
+- The line counts as occupied: `has_input()` is True, so Enter in a pane goes to the shell.
+- No automatic `cd` is written, for any driver, so the line-editing drivers do not stash and `cd` either.
+  The newest target is kept, and `set_terminal_directory` returns the last known directory at once.
+- `run_command()` treats the line as typed input: bash and zsh stash and restore it, a plain shell reports busy.
+
+An Enter (or any input containing a newline) forwarded after the first report clears the flag.
+The kept target is applied at the next precmd, also when the entered command changed the directory itself.
+Until that Enter the state stays, even if the early input already ended with Enter (for example an answer to a question in an rc file) or the line was cleared with Ctrl+U or Ctrl+C: panel changes are not followed, and one Enter, also on an empty line, resumes them.
+A restart of the shell clears the flag.
 
 ---
 
@@ -345,9 +364,10 @@ It uses two facts that Nova Navigator owns and needs nothing from the shell.
 ### Fact A: user bytes since precmd
 
 Every path into the shell goes through the widget: `on_key`, `_paste_text`, and `send()`.
-Each sets `_input_since_precmd`; every precmd clears it.
+Each sets `_input_since_precmd`; every precmd clears it, except while input typed before the first hook report may still be on the line (see [Input typed before the first hook report](#input-typed-before-the-first-hook-report)).
 Internal writes (kill, `cd`, yank, init code) never set it.
-If no user byte was sent, the line is empty, and this answer is certain.
+If no user byte was sent since the last precmd, the line is taken to be empty.
+This is wrong for input typed while a command was still running: that command's precmd clears the flag, so such input is not detected, for any driver.
 
 ### Fact B: the screen before the first user byte
 
@@ -452,7 +472,7 @@ Because the target is derived rather than passed, a delayed handler can never mo
 ### Startup
 
 `_start_backend()` enables draining and writes the init code.
-The first precmd ends draining and marks the shell as at a prompt; a target stored before that is applied then.
+The first precmd ends draining and marks the shell as at a prompt; a target stored before that is applied then, unless user input was sent before it (see [Input typed before the first hook report](#input-typed-before-the-first-hook-report)).
 This holds for a hook report that arrives after the startup timeout as well (see [Startup Bootstrap](#startup-bootstrap)).
 That first precmd does not post `PathChanged` (see [Precmd classification](#precmd-classification)).
 

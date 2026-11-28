@@ -364,6 +364,9 @@ class Terminal(ScrollView, can_focus=True):
         # True once any user-originated byte was forwarded to the shell since the
         # last precmd.  Internal writes (kill, cd, yank, init code) never set it.
         self._input_since_precmd: bool = False
+        # User input was forwarded before this shell's first hook report and has not been
+        # followed by a later Enter, so a prompt line may hold text nobody can see as typed.
+        self._startup_input: bool = False
         # (cursor row, cursor column, text of the cursor row) captured after every
         # stdout chunk until the first user byte, i.e. the fully drawn prompt.
         self._prompt_snapshot: tuple[int, int, str] | None = None
@@ -667,7 +670,13 @@ class Terminal(ScrollView, can_focus=True):
         prompt and the current ``owner`` is recorded as the command's owner.
         """
         self._input_since_precmd = True
-        if submits or "\r" in data or "\n" in data:
+        submitted = submits or "\r" in data or "\n" in data
+        # A started shell is either still held back (_startup_output) or revealed without a report.
+        if self._startup_output is not None or self._no_integration:
+            self._startup_input = True
+        elif submitted:
+            self._startup_input = False
+        if submitted:
             self._at_prompt = False
             self._command_owner = self.owner
 
@@ -687,13 +696,22 @@ class Terminal(ScrollView, can_focus=True):
         cursor = self._screen.cursor
         self._prompt_snapshot = (cursor.y, cursor.x, self._row_text(cursor.y))
 
+    def _holds_startup_input(self) -> bool:
+        """Return True if the shell reports prompts but input typed before its first report may still be on the line.
+
+        No automatic ``cd`` is written then, for any driver.  An Enter forwarded after the first
+        report ends this state.
+        """
+        return self._startup_input and self._shell_hooked
+
     def has_input(self) -> bool:
         """Return True if the shell line probably holds user input.
 
         No user byte since the last precmd means the line is empty; this is
         certain.  Otherwise the screen is compared with the snapshot frozen at
         the first user byte, which detects "typed, then deleted everything".
-        Without a snapshot the answer is conservatively True.
+        Without a snapshot the answer is conservatively True; this is also the
+        case after input sent before the first hook report (``_startup_input``).
         """
         if not self._input_since_precmd:
             return False
@@ -709,17 +727,21 @@ class Terminal(ScrollView, can_focus=True):
         Requests are coalesced: only the newest target is kept.  A terminal that
         has given up ignores the request.  Until the first hook report
         (``_no_integration``) nothing is written: the target is kept and the
-        first hook report applies it.  Otherwise the ``cd`` is sent now when the
-        shell is at a prompt and no transaction is active, or on the next precmd.
+        first hook report applies it.  While the line may hold input typed before
+        the first hook report (``_holds_startup_input``) the target is kept too,
+        and the precmd after the user's next Enter applies it.  Otherwise the
+        ``cd`` is sent now when the shell is at a prompt and no transaction is
+        active, or on the next precmd.
         Line-editing shells run the awaitable, input-preserving transaction (see
         ``_start_nav``); a plain shell gets its ``cd`` on an empty prompt
         (see ``_send_plain_cd``) and nobody waits for it.
         """
         if not self._started or self._gave_up:
             return
-        if self._no_integration:
-            # Without the hook the shell is never at a prompt, so nothing may be written yet.
-            # The newest target is kept; the first hook report applies it (see _handle_pre_cmd).
+        if self._no_integration or self._holds_startup_input():
+            # Without the hook the shell is never at a prompt, and input typed before the first report
+            # may still be on the line, so nothing may be written yet.  The newest target is kept; a
+            # later hook report applies it (see _apply_pending_target).  Nobody waits for it.
             self._nav_target = path
             return
         if not self._nav_busy and self._nav_target is None and path == self._cwd:
@@ -859,14 +881,19 @@ class Terminal(ScrollView, can_focus=True):
         self._resolve_nav_future(cwd)
 
     def _apply_pending_target(self, cwd: PurePath) -> None:
-        """Start a transaction for a target stored while the shell was busy."""
+        """Start a transaction for a target stored while the shell was busy.
+
+        While the line may hold startup input the target stays stored and waiting callers
+        are resolved with *cwd*.
+        """
         if self._nav_target is None:
             return
-        if cwd != self._nav_target:
-            self._start_nav()
-        else:
+        if cwd == self._nav_target:
             self._nav_target = None
-            self._resolve_nav_future(cwd)
+        elif not self._holds_startup_input():
+            self._start_nav()
+            return
+        self._resolve_nav_future(cwd)
 
     def _resolve_nav_future(self, cwd: PurePath) -> None:
         if self._nav_future is not None and not self._nav_future.done():
@@ -930,6 +957,7 @@ class Terminal(ScrollView, can_focus=True):
         self._at_prompt = False
         self._hook_repaired = False
         self._input_since_precmd = False
+        self._startup_input = False
         self._prompt_snapshot = None
         self._command_owner = None
         self._draining = False
@@ -1062,7 +1090,8 @@ class Terminal(ScrollView, can_focus=True):
         is_bootstrap_precmd = self._cwd is None
         self._cwd = cwd
         self._at_prompt = True
-        self._input_since_precmd = False
+        # Input typed before the first report counts as input on this prompt line too.
+        self._input_since_precmd = self._startup_input
         self._prompt_snapshot = None
         if self._nav_busy:
             self._cancel_watchdog()
@@ -1142,7 +1171,8 @@ class Terminal(ScrollView, can_focus=True):
         navigation is resolved with the last known CWD, or the requested path when none is known,
         not with a CWD reported by the shell, so no caller waits forever.
         The newest navigation target is kept: a hook report that arrives later still enables the
-        integration and applies it through the normal guarded path.
+        integration and applies it, but not onto a line that may hold input sent before that report
+        (see ``_holds_startup_input``).
         """
         if self._startup_output is None:
             return
