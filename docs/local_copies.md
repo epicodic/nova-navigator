@@ -100,7 +100,7 @@ With nothing unsynced, Nova Navigator quits immediately and removes its local-co
 A rebound quit key works with a dialog open only when the focused control and the dialog do not use it themselves.
 A text field keeps the characters typed into it, Space included, and its editing keys such as `Ctrl+X`.
 Buttons, tables, lists and menus keep the keys they act on, such as Enter, the arrow keys or the hotkey of a menu entry.
-The Key Bindings dialog keeps Space, Backspace and Delete in its table, and the dialog that captures a new key binding takes every key.
+The Key Bindings dialog keeps Space, Backspace and Delete in its table, and the dialog that captures a new key binding takes every key except Esc and Ctrl+Q.
 A rebound quit chord such as `Ctrl+X Ctrl+C` must be typed again from the start after the screen or the focus changed, or after one of its keys was used by the focused control.
 With the built-in editor or viewer open, `Ctrl+Q` first closes that screen and asks about its unsaved text; the quit prompt for the copies is asked by a later `Ctrl+Q`.
 While a quit is under way, a quit key is ignored, except that it still closes a built-in editor or viewer opened meanwhile, and except while the quit waits for a write-back.

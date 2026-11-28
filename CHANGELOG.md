@@ -158,6 +158,11 @@
 - The viewer has no default key for Wrap Mode.
 - With a dialog open, a rebound Quit key does nothing while the focused control or the dialog uses that key itself, for example a letter or `Ctrl+X` in a text field, Enter on a button, or an arrow key in a table.
   `Ctrl+Q` also still quits when Quit is rebound.
+- Pressing Ctrl+Q while the dialog that captures a new key binding is open (inside the Key Bindings dialog) can leave the application's process running with its screen gone.
+  Close that dialog with Esc first.
+  This also exists in earlier code.
+- With Quit rebound to a chord, a half-typed chord on the main screen survives a dialog opening and closing, so the second key alone then quits.
+- With Quit rebound to a printable key, typing that key in the filter or go-to-path field quits.
 - Rebinding the navigator's Quit does not change the editor's quit key; rebind "Editor: Quit" (`editor.quit`) in the Key Bindings dialog too.
 - F1 help does not list the editor's cursor movement, selection and other fixed text keys.
 
