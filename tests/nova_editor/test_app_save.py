@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import gc
 import os
 import re
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -241,6 +244,21 @@ async def test_ctrl_q_during_a_save_cancels_then_asks_and_quit_anyway_exits(tmp_
     assert path.read_text() == "a" * 100 + "\n"
 
 
+@contextmanager
+def heap_frozen() -> Iterator[None]:
+    """Keep the heap of the test process out of the garbage collections of a timed section.
+
+    A full collection of everything that collecting the test suite has left alive takes longer than a key press may be late.
+    The collector stays on, so what the timed section allocates itself is still collected, and timed.
+    """
+    gc.collect()
+    gc.freeze()
+    try:
+        yield
+    finally:
+        gc.unfreeze()
+
+
 @pytest.mark.wall_clock
 @pytest.mark.asyncio
 async def test_poll_runs_in_a_thread_and_does_not_delay_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -259,17 +277,18 @@ async def test_poll_runs_in_a_thread_and_does_not_delay_keys(tmp_path: Path, mon
     async with app.run_test() as pilot:
         await pilot.pause()
         assert app.editor is not None
-        baseline = 0.0
-        for _ in range(3):  # what a key press costs through the pilot while no poll blocks
+        with heap_frozen():
+            baseline = 0.0
+            for _ in range(3):  # what a key press costs through the pilot while no poll blocks
+                started = time.monotonic()
+                await pilot.press("left")
+                baseline = max(baseline, time.monotonic() - started)
+            monkeypatch.setattr(ExternalCheck, "run", slow_check)
+            await wait_until(pilot, entered.is_set)
             started = time.monotonic()
-            await pilot.press("left")
-            baseline = max(baseline, time.monotonic() - started)
-        monkeypatch.setattr(ExternalCheck, "run", slow_check)
-        await wait_until(pilot, entered.is_set)
-        started = time.monotonic()
-        await pilot.press("x")
-        elapsed = time.monotonic() - started
-        release.set()
+            await pilot.press("x")
+            elapsed = time.monotonic() - started
+            release.set()
         assert app.editor.text == "xone\n"
         assert elapsed - baseline < 0.05, (elapsed, baseline)
     assert threads
