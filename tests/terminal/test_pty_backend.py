@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import time
 from pathlib import Path
 
@@ -381,5 +382,15 @@ def test_teardown_twice_is_safe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     _isolate_shell_env(tmp_path, monkeypatch)
     backend = LocalPtyBackend()
     backend.open("/bin/sh", rows=24, cols=80)
+    pid = backend._pid
+    os.kill(pid, signal.SIGKILL)
+    # Wait for the exit without reaping it, so the first teardown() is the one that reaps the child.
+    os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
     backend.teardown()
+    assert backend._pid == -1
+
+    signals_sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(os, "kill", lambda target, sig: signals_sent.append((target, sig)))
     backend.teardown()
+    backend.resume()
+    assert signals_sent == []
