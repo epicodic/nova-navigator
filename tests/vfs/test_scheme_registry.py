@@ -83,8 +83,8 @@ async def test_vfspath_from_uri_azure_scheme() -> None:
     assert AZURE_PLUGIN.connector is not None
     SCHEME_REGISTRY.register_scheme("azure", AZURE_PLUGIN.connector)
     with (
-        patch("nova_navigator.vfs.filesystems.azure.ContainerClient"),
-        patch("nova_navigator.vfs.filesystems.azure.DefaultAzureCredential"),
+        patch("nova_navigator.vfs.filesystems._azure_sdk.ContainerClient"),
+        patch("nova_navigator.vfs.filesystems._azure_sdk.DefaultAzureCredential"),
     ):
         vpath = await vfspath_from_uri("azure://myaccount.blob.core.windows.net/mycontainer/folder/file.txt")
     assert vpath is not None
@@ -101,8 +101,8 @@ async def test_vfspath_from_uri_azure_root() -> None:
     assert AZURE_PLUGIN.connector is not None
     SCHEME_REGISTRY.register_scheme("azure", AZURE_PLUGIN.connector)
     with (
-        patch("nova_navigator.vfs.filesystems.azure.ContainerClient"),
-        patch("nova_navigator.vfs.filesystems.azure.DefaultAzureCredential"),
+        patch("nova_navigator.vfs.filesystems._azure_sdk.ContainerClient"),
+        patch("nova_navigator.vfs.filesystems._azure_sdk.DefaultAzureCredential"),
     ):
         vpath = await vfspath_from_uri("azure://myaccount.blob.core.windows.net/mycontainer/")
     assert vpath is not None

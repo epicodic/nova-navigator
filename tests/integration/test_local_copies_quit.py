@@ -15,18 +15,34 @@ exactly what the Ctrl+Q binding, the "Quit" menu item, and any other action look
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
+import threading
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 from textual import widgets
+from textual.pilot import Pilot
 
+from nova_editor.screen import EditorScreen
+from nova_navigator import nova_navigator as nova_navigator_module
+from nova_navigator.config import loader
+from nova_navigator.dialogs import InputNameDialog, WriteBackRunningDialog
 from nova_navigator.local_copies import CopyEntry, CopyStatus, LocalCopyManager
+from nova_navigator.nova_navigator import NovaNavigator
 from nova_navigator.scheduler import Job
+from nova_navigator.usermenu import MenuEntry, MenuView
+from nova_navigator.usermenu.popup import UserMenuPopup
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
-from nova_navigator.vfs.local_copy import Baseline, LocalCopy, SourceFingerprint
+from nova_navigator.vfs.local_copy import Baseline, LocalCopy, ProgressCallback, SourceFingerprint
 from nova_navigator.vfs.vpath import VPath
-from tests.integration.conftest import AppCtx
+from nova_widgets import MessageBox
+from nova_widgets.keybindings_dialog import KeybindingsDialog, KeyCaptureDialog
+from tests._utils.local_copy_helpers import SchemeFs, overwrite
+from tests.integration.conftest import AppCtx, poll_until
 
 _ROOT = Path(tempfile.gettempdir()) / "nn-local-copies-quit-test"
 
@@ -144,3 +160,878 @@ async def test_quit_prompt_sync_failure_keeps_app_running(app_ctx: AppCtx) -> No
     assert fake.synced == [pending]
     assert app_ctx.app.is_running
     assert fake.shutdown_calls == []
+
+
+async def _press_all(app_ctx: AppCtx, keys: list[str]) -> None:
+    for key in keys:
+        await app_ctx.pilot.press(key)
+        await app_ctx.pilot.pause()
+
+
+def _quit_prompts(app: NovaNavigator) -> list[MessageBox]:
+    return [screen for screen in app.screen_stack if isinstance(screen, MessageBox)]
+
+
+def _assert_asking(app: NovaNavigator, fake: _FakeLocalCopyManager) -> None:
+    assert app.is_running
+    assert fake.shutdown_calls == []
+    assert len(_quit_prompts(app)) == 1
+    assert len(app.screen.query("#IGNORE")) == 1
+
+
+_STATES = {
+    "settings dialog": ["ctrl+f1"],
+    "local copies dialog": ["ctrl+e"],
+    "help": ["f1"],
+    "new directory dialog": ["f7"],
+    "quit prompt itself": ["ctrl+q"],
+    "pending ctrl+s": ["ctrl+s"],
+    "pending ctrl+t": ["ctrl+t"],
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("keys", _STATES.values(), ids=_STATES.keys())
+async def test_ctrl_q_asks_in_every_state(app_ctx: AppCtx, keys: list[str]) -> None:
+    fake = _FakeLocalCopyManager(pending=[_entry()])
+    app_ctx.app.local_copies = fake
+    await _press_all(app_ctx, keys)
+
+    await _press_all(app_ctx, ["ctrl+q"])
+
+    _assert_asking(app_ctx.app, fake)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("binding", ["ctrl+k", "ctrl+x ctrl+c"])
+@pytest.mark.parametrize("keys", [["ctrl+q"], ["ctrl+f1", "ctrl+q"]], ids=["panel", "dialog"])
+async def test_ctrl_q_asks_with_quit_rebound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, binding: str, keys: list[str]) -> None:
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "keybindings.toml").write_text(f'[bindings]\n"app.quit" = "{binding}"\n')
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", config)
+    app = NovaNavigator(config_dir=config)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        fake = _FakeLocalCopyManager(pending=[_entry()])
+        app.local_copies = fake
+
+        for key in keys:
+            await pilot.press(key)
+            await pilot.pause()
+
+        _assert_asking(app, fake)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_cancel_over_a_dialog_returns_to_that_dialog(app_ctx: AppCtx) -> None:
+    fake = _FakeLocalCopyManager(pending=[_entry()])
+    app_ctx.app.local_copies = fake
+    await _press_all(app_ctx, ["ctrl+f1"])
+    dialog = app_ctx.app.screen
+
+    await _press_all(app_ctx, ["ctrl+q", "escape"])
+
+    assert app_ctx.app.is_running
+    assert app_ctx.app.screen is dialog
+    assert fake.shutdown_calls == []
+
+    await _press_all(app_ctx, ["ctrl+q"])
+    await app_ctx.pilot.click("#IGNORE")
+    await app_ctx.pilot.pause()
+
+    assert not app_ctx.app.is_running
+    assert fake.shutdown_calls == [False]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ctrl_q_with_a_dialog_open_and_nothing_unsynced_exits(app_ctx: AppCtx) -> None:
+    fake = _FakeLocalCopyManager(pending=[])
+    app_ctx.app.local_copies = fake
+    await _press_all(app_ctx, ["ctrl+f1"])
+
+    await app_ctx.pilot.press("ctrl+q")
+    await poll_until(app_ctx.pilot, lambda: not app_ctx.app.is_running)
+
+    assert not app_ctx.app.is_running
+    assert fake.shutdown_calls == [True]
+
+
+class _BlockedSync(_FakeLocalCopyManager):
+    """A fake whose sync waits for ``gate`` and records a cancellation."""
+
+    def __init__(self, pending: list[CopyEntry]) -> None:
+        super().__init__(pending)
+        self.gate = asyncio.Event()
+        self.cancelled = False
+
+    async def sync_now(self, entry: CopyEntry) -> None:
+        try:
+            await self.gate.wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        await super().sync_now(entry)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ctrl_q_during_sync_and_quit_does_not_cancel_the_sync(app_ctx: AppCtx) -> None:
+    fake = _BlockedSync(pending=[_entry()])
+    app_ctx.app.local_copies = fake
+    await _press_all(app_ctx, ["ctrl+q"])
+    await app_ctx.pilot.click("#SAVE")
+    await app_ctx.pilot.pause()
+
+    await _press_all(app_ctx, ["ctrl+q"])
+
+    assert app_ctx.app.is_running
+    assert not fake.cancelled
+    assert _quit_prompts(app_ctx.app) == []
+
+    fake.gate.set()
+    await poll_until(app_ctx.pilot, lambda: not app_ctx.app.is_running)
+
+    assert fake.shutdown_calls == [True]
+
+
+# ---------------------------------------------------------------------------
+# A write-back that does not return: the quit key offers to quit and keep files
+# ---------------------------------------------------------------------------
+
+
+class _HungWrite:
+    """Replace a copy's write_back() so it does not return before the test finishes it."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, copy: LocalCopy) -> None:
+        self.entered = threading.Event()
+        self.calls = 0
+        self._done = threading.Event()
+        self._succeed = False
+        original = copy.write_back
+
+        def write_back(progress: ProgressCallback | None = None) -> None:
+            self.calls += 1
+            self.entered.set()
+            self._done.wait(timeout=60)  # a broken test must not keep the worker thread for ever
+            if not self._succeed:
+                raise OSError("connection lost")
+            original(progress)
+
+        monkeypatch.setattr(copy, "write_back", write_back)
+
+    def finish(self, *, succeed: bool) -> None:
+        if not self._done.is_set():
+            self._succeed = succeed
+            self._done.set()
+
+
+@dataclass
+class _Hung:
+    manager: LocalCopyManager
+    fs: SchemeFs
+    entry: CopyEntry
+    write: _HungWrite
+
+
+@pytest.fixture
+def _no_orphan_scan(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the startup scan away from the real local-copy directories; request this before the app starts."""
+    monkeypatch.setattr(nova_navigator_module, "find_orphans", list)
+
+
+async def _open_copy(app: NovaNavigator, pilot: Pilot[None], root: Path) -> tuple[LocalCopyManager, SchemeFs, CopyEntry]:
+    manager = LocalCopyManager(root, app.start_job, poll_interval=0.05, settle_time=0.1)
+    app.local_copies = manager
+    fs = SchemeFs({"/d/report.txt": b"old"})
+    worker = app.run_worker(manager.open(fs.path("/d/report.txt")))
+    await poll_until(pilot, lambda: worker.is_finished)
+    entry = worker.result
+    assert entry is not None
+    return manager, fs, entry
+
+
+@pytest_asyncio.fixture
+async def hung(_no_orphan_scan: None, app_ctx: AppCtx, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_Hung]:
+    """An edited local copy whose automatic write-back is running and does not return."""
+    manager, fs, entry = await _open_copy(app_ctx.app, app_ctx.pilot, tmp_path / "copies")
+    write = _HungWrite(monkeypatch, entry.copy)
+    entry.copy.path.write_bytes(b"edited")
+    await poll_until(app_ctx.pilot, write.entered.is_set)
+    assert write.entered.is_set()
+    yield _Hung(manager, fs, entry, write)
+    write.finish(succeed=False)
+    await poll_until(app_ctx.pilot, lambda: not manager.writing())  # before the app is torn down
+
+
+def _write_back_dialogs(app: NovaNavigator) -> list[WriteBackRunningDialog]:
+    return [screen for screen in app.screen_stack if isinstance(screen, WriteBackRunningDialog)]
+
+
+async def _quit_and_wait_for_write(pilot: Pilot[None], choice: str, key: str = "ctrl+q") -> None:
+    """Press the quit key and answer the quit prompt, which leaves the quit waiting for the write-back."""
+    app = pilot.app
+    await pilot.press(*key.split())
+    await poll_until(pilot, lambda: bool(app.screen.query("#IGNORE")))
+    await pilot.click(f"#{choice}")
+    await pilot.pause()
+
+
+async def _open_write_back_dialog(pilot: Pilot[None], key: str = "ctrl+q") -> WriteBackRunningDialog:
+    await pilot.press(*key.split())
+    await poll_until(pilot, lambda: isinstance(pilot.app.screen, WriteBackRunningDialog))
+    dialog = pilot.app.screen
+    assert isinstance(dialog, WriteBackRunningDialog)
+    return dialog
+
+
+_CHOICES = {"sync and quit": "SAVE", "quit and keep files": "IGNORE"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("choice", _CHOICES.values(), ids=_CHOICES.keys())
+async def test_quit_key_during_a_hung_write_back_asks_what_to_do(app_ctx: AppCtx, hung: _Hung, choice: str) -> None:
+    await _quit_and_wait_for_write(app_ctx.pilot, choice)
+    assert app_ctx.app.is_running
+
+    dialog = await _open_write_back_dialog(app_ctx.pilot)
+
+    text = "\n".join(str(label.content) for label in dialog.query(widgets.Label))
+    assert "report.txt" in text
+    assert str(hung.manager.root) in text
+    focused = app_ctx.app.focused
+    assert focused is not None
+    assert focused.id == "CANCEL"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("answer", ["click", "escape", "enter"])
+@pytest.mark.parametrize("choice", _CHOICES.values(), ids=_CHOICES.keys())
+async def test_keep_waiting_leaves_the_app_and_the_write_running(app_ctx: AppCtx, hung: _Hung, choice: str, answer: str) -> None:
+    await _quit_and_wait_for_write(app_ctx.pilot, choice)
+    await _open_write_back_dialog(app_ctx.pilot)
+
+    if answer == "click":
+        await app_ctx.pilot.click("#CANCEL")
+    else:
+        await app_ctx.pilot.press(answer)
+    await app_ctx.pilot.pause()
+
+    assert app_ctx.app.is_running
+    assert _write_back_dialogs(app_ctx.app) == []
+    assert hung.manager.writing() == [hung.entry]
+    assert hung.write.calls == 1
+    await _open_write_back_dialog(app_ctx.pilot)  # the next quit key asks again
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.usefixtures("hung")
+async def test_enter_without_a_focused_button_does_not_quit(app_ctx: AppCtx) -> None:
+    await _quit_and_wait_for_write(app_ctx.pilot, "IGNORE")
+    dialog = await _open_write_back_dialog(app_ctx.pilot)
+    dialog.set_focus(None)
+
+    await app_ctx.pilot.press("enter")
+    await app_ctx.pilot.pause()
+
+    assert app_ctx.app.is_running
+    assert app_ctx.app.screen is dialog
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("choice", _CHOICES.values(), ids=_CHOICES.keys())
+async def test_quit_and_keep_files_ends_the_app_and_keeps_the_copy(app_ctx: AppCtx, hung: _Hung, choice: str) -> None:
+    await _quit_and_wait_for_write(app_ctx.pilot, choice)
+    await _open_write_back_dialog(app_ctx.pilot)
+
+    await app_ctx.pilot.click("#IGNORE")
+    await poll_until(app_ctx.pilot, lambda: not app_ctx.app.is_running)
+
+    assert not app_ctx.app.is_running
+    assert hung.entry.copy.path.read_bytes() == b"edited"
+    hung.write.finish(succeed=True)  # a write that gets through during teardown removes nothing either
+    await poll_until(app_ctx.pilot, lambda: hung.fs.read(hung.fs.path("/d/report.txt")).read(10) == b"edited")
+    await hung.manager.shutdown()
+    assert hung.entry.copy.path.read_bytes() == b"edited"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.usefixtures("hung")
+async def test_repeated_quit_keys_open_one_dialog(app_ctx: AppCtx) -> None:
+    await _quit_and_wait_for_write(app_ctx.pilot, "IGNORE")
+    dialog = await _open_write_back_dialog(app_ctx.pilot)
+
+    await _press_all(app_ctx, ["ctrl+q", "ctrl+q"])
+
+    assert _write_back_dialogs(app_ctx.app) == [dialog]
+    assert app_ctx.app.screen is dialog
+    assert app_ctx.app.is_running
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("choice", _CHOICES.values(), ids=_CHOICES.keys())
+async def test_a_write_that_finishes_while_asking_quits_as_chosen(app_ctx: AppCtx, hung: _Hung, choice: str) -> None:
+    await _quit_and_wait_for_write(app_ctx.pilot, choice)
+    await _open_write_back_dialog(app_ctx.pilot)
+
+    hung.write.finish(succeed=True)
+    await poll_until(app_ctx.pilot, lambda: not app_ctx.app.is_running)
+
+    assert not app_ctx.app.is_running
+    assert hung.entry.copy.path.exists() == (choice == "IGNORE")
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_write_that_fails_while_asking_closes_the_dialog(app_ctx: AppCtx, hung: _Hung) -> None:
+    await _quit_and_wait_for_write(app_ctx.pilot, "SAVE")
+    await _open_write_back_dialog(app_ctx.pilot)
+
+    hung.write.finish(succeed=False)
+    await poll_until(app_ctx.pilot, lambda: not _write_back_dialogs(app_ctx.app))
+
+    assert _write_back_dialogs(app_ctx.app) == []
+    assert app_ctx.app.is_running
+    assert hung.entry.copy.path.read_bytes() == b"edited"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.usefixtures("_no_orphan_scan")
+@pytest.mark.parametrize("binding", ["ctrl+k", "ctrl+x ctrl+c"])
+async def test_rebound_quit_key_asks_during_a_hung_write_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, binding: str) -> None:
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "keybindings.toml").write_text(f'[bindings]\n"app.quit" = "{binding}"\n')
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", config)
+    app = NovaNavigator(config_dir=config)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        _manager, _fs, entry = await _open_copy(app, pilot, tmp_path / "copies")
+        write = _HungWrite(monkeypatch, entry.copy)
+        try:
+            entry.copy.path.write_bytes(b"edited")
+            await poll_until(pilot, write.entered.is_set)
+            await _quit_and_wait_for_write(pilot, "IGNORE", binding)
+
+            await _open_write_back_dialog(pilot, binding)
+
+            assert app.is_running
+        finally:
+            write.finish(succeed=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.usefixtures("_no_orphan_scan")
+async def test_quit_key_asks_during_a_hung_reopen_overwrite(app_ctx: AppCtx, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager, fs, entry = await _open_copy(app_ctx.app, app_ctx.pilot, tmp_path / "copies")
+    await manager.close(entry)
+    entry.copy.path.write_bytes(b"local edit")
+    overwrite(fs, "/d/report.txt", b"server edit")
+    write = _HungWrite(monkeypatch, entry.copy)
+    try:
+        app_ctx.app.run_worker(manager.open(fs.path("/d/report.txt")))
+        await poll_until(app_ctx.pilot, lambda: bool(app_ctx.app.screen.query("#OVERWRITE")))
+        await app_ctx.pilot.click("#OVERWRITE")
+        await poll_until(app_ctx.pilot, write.entered.is_set)
+        await _quit_and_wait_for_write(app_ctx.pilot, "IGNORE")
+        assert app_ctx.app.is_running
+
+        await _open_write_back_dialog(app_ctx.pilot)
+        await app_ctx.pilot.click("#IGNORE")
+        await poll_until(app_ctx.pilot, lambda: not app_ctx.app.is_running)
+
+        assert not app_ctx.app.is_running
+        assert entry.copy.path.read_bytes() == b"local edit"
+    finally:
+        write.finish(succeed=False)
+
+
+class _BlockedShutdown(_FakeLocalCopyManager):
+    """A fake whose shutdown waits for ``gate`` although nothing is being written."""
+
+    def __init__(self) -> None:
+        super().__init__(pending=[])
+        self.gate = asyncio.Event()
+
+    async def shutdown(self, remove_files: bool = True) -> None:
+        await self.gate.wait()
+        await super().shutdown(remove_files)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_second_quit_key_without_a_write_back_asks_nothing(app_ctx: AppCtx) -> None:
+    fake = _BlockedShutdown()
+    app_ctx.app.local_copies = fake
+
+    await _press_all(app_ctx, ["ctrl+q", "ctrl+q"])
+
+    assert _write_back_dialogs(app_ctx.app) == []
+    fake.gate.set()
+    await poll_until(app_ctx.pilot, lambda: not app_ctx.app.is_running)
+    assert fake.shutdown_calls == [True]
+
+
+# ---------------------------------------------------------------------------
+# The choice "Quit and keep files" is not lost between two write-backs
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_the_choice_made_between_two_write_backs_is_honoured(app_ctx: AppCtx, hung: _Hung, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager, fs = hung.manager, hung.fs
+    overwrite(fs, "/d/second.txt", b"old")
+    worker = app_ctx.app.run_worker(manager.open(fs.path("/d/second.txt")))
+    await poll_until(app_ctx.pilot, lambda: worker.is_finished)
+    second = worker.result
+    assert second is not None
+    second.copy.path.write_bytes(b"second edit")
+    await poll_until(app_ctx.pilot, lambda: fs.read(fs.path("/d/second.txt")).read(20) == b"second edit")
+    second.status = CopyStatus.MODIFIED  # unsynced, so "Sync and quit" syncs it after the first one
+    between = asyncio.Event()
+    resume = asyncio.Event()
+    sync_now = manager.sync_now
+
+    async def _sync_then_pause(entry: CopyEntry) -> None:
+        await sync_now(entry)
+        if entry is hung.entry:
+            between.set()
+            await resume.wait()  # the first write is over, the quit has not reached the second one
+
+    monkeypatch.setattr(manager, "sync_now", _sync_then_pause)
+    await _quit_and_wait_for_write(app_ctx.pilot, "SAVE")
+    await _open_write_back_dialog(app_ctx.pilot)
+    hung.write.finish(succeed=True)
+    await poll_until(app_ctx.pilot, between.is_set)
+    assert manager.writing() == []
+
+    await app_ctx.pilot.click("#IGNORE")
+    await poll_until(app_ctx.pilot, lambda: not app_ctx.app.is_running)
+
+    assert not app_ctx.app.is_running
+    assert second.copy.path.read_bytes() == b"second edit"
+    assert hung.entry.copy.path.exists()
+
+
+class _FinishedWriting(_BlockedShutdown):
+    """A fake that reports a running write until ``entries`` is emptied, and whose shutdown still waits then."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entries_written = [_entry()]
+        self.abandoned = False
+
+    def writing(self) -> list[CopyEntry]:
+        return list(self.entries_written)
+
+    def abandon(self) -> None:
+        self.abandoned = True
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_with_every_write_finished_the_app_quits_as_chosen_before(app_ctx: AppCtx) -> None:
+    fake = _FinishedWriting()
+    app_ctx.app.local_copies = fake
+    await _press_all(app_ctx, ["ctrl+q"])
+    await _open_write_back_dialog(app_ctx.pilot)
+    fake.entries_written.clear()
+
+    await app_ctx.pilot.click("#IGNORE")
+    await app_ctx.pilot.pause()
+
+    assert app_ctx.app.is_running
+    assert not fake.abandoned
+    fake.gate.set()
+    await poll_until(app_ctx.pilot, lambda: not app_ctx.app.is_running)
+    assert fake.shutdown_calls == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_write_that_fails_while_the_dialog_is_covered_closes_it_later(app_ctx: AppCtx, hung: _Hung) -> None:
+    await _quit_and_wait_for_write(app_ctx.pilot, "SAVE")
+    dialog = await _open_write_back_dialog(app_ctx.pilot)
+    cover = MessageBox("on top", title="Cover")
+    app_ctx.app.push_screen(cover)
+    await app_ctx.pilot.pause()
+
+    hung.write.finish(succeed=False)
+    await poll_until(app_ctx.pilot, lambda: not any(w.group == "quit" and not w.is_finished for w in app_ctx.app.workers))
+    assert _write_back_dialogs(app_ctx.app) == [dialog]
+    cover.dismiss(None)
+    await poll_until(app_ctx.pilot, lambda: not _write_back_dialogs(app_ctx.app))
+
+    assert _write_back_dialogs(app_ctx.app) == []
+    assert app_ctx.app.is_running
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_after_a_forced_quit_the_sync_and_quit_does_nothing_more(app_ctx: AppCtx, hung: _Hung, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The write fails after the user chose to quit, while the app is still going down."""
+    exits: list[bool] = []
+    notices: list[str] = []
+    monkeypatch.setattr(app_ctx.app, "exit", lambda *_args, **_kwargs: exits.append(True))
+    monkeypatch.setattr(app_ctx.app, "notify", lambda message, **_kwargs: notices.append(message))
+    await _quit_and_wait_for_write(app_ctx.pilot, "SAVE")
+    await _open_write_back_dialog(app_ctx.pilot)
+    await app_ctx.pilot.click("#IGNORE")
+    await poll_until(app_ctx.pilot, lambda: bool(exits))
+
+    hung.write.finish(succeed=False)
+    await poll_until(app_ctx.pilot, lambda: not any(w.group == "quit" and not w.is_finished for w in app_ctx.app.workers))
+
+    assert notices == []
+    assert exits == [True]
+
+
+# ---------------------------------------------------------------------------
+# A rebound quit key with a dialog open
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def rebound_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> AsyncIterator[tuple[NovaNavigator, Pilot[None]]]:
+    """The application with Quit rebound to the keys given as the fixture's parameter."""
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "keybindings.toml").write_text(f'[bindings]\n"app.quit" = "{request.param}"\n')
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", config)
+    app = NovaNavigator(config_dir=config)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        yield app, pilot
+
+
+_DIALOGS = {
+    "settings dialog": ["ctrl+f1"],
+    "local copies dialog": ["ctrl+e"],
+    "help": ["f1"],
+    "new directory dialog": ["f7"],
+    "quit prompt itself": ["f10"],
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["f10"], indirect=True)
+@pytest.mark.parametrize("keys", _DIALOGS.values(), ids=_DIALOGS.keys())
+async def test_rebound_quit_key_asks_with_a_dialog_open(rebound_app: tuple[NovaNavigator, Pilot[None]], keys: list[str]) -> None:
+    app, pilot = rebound_app
+    fake = _FakeLocalCopyManager(pending=[_entry()])
+    app.local_copies = fake
+
+    for key in [*keys, "f10"]:
+        await pilot.press(key)
+        await pilot.pause()
+
+    _assert_asking(app, fake)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["ctrl+x ctrl+c"], indirect=True)
+async def test_rebound_quit_chord_asks_with_a_dialog_open(rebound_app: tuple[NovaNavigator, Pilot[None]]) -> None:
+    app, pilot = rebound_app
+    fake = _FakeLocalCopyManager(pending=[_entry()])
+    app.local_copies = fake
+
+    for key in ["ctrl+e", "ctrl+x", "ctrl+c"]:
+        await pilot.press(key)
+        await pilot.pause()
+
+    _assert_asking(app, fake)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["f10"], indirect=True)
+async def test_the_key_capture_dialog_still_receives_the_quit_key(rebound_app: tuple[NovaNavigator, Pilot[None]]) -> None:
+    app, pilot = rebound_app
+    fake = _FakeLocalCopyManager(pending=[_entry()])
+    app.local_copies = fake
+    capture = KeyCaptureDialog(app._main_screen.ACTIONS[0])
+    app.push_screen(capture)
+    await pilot.pause()
+
+    await pilot.press("f10")
+    await pilot.pause()
+
+    assert app.screen is capture
+    assert capture.value is not None
+    assert _quit_prompts(app) == []
+
+
+# ---------------------------------------------------------------------------
+# A rebound quit key that the focused control uses itself
+# ---------------------------------------------------------------------------
+
+
+async def _name_dialog(app: NovaNavigator, pilot: Pilot[None], value: str = "") -> widgets.Input:
+    """Open a dialog with a focused text field."""
+    dialog = InputNameDialog("Name", "Name:", value)
+    app.push_screen(dialog)
+    await pilot.pause()
+    field = dialog.query_one(widgets.Input)
+    assert app.focused is field
+    return field
+
+
+def _pending_copy(app: NovaNavigator) -> _FakeLocalCopyManager:
+    fake = _FakeLocalCopyManager(pending=[_entry()])
+    app.local_copies = fake
+    return fake
+
+
+async def _press(pilot: Pilot[None], *keys: str) -> None:
+    for key in keys:
+        await pilot.press(key)
+        await pilot.pause()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize(("rebound_app", "typed"), [("q", "q"), ("space", " ")], ids=["letter", "space"], indirect=["rebound_app"])
+async def test_a_printable_quit_key_is_typed_into_a_text_field(rebound_app: tuple[NovaNavigator, Pilot[None]], typed: str) -> None:
+    app, pilot = rebound_app
+    _pending_copy(app)
+    field = await _name_dialog(app, pilot)
+
+    await _press(pilot, "q" if typed == "q" else "space")
+
+    assert field.value == typed
+    assert _quit_prompts(app) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["q"], indirect=True)
+async def test_a_printable_quit_key_asks_when_a_button_has_the_focus(rebound_app: tuple[NovaNavigator, Pilot[None]]) -> None:
+    app, pilot = rebound_app
+    fake = _pending_copy(app)
+    await _name_dialog(app, pilot)
+    app.screen.query_one("#CANCEL", widgets.Button).focus()
+    await pilot.pause()
+
+    await _press(pilot, "q")
+
+    _assert_asking(app, fake)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["ctrl+x ctrl+c"], indirect=True)
+async def test_a_text_field_keeps_a_key_that_starts_the_quit_chord(rebound_app: tuple[NovaNavigator, Pilot[None]]) -> None:
+    app, pilot = rebound_app
+    _pending_copy(app)
+    field = await _name_dialog(app, pilot, "text")
+    field.select_all()
+
+    await _press(pilot, "ctrl+x")
+    assert field.value == ""
+    await _press(pilot, "ctrl+c")
+
+    assert _quit_prompts(app) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["space"], indirect=True)
+async def test_a_key_the_key_bindings_dialog_handles_stays_with_it(rebound_app: tuple[NovaNavigator, Pilot[None]]) -> None:
+    app, pilot = rebound_app
+    _pending_copy(app)
+    app._main_screen.action_keybindings()
+    await poll_until(pilot, lambda: isinstance(app.screen, KeybindingsDialog))
+    app.screen.query_one(widgets.DataTable).focus()
+    await pilot.pause()
+
+    await _press(pilot, "space")
+
+    assert isinstance(app.screen, KeyCaptureDialog)
+    assert _quit_prompts(app) == []
+    await _press(pilot, "escape", "escape")  # the capture dialog holds up the table dialog until it is closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["down"], indirect=True)
+async def test_a_key_the_focused_table_binds_stays_with_it(rebound_app: tuple[NovaNavigator, Pilot[None]]) -> None:
+    app, pilot = rebound_app
+    _pending_copy(app)
+    app._main_screen.action_keybindings()
+    await poll_until(pilot, lambda: isinstance(app.screen, KeybindingsDialog))
+    table = app.screen.query_one(widgets.DataTable)
+    table.focus()
+    await pilot.pause()
+
+    await _press(pilot, "down")
+
+    assert table.cursor_row == 1
+    assert _quit_prompts(app) == []
+    await _press(pilot, "escape")
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["enter"], indirect=True)
+async def test_a_key_the_dialog_binds_stays_with_it(rebound_app: tuple[NovaNavigator, Pilot[None]]) -> None:
+    app, pilot = rebound_app
+    _pending_copy(app)
+    await _name_dialog(app, pilot, "name")
+    app.screen.query_one("#CANCEL", widgets.Button).focus()
+    await pilot.pause()
+
+    await _press(pilot, "enter")
+
+    assert not isinstance(app.screen, InputNameDialog)
+    assert _quit_prompts(app) == []
+
+
+def _menu_view(key: str) -> MenuView:
+    return MenuView(rows=(MenuEntry(id="one", label="One", run="true", key=key),), default_index=0, names={})
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["q"], indirect=True)
+@pytest.mark.parametrize("hotkey", ["q", "z"], ids=["entry hotkey", "other hotkey"])
+async def test_a_menu_screen_keeps_its_own_hotkeys(rebound_app: tuple[NovaNavigator, Pilot[None]], hotkey: str) -> None:
+    app, pilot = rebound_app
+    fake = _pending_copy(app)
+    worker = app.run_worker(UserMenuPopup(_menu_view(hotkey)).exec())
+    await poll_until(pilot, lambda: isinstance(app.focused, UserMenuPopup))
+
+    await _press(pilot, "q")
+
+    if hotkey == "q":
+        await poll_until(pilot, lambda: worker.is_finished)
+        assert worker.result is not None
+        assert _quit_prompts(app) == []
+    else:
+        _assert_asking(app, fake)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["q"], indirect=True)
+async def test_a_text_field_of_a_dialog_above_the_editor_keeps_the_quit_key(rebound_app: tuple[NovaNavigator, Pilot[None]], tmp_path: Path) -> None:
+    app, pilot = rebound_app
+    file = tmp_path / "file.txt"
+    file.write_text("text")
+    await app.open_editor(VPath(file, LocalFilesystem.singleton()))
+    await poll_until(pilot, lambda: isinstance(app.screen, EditorScreen))
+    editor = app.screen
+    field = await _name_dialog(app, pilot)
+
+    await _press(pilot, "q")
+
+    assert field.value == "q"
+    assert editor in app.screen_stack
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["f10"], indirect=True)
+async def test_the_default_quit_key_still_asks_over_a_dialog_when_quit_is_rebound(rebound_app: tuple[NovaNavigator, Pilot[None]]) -> None:
+    app, pilot = rebound_app
+    fake = _pending_copy(app)
+    await _name_dialog(app, pilot)
+
+    await _press(pilot, "ctrl+q")
+
+    _assert_asking(app, fake)
+
+
+# ---------------------------------------------------------------------------
+# A half-typed quit chord ends
+# ---------------------------------------------------------------------------
+
+_CHORD = "f9 f10"
+
+
+async def _focus_away_and_back(app: NovaNavigator, pilot: Pilot[None]) -> None:
+    field = app.screen.query_one(widgets.Input)
+    app.screen.query_one("#CANCEL", widgets.Button).focus()
+    await pilot.pause()
+    field.focus()
+    await pilot.pause()
+
+
+async def _cover_and_uncover(app: NovaNavigator, pilot: Pilot[None]) -> None:
+    cover = InputNameDialog("Cover", "Cover:")
+    app.push_screen(cover)
+    await pilot.pause()
+    cover.dismiss(None)
+    await pilot.pause()
+
+
+async def _another_dialog(app: NovaNavigator, pilot: Pilot[None]) -> None:
+    app.screen.dismiss(None)
+    await pilot.pause()
+    await _name_dialog(app, pilot)
+
+
+async def _key_on_the_main_screen(app: NovaNavigator, pilot: Pilot[None]) -> None:
+    dialog = app.screen
+    dialog.dismiss(None)
+    await pilot.pause()
+    await _press(pilot, "down")
+    app.push_screen(InputNameDialog("Name", "Name:"))
+    await pilot.pause()
+
+
+_INTERRUPTIONS = {
+    "the focus changes": _focus_away_and_back,
+    "a screen comes and goes": _cover_and_uncover,
+    "another dialog": _another_dialog,
+    "a key on the main screen": _key_on_the_main_screen,
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", [_CHORD], indirect=True)
+@pytest.mark.parametrize("interrupt", _INTERRUPTIONS.values(), ids=_INTERRUPTIONS.keys())
+async def test_a_half_typed_quit_chord_ends(rebound_app: tuple[NovaNavigator, Pilot[None]], interrupt: Callable[[NovaNavigator, Pilot[None]], Awaitable[None]]) -> None:
+    app, pilot = rebound_app
+    fake = _pending_copy(app)
+    await _name_dialog(app, pilot)
+    await _press(pilot, "f9")
+
+    await interrupt(app, pilot)
+    await _press(pilot, "f10")
+
+    assert _quit_prompts(app) == []
+    await _press(pilot, "f9", "f10")  # the whole chord still works
+    _assert_asking(app, fake)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["f9 q"], indirect=True)
+async def test_a_key_the_text_field_takes_ends_a_half_typed_quit_chord(rebound_app: tuple[NovaNavigator, Pilot[None]]) -> None:
+    app, pilot = rebound_app
+    _pending_copy(app)
+    field = await _name_dialog(app, pilot)
+
+    await _press(pilot, "f9", "q")
+
+    assert field.value == "q"
+    app.screen.query_one("#CANCEL", widgets.Button).focus()
+    await pilot.pause()
+    await _press(pilot, "q")
+    assert _quit_prompts(app) == []

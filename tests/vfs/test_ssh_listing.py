@@ -273,3 +273,9 @@ async def test_gnu_host_never_probes_or_switches_to_sftp(fs: SSHFilesystem, tmp_
     assert _PROBE_COMMAND not in commands
     assert len(commands) == 4  # two follow modes per directory, ADR-3
     assert fs._listing_via_sftp is False
+
+
+def test_real_path_of_a_broken_link_raises_on_the_stub(fs: SSHFilesystem, tmp_path: Path) -> None:
+    (tmp_path / "broken").symlink_to("does-not-exist")
+    with pytest.raises(FileNotFoundError):
+        fs.real_path(VPath(tmp_path / "broken", fs))

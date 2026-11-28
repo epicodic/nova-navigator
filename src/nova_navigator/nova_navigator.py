@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import importlib.metadata
 import logging
@@ -8,20 +9,32 @@ import os
 import shlex
 import subprocess
 import sys
-from collections.abc import Mapping
+import tempfile
+import termios
+import threading
+import time
+import traceback
+from collections.abc import Awaitable, Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import partial
 from pathlib import Path, PurePath, PurePosixPath
-from typing import ClassVar, NamedTuple, cast
+from typing import ClassVar, NamedTuple, cast, override
+from weakref import WeakSet
 
+from rich.console import Console
+from rich.text import Text
 from textual import events, work
-from textual.app import App, ComposeResult
+from textual.app import App, AutopilotCallbackType, ComposeResult
 from textual.containers import Horizontal
+from textual.drivers.linux_driver import LinuxDriver
 from textual.geometry import Offset
 from textual.logging import TextualHandler
 from textual.screen import Screen
+from textual.widget import Widget
 from textual.widgets import Input
-from textual.worker import WorkerFailed
+from textual.worker import Worker, WorkerFailed
 
 from nova_editor.screen import EditorScreen
 from nova_navigator import debug_analytics
@@ -36,6 +49,7 @@ from nova_navigator.commands import (
     CommandRunner,
 )
 from nova_navigator.config import app_config_dir, conf_
+from nova_navigator.config.settings import Settings
 from nova_navigator.dialogs import (
     BookmarksDialog,
     ConnectToDialog,
@@ -45,15 +59,20 @@ from nova_navigator.dialogs import (
     JobsDialog,
     LocalCopiesDialog,
     SelectByPatternDialog,
+    WriteBackRunningDialog,
 )
 from nova_navigator.dialogs.constants import DEFAULT_BOOKMARKS_GROUP
+from nova_navigator.dialogs.key_help_dialog import KeyHelpDialog
 from nova_navigator.dialogs.response_dialog import make_response_dialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
 from nova_navigator.dialogs.user_menu_input_dialog import InputField, UserMenuInputDialog
 from nova_navigator.embedded_editor_keys import editor_key_actions
 from nova_navigator.filemanager.compare import CompareMode, compare_directories, identical_file_names
 from nova_navigator.filemanager.jobs import copy_or_move_files_job, delete_files_job
-from nova_navigator.local_copies.editor_session import EditorTarget, finish_editing, open_for_editing
+from nova_navigator.key_help import build_key_help
+from nova_navigator.local_copies import CopyEntry
+from nova_navigator.local_copies.editor_session import EditorTarget, SessionNotice, finish_editing, open_for_editing
+from nova_navigator.local_copies.viewer_session import ViewTarget, finish_viewing, open_for_viewing
 from nova_navigator.nova_navigator_core import (
     NovaNavigatorCore,
     PanelRef,
@@ -64,7 +83,10 @@ from nova_navigator.remotes.remote import RemoteConnector, register_remote_schem
 from nova_navigator.remotes.ssh import SSH_PLUGIN
 from nova_navigator.runtime_patches import apply_runtime_patches
 from nova_navigator.scheduler import Job, ResponseRequest, skipped_summary
+from nova_navigator.session_state import PanelState, SessionState, load_session_state, usable_directory
+from nova_navigator.session_state import save_session_state as write_session_state_file
 from nova_navigator.terminal import Terminal, TerminalPool
+from nova_navigator.terminal.local_shell import resolve_local_shell
 from nova_navigator.usermenu import (
     USER_MENU_FILENAME,
     MenuEntry,
@@ -83,10 +105,13 @@ from nova_navigator.vfs.parse_uri import parse_uri
 from nova_navigator.vfs.process_root import find_orphans
 from nova_navigator.vfs.scheme_registry import SCHEME_REGISTRY, vfspath_from_uri
 from nova_navigator.widgets import DirectoryBrowser, JobStatusIcon
-from nova_navigator.widgets.directory_browser import GoToPathWidget, UpPath
+from nova_navigator.widgets.directory_browser import GoToPathWidget, SortKey, UpPath
 from nova_widgets import ButtonSpec, KeybindingsConfig, KeybindingsDialog, MessageBox, Response
 from nova_widgets.actions_support import ActionsSupport
+from nova_widgets.keybindings_dialog import KeyCaptureDialog
 from nova_widgets.keymap import HintBar, HintsChanged, KeymapRegistry
+from nova_widgets.keymap.key_sequence import KeyChord
+from nova_widgets.keymap.key_sequence_state_machine import KeySequenceStateMachine
 from nova_widgets.menu import Action, Menu, MenuBar
 from nova_widgets.menu import constructor as mc
 
@@ -96,6 +121,24 @@ logging.basicConfig(
 )
 
 _logger = logging.getLogger("nova_navigator.nova_navigator")
+
+
+def _store_show_hidden(value: bool) -> None:
+    """Save the show_hidden_files setting, reloading settings.toml first so hand edits survive.
+
+    A settings file that cannot be read or written is logged and left as it is; the toggle still applies.
+    """
+    conf_.settings.general.show_hidden_files = value
+    # a damaged or unwritable settings file must not break the toggle
+    try:
+        stored = Settings.load()
+        stored.general.show_hidden_files = value
+        stored.save()
+    except Exception:
+        _logger.exception("Could not save the show_hidden_files setting")
+
+
+_TERMINAL_PASS_THROUGH = frozenset({"app.help", "browser.view_file"})
 
 
 class CommandInput(Input):
@@ -146,6 +189,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         Action("Rename", id="browser.rename", action="rename", description="Rename the file or directory under the cursor", shortcut="shift+f6", show=False),
         Action("User Menu", id="app.user_menu", action="user_menu", description="Open the user menu", shortcut="f2", show=True, bar_priority=5),
         Action("Edit User Menu File", id="app.edit_user_menu", action="edit_user_menu", description="Open the user menu file in the editor", show=False),
+        Action("View", id="browser.view_file", action="view_file", description="Show the file under the cursor read-only", shortcut="f3", show=True, bar_priority=10),
         Action("Edit", id="browser.open_editor", action="open_editor", description="Open the file under the cursor in an editor", shortcut="f4", show=True, bar_priority=15),
         Action("Copy", id="browser.copy", action="copy_or_move_files(False)", description="Copy selected files to the other panel", shortcut="f5", show=True, bar_priority=20),
         Action("Move", id="browser.move", action="copy_or_move_files(True)", description="Move selected files to the other panel", shortcut="f6", show=True, bar_priority=25),
@@ -163,6 +207,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         Action("Go Up", id="browser.go_up", action="go_up", description="Navigate to the parent directory", shortcut="alt+up", show=False),
         Action("Follow Symlink", id="browser.follow_symlink", action="follow_symlink", description="Follow symlink to destination", shortcut="alt+down", show=False),
         Action("Key Bindings…", id="app.keybindings", action="keybindings", description="Open keybinding editor", show=False, icon="keyboard"),
+        Action("Help", id="app.help", action="key_help", shortcut="f1", description="Show the key bindings", show=True, bar_priority=1),
         Action("Invert Selection", id="selection.invert", action="invert_selection", description="Invert the current selection", shortcut="ctrl+s i", show=True),
         Action("Select All", id="selection.select_all", action="select_all", description="Select all items in the current directory", shortcut="ctrl+s a", show=True),
         Action("Select None", id="selection.select_none", action="select_none", description="Deselect all items in the current directory", shortcut="ctrl+s n", show=True),
@@ -213,20 +258,25 @@ class MainScreen(ActionsSupport, Screen[None]):
 
     _sync_state: SyncBrowsing | None
     _compare_config: _CompareConfig | None
+    _compare_mode_actions: dict[CompareMode, Action]
 
     def __init__(self, config_dir: Path | None = None) -> None:
         super().__init__()
         self._terminal_mode = self._TerminalMode.MINIMIZED
         self._sync_state = None
         self._compare_config = None
+        self._menu_focus: Widget | None = None
         self._terminal_pool = TerminalPool()
         self._provisioning: set[int] = set()
         _config_dir = config_dir if config_dir is not None else app_config_dir()
         self._keymap_config = KeybindingsConfig(_config_dir)
         self._keymap_registry: KeymapRegistry | None = None
+        self.quit_keys = KeySequenceStateMachine()  # the quit key alone, for the screens without a keymap
         self._hint_bar = HintBar()
         self._user_menu_store = UserMenuStore(_config_dir / USER_MENU_FILENAME)
         self._command_runner: CommandRunner | None = None
+        self._session_state = load_session_state()
+        self._local_shell = resolve_local_shell(os.environ)
 
     @property
     def app(self) -> NovaNavigator:  # type: ignore[override]
@@ -240,6 +290,7 @@ class MainScreen(ActionsSupport, Screen[None]):
             self._act("app.settings"),
             self._act("app.keybindings"),
             mc.separator(),
+            self._act("app.help"),
             mc.action("About", icon="info", action="about"),
             mc.separator(),
             self._act("app.quit"),
@@ -256,6 +307,7 @@ class MainScreen(ActionsSupport, Screen[None]):
             self._act("file.open"),
             self._act("file.open_in_other_panel"),
             self._act("browser.follow_symlink"),
+            self._act("browser.view_file"),
             self._act("browser.open_editor"),
             mc.separator(),
             self._act("file.copy"),
@@ -309,6 +361,16 @@ class MainScreen(ActionsSupport, Screen[None]):
             self._act("bookmarks.add_to_bookmarks"),
             mc.action("Manage Bookmarks", action="edit_bookmarks", name="edit_bookmarks"),
         )
+        by_size, by_mtime = mc.group(
+            mc.action("By File Size", checkable=True, action="compare_by_size", name="compare_by_size"),
+            mc.action(
+                "By Modification Time",
+                checkable=True,
+                action="compare_by_mtime",
+                name="compare_by_mtime",
+            ),
+        )
+        self._compare_mode_actions = {CompareMode.BY_SIZE: by_size, CompareMode.BY_MODIFICATION_TIME: by_mtime}
         self._menu_bar.add_menu("View", name="view").add(
             self._act("browser.refresh"),
             mc.separator(),
@@ -319,15 +381,8 @@ class MainScreen(ActionsSupport, Screen[None]):
                 "Compare Directories",
                 self._act("view.compare_enable"),
                 mc.separator(),
-                *mc.group(
-                    mc.action("By File Size", checkable=True, action="compare_by_size", name="compare_by_size"),
-                    mc.action(
-                        "By Modification Time",
-                        checkable=True,
-                        action="compare_by_mtime",
-                        name="compare_by_mtime",
-                    ),
-                ),
+                by_size,
+                by_mtime,
                 mc.separator(),
                 self._act("view.compare_hide_identical"),
                 name="compare_directories",
@@ -345,14 +400,14 @@ class MainScreen(ActionsSupport, Screen[None]):
         self._left_panel = DirectoryBrowser(id="pane-left", path=LocalFilesystem.singleton().cwd())
         self._last_active_panel = self._left_panel
 
-        self._right_panel = DirectoryBrowser(id="pane-right", path=LocalFilesystem.singleton().cwd())
+        self._right_panel = DirectoryBrowser(id="pane-right", path=self._restored_right_path())
         yield Horizontal(
             self._left_panel,
             self._right_panel,
         )
 
         local_terminal = Terminal(
-            "/usr/bin/zsh",
+            shlex.quote(self._local_shell.path),
             id="terminal",
             keep_alive=True,
             scrollback_lines=conf_.settings.terminal.scrollback_lines,
@@ -383,9 +438,43 @@ class MainScreen(ActionsSupport, Screen[None]):
             case PanelRef.ACTIVE:
                 return self._last_active_panel
 
+    def _restored_right_path(self) -> VPath:
+        """The directory the right panel starts in: the stored one when it is still usable, else the cwd."""
+        local = LocalFilesystem.singleton()
+        stored = usable_directory(self._session_state.right_path)
+        return VPath(stored, local) if stored is not None else local.cwd()
+
     async def on_mount(self) -> None:
+        if self._local_shell.rejected is not None:
+            self.app.notify(
+                f"SHELL={self._local_shell.rejected} cannot be executed; using {self._local_shell.path}",
+                severity="warning",
+                markup=False,
+            )
         self._keymap_registry = KeymapRegistry(self._hint_bar)
         self._reload_keymap()
+        panels_state = (
+            (self._left_panel, self._session_state.left),
+            (self._right_panel, self._session_state.right),
+        )
+        for panel, state in panels_state:
+            if state.sort_column is not None:
+                panel.sort_column = SortKey[state.sort_column.upper()]
+            if state.sort_ascending is not None:
+                panel.sort_ascending = state.sort_ascending
+        self._set_show_hidden(conf_.settings.general.show_hidden_files is True)
+        self._left_panel.focus()
+
+    def save_session_state(self) -> None:
+        """Store the sort orders and the right panel's last local directory."""
+        left, right = self._left_panel, self._right_panel
+        write_session_state_file(
+            SessionState(
+                left=PanelState(left.sort_column.name.lower(), left.sort_ascending),
+                right=PanelState(right.sort_column.name.lower(), right.sort_ascending),
+                right_path=right.last_local_path or self._session_state.right_path,
+            )
+        )
 
     @property
     def keymap_config(self) -> KeybindingsConfig:
@@ -406,6 +495,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         style = conf_.settings.general.key_display_style
         self._keymap_registry.set_key_display_style(style)
         self._keymap_registry.reload(bindings, all_actions)
+        self.quit_keys.build_trie({name: keys for name, keys in bindings.items() if name == "app.quit"})
 
     def on_focus(self, event: events.Focus) -> None:
         if self._keymap_registry is not None:
@@ -421,8 +511,7 @@ class MainScreen(ActionsSupport, Screen[None]):
             self._jobs_dialog._update_position()
 
     def _action_quit(self) -> None:
-        # Exclusive: a repeated quit key while the prompt is being opened must not stack a second prompt.
-        self.app.run_worker(self.app.request_quit(), exclusive=True, group="quit")
+        self.app.start_quit()
 
     async def _on_key(self, event: events.Key) -> None:
         if await self._handle_key(event):
@@ -542,6 +631,8 @@ class MainScreen(ActionsSupport, Screen[None]):
         stale target for a panel that is no longer active.
         """
         panel = self.active_panel()
+        if not panel.has_committed_path:
+            return  # the first listing has not succeeded yet, so there is no directory to point the terminal at
         path = panel.path
         await self._ensure_terminal_for(path)
         self._terminal_pool.switch_to(path.filesystem)
@@ -602,10 +693,14 @@ class MainScreen(ActionsSupport, Screen[None]):
     def _action_toggle_hide_identical(self) -> None:
         self._refresh_compare()
 
+    def _checked_compare_mode(self) -> CompareMode | None:
+        """Return the mode checked in the Compare Directories menu, or None if none is checked."""
+        return next((mode for mode, action in self._compare_mode_actions.items() if action.checked), None)
+
     def _action_toggle_compare_enable(self) -> None:
         a = self._act("view.compare_enable")
         if a.checked:
-            self._compare_config = _CompareConfig(mode=None)
+            self._compare_config = _CompareConfig(mode=self._checked_compare_mode())
             self._refresh_compare()
         else:
             self._compare_config = None
@@ -886,6 +981,7 @@ class MainScreen(ActionsSupport, Screen[None]):
             (AKey(is_directory=True, is_file=True), self._act("file.open")),
             (AKey(is_directory=True), self._act("file.open_in_other_panel")),
             (AKey(is_symlink=True), self._act("browser.follow_symlink")),
+            (AKey(is_file=True), self._act("browser.view_file")),
             (AKey(is_file=True), self._act("browser.open_editor")),
             (AKey(is_directory=True, is_file=True), self._act("file.cut")),
             (AKey(is_directory=True, is_file=True), self._act("file.copy")),
@@ -953,18 +1049,46 @@ class MainScreen(ActionsSupport, Screen[None]):
             await self.app.run_action(action.action, self)
 
     async def _on_menu_triggered(self, event: Menu.Triggered) -> None:
-        if event.action and event.action:
-            await self._run_action(event.action)
+        if event.action:
+            self._menu_focus = self._menu_bar.focus_before_menu
+            try:
+                await self._run_action(event.action)
+            finally:
+                self._menu_focus = None
+
+    def _passes_to_terminal(self, action_id: str) -> bool:
+        return action_id in _TERMINAL_PASS_THROUGH and isinstance(self.focused, Terminal)
+
+    def _action_key_help(self) -> None:
+        previous = self._menu_focus if self._menu_focus is not None else self.focused
+        actions = [*type(self).ACTIONS, *DirectoryBrowser.ACTIONS, *editor_key_actions()]
+        groups = build_key_help(actions, self._keymap_config, conf_.settings.general.key_display_style)
+
+        def restore(_result: Response | None) -> None:
+            if previous is not None and previous.is_attached:
+                previous.focus()
+
+        self.app.push_screen(KeyHelpDialog(groups), restore)
+
+    def _set_show_hidden(self, value: bool) -> None:
+        self._act("view.show_hidden_files").set_checked(value)
+        self._left_panel.show_hidden_files = value
+        self._right_panel.show_hidden_files = value
 
     def _action_toggle_hidden(self) -> None:
-        new_state = not self._left_panel.show_hidden_files
-        self._act("view.show_hidden_files").set_checked(new_state)
-        self._action_show_hidden_files()
+        self._set_show_hidden(not self._left_panel.show_hidden_files)
+        _store_show_hidden(self._left_panel.show_hidden_files)
 
     def _action_show_hidden_files(self) -> None:
-        a = self._act("view.show_hidden_files")
-        self._left_panel.show_hidden_files = a.checked
-        self._right_panel.show_hidden_files = a.checked
+        # the menu flips the checked state, but a key bound to this action does not, so toggle from the panels
+        self._action_toggle_hidden()
+
+    async def _action_view_file(self) -> None:
+        # the key registry ignores `Action.enabled`, so a directory (also `..` and a link to one) is refused here
+        path = self.active_panel().path_item_under_cursor
+        if isinstance(path, UpPath) or path.stat.is_directory:
+            return
+        await self.app.open_viewer(path)
 
     async def _action_open_editor(self) -> None:
         path = self.active_panel().path_item_under_cursor
@@ -1099,6 +1223,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         dialog = SettingsDialog(copy.deepcopy(conf_.settings))
         if await dialog.run() == Response.OK:
             conf_.settings = dialog.config
+            self._set_show_hidden(conf_.settings.general.show_hidden_files is True)
             conf_.settings.save()
 
     @work
@@ -1201,11 +1326,49 @@ class MainScreen(ActionsSupport, Screen[None]):
 
 @dataclass(frozen=True)
 class _EditorSession:
-    """One open editor screen with what the host needs to end it."""
+    """One open editor or viewer screen with what the host needs to end it."""
 
     screen: EditorScreen
-    target: EditorTarget
     previous_sub_title: str
+    finish: Callable[[], Awaitable[SessionNotice | None]]
+    """Ends the file side of the session after the screen is gone."""
+    reload_panels: bool = True
+    """False when the session cannot have changed a file."""
+
+
+def _format_forced_quit_report(root: Path, names: list[str]) -> str:
+    """What the terminal says after a forced quit. Only names of files are listed: a copy's path can hold a password."""
+    lines = [
+        "Nova Navigator quit while a write-back was still running. Check the source: it may not contain your changes.",
+        f"Local copies were kept in {root}",
+    ]
+    if names:
+        lines.append(f"Not written back: {', '.join(name if name.isprintable() else repr(name) for name in names)}")
+    lines.append(f"{tempfile.gettempdir()} can be emptied at restart; save what you need.")
+    return "\n".join(lines)
+
+
+_SHELL_END_SECONDS = 4.0
+"""Part of the backstop's time kept for ending closed shells: a shell is killed 3 s after its terminal closes."""
+_LAST_OUTPUT_SECONDS = 1.0
+"""How long writing to the terminal may take at the end of a forced quit, beyond its deadline."""
+_INPUT_THREAD_SECONDS = 0.5
+"""How long to wait for textual's input thread, which looks for its exit event every 0.1 s."""
+_MOUSE_REPORTING_OFF = "\x1b[?1000l\x1b[?1003l\x1b[?1015l\x1b[?1006l"
+
+
+def _restore_terminal_input(driver: LinuxDriver) -> None:
+    """Give the line settings of the terminal back and stop textual from reading what is typed.
+
+    Neither writes to the terminal, so both work when the terminal takes no output.
+    """
+    if driver.attrs_before is not None:
+        with contextlib.suppress(termios.error):
+            termios.tcsetattr(driver.fileno, termios.TCSANOW, driver.attrs_before)
+    driver.exit_event.set()  # textual's own disable_input() does nothing once this is set
+    reader = driver._key_thread
+    if reader is not None and reader is not threading.current_thread():
+        reader.join(_INPUT_THREAD_SECONDS)
 
 
 class NovaNavigator(NovaNavigatorCore, App[None]):
@@ -1214,6 +1377,8 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
     CSS_PATH = "nn.tcss"
     ENABLE_COMMAND_PALETTE = False
     _main_screen: MainScreen
+    BACKSTOP_SECONDS: ClassVar[float] = 10.0
+    """How long a forced quit may take before the process is ended regardless."""
 
     def __init__(self, config_dir: Path | None = None) -> None:
         apply_runtime_patches()
@@ -1223,6 +1388,15 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         self._showing_exception_dialog = False
         self._editor_busy = False
         self._editor_session: _EditorSession | None = None
+        self._quit_awaits_write_back = False
+        self._quit_has_more_to_sync = False  # "Sync and quit" has not yet started on every copy
+        self._write_back_dialog: WriteBackRunningDialog | None = None
+        self._forced_quit_report: str | None = None
+        self._forced_quit_deadline: float | None = None
+        self._end_lock = threading.Lock()  # held by the one thread that ends the process
+        self._owns_process = False  # True inside run_async(), never under run_test()
+        self._teardown_started = False
+        self._quit_chord_screens: WeakSet[Screen[object]] = WeakSet()  # watched for the end of a half-typed quit chord
         register_remote_scheme(conf_.remotes)
 
     def action_help_quit(self) -> None:
@@ -1234,11 +1408,64 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
             if event.key == "backspace" and event.character == "\x08":
                 event.key = "ctrl+h"
             screen = self.screen
-            if isinstance(screen, MainScreen) and screen._keymap_registry is not None and await screen._keymap_registry.handle_key(event.key, self):
+            if not event.is_forwarded and isinstance(screen, MainScreen | EditorScreen | KeyCaptureDialog):
+                self._end_quit_chord()  # these screens get the key without feeding it to the quit chord
+            if isinstance(screen, MainScreen) and screen._keymap_registry is not None and await screen._keymap_registry.handle_key(event.key, self, pass_through=screen._passes_to_terminal):
                 return
-            if isinstance(screen, EditorScreen) and not event.is_forwarded and await screen.press_key(event.key):
+            if isinstance(screen, EditorScreen):
+                if not event.is_forwarded and await screen.press_key(event.key):
+                    return
+            elif not isinstance(screen, MainScreen | KeyCaptureDialog) and not event.is_forwarded and await self._press_quit_key(event):
                 return
         await super().on_event(event)
+
+    async def _press_quit_key(self, event: events.Key) -> bool:
+        """Handle the configured quit key over a dialog, where no keymap is consulted. True if the key was taken.
+
+        A key that the focused control or the dialog uses itself is left to it.
+        """
+        main = getattr(self, "_main_screen", None)
+        if main is None:
+            return False
+        screen = self.screen
+        if self._is_used_by_focus(screen, event):
+            self._end_quit_chord()
+            return False
+        result = main.quit_keys.feed(KeyChord.parse(event.key))
+        if main.quit_keys.is_pending:
+            self._end_quit_chord_on_change(screen)
+        if result.action_name is not None:
+            await self.run_action("quit")
+        return result.consumed
+
+    def _is_used_by_focus(self, screen: Screen[object], event: events.Key) -> bool:
+        """Whether the focused widget or *screen* does something with the key of *event*.
+
+        Either it binds the key, or it declares through ``check_consume_key`` that it takes it in its key handler,
+        as a text field does with a printable character.
+        """
+        focused = screen.focused
+        nodes = focused.ancestors_with_self if focused is not None else [screen]
+        if any(node.check_consume_key(event.key, event.character) for node in nodes):
+            return True
+        active = screen.active_bindings.get(event.key)
+        if active is None or active.node is self:
+            return False
+        # Every screen binds Ctrl+C to copy selected text; without a selection it does nothing.
+        return active.binding.action != "screen.copy_text" or bool(screen.get_selected_text())
+
+    def _end_quit_chord(self, _changed: object = None) -> None:
+        main = getattr(self, "_main_screen", None)
+        if main is not None:
+            main.quit_keys.reset()
+
+    def _end_quit_chord_on_change(self, screen: Screen[object]) -> None:
+        """End a half-typed quit chord when another screen becomes active or the focus on *screen* moves."""
+        if screen in self._quit_chord_screens:
+            return
+        self._quit_chord_screens.add(screen)
+        self.screen_change_signal.subscribe(screen, self._end_quit_chord, immediate=True)
+        self.watch(screen, "focused", self._end_quit_chord, init=False)
 
     def on_app_focus(self, event: events.AppFocus) -> None:
         """The terminal got the focus back: the edited file may have changed meanwhile."""
@@ -1247,12 +1474,161 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
             screen.poll()
 
     async def action_quit(self) -> None:
-        """Quit: with an editor screen open the editor asks about unsaved text, else exit as Textual does."""
+        """Quit: with an editor screen open the editor asks about unsaved text, else ask about unsynced local copies."""
         for screen in reversed(self.screen_stack):
             if isinstance(screen, EditorScreen):
                 await screen.action_quit_editor()
                 return
-        await super().action_quit()
+        self.start_quit()
+
+    def start_quit(self) -> None:
+        """Run :meth:`request_quit` in a worker, unless a quit request is already under way.
+
+        While the request under way waits for a write-back, ask whether to stop waiting instead.
+        """
+        if any(worker.group == "quit" and not worker.is_finished for worker in self.workers):
+            self._offer_forced_quit()
+            return
+        self.run_worker(self.request_quit(), group="quit")
+
+    def _offer_forced_quit(self) -> None:
+        """Open the write-back dialog, if a quit waits for a write-back and the dialog is not open yet."""
+        if not self._quit_awaits_write_back or self._write_back_dialog is not None:
+            return
+        writing = self.local_copies.writing()
+        if not writing:
+            return  # the quit is not held up by a write-back
+        dialog = WriteBackRunningDialog([entry.copy.source.name for entry in writing], self.local_copies.root)
+        self._write_back_dialog = dialog
+        self.run_worker(self._ask_forced_quit(dialog), group="forced_quit")
+
+    async def _ask_forced_quit(self, dialog: WriteBackRunningDialog) -> None:
+        try:
+            answer = await dialog.run()
+        finally:
+            self._write_back_dialog = None
+        # With every write over meanwhile, the quit goes on as chosen before. Between two writes of "Sync and quit"
+        # nothing is being written for a moment, but the choice still counts.
+        if answer == Response.IGNORE and self._quit_awaits_write_back and (self._quit_has_more_to_sync or self.local_copies.writing()):
+            self._force_quit()
+
+    def _force_quit(self) -> None:
+        """Exit without waiting for the running write-backs, keeping every local copy.
+
+        Inside :meth:`run_async` the process is then ended without joining the threads stuck in a write,
+        at the latest after ``BACKSTOP_SECONDS``.
+        """
+        self.local_copies.abandon()  # first: from here on nothing removes a local copy
+        entries = self.local_copies.writing()
+        self._report_forced_quit(entries)
+        # The backstop is armed before anything that reads files, so that a hang there is covered too.
+        if self._owns_process:
+            self._forced_quit_deadline = time.monotonic() + self.BACKSTOP_SECONDS
+            delay = max(self.BACKSTOP_SECONDS - _SHELL_END_SECONDS, self.BACKSTOP_SECONDS / 2)
+            backstop = threading.Timer(delay, self._end_process)
+            backstop.daemon = True
+            backstop.start()
+        with contextlib.suppress(OSError):  # a copy that cannot be read must not stop the quit
+            self._report_forced_quit(entries + [entry for entry in self.local_copies.unsynced() if entry not in entries])
+        self._main_screen.save_session_state()
+        self.exit()
+
+    def _report_forced_quit(self, entries: list[CopyEntry]) -> None:
+        self._forced_quit_report = _format_forced_quit_report(self.local_copies.root, [entry.copy.source.name for entry in entries])
+
+    @override
+    async def run_async(
+        self,
+        *,
+        headless: bool = False,
+        inline: bool = False,
+        inline_no_clear: bool = False,
+        mouse: bool = True,
+        size: tuple[int, int] | None = None,
+        auto_pilot: AutopilotCallbackType | None = None,
+    ) -> None:
+        """Run the app; after a forced quit, end the process here.
+
+        Returning would not end it: asyncio and the interpreter wait for the thread stuck in the write.
+        """
+        self._owns_process = True
+        error: BaseException | None = None
+        try:
+            await super().run_async(headless=headless, inline=inline, inline_no_clear=inline_no_clear, mouse=mouse, size=size, auto_pilot=auto_pilot)
+        except BaseException as raised:
+            error = raised
+            raise
+        finally:
+            self._owns_process = False
+            if self._forced_quit_report is not None:
+                self._end_process(error)  # does not return, so it prints the error itself
+
+    @override
+    async def _shutdown(self) -> None:
+        self._teardown_started = True  # textual has given the terminal back before it calls this
+        await super()._shutdown()
+
+    def _end_process(self, error: BaseException | None = None) -> None:
+        """Give the terminal back, report the kept copies, let closed shells end and leave the process at once.
+
+        Run after the app has ended, or on the backstop's timer thread when the quit or the teardown hangs, for
+        example closing a stalled SSH terminal. Only the first caller does it; a later one waits for the process to end.
+        """
+        self._end_lock.acquire()  # never released
+        code = self.return_code or 0
+        if error is not None:
+            code = code or 1
+        try:
+            deadline = self._forced_quit_deadline
+            if deadline is None:
+                deadline = time.monotonic() + self.BACKSTOP_SECONDS
+            # Output that nobody reads must not keep the process.
+            last_resort = threading.Timer(max(deadline - time.monotonic(), 0.0) + _LAST_OUTPUT_SECONDS, os._exit, [code])
+            last_resort.daemon = True
+            last_resort.start()
+            self._release_terminal()
+            console = Console(file=sys.__stderr__, markup=False, highlight=False)
+            console.print(Text(self._forced_quit_report or ""), soft_wrap=True)
+            if error is not None:
+                traceback.print_exception(error, file=sys.__stderr__)
+            for thread in threading.enumerate():
+                if thread.name.startswith("end-shell-"):  # kills a shell that ignored the hangup
+                    thread.join(max(0.0, deadline - time.monotonic()))
+            debug_analytics.cleanup()
+            for stream in (sys.__stdout__, sys.__stderr__):
+                if stream is not None:
+                    stream.flush()
+        finally:
+            os._exit(code)
+
+    def _release_terminal(self) -> None:
+        """Leave application mode if textual did not get there, and wait until the driver has written everything."""
+        driver = self._driver
+        if driver is None:
+            return
+        restore = not self._teardown_started
+        if restore and isinstance(driver, LinuxDriver):
+            _restore_terminal_input(driver)  # before any write, which blocks for ever when textual's output queue is full
+        with contextlib.suppress(Exception):
+            if restore:
+                # Off the main thread, textual's stop_application_mode() fails inside before it turns mouse reporting
+                # off and drops pending input, and says nothing.
+                driver.write(_MOUSE_REPORTING_OFF)
+                driver.stop_application_mode()
+            driver.close()  # the driver writes from a thread of its own, which textual may not have stopped yet
+            if restore and sys.__stdin__ is not None:
+                time.sleep(0.1)  # mouse reports sent before the terminal read the sequences above
+                termios.tcflush(sys.__stdin__.fileno(), termios.TCIFLUSH)
+
+    @contextmanager
+    def _awaiting_write_back(self) -> Iterator[None]:
+        """Mark the part of a quit during which the quit key offers to stop waiting."""
+        self._quit_awaits_write_back = True
+        try:
+            yield
+        finally:
+            self._quit_awaits_write_back = False
+            self._quit_has_more_to_sync = False
 
     def _handle_exception(self, error: Exception) -> None:
         sys.settrace(debug_analytics.trace_handler)
@@ -1330,11 +1706,16 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         cleanup so ``on_unmount``'s later call is a no-op, see ``LocalCopyManager.shutdown``).
         Otherwise ask **Sync and quit**, **Quit and keep files**, or **Cancel**. A failed or
         still-conflicting sync after "Sync and quit" is reported and the app stays open.
+
+        While this waits for a write-back, the quit key offers to quit and keep the local copies
+        (see :meth:`start_quit`). Once the user chose that, nothing more is done here.
         """
         pending = self.local_copies.unsynced()
         if not pending:
-            await self.local_copies.shutdown()
-            self.exit()
+            with self._awaiting_write_back():
+                await self.local_copies.shutdown()
+            if self._forced_quit_report is None:
+                self.exit()
             return
 
         dialog = MessageBox(
@@ -1348,15 +1729,23 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         )
         answer = await dialog.run()
         if answer == Response.SAVE:
-            for entry in pending:
-                await self.local_copies.sync_now(entry)
+            with self._awaiting_write_back():
+                for number, entry in enumerate(pending, start=1):
+                    self._quit_has_more_to_sync = number < len(pending)
+                    await self.local_copies.sync_now(entry)
+            if self._forced_quit_report is not None:
+                return
             if self.local_copies.unsynced():
+                if self._write_back_dialog is not None:
+                    self._write_back_dialog.withdraw()
                 self.notify("Some local copies could not be synced; Nova Navigator stays open.", title="Quit", severity="error")
                 return
         elif answer != Response.IGNORE:
             return
-        await self.local_copies.shutdown(remove_files=answer != Response.IGNORE)
-        self.exit()
+        with self._awaiting_write_back():
+            await self.local_copies.shutdown(remove_files=answer != Response.IGNORE)
+        if self._forced_quit_report is None:
+            self.exit()
 
     async def on_unmount(self) -> None:
         """Stop local-copy detectors/syncs and remove this process's local-copy directory on exit.
@@ -1364,7 +1753,11 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         Prompting about unsynced copies before quitting is a separate concern (not handled
         here); this only ensures a clean, non-leaking shutdown on a normal exit. Bounded by a
         timeout so a stuck sync (e.g. an unreachable remote) can never hang app shutdown.
+        The session state is saved first, and only when the main screen has built its panels.
         """
+        main = getattr(self, "_main_screen", None)
+        if main is not None and hasattr(main, "_right_panel"):
+            main.save_session_state()
         try:
             await asyncio.wait_for(self.local_copies.shutdown(), timeout=5)
         except TimeoutError:
@@ -1400,7 +1793,7 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
                 screen.keymap_registry.set_key_display_style(conf_.settings.general.key_display_style)
                 if target.read_only:
                     screen.document.editor.read_only = True
-                self._editor_session = _EditorSession(screen, target, self.sub_title)
+                self._editor_session = _EditorSession(screen, self.sub_title, partial(finish_editing, self.local_copies, target))
                 self.push_screen(screen)
                 pushed = True
             except Exception:
@@ -1425,6 +1818,54 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
                 f"Local copy of {target.entry.key}. Saves are written back to the source.",
                 title="Local copy",
             )
+
+    async def open_viewer(self, path: VPath) -> None:
+        """Show *path* read-only in the editor screen: a local file in place, any other file through a private copy.
+
+        The source is never written. Pushes the screen and returns; `on_editor_screen_closed` ends the session.
+        A request while an editor or viewer session is opening, open or ending is ignored.
+        """
+        if self._editor_busy:
+            return
+        self._editor_busy = True
+        pushed = False
+        worker: Worker[ViewTarget | None] | None = None
+        try:
+            # A worker for the same reason as in `open_editor`: the download job may have to ask a question.
+            worker = self.run_worker(
+                open_for_viewing(self.local_copies, path),
+                group="editor_open",
+                exit_on_error=False,
+            )
+            try:
+                target = await worker.wait()
+            except WorkerFailed as failed:
+                raise failed.error from None
+            if target is None:
+                return
+            try:
+                screen = EditorScreen(path=target.path, view_only=True, keybindings=self._main_screen.keymap_config, keyboard_shortcuts_item=False)
+                screen.keymap_registry.set_key_display_style(conf_.settings.general.key_display_style)
+                self._editor_session = _EditorSession(screen, self.sub_title, partial(self._finish_viewer, target), reload_panels=False)
+                self.push_screen(screen)
+                pushed = True
+            except Exception:
+                self._editor_session = None
+                raise
+        finally:
+            if not pushed:
+                self._editor_busy = False
+                # The worker keeps its result when a cancellation makes `wait` drop it, so a private copy is removed also then.
+                if worker is not None and worker.result is not None:
+                    finish_viewing(self.local_copies, worker.result)
+        if target.directory is not None:
+            # markup=False: a file name may contain brackets
+            self.notify(f"{target.key} is shown read-only.", title="Viewer", markup=False)
+
+    async def _finish_viewer(self, target: ViewTarget) -> SessionNotice | None:
+        """End a viewer session; there is nothing to tell the user."""
+        finish_viewing(self.local_copies, target)
+        return None
 
     def on_editor_screen_closed(self, message: EditorScreen.Closed) -> None:
         """The editor asked to close: end the session in a worker."""
@@ -1459,10 +1900,11 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
                 if session.screen in self.screen_stack:
                     self.sub_title = session.previous_sub_title
                     await self.pop_screen()
-                    self._main_screen.reload_panels()
+                    if session.reload_panels:
+                        self._main_screen.reload_panels()
             finally:
-                # Always run finish_editing (final sync and release) even when pop/reload fails.
-                notice = await finish_editing(self.local_copies, session.target)
+                # Always finish the session (final sync and release, or removal of the view copy) even when pop/reload fails.
+                notice = await session.finish()
                 if notice is not None:
                     self.notify(notice.message, title="Local copy", severity=notice.severity, timeout=15)
         finally:

@@ -35,7 +35,10 @@ def run_in_thread(doc: LazyDocument, job: InPlaceJob) -> tuple[threading.Thread,
     doc.lock_edits("saving")
     doc.begin_save()
 
+    registered = threading.Event()
+
     def work() -> None:
+        registered.wait()  # the job may close the document, and `close` waits only for threads registered by then
         try:
             outcome.append(job.run())
         except SaveFailed as error:
@@ -43,7 +46,10 @@ def run_in_thread(doc: LazyDocument, job: InPlaceJob) -> tuple[threading.Thread,
 
     thread = threading.Thread(target=work)
     thread.start()
-    doc.join_on_close(thread)
+    try:
+        doc.join_on_close(thread)
+    finally:
+        registered.set()
     return thread, outcome
 
 

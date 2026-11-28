@@ -247,6 +247,7 @@ async def test_a_closed_document_draws_blanks_without_a_report(tmp_path: Path) -
     assert reports == []
 
 
+@pytest.mark.wall_clock
 @pytest.mark.asyncio
 async def test_wall_clock_sanity(tmp_path: Path) -> None:
     with budget_view(make_sparse(tmp_path)) as (_, _source, _log, view):

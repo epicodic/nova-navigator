@@ -94,6 +94,7 @@ class MenuBar(Widget, ActionCollection):
         ActionCollection.__init__(self)
         self._menus = []
         self._menu_opened = None
+        self._focus_before_menu: Widget | None = None
         self._right_widgets = []
 
     @property
@@ -104,6 +105,11 @@ class MenuBar(Widget, ActionCollection):
         Each Menu is also an Action, but this property returns them as Menu objects.
         """
         return [m for m in self._actions if isinstance(m, Menu)]  # type: list[Menu]
+
+    @property
+    def focus_before_menu(self) -> Widget | None:
+        """The widget that had the focus when the current menu was opened from the closed bar."""
+        return self._focus_before_menu
 
     def add_menu(self, title: str, *items: Action, name: str | None = None) -> Menu:
         menu = Menu(title, *items, name=name)
@@ -135,6 +141,7 @@ class MenuBar(Widget, ActionCollection):
 
     def _on_menu_bar_item_selected(self, event: MenuBarItem.Selected) -> None:
         if not self._menu_opened:
+            self._focus_before_menu = self.screen.focused
             self._invoke_menu(event.item)
         else:
             self._menu_opened.dismiss()

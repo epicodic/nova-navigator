@@ -180,6 +180,10 @@ class Filesystem(ABC):
             return self.path(target)
         return self.parent(path) / target
 
+    def is_same_storage(self, other: Filesystem) -> bool:
+        """Return True if a path means the same entry on this filesystem and on *other*."""
+        return self == other
+
     @abstractmethod
     def is_same_device(self, path1: VPath, path2: VPath) -> bool:
         """Return True if *path1* and *path2* are on the same device (filesystem)."""

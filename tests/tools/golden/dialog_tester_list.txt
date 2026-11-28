@@ -1,3 +1,6 @@
+WriteBackRunningDialog
+  Quit key while a quit waits for a write-back.
+
 ConnectToDialog
   Pick a saved remote connection (uses real config).
 
@@ -82,4 +85,7 @@ FileDialog (dir)
 
 UserMenuInputDialog
   Collects the input fields of a user menu entry before it runs.
+
+KeyHelpDialog
+  F1 key help list
 

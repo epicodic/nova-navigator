@@ -4,6 +4,8 @@ import os
 import time
 from pathlib import Path
 
+import pytest
+
 from nova_navigator.vfs.filesystems import LocalFilesystem
 from nova_navigator.vfs.types import OUTPUT_TAIL_LIMIT
 
@@ -39,6 +41,7 @@ def test_exec_command_keeps_only_output_tail(tmp_path: Path) -> None:
     assert len(result.output) == OUTPUT_TAIL_LIMIT
 
 
+@pytest.mark.wall_clock
 def test_exec_command_cancel_terminates_process(tmp_path: Path) -> None:
     start = time.monotonic()
     result = _fs.exec_command("sleep 10", _fs.path(tmp_path), should_cancel=lambda: True)
@@ -46,6 +49,7 @@ def test_exec_command_cancel_terminates_process(tmp_path: Path) -> None:
     assert time.monotonic() - start < 5
 
 
+@pytest.mark.wall_clock
 def test_exec_command_cancel_kills_process_ignoring_sigterm(tmp_path: Path) -> None:
     start = time.monotonic()
     result = _fs.exec_command("trap '' TERM; sleep 30", _fs.path(tmp_path), should_cancel=lambda: True)

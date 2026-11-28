@@ -6,6 +6,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -165,6 +166,7 @@ def build_medium_file(path: Path, kind: str) -> None:
             written += length + 1
 
 
+@pytest.mark.wall_clock
 def test_medium_long_lines_are_bounded_in_bytes_and_time(tmp_path: Path) -> None:
     worst_bytes = 0
     worst_time = 0.0

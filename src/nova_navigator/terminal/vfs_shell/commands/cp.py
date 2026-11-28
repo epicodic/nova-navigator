@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 
+from nova_navigator.filemanager.tasks import is_into_itself, would_overwrite_source
 from nova_navigator.terminal.vfs_shell.command import Command, ShellArgumentParser, ShellContext
 from nova_navigator.vfs.vpath import VPath
 
@@ -45,6 +46,10 @@ class CpCommand(Command):
                     ctx.write_error(f"cp: -r not specified; omitting directory '{src_str}'\r\n")
                     exit_code = 1
                     continue
+                if is_into_itself(src, dest):
+                    ctx.write_error(f"cp: cannot copy a directory, '{src_str}', into itself, '{dest_str}'\r\n")
+                    exit_code = 1
+                    continue
                 result = await self._cp_tree(src, dest, src_str, ctx)
                 if result != 0:
                     exit_code = result
@@ -73,6 +78,9 @@ class CpCommand(Command):
 
     def _cp_file(self, src: VPath, dest: VPath, src_str: str, ctx: ShellContext) -> int:
         """Copy a single file."""
+        if would_overwrite_source(src, dest):
+            ctx.write_error(f"cp: '{src_str}' and '{dest.path}' are the same file\r\n")
+            return 1
         try:
             reader = ctx.filesystem.read(src)
         except OSError as e:

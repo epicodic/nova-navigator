@@ -52,6 +52,7 @@ def _rebase(area: NovaTextArea, target: Path) -> None:
     area.refresh_after_rebase()
 
 
+@pytest.mark.wall_clock
 @pytest.mark.asyncio
 async def test_the_cursor_stays_resolved_at_its_column_after_a_save(tmp_path: Path) -> None:
     path = tmp_path / "row.txt"

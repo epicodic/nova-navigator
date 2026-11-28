@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import shlex
+
 from nova_navigator.terminal.shell_driver import (
-    _ZSH_RAW_END_OF_LINE_SEQUENCE,
     BashDriver,
     FallbackDriver,
     ZshDriver,
@@ -197,6 +198,10 @@ def test_fallback_driver_init_code_ends_with_newline() -> None:
     assert code.endswith("\n")
 
 
+def test_fallback_driver_init_code_sets_erase_to_backspace() -> None:
+    assert "stty erase '^H'" in FallbackDriver().init_code()
+
+
 def test_fallback_driver_cd_command_is_self_contained() -> None:
     driver = FallbackDriver()
     cmd = driver.cd_command("/var/data")
@@ -232,78 +237,77 @@ def test_detect_driver_sh() -> None:
     assert isinstance(driver, FallbackDriver)
 
 
+def test_detect_driver_handles_quoted_path_with_space() -> None:
+    driver = detect_driver(shlex.quote("/opt/my shells/zsh"))
+    assert isinstance(driver, ZshDriver)
+
+
 # ---------------------------------------------------------------------------
-# kill_line_sequence / yank_sequence
+# set_aside_sequence / put_back_sequence
 # ---------------------------------------------------------------------------
 
 
-def test_bash_driver_kill_line_sequence_moves_to_end_before_killing() -> None:
-    """Bash's Ctrl+U (unix-line-discard) only kills backward from the cursor, so
-    the cursor must reach the true end (Ctrl+E) before it, or trailing typed text
-    would survive the kill."""
+def test_bash_driver_set_aside_sequence_enters_insert_mode_before_stashing() -> None:
+    """The stash function is bound in the emacs and vi insert keymaps only, so vi
+    command mode is left first."""
     driver = BashDriver()
-    seq = driver.kill_line_sequence()
-    assert seq.startswith(b"\x05")  # Ctrl+E
-    assert seq.endswith(b"\x15")  # Ctrl+U
+    seq = driver.set_aside_sequence()
+    assert seq.startswith(b"\x1b[95~")  # insert mode
+    assert seq.endswith(b"\x1b[96~")  # stash
 
 
-def test_bash_driver_kill_line_sequence_types_a_space_before_killing() -> None:
-    """A literal space is typed before the kill so it is never empty: an empty kill
-    leaves the kill ring untouched, so a later kill of an already-empty line would
-    still yank back stale, unrelated text on the next ``yank_sequence()``."""
+def test_bash_driver_set_aside_sequence_sends_only_private_keys() -> None:
+    """No text is typed and no readline kill is used, so the kill ring stays as it was."""
     driver = BashDriver()
-    seq = driver.kill_line_sequence()
-    assert seq == b"\x05 \x15"
+    seq = driver.set_aside_sequence()
+    assert seq == b"\x1b[95~\x1b[93\x07\x1b[95~\x1b[96~"
 
 
-def test_bash_driver_yank_sequence_backspaces_off_the_marker_space() -> None:
-    """Backspace (not Ctrl+E) reaches the true end: the marker space is always
-    the last character restored, so backspace removes exactly it."""
+def test_bash_driver_put_back_sequence_sends_only_private_keys() -> None:
     driver = BashDriver()
-    seq = driver.yank_sequence()
-    assert seq == b"\x19\x08"
+    seq = driver.put_back_sequence()
+    assert seq == b"\x1b[95~\x1b[93\x07\x1b[95~\x1b[94~"
 
 
-def test_zsh_driver_kill_line_sequence_uses_private_raw_eol_not_real_ctrl_e() -> None:
+def test_zsh_driver_set_aside_sequence_does_not_use_real_ctrl_e() -> None:
     """Real Ctrl+E (end-of-line) is one of zsh-autosuggestions' default
     accept-widgets: sending it while a suggestion is showing silently accepts
-    the suggestion into the real buffer.  The private CSI sequence bound in
-    ``init_code()`` to the unwrapped ``.end-of-line`` builtin reaches the true
-    end without that risk."""
+    the suggestion into the real buffer.  The private stash widget sets the
+    buffer itself, so no such key is sent."""
     driver = ZshDriver()
-    seq = driver.kill_line_sequence()
+    seq = driver.set_aside_sequence()
     assert b"\x05" not in seq  # never the real Ctrl+E
-    assert seq.startswith(_ZSH_RAW_END_OF_LINE_SEQUENCE)
+    assert seq.startswith(b"\x1b[95~")
 
 
-def test_zsh_driver_kill_line_sequence_types_a_space_before_killing() -> None:
+def test_zsh_driver_set_aside_sequence_sends_only_private_keys() -> None:
     driver = ZshDriver()
-    seq = driver.kill_line_sequence()
-    assert seq == _ZSH_RAW_END_OF_LINE_SEQUENCE + b" \x15"
+    seq = driver.set_aside_sequence()
+    assert seq == b"\x1b[95~\x1b[96~\x1b[93~\x1b[92~\x1b[95~\x1b[96~"
 
 
-def test_zsh_driver_yank_sequence_backspaces_off_the_marker_space() -> None:
-    """Backspace (not Ctrl+E) reaches the true end: a trailing Ctrl+E here would
-    risk accepting a new autosuggestion formed from the just-restored text."""
+def test_zsh_driver_put_back_sequence_sends_only_the_private_restore_key() -> None:
+    """No Ctrl+E: it would risk accepting a new autosuggestion formed from the
+    just-restored text."""
     driver = ZshDriver()
-    seq = driver.yank_sequence()
-    assert seq == b"\x19\x08"
+    seq = driver.put_back_sequence()
+    assert seq == b"\x1b[94~"
 
 
-def test_zsh_driver_init_code_defines_raw_eol_widget_bound_to_private_sequence() -> None:
-    """The private sequence kill_line_sequence() sends must be bound in
-    init_code() to a widget that calls the real, unwrapped ``.end-of-line``."""
+def test_zsh_driver_init_code_defines_stash_widget_bound_to_private_sequence() -> None:
+    """The private sequence set_aside_sequence() sends must be bound in
+    init_code() to a widget that clears the whole buffer."""
     code = ZshDriver().init_code()
-    assert "zle .end-of-line" in code
-    assert "zle -N _nn_raw_eol" in code
+    assert "BUFFER=; " in code
+    assert "zle -N _nn_stash" in code
     assert r"\e[96~" in code
 
 
-def test_fallback_driver_does_not_override_kill_or_yank_sequence() -> None:
+def test_fallback_driver_does_not_override_the_line_sequences() -> None:
     """FallbackDriver has no line editor (supports_line_editing is False) and never
-    reaches hidden navigation's kill/yank step, so it relies on the base class."""
-    assert "kill_line_sequence" not in FallbackDriver.__dict__
-    assert "yank_sequence" not in FallbackDriver.__dict__
+    reaches hidden navigation's stash and restore, so it relies on the base class."""
+    assert "set_aside_sequence" not in FallbackDriver.__dict__
+    assert "put_back_sequence" not in FallbackDriver.__dict__
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,239 @@
+# Changelog
+
+## 0.1.0
+
+### Added
+
+- Two independent file panels side by side.
+- Browse SSH servers as if they were local folders.
+  SSH is tested with OpenSSH servers on Debian and on Alpine (BusyBox) in containers: password and key-file login, identity files from `~/.ssh/config`, ProxyJump, host key prompts, listing, copy, move, delete, symbolic links and editing.
+- Open tar and zip archives as folders.
+- A live shell in the same window.
+  The embedded terminal runs the shell named by `$SHELL`; bash and zsh have full integration.
+  With them, text you are typing on the command line is normally kept when the shell follows the panels, in emacs and vi editing modes.
+  Known issues lists the cases where it is changed, lost or run.
+  With bash and plain shells, a long line wraps when the terminal is one row high, and only the row with the cursor shows.
+  zsh behaves as it does in any one-row terminal.
+  Horizontal scrolling of the command line (readline's `horizontal-scroll-mode`) is turned off in the embedded bash once the setup line has run.
+  It is not turned off for a bash that is treated as a plain shell: `sh` linked to bash, or an SSH shell that could not be detected.
+  Until the embedded bash has reported its first prompt, size changes do not reach it, so that this setting cannot make it hang at startup; the protection ends after 5 s.
+  Until its first prompt report, bash and its startup files see the opening size (80x24 at first start), not the real terminal size.
+  A startup file that asks a question or starts another program keeps that size until the 5 s startup timeout.
+  Output shown by the timeout was formatted for that size.
+- A built-in text editor, `ned`, which opens from the file manager with F4 and can also run on its own.
+- Copy (F5), move (F6) and delete (F8), with progress and conflict resolution.
+- Long operations run in the background and can be cancelled.
+- View and cancel running jobs in the Jobs dialog.
+- Bookmarks for frequently used folders.
+- Icons and file types set in a configuration file.
+- Icons from a Nerd Font when one is installed; Unicode icons otherwise.
+- A menu bar; arrow keys, Enter and Esc work once a menu is open.
+- F1 opens help.
+- F3 views a file read-only.
+- The right panel's folder and sort order are restored when the application starts again.
+- Azure Blob Storage, installed with the optional `azure` extra.
+  Sign in with `az login` is the expected way; this has not been verified.
+
+### Known issues
+
+#### Possible data loss
+
+- The same storage reached in another way, for example under another host name, user or port, is not recognised, so copying or moving a file or folder onto itself that way can destroy it.
+- Servers with the same address, port and user name behind different jump hosts are treated as one machine.
+  So copying or moving a file or folder between them to the same path, or a folder to a path inside it, is skipped.
+- Two hard-linked names on SSH are not recognised as one file, so copying or moving one onto the other may destroy data.
+  This was not tested.
+- If a directory is replaced by a symbolic link while it is being deleted, moved, or removed with `rm -r` in the built-in shell, the operation can follow the link.
+- In the built-in shell, inside folder `d`, `cp -r d .` can overwrite a file in `d` with the file of the same name from `d/d`.
+  The command still exits with 0.
+- Killing the application while it replaces a link can leave the destination missing.
+  Changes made by other programs during a copy are not detected.
+- An interrupted save can damage a configuration file: `remotes.toml` and `keybindings.toml` always, `settings.toml` and `bookmarks.toml` when the directory is read-only.
+
+#### Terminal
+
+- Changing the panel's folder while a line editor command waits for more keys can change the typed line.
+  This happens, for example, in the middle of a vi command or search:
+  after Ctrl+V, Esc, Alt+[, Esc O or Ctrl+X the line can end in extra characters such as `[95~`, in vi command mode the case of letters can change (zsh `'` swaps the case of the whole line), and Ctrl+R with a pattern leaves the line found in the history.
+  zsh's question whether to list all completions also leaves `[95~`, and a zsh completion menu accepts the selected completion.
+  In bash, an Alt+P or Alt+N search drops a line recalled from the history.
+- A bash completion question (`Display all ... possibilities?`) or `--More--` list is closed by a change of the panel's folder or by a command.
+- A pending zsh vi search or named command (`/`, `?`, `:`, Alt+x) is cancelled by a change of the panel's folder.
+- A line that the shell puts back at the prompt by itself (zsh `hist_verify`, `push-line`, `print -z`) is kept, but Enter on a file panel treats the command line as empty.
+- With zsh `hist_verify`, a user menu or other command that contains `!` is put back at the prompt instead of run.
+- In bash with line editing turned off (`set +o emacs` and no vi mode), and in bash older than 5, the shell follows the panels only on an empty command line, as plain shells do.
+  A user menu or other command is refused while text is on the line.
+  Text typed while a command was still running is not noticed there, and a change of the panel's folder runs it; so is text typed with `stty -echo`.
+- In bash with `shopt -s histverify` or `histreedit`, the shell does not follow the panels while a line waits at the prompt for your review, until you enter or cancel it.
+- An editor opened from the command line (bash vi `v`, Ctrl+X Ctrl+E) receives the `cd` that follows a panel change as its input.
+- bash and zsh get private key bindings for this (`ESC[92~` to `ESC[96~`, in bash also `ESC[93` followed by Ctrl+G).
+  In bash, removing them can make a panel change run the typed line.
+  The same can happen with a `DEBUG` trap that returns non-zero under `shopt -s extdebug`.
+  Tools that use the `DEBUG` trap see two extra shell functions, `_nn_stash` and `_nn_restore`, at every panel change.
+- A zsh keymap first created while a command line is being edited has no private bindings until the next prompt, and a change of the panel's folder can then run the typed line.
+  The same holds for a protected keymap linked as `main`, which also prints an error at each prompt.
+- Line editor plugins such as zsh-vi-mode or zsh-autosuggestions were not tried with these bindings.
+- In a shell treated as a plain shell that has a vi mode (for example `sh` linked to bash), do not leave an empty command line in vi command mode.
+  The `cd` of a panel change is then read as editor commands, and what runs is unpredictable.
+- With bash 5.3 (Ubuntu 26.04), once a typed line is taller than the terminal, which in the one-row view means more than two rows, bash redraws it by clearing the screen.
+  These redraws add copies of the prompt to the scrollback.
+
+#### SSH
+
+- Login through ssh-agent and passphrase-protected keys are not tested.
+- A command on an SSH server that never reports an exit status blocks until you cancel it.
+- SSH servers need SFTP. On a server with uutils tools, a directory with non-UTF-8 names (or U+FFFD) cannot be listed if the SFTP listing fails.
+- `ssh://user:password@host` is not supported: `user:password` is sent as the user name and shown in the login dialog.
+  Add to Bookmarks can store such an address, password included, in `bookmarks.toml`.
+  The password also appears in the folder names of local copies.
+- Wildcard, negated and `@cert-authority` entries in `known_hosts` are not matched, so you are asked to confirm such a host again.
+  A second key of the same type for a host is reported as a changed key.
+- A new host key is stored even if you then cancel the login.
+  If storing it fails after a failed login, there is no warning.
+- Of `~/.ssh/config`, `ProxyCommand` and `Include` are ignored, and `Match` blocks with other than the basic keywords never apply.
+- A hanging name lookup can delay a connection beyond the configured SSH timeout.
+- Reading a non-UTF-8 link target needs `readlink` and `od` on the server.
+  A server that omits file attributes gets default values.
+- On SSH files and TAR members, a change that keeps the size and happens within the same second is not detected.
+  A ZIP or TAR file on SSH inherits this for the whole archive.
+- Nothing stops another writer from racing the write-back.
+  Write-back needs the `posix-rename@openssh.com` SFTP extension.
+  Write-back into a nested archive on a remote host is untested.
+- Large directories on SSH are slow to list, copy, move and delete, especially with many links or non-GNU servers.
+- A remote command that writes very much to its error output can stall.
+- Unusual server tools can make a directory show as empty or fail with an input/output error.
+- Every move to or from an SSH server, also within one server, copies and then deletes.
+- Entering an `ssh://` address without a path in "Go to path", on a panel of that server, opens `/`, not the login directory.
+- When following links and a path cannot be resolved (for example non-UTF-8), a link loop is followed up to 16 levels.
+- Some connection error texts are formatted oddly.
+- Host names in `known_hosts` are stored and matched as typed, so another spelling (such as different letter case) is asked about again.
+
+#### Azure
+
+- Azure Blob Storage is tested against the Azurite emulator.
+  It has not yet been verified with a real storage account.
+- Renaming a large Azure blob whose server-side copy takes more than 300 seconds fails; the source is kept.
+- The first access to Azure can take about 90 seconds (seen with default settings on a development host with proxy environment variables).
+- `azure://` addresses work with host-style endpoints only.
+  A `.keep` file marks directories and may show as a hidden file.
+  A change made just while a blob is saved can be overwritten.
+  Deleting a missing path reports nothing.
+
+#### Archives
+
+- A zip or TAR member that you edit and save back keeps its old date.
+- A zip directory without its own entry may show no date.
+- Archives do not keep empty directories.
+- Quitting does not wait for a file that F5, F6 or the terminal's `cp` is writing into an archive on SSH or Azure.
+  Tried with F5 and F6: with no unsynced local copy, Ctrl+Q asks nothing and removes the local working copy of the archive while the write is running, and the process waits for the write to end, forever if it hangs.
+  In the cases tried the source file was kept; a move can leave the file in both places.
+  The terminal's `cp` was not tried for this.
+- `.jar`, `.war`, `.ear`, `.apk`, `.whl` and single compressed files are read-only.
+- Writing into a large archive rebuilds it for every file.
+  Opening a large `.gz`, `.bz2` or `.xz` blocks while it is decompressed.
+- Hard links in a TAR are copied as separate files.
+- A panel inside an archive can show old sizes and members until it is refreshed.
+
+#### Viewer and editor
+
+- While a large remote file downloads for F3 or F4, the application accepts no keys and the download cannot be interrupted midway.
+- With a menu open in the viewer, F10, Ctrl+W or Ctrl+Q closes the viewer at once.
+  Esc closes the menu first.
+- A failed download for F3 or F4 shows no message, only a failed job.
+- Choosing "Abort" in the error dialog for an unreadable file ends the application.
+- "Quit and keep files" while a file is still downloading for viewing can make that download fail.
+- A hung write-back of a local copy is not detected: quitting waits for it until you press the quit key again and choose "Quit and keep files".
+  The source may then lack your changes, and a temporary `.nn-tmp` file can stay beside it.
+  That quit stops the file operations running inside Nova Navigator.
+  Background commands are not stopped; one that writes output after a quit can be ended by that.
+- A later Nova Navigator that gets the same process ID as an earlier one reuses the directory of its kept local copies.
+  It can overwrite a kept copy when it opens the same source, and removes the directory at its normal quit.
+- If a write-back over SSH stalls, an action that needs the same connection can freeze the whole application, and then no key works.
+  This was seen in the code and not tried.
+- Cancelling F4 just after the download may leave a local copy behind.
+  This was not reproduced.
+- Saving in the editor creates a new file, except for a plain Save that only overwrites bytes (same length, nothing moved) in a file not changed on disk, which is patched in place.
+  When the editor creates a new file, hard links, owner, group, ACLs and extended attributes are not kept; only permission bits are restored.
+  See the [Known Limits section of the editor documentation](https://github.com/epicodic/nova-navigator/blob/main/docs/editor.md#known-limits-1).
+- The viewer has no default key for Wrap Mode.
+- With a dialog open, a rebound Quit key does nothing while the focused control or the dialog uses that key itself, for example a letter or `Ctrl+X` in a text field, Enter on a button, or an arrow key in a table.
+  `Ctrl+Q` also still quits when Quit is rebound.
+- Pressing Ctrl+Q while the dialog that captures a new key binding is open (inside the Key Bindings dialog) can leave the application's process running with its screen gone.
+  Close that dialog with Esc first.
+  This also exists in earlier code.
+- With Quit rebound to a chord, a half-typed chord on the main screen survives a dialog opening and closing, so the second key alone then quits.
+- With Quit rebound to a printable key, typing that key in the filter or go-to-path field quits.
+- Rebinding the navigator's Quit does not change the editor's quit key; rebind "Editor: Quit" (`editor.quit`) in the Key Bindings dialog too.
+- F1 help does not list the editor's cursor movement, selection and other fixed text keys.
+
+#### Settings and layout
+
+- A `settings.toml` with a syntax error stops the start.
+  If the file is read-only, OK in the settings dialog fails.
+- Closing the terminal window, SIGTERM (a termination signal) or a crash loses this session's right-panel folder and sort order.
+- A right-panel folder whose name is not valid UTF-8 is not remembered.
+- Three file-panel keys, Insert, Ctrl+A and Ctrl+F, are not listed in the Key Bindings dialog. They can only be changed by hand in `keybindings.toml`, using the quoted action name, for example `"browser.insert_select"`; any save in the Key Bindings dialog removes such entries.
+  Tab and Shift+Tab are fixed keys.
+- Ctrl+F1 opens Settings, so the terminal's "Ctrl+F1 leaves focus" appears not to work.
+  This was seen in the code and not tried.
+- With several instances open, the last one to quit decides the stored right-panel folder and sort orders.
+  Restoring a local folder can mount it or wait on a stale network mount.
+- The hidden-files setting does not apply to the file dialog, which has its own switch.
+- Hide Identical keeps its setting while compare is off, and the other panel can update late.
+  No files are affected.
+- In terminals that use the kitty keyboard protocol, the numpad + and - keys do not work after Ctrl+S; use the main-keyboard keys.
+- A leftover `proxy` entry under `[network]` in `settings.toml` is ignored.
+
+#### Security and crash reports
+
+- Crash reports do not hide passwords typed or pasted into the embedded terminal, a user-menu prompt or another free-text field.
+- The crash report is deleted when `nn` ends after most crashes inside the application.
+- Crash reports can still contain a password that was being typed at the time of the crash, that is part of a URI and contains `/`, that appears in unusual nested or split forms, or that is in a configuration file being read at that moment.
+  Check a crash report before sharing it.
+- Crash reports may hide more than necessary.
+- Passwords written into a URI in `remotes.toml` or `bookmarks.toml` stay on disk.
+
+#### Terminal
+
+- Typing text and then deleting it can leave Nova Navigator treating the line as still occupied.
+  One Enter on a file panel is then sent to the terminal instead of navigating.
+  That Enter clears the state, and the next Enter navigates.
+  It happens with bash after a line of more than two rows in the one-row terminal (which then shows an empty row until Ctrl+L or Enter), with zsh after a line wider than a one-row terminal, with `sh` or dash after a line that had wrapped, and after typing before a slow prompt has appeared.
+- bash can loop forever, using a whole CPU, when its prompt has colour or other invisible codes, the typed line is wider than the terminal and the width changes, with a one-row terminal or with `horizontal-scroll-mode` on.
+  The embedded bash is protected from this.
+  A bash started inside zsh or inside the embedded shell, or reached by a typed `ssh`, can still do it where one of these applies.
+- Nothing ends a looping shell if Nova Navigator itself crashes or is killed, and a looping shell on an SSH server cannot be killed by closing its terminal.
+
+#### Other
+
+- Text typed while a command is still running is not detected, even when it was already entered, so a later panel change can write its `cd` into that text and the combined line may run.
+  In shells without bracketed paste (sh, dash), further lines of a multi-line paste at a prompt are not detected either.
+- If you type or paste into the terminal, or keys are passed to it from a file panel (such as typed characters or inserted file names), while its shell is still starting, the shell stops following the panels until you press Enter in it once more after it is ready, even if you cleared the line.
+  Once it is ready and until that Enter, Enter in a file panel goes to the terminal, and runs any early text still on the line.
+  Ctrl+C pressed before the shell is ready can discard its setup; the shell then does not follow the panels until it is restarted (for the local shell, type `exit`).
+- On a slow shell, Enter pressed before the typed command appears may act on the file panel instead of the terminal.
+  This was seen in the code, but not reproduced in the application.
+- A move across devices that follows links (or to a destination without links) can skip, as broken, a link whose target was already moved in the same move.
+- Where `P/d` is a symbolic link, copying or moving `P/d/d` into `P` removes the link and then fails; over SSH it can report success and leave an empty folder.
+  File contents are kept.
+- Relative links copied to another host keep their text even with the stable-links option.
+- The built-in shell's `cp` and `mv` have no link options.
+- With stable links, `..` after a linked directory is read textually.
+- A followed directory target that disappears can fail the job when its real path cannot be determined.
+- The overwrite question for a folder says "File".
+- A move within one device renames, so relative links can end up pointing elsewhere.
+  Link modification times are not kept.
+  A cross-device move leaves skipped links and their folder behind.
+- Some skipped entries are not listed in the Jobs dialog.
+- A file you answered No for is not listed as skipped.
+  Rows hidden by Hide Identical lose their selection.
+- There is no "Preserve attributes" switch; permission bits and modification time are copied where the destination supports them; owner, group, ACLs and extended attributes are not.
+- There is no "Dive into subdir if exists" switch.
+- There are no rename masks for copy and move.
+- The copy and move dialog has no "Background" button; jobs already run in the background.
+- The developer script `create_bundle_shiv.sh` does not include the Azure SDK in the bundle it builds.
+- fish, csh and other shells without a POSIX hook run as a plain terminal: no directory sync, no user menu commands in the terminal; the screen appears after a few seconds.
+- With `sh` or dash the shell has no line editing; a panel change waits while text is typed.
+- In vi editing mode, outside insert mode, directory sync and terminal commands can report the terminal as busy.
+- While the terminal is focused, F1 and F3 go to the shell, not to help or the viewer.
+- The menu bar cannot be opened from the keyboard.

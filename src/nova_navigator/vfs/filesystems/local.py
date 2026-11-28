@@ -123,16 +123,22 @@ class _LocalAtomicWriter:
             os.replace(self._tmp, self._target)
         except BaseException:
             try:
-                self._file.close()
+                with contextlib.suppress(OSError):
+                    self._file.close()
             finally:
-                self._tmp.unlink(missing_ok=True)
+                with contextlib.suppress(OSError):
+                    self._tmp.unlink(missing_ok=True)
             raise
 
     def abort(self) -> None:
         if not self._done:
             self._done = True
-            self._file.close()
-            self._tmp.unlink(missing_ok=True)
+            try:
+                with contextlib.suppress(OSError):
+                    self._file.close()
+            finally:
+                with contextlib.suppress(OSError):
+                    self._tmp.unlink(missing_ok=True)
 
 
 class LocalFilesystem(Filesystem):

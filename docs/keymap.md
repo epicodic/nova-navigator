@@ -169,10 +169,14 @@ It:
 Updates the `KeyFormatStyle` and immediately refreshes the hint bar.
 Call this before or after `reload`.
 
-### `async handle_key(key, app) -> bool`
+### `async handle_key(key, app, pass_through=None) -> bool`
 
 Called from `NovaNavigator.on_event` before Textual's priority bindings and awaited.
 Returns `True` if the key was consumed.
+
+`pass_through` is an optional predicate on the matched action id.
+When it returns `True`, the key is left unconsumed (`False`) and no action runs, so the focused widget receives the key.
+`MainScreen` uses it so that a focused terminal keeps F1 and F3 (sent to the shell) and neither the help nor the viewer action is run there.
 
 `key` is a Textual key name string such as `"ctrl+x"` or `"f5"`.
 It is converted to a `KeyChord` internally before being fed to the state machine.
@@ -273,6 +277,8 @@ This is the map passed to `KeymapRegistry.reload()`.
 3. On every key event, `NovaNavigator.on_event` calls `KeymapRegistry.handle_key(key, app)` when a `MainScreen` is the active screen.
    If consumed, the event is stopped.
    Otherwise, it falls through to terminal and panel key handling.
+   With any other screen on top, except an editor and `KeyCaptureDialog`, only the `app.quit` key is matched (`MainScreen.quit_keys`), so that it also works over a dialog.
+   A key that the focused widget or that screen uses itself is left to it, see "The quit key over a dialog" in `local_copies.md`.
 4. `MainScreen.on_focus` calls `KeymapRegistry.on_focus_changed(self.app.focused)` on every focus change.
 5. `MainScreen.on_hints_changed` calls `KeymapRegistry.update_hint_priorities(event.widget, event.priorities)` when any widget posts a `HintsChanged` message.
 
@@ -292,6 +298,14 @@ This is the map passed to `KeymapRegistry.reload()`.
    No further registration is needed.
 
 ---
+
+## Key help (F1)
+
+F1 opens `KeyHelpDialog` (`nova_navigator/dialogs/key_help_dialog.py`), a read-only, scrollable list of the effective bindings.
+`build_key_help` in `nova_navigator/key_help.py` groups the actions passed in by their id prefix and by an exception table; unmapped actions are omitted.
+The keys shown come from the resolved overrides, not from `Action.shortcut`.
+Rows that are not actions (fixed keys of the file list, terminal and editor) are listed with no action id.
+With a terminal focused, F1 goes to the shell (`pass_through`); the Help entry of the icon menu opens the dialog from there and focus returns to the terminal.
 
 ## Keybindings Dialog
 

@@ -1780,10 +1780,66 @@ async def test_request_cd_fallback_driver_writes_cd_without_draining() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         terminal._started = True
+        terminal._at_prompt = True
         terminal.request_cd(PurePath("/target/path"))
         assert len(backend.writes) >= 1
         assert b"".join(backend.writes).endswith(b"\n")
         assert terminal._draining is False
+
+
+def _fallback() -> tuple[FakePtyBackend, Terminal]:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=FallbackDriver())
+    terminal._started = True
+    terminal._cwd = PurePath("/w")
+    return backend, terminal
+
+
+class _PathChangeRecorder(TerminalTestApp):
+    def __init__(self, terminal: Terminal) -> None:
+        super().__init__(terminal)
+        self.changes: list[PurePath] = []
+
+    def on_terminal_path_changed(self, message: Terminal.PathChanged) -> None:
+        self.changes.append(message.cwd)
+
+
+@pytest.mark.asyncio
+async def test_fallback_cd_waits_while_a_command_runs() -> None:
+    backend, terminal = _fallback()
+    terminal._at_prompt = False
+    terminal.request_cd(PurePath("/target"))
+    assert backend.writes == []
+    terminal._handle_pre_cmd("/w")
+    assert b"".join(backend.writes).endswith(b"\n")
+
+
+@pytest.mark.asyncio
+async def test_fallback_cd_never_joins_typed_input() -> None:
+    backend, terminal = _fallback()
+    terminal._at_prompt = True
+    _feed_and_snapshot(terminal, "$ ")
+    terminal._note_user_input("r")
+    _feed_and_snapshot(terminal, "r")
+    terminal.request_cd(PurePath("/target"))
+    assert backend.writes == []
+
+
+@pytest.mark.asyncio
+async def test_fallback_cd_precmd_posts_no_path_changed() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/sh", backend=backend, driver=FallbackDriver())
+    app = _PathChangeRecorder(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal._started = True
+        terminal._cwd = PurePath("/w")
+        terminal._at_prompt = True
+        terminal.request_cd(PurePath("/target"))
+        assert b"".join(backend.writes).endswith(b"\n")
+        terminal._handle_pre_cmd("/target")
+        await pilot.pause()
+        assert app.changes == []
 
 
 @pytest.mark.asyncio
@@ -2279,8 +2335,8 @@ async def test_pre_cmd_sets_at_prompt_and_posts_path_changed_with_owner() -> Non
 # Navigation transaction
 # ---------------------------------------------------------------------------
 
-_KILL = b"\x1b[96~ \x15"  # ZshDriver.kill_line_sequence(): raw eol, space, Ctrl+U
-_YANK_BYTES = b"\x19\x08"  # ZshDriver.yank_sequence(): Ctrl+Y, backspace
+_SET_ASIDE = b"\x1b[95~\x1b[96~\x1b[93~\x1b[92~\x1b[95~\x1b[96~"  # ZshDriver.set_aside_sequence(): stash, cancel a search, stash
+_PUT_BACK_BYTES = b"\x1b[94~"  # ZshDriver.put_back_sequence(): restore key
 
 
 def _cd_writes(backend: FakePtyBackend) -> list[bytes]:
@@ -2327,7 +2383,8 @@ async def test_request_cd_at_prompt_writes_cd_and_drains() -> None:
         assert terminal._draining is True
         assert terminal._at_prompt is False
         assert _cd_writes(backend) == [_expected_cd("/opt/target")]
-        assert _KILL not in backend.writes
+        # The line is set aside also when it looks empty.
+        assert backend.writes == [_SET_ASIDE, _expected_cd("/opt/target")]
         terminal._cancel_watchdog()
 
 
@@ -2341,10 +2398,10 @@ async def test_request_cd_kills_line_once_when_input_present() -> None:
         terminal._at_prompt = True
         terminal._note_user_input("l")
         terminal.request_cd(PurePath("/a"))
-        assert backend.writes[0] == _KILL
+        assert backend.writes[0] == _SET_ASIDE
         assert terminal._nav_stashed is True
         terminal.request_cd(PurePath("/b"))  # coalesced, no second kill
-        assert backend.writes.count(_KILL) == 1
+        assert backend.writes.count(_SET_ASIDE) == 1
         terminal._cancel_watchdog()
 
 
@@ -2414,7 +2471,7 @@ async def test_request_cd_when_not_at_prompt_defers_until_precmd() -> None:
 
 
 @pytest.mark.asyncio
-async def test_abab_sequence_ends_at_b_with_one_kill_and_one_yank() -> None:
+async def test_abab_sequence_ends_at_b_with_one_set_aside_per_cd_and_one_put_back() -> None:
     backend, terminal = _new_zsh_terminal()
     app = TerminalTestApp(terminal)
     async with app.run_test() as pilot:
@@ -2441,8 +2498,7 @@ async def test_abab_sequence_ends_at_b_with_one_kill_and_one_yank() -> None:
             assert terminal._draining is False
             assert terminal._nav_busy is False
             assert terminal._nav_target is None
-            assert backend.writes.count(_KILL) == 1
-            assert backend.writes.count(_YANK_BYTES) == 1
+            assert backend.writes == [_SET_ASIDE, _expected_cd("/a"), _SET_ASIDE, _expected_cd("/b"), _PUT_BACK_BYTES]
             assert await future == PurePath("/b")
             rendered = "".join(line.plain for line in terminal._display.lines)
             assert "hidden echo" not in rendered
@@ -2463,7 +2519,7 @@ async def test_completed_navigation_with_stash_reports_input_present() -> None:
             terminal._note_user_input("l")
             terminal.request_cd(PurePath("/a"))
             await recv_q.put(["pre_cmd", "/a\n"])
-            await recv_q.put(["stdout", "$ ls"])  # prompt plus yanked text
+            await recv_q.put(["stdout", "$ ls"])  # prompt plus restored text
             await pilot.pause(delay=0.1)
             assert terminal.has_input() is True
         finally:
@@ -2487,7 +2543,7 @@ async def test_request_cd_stashes_with_editor_protocol_when_input_present() -> N
         terminal.request_cd(PurePath("/a"))
         assert backend.writes[0] == STASH_SEQUENCE
         assert terminal._nav_stashed is True
-        assert _KILL not in backend.writes
+        assert _SET_ASIDE not in backend.writes
         terminal._cancel_watchdog()
 
 
@@ -2521,7 +2577,7 @@ async def test_finish_nav_restores_with_editor_protocol() -> None:
             await pilot.pause(delay=0.1)
             assert backend.writes.count(STASH_SEQUENCE) == 1
             assert backend.writes.count(RESTORE_SEQUENCE) == 1
-            assert _YANK_BYTES not in backend.writes
+            assert _PUT_BACK_BYTES not in backend.writes
             assert terminal._draining is False
             assert terminal._nav_busy is False
         finally:
@@ -2618,7 +2674,7 @@ async def test_user_reaching_pending_target_resolves_without_cd() -> None:
 
 
 @pytest.mark.asyncio
-async def test_enter_during_busy_transaction_resends_cd_without_second_kill() -> None:
+async def test_enter_during_busy_transaction_resends_cd_with_a_kill_before_it() -> None:
     backend, terminal = _new_zsh_terminal()
     app = TerminalTestApp(terminal)
     async with app.run_test() as pilot:
@@ -2634,7 +2690,7 @@ async def test_enter_during_busy_transaction_resends_cd_without_second_kill() ->
             await recv_q.put(["pre_cmd", "/old\n"])
             await pilot.pause(delay=0.1)
             assert _cd_writes(backend) == [_expected_cd("/a"), _expected_cd("/a")]
-            assert backend.writes.count(_KILL) == 1
+            assert backend.writes == [_SET_ASIDE, _expected_cd("/a"), _SET_ASIDE, _expected_cd("/a")]
             await recv_q.put(["pre_cmd", "/a\n"])
             await pilot.pause(delay=0.1)
             assert terminal._nav_busy is False
@@ -2712,7 +2768,7 @@ async def test_watchdog_reinstalls_hook_once_and_resends_cd(monkeypatch: pytest.
 
 
 @pytest.mark.asyncio
-async def test_watchdog_gives_up_on_second_timeout_and_yanks(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_watchdog_gives_up_on_second_timeout_and_puts_the_line_back(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(terminal_module, "_NAV_WATCHDOG_TIMEOUT", 0.05)
     backend, terminal = _new_zsh_terminal()
     app = TerminalTestApp(terminal)
@@ -2727,7 +2783,7 @@ async def test_watchdog_gives_up_on_second_timeout_and_yanks(monkeypatch: pytest
         assert terminal._nav_busy is False
         assert terminal._nav_target is None
         assert terminal._draining is False
-        assert backend.writes.count(_YANK_BYTES) == 1
+        assert backend.writes.count(_PUT_BACK_BYTES) == 1
         assert await future == PurePath("/old")
 
 

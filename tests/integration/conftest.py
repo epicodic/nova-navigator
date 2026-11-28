@@ -60,6 +60,17 @@ def headed(request: pytest.FixtureRequest) -> bool:
     return bool(request.config.getoption("--headed"))
 
 
+@pytest.fixture(autouse=True)
+def _isolated_shell(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give the embedded terminal a plain bash with an empty home, not the developer's shell setup."""
+    home = tmp_path_factory.mktemp("home")
+    (home / ".zshrc").touch()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    for name in ("PS1", "PROMPT_COMMAND", "ZDOTDIR", "HISTFILE", "ENV", "BASH_ENV"):
+        monkeypatch.delenv(name, raising=False)
+
+
 # ---------------------------------------------------------------------------
 # AppCtx — bundles everything a test needs
 # ---------------------------------------------------------------------------

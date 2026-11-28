@@ -101,3 +101,19 @@ async def test_newline_handling() -> None:
         assert "line1" in text
         assert "line2" in text
         assert "\n" in text
+
+
+@pytest.mark.asyncio
+async def test_a_screen_update_that_still_holds_a_removed_widget_renders_it_blank() -> None:
+    """A screen update can run after the removal of the widget and before the next layout, and then renders the removed widget."""
+    widget = NovaTextArea(text="hello\n")
+    app = EditorTestApp(widget)
+
+    async with app.run_test(size=(40, 10)) as pilot:
+        await pilot.pause()
+        region = widget.region.reset_offset
+        await widget.remove()
+
+        strips = widget.render_lines(region)
+
+        assert [(strip.text, strip.cell_length) for strip in strips] == [(" " * region.width, region.width)] * region.height

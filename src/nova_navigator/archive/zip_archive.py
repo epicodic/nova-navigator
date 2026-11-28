@@ -1,9 +1,18 @@
 import zipfile
+from datetime import datetime
 from pathlib import PurePath
 from typing import override
 
 from ..vfs.filesystem import StreamReaderLike
 from .archive import Archive, Stat, _ArchiveReader
+
+
+def _zip_modified(date_time: tuple[int, int, int, int, int, int]) -> float:
+    """Return the epoch seconds of a zip entry's recorded local time, or -1.0 if it is not a valid date."""
+    try:
+        return datetime(*date_time).timestamp()
+    except ValueError:
+        return -1.0
 
 
 class ZipArchive(Archive):
@@ -53,7 +62,7 @@ class ZipArchive(Archive):
             # Root directory of the archive
             return Stat(
                 size=0,
-                modified=0,
+                modified=-1.0,
                 is_hidden=False,
                 is_directory=True,
                 is_executable=False,
@@ -65,7 +74,7 @@ class ZipArchive(Archive):
             if self.listdir(path):
                 return Stat(
                     size=0,
-                    modified=0,
+                    modified=-1.0,
                     is_hidden=path.name.startswith("."),
                     is_directory=True,
                     is_executable=False,
@@ -75,7 +84,7 @@ class ZipArchive(Archive):
 
         return Stat(
             size=member.file_size,
-            modified=0.0,  # member.date_time,
+            modified=_zip_modified(member.date_time),
             is_hidden=member.filename.startswith("."),
             is_directory=member.is_dir(),
             is_executable=(member.external_attr >> 16) & 0o111 != 0,

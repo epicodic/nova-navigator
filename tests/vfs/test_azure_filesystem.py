@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
-from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
+from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError, ServiceRequestError
 from azure.storage.blob import BlobPrefix, BlobProperties, ContainerClient
 
 from nova_navigator.vfs.filesystems.azure import AzureFilesystem
@@ -224,6 +224,7 @@ def test_rename_copies_then_deletes() -> None:
     fs, mock_client = _make_fs()
     src_blob_client = MagicMock()
     dst_blob_client = MagicMock()
+    dst_blob_client.start_copy_from_url.return_value = {"copy_status": "success"}
     src_blob_client.url = "https://test.blob.core.windows.net/testcontainer/old.txt"
 
     def _get_client(name: str) -> MagicMock:
@@ -315,3 +316,232 @@ def test_version_tag_missing_blob_raises_file_not_found() -> None:
     mock_client.get_blob_client.return_value.get_blob_properties.side_effect = ResourceNotFoundError
     with pytest.raises(FileNotFoundError):
         fs.version_tag(fs.path("/missing.txt"))
+
+
+# ── regressions A1-A3: directory rename, erase of directories, same device ────
+
+
+def test_rename_moves_every_blob_under_a_directory() -> None:
+    fs, mock_client = _make_fs()
+    clients: dict[str, MagicMock] = {}
+
+    def _get_client(name: str) -> MagicMock:
+        if name not in clients:
+            clients[name] = MagicMock(url=f"https://test.blob.core.windows.net/testcontainer/{name}")
+            clients[name].start_copy_from_url.return_value = {"copy_status": "success"}
+        return clients[name]
+
+    mock_client.get_blob_client.side_effect = _get_client
+    _get_client("dst").start_copy_from_url.side_effect = ResourceNotFoundError  # the copy finds no source blob
+    names = ["src/.keep", "src/a.txt", "src/deep/b.txt"]
+    mock_client.list_blobs.return_value = [_make_blob_properties(name) for name in names]
+
+    fs.rename(fs.path("/src"), fs.path("/dst"))
+
+    mock_client.list_blobs.assert_called_with(name_starts_with="src/")
+    for name in names:
+        moved = "dst/" + name.removeprefix("src/")
+        _get_client(moved).start_copy_from_url.assert_called_once_with(_get_client(name).url)
+        _get_client(name).delete_blob.assert_called_once()
+
+
+def test_rmdir_after_removing_the_marker_succeeds() -> None:
+    fs, mock_client = _make_fs()
+    mock_client.list_blobs.return_value = []
+    mock_client.get_blob_client.return_value.delete_blob.side_effect = [None, ResourceNotFoundError]
+    fs.remove(fs.path("/d/.keep"))
+    fs.rmdir(fs.path("/d"))
+
+
+def test_rmdir_after_removing_the_last_blob_succeeds() -> None:
+    fs, mock_client = _make_fs()
+    mock_client.list_blobs.return_value = []
+    mock_client.get_blob_client.return_value.delete_blob.side_effect = [None, ResourceNotFoundError]
+    fs.remove(fs.path("/d/a.txt"))
+    fs.rmdir(fs.path("/d"))
+
+
+def test_second_rmdir_of_the_same_directory_raises_file_not_found() -> None:
+    fs, mock_client = _make_fs()
+    mock_client.list_blobs.return_value = []
+    mock_client.get_blob_client.return_value.delete_blob.side_effect = [None, ResourceNotFoundError]
+    fs.rmdir(fs.path("/d"))
+    with pytest.raises(FileNotFoundError):
+        fs.rmdir(fs.path("/d"))
+
+
+def test_rmdir_of_parent_succeeds_after_its_emptied_subdirectory_is_removed() -> None:
+    fs, mock_client = _make_fs()
+    mock_client.list_blobs.return_value = []
+    mock_client.get_blob_client.return_value.delete_blob.side_effect = [None, None, ResourceNotFoundError]
+    fs.remove(fs.path("/p/d/a.txt"))
+    fs.rmdir(fs.path("/p/d"))
+    fs.rmdir(fs.path("/p"))
+
+
+def test_is_same_device_is_false_for_another_container() -> None:
+    fs, mock_client = _make_fs()
+    other = AzureFilesystem("https://test.blob.core.windows.net", "othercontainer", client=mock_client)
+    assert fs.is_same_device(fs.path("/a"), other.path("/a")) is False
+
+
+def test_is_same_device_is_true_for_another_instance_of_the_same_container() -> None:
+    fs, mock_client = _make_fs()
+    again = AzureFilesystem("https://test.blob.core.windows.net/", "testcontainer", client=mock_client)
+    assert fs.is_same_device(fs.path("/a"), again.path("/b")) is True
+
+
+# ── regressions A4-A6: errors reach the caller, a failed move keeps the source ──
+
+
+@pytest.mark.asyncio
+async def test_iterdir_raises_the_listing_error() -> None:
+    fs, mock_client = _make_fs()
+    mock_client.walk_blobs.side_effect = ResourceNotFoundError
+    with pytest.raises(FileNotFoundError):
+        async for _ in fs.iterdir(fs.path("/")):
+            pass
+
+
+def test_stat_maps_connection_errors_to_oserror() -> None:
+    fs, mock_client = _make_fs()
+    mock_client.get_blob_client.return_value.get_blob_properties.side_effect = ServiceRequestError("no route to host")
+    with pytest.raises(OSError, match="no route to host") as exc_info:
+        fs.stat(fs.path("/file.txt"))
+    assert exc_info.value.errno == errno.EIO
+
+
+def test_write_maps_upload_errors_to_oserror() -> None:
+    fs, mock_client = _make_fs()
+    mock_client.get_blob_client.return_value.upload_blob.side_effect = ServiceRequestError("no route to host")
+    writer = fs.write(fs.path("/out.txt"))
+    writer.write(b"hello")
+    with pytest.raises(OSError, match="no route to host") as exc_info:
+        writer.close()
+    assert exc_info.value.errno == errno.EIO
+
+
+def _copy_properties(status: str) -> MagicMock:
+    props = MagicMock()
+    props.copy.status = status
+    return props
+
+
+def test_rename_keeps_the_source_when_the_copy_fails() -> None:
+    fs, mock_client = _make_fs()
+    src_blob_client = MagicMock()
+    dst_blob_client = MagicMock()
+    dst_blob_client.start_copy_from_url.return_value = {"copy_status": "failed"}
+
+    def _get_client(name: str) -> MagicMock:
+        return src_blob_client if name == "old.txt" else dst_blob_client
+
+    mock_client.get_blob_client.side_effect = _get_client
+    with pytest.raises(OSError, match="did not complete"):
+        fs.rename(fs.path("/old.txt"), fs.path("/new.txt"))
+    src_blob_client.delete_blob.assert_not_called()
+
+
+def test_rename_waits_for_a_pending_copy() -> None:
+    fs, mock_client = _make_fs()
+    src_blob_client = MagicMock()
+    dst_blob_client = MagicMock()
+    dst_blob_client.start_copy_from_url.return_value = {"copy_status": "pending"}
+    dst_blob_client.get_blob_properties.side_effect = [_copy_properties("pending"), _copy_properties("success")]
+
+    def _get_client(name: str) -> MagicMock:
+        return src_blob_client if name == "old.txt" else dst_blob_client
+
+    mock_client.get_blob_client.side_effect = _get_client
+    fs.rename(fs.path("/old.txt"), fs.path("/new.txt"))
+    assert dst_blob_client.get_blob_properties.call_count == 2
+    src_blob_client.delete_blob.assert_called_once()
+
+
+# ── deleted during download, same-name rename, abandoned copy ─────────────────
+
+
+def test_read_blob_deleted_during_download_raises_file_not_found() -> None:
+    fs, mock_client = _make_fs()
+    downloader = MagicMock()
+    downloader.read.side_effect = ResourceNotFoundError
+    mock_client.get_blob_client.return_value.download_blob.return_value = downloader
+    reader = fs.read(fs.path("/file.txt"))
+    with pytest.raises(FileNotFoundError):
+        reader.read(4)
+
+
+def test_rename_onto_itself_keeps_the_blob() -> None:
+    fs, mock_client = _make_fs()
+    blob_client = MagicMock()
+    blob_client.start_copy_from_url.return_value = {"copy_status": "success"}
+    mock_client.get_blob_client.return_value = blob_client
+    fs.rename(fs.path("/same.txt"), fs.path("/same.txt"))
+    blob_client.delete_blob.assert_not_called()
+
+
+def test_rename_onto_itself_of_a_missing_blob_raises_file_not_found() -> None:
+    fs, mock_client = _make_fs()
+    mock_client.get_blob_client.return_value.get_blob_properties.side_effect = ResourceNotFoundError
+    mock_client.list_blobs.return_value = iter([])
+    with pytest.raises(FileNotFoundError):
+        fs.rename(fs.path("/missing.txt"), fs.path("/missing.txt"))
+
+
+def test_pending_copy_at_timeout_is_aborted_and_new_destination_removed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nova_navigator.vfs.filesystems import azure as azure_module
+
+    monkeypatch.setattr(azure_module, "_COPY_TIMEOUT", 0.0)
+    fs, mock_client = _make_fs()
+    src_blob_client = MagicMock()
+    dst_blob_client = MagicMock()
+    dst_blob_client.exists.return_value = False
+    dst_blob_client.start_copy_from_url.return_value = {"copy_status": "pending", "copy_id": "copy-1"}
+
+    def _get_client(name: str) -> MagicMock:
+        return src_blob_client if name == "old.txt" else dst_blob_client
+
+    mock_client.get_blob_client.side_effect = _get_client
+    with pytest.raises(OSError, match="did not complete"):
+        fs.rename(fs.path("/old.txt"), fs.path("/new.txt"))
+    dst_blob_client.abort_copy.assert_called_once_with("copy-1")
+    dst_blob_client.delete_blob.assert_called_once()
+    src_blob_client.delete_blob.assert_not_called()
+
+
+def test_failed_copy_keeps_a_destination_that_existed_before() -> None:
+    fs, mock_client = _make_fs()
+    src_blob_client = MagicMock()
+    dst_blob_client = MagicMock()
+    dst_blob_client.exists.return_value = True
+    dst_blob_client.start_copy_from_url.return_value = {"copy_status": "failed", "copy_id": "copy-2"}
+
+    def _get_client(name: str) -> MagicMock:
+        return src_blob_client if name == "old.txt" else dst_blob_client
+
+    mock_client.get_blob_client.side_effect = _get_client
+    with pytest.raises(OSError, match="did not complete"):
+        fs.rename(fs.path("/old.txt"), fs.path("/new.txt"))
+    dst_blob_client.delete_blob.assert_not_called()
+    dst_blob_client.abort_copy.assert_not_called()
+    src_blob_client.delete_blob.assert_not_called()
+
+
+@pytest.mark.parametrize("existed", [False, True])
+def test_pending_copy_is_abandoned_when_its_status_cannot_be_read(existed: bool) -> None:
+    fs, mock_client = _make_fs()
+    src_blob_client = MagicMock()
+    dst_blob_client = MagicMock()
+    dst_blob_client.exists.return_value = existed
+    dst_blob_client.start_copy_from_url.return_value = {"copy_status": "pending", "copy_id": "copy-3"}
+    dst_blob_client.get_blob_properties.side_effect = ServiceRequestError("status unreachable")
+
+    def _get_client(name: str) -> MagicMock:
+        return src_blob_client if name == "old.txt" else dst_blob_client
+
+    mock_client.get_blob_client.side_effect = _get_client
+    with pytest.raises(OSError, match="status unreachable"):
+        fs.rename(fs.path("/old.txt"), fs.path("/new.txt"))
+    dst_blob_client.abort_copy.assert_called_once_with("copy-3")
+    assert dst_blob_client.delete_blob.call_count == (0 if existed else 1)
+    src_blob_client.delete_blob.assert_not_called()

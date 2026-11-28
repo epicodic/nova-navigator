@@ -32,7 +32,9 @@ from ..config import conf_
 from ..file_filter import FilenamePatternFilter
 from ..format_utils import format_size
 from ..icons import ico_
+from ..secret_registry import register_uri_secrets
 from ..vfs import VPath
+from ..vfs.local_copy import is_local_source
 from ..vfs.types import Stat
 
 
@@ -377,6 +379,7 @@ class GoToPathWidget(PopupWidget, can_focus=True):
 
     def action_accept(self) -> None:
         value = self.input.value.strip()
+        register_uri_secrets(value)
         if not value:
             self.action_dismiss()
             return
@@ -573,6 +576,7 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
             ),
         ]
         self._path = UpPath()
+        self.last_local_path: str | None = None
         self._history = []
         self._history_index = -1
         self._load_cancel = None
@@ -609,6 +613,11 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
     @property
     def path(self) -> VPath:
         return self._path
+
+    @property
+    def has_committed_path(self) -> bool:
+        """Whether a directory has been listed successfully, so ``path`` is a real path rather than the placeholder."""
+        return not isinstance(self._path, UpPath)
 
     @property
     def path_item_under_cursor(self) -> VPath:
@@ -678,6 +687,8 @@ class DirectoryBrowser(ActionsSupport, CustomBorderMixin, ScrollView):
         if target != self._path:
             self._hidden_names = frozenset()
         self._path = target
+        if is_local_source(target):
+            self.last_local_path = str(target.path)
         self.border_title = target.uri
         self.post_message(DirectoryBrowser.PathChanged(self, target))
 

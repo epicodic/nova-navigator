@@ -1,5 +1,5 @@
 from .archive import ArchiveFilesystem
-from .azure import AzureFilesystem
+from .azure import AzureFilesystem, MissingAzureExtraError
 from .local import LocalFilesystem
 from .remote import RemoteFilesystem
 from .ssh import (
@@ -7,6 +7,7 @@ from .ssh import (
     ConfirmedKeyMismatchError,
     HopAuthenticationError,
     HostKeyError,
+    NoAuthenticationMethodError,
     RevokedHostKeyError,
     SshConnectTimeoutError,
     SSHFilesystem,
@@ -22,6 +23,8 @@ __all__ = [
     "HopAuthenticationError",
     "HostKeyError",
     "LocalFilesystem",
+    "MissingAzureExtraError",
+    "NoAuthenticationMethodError",
     "RemoteFilesystem",
     "RevokedHostKeyError",
     "SSHFilesystem",

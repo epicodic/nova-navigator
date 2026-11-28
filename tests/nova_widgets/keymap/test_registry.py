@@ -179,3 +179,17 @@ async def test_escape_during_pending_sequence_clears_hint_bar() -> None:
         assert consumed is False
         assert hint_bar.is_chord_pending is False
         assert registry.pending_chord_info is None
+
+
+@pytest.mark.asyncio
+async def test_pass_through_leaves_the_key_unconsumed() -> None:
+    registry = KeymapRegistry(HintBar())
+    registry.reload({"browser.copy": KeySequence.parse("f5")})
+
+    app = _RegistryTestApp(registry)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert await registry.handle_key("f5", app, pass_through=lambda i: i == "browser.copy") is False
+        assert app.dispatched == []
+        assert await registry.handle_key("f5", app, pass_through=lambda _: False) is True
+        assert app.dispatched == ["copy"]

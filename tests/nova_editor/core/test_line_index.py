@@ -108,6 +108,7 @@ def test_snapshot_grows_monotonically_and_lower_bound_holds() -> None:
     assert index.snapshot().count == 2001
 
 
+@pytest.mark.wall_clock
 def test_rows_past_the_frontier_return_none_immediately() -> None:
     gate = threading.Event()
     index = LineIndex(MemorySource(b"a\nb\nc\n", gate=gate), scan_block=2)

@@ -42,6 +42,7 @@ class TimedNovaTextArea(NovaTextArea):
         highlight_cursor_line: bool = True,
         placeholder: str | Content = "",
         timing_file: str | None = None,
+        view_only: bool = False,
         _prebuilt_document: LazyDocument | None = None,
     ) -> None:
         super().__init__(
@@ -63,6 +64,7 @@ class TimedNovaTextArea(NovaTextArea):
             compact=compact,
             highlight_cursor_line=highlight_cursor_line,
             placeholder=placeholder,
+            view_only=view_only,
             _prebuilt_document=_prebuilt_document,
         )
         self.timing_file = timing_file

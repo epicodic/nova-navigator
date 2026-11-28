@@ -437,6 +437,7 @@ class _SlowCloseSource(CountingSource):
         super().close()
 
 
+@pytest.mark.wall_clock
 def test_close_does_not_wait_for_the_source_and_wait_closed_does(tmp_path: Path) -> None:
     source = _SlowCloseSource(make_mixed(tmp_path / "m.txt", long_chars=6000))
     doc = LazyDocument(source, _config())
@@ -455,6 +456,7 @@ def test_close_does_not_wait_for_the_source_and_wait_closed_does(tmp_path: Path)
     assert source.closes == 1
 
 
+@pytest.mark.wall_clock
 def test_retired_scans_are_joined_off_the_caller_thread(tmp_path: Path) -> None:
     from tests.nova_editor.helpers_view import GateSource
 

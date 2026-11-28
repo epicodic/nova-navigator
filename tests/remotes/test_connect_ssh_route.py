@@ -401,6 +401,7 @@ async def test_proxy_command_alone_connects_directly_and_logs_info(route_env: Ro
 
 
 @pytest.mark.asyncio
+@pytest.mark.wall_clock
 async def test_silent_host_fails_after_ssh_timeout_with_error_box(route_env: RouteEnv, default_settings: Settings) -> None:
     default_settings.network.ssh_timeout = 1
     silent = SilentServer()
@@ -466,6 +467,7 @@ async def test_changed_timeout_setting_applies_to_the_next_connection(route_env:
 
 
 @pytest.mark.asyncio
+@pytest.mark.wall_clock
 async def test_timeout_below_one_second_is_clamped_to_one(route_env: RouteEnv, default_settings: Settings) -> None:
     default_settings.network.ssh_timeout = 0
     silent = SilentServer()

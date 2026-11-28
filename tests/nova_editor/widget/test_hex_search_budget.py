@@ -65,6 +65,7 @@ def test_goto_beyond_the_length_is_rejected_without_reading(tmp_path: Path) -> N
         assert log.calls == []
 
 
+@pytest.mark.wall_clock
 def test_forward_byte_search_near_the_end_reads_two_windows_at_most(tmp_path: Path) -> None:
     source = CountingSource(sparse_with_needle(tmp_path))
     with opened(source, autostart=False) as document:

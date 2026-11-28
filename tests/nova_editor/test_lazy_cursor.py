@@ -120,6 +120,7 @@ def _mixed(tmp_path: Path) -> Path:
     return path
 
 
+@pytest.mark.wall_clock
 @pytest.mark.asyncio
 async def test_end_is_provisional_then_resolves_without_visual_change(tmp_path: Path) -> None:
     rig = _Rig(_mixed(tmp_path))
@@ -166,6 +167,7 @@ async def test_provisional_window_shows_the_end_of_the_row(tmp_path: Path) -> No
         assert width > 0
 
 
+@pytest.mark.wall_clock
 @pytest.mark.asyncio
 async def test_up_from_provisional_repaints_progress_immediately(tmp_path: Path) -> None:
     rig = _Rig(_mixed(tmp_path))

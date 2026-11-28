@@ -1,6 +1,7 @@
 # Coding Conventions
 
-This project is **Python 3.12 only**.
+This project requires **Python 3.12 or later** (`requires-python = ">=3.12"`) and CI tests 3.12, 3.13 and 3.14.
+Code must still run on 3.12, so do not use syntax or standard-library features that only later versions provide.
 
 ## Python
 
@@ -59,3 +60,9 @@ def compose_content(self) -> ComposeResult:
 ```
 
 This applies to all Textual container context managers (`Horizontal`, `Vertical`, `ScrollableContainer`, etc.) used inside `compose_content()`.
+
+## Secrets in diagnostics
+
+`crash.txt` and `app.log` are scrubbed of every value registered in `nova_navigator/secret_registry.py`.
+Code that receives a password or passphrase (a new input field, config setting, argument or callback) must register it there at the point of receipt, with a test in `tests/test_secret_receivers.py`.
+Registration cannot recognise transformed copies (encoded, split or truncated).

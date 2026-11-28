@@ -38,6 +38,10 @@ A link to a directory is therefore a link, not a directory.
 `VPath.walk` never descends into a link.
 Delete and the removal of a move source never follow a link.
 They call `Filesystem.remove` on the link itself.
+Delete checks a directory again with `Filesystem.stat_uncached` before listing it, and again after the recursive-delete question.
+If it has become a link, the link is removed and its target is not listed.
+A change between that check and the operation itself is not covered.
+An entry that has vanished meanwhile is skipped and does not abort the job.
 
 ## Copy decision
 
@@ -141,6 +145,28 @@ An answer of `skip` or "No" is a decision of the user.
 Such a policy skip is not reported, unlike `"folder exists"`.
 A move of a file onto a link on the same device renames over it, so the link is replaced.
 
+## Copy and move onto itself
+
+`_is_onto_itself` in `filemanager/tasks.py` runs before anything at a destination is removed or written.
+A match is skipped as `"same file"` under every overwrite policy, without a question, and nothing is changed.
+It applies to files, links and folders, on copy and on move.
+
+- The destination is the source entry: the same path on the same storage (`Filesystem.is_same_storage`, or the same device), also behind `RemoteFilesystem` wrappers.
+- On the local filesystem the inode decides, so a path through a symlinked folder and a hard link count too.
+- Elsewhere, equal names in parent folders that `real_path` resolves to the same folder count too.
+- The source is a link and the destination is its target, or a link on the way to it.
+
+Copying or moving a file onto a link that points to it is not such a case: the link is replaced, as any destination link.
+
+Two SSH connections with the same host name, port and user, as effective after `~/.ssh/config`, are the same storage (`Filesystem.is_same_storage`).
+They still compare unequal with `==`, so link rewriting and the move strategy treat them as separate.
+The same storage reached under another host name, user or port is not recognised, and neither is a hard link on SSH.
+
+A folder copied or moved into itself or one of its subfolders, with links resolved, is skipped as `"into itself"` in the same way.
+Only the parent folder of the destination is resolved when the destination itself is a link: that link is replaced, as a folder write replaces it, so a folder copied onto a link that points into the source is not skipped.
+
+`cp` refuses to copy a file onto itself, also through a link on a filesystem that supports symbolic links, and `cp -r` refuses to copy a directory into itself.
+
 ## Loop detection
 
 Loops only matter when a directory link is followed and copied as a tree.
@@ -160,12 +186,14 @@ When `real_path` returns `None`, the link is walked through a followed view and 
 ## Skip reasons
 
 An item that is left out is reported with `TaskContext.report_skipped(item.uri, reason)`.
-There are four exact reasons.
+There are six exact reasons.
 
 - `"broken link"`: the target does not exist, or no longer exists when the link is processed (for example moved earlier in the same move), and links are followed or the destination has no links.
 - `"link loop"`: the directory link loops, or the depth guard was hit.
 - `"unreadable link"`: `readlink` failed on the source.
 - `"folder exists"`: a file or link met a real folder of the same name at the destination; `item` is the source path.
+- `"same file"`: the destination is the source itself; see "Copy and move onto itself".
+- `"into itself"`: the destination of a folder lies inside it; see "Copy and move onto itself".
 
 The app shows one toast per finished job and the Jobs dialog lists each path with its reason.
 A skipped item counts as completed work.
@@ -272,6 +300,9 @@ This is verified against the stub server only.
 The modification time of a link is not preserved, because `utime` and `chmod` follow links.
 Each `stat_or_none` costs one directory listing, so large trees cost O(n) listings.
 On a remote without GNU `find` or `stat`, or one that refuses exec requests, the listing uses SFTP and one extra `stat` per link.
+A directory whose listing output contains U+FFFD is listed through SFTP too, because uutils `stat` writes it in place of name bytes that are not UTF-8.
+This is decided per directory, and a name that really contains U+FFFD takes the same path.
+Such a directory raises an error instead of listing when SFTP fails.
 A link whose `stat` fails is listed as a broken link, as it is with `stat -L`.
 
 The SSH behaviour is tested against the stub server only.

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -59,6 +61,7 @@ async def test_typing_and_ctrl_s_write_the_local_file(app_ctx: AppCtx) -> None:
 
     await app_ctx.pilot.press("x", "ctrl+s")
     await poll_until(app_ctx.pilot, lambda: (app_ctx.src_dir / "a.txt").read_text() == "xhello\n")
+    await wait_for_save(app_ctx, screen)
 
     assert not screen.document.editor.modified
 
@@ -165,6 +168,14 @@ async def open_in_editor(ctx: AppCtx, source: VPath) -> EditorScreen:
     return editor_of(ctx)
 
 
+async def wait_for_save(ctx: AppCtx, screen: EditorScreen) -> None:
+    """Wait until the save of *screen* has finished; a save still running at the timeout fails the test."""
+    editor = screen.document.editor
+    await poll_until(ctx.pilot, lambda: not editor.saving and not editor.modified)
+    assert not editor.saving
+    assert not editor.modified
+
+
 def capture_notices(ctx: AppCtx, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Record the toasts of the app instead of showing them."""
     notices: list[str] = []
@@ -215,13 +226,48 @@ async def test_an_ssh_file_is_edited_through_its_copy_and_written_back_once(app_
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_closing_right_after_a_save_loses_nothing_and_syncs_once(app_ctx: AppCtx, tmp_path: Path) -> None:
+async def test_closing_right_after_a_save_loses_nothing_and_syncs_once(app_ctx: AppCtx, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fs = SchemeFs({"/d/f.txt": b"remote\n"})
     runner = ScriptedRunner()
     manager = install_manager(app_ctx, tmp_path, runner)
-    await open_in_editor(app_ctx, fs.path("/d/f.txt"))
+    screen = await open_in_editor(app_ctx, fs.path("/d/f.txt"))
+    editor = screen.document.editor
 
-    await app_ctx.pilot.press("x", "ctrl+s", "ctrl+w")
+    # The save is held after the replace of the file (prepare_rebase runs on the save thread right after it), so the close
+    # below happens while the save still runs. Without the hold a fast save would finish first and the close would not
+    # exercise a running save at all.
+    reached = threading.Event()
+    release = threading.Event()
+    cancel_calls: list[None] = []
+    real_prepare_rebase = editor.document.prepare_rebase
+    real_cancel_save = editor.cancel_save
+
+    def held_prepare_rebase(*args: Any, **kwargs: Any) -> Any:
+        reached.set()
+        release.wait(timeout=10)
+        return real_prepare_rebase(*args, **kwargs)
+
+    def recording_cancel_save() -> None:
+        cancel_calls.append(None)
+        real_cancel_save()
+
+    monkeypatch.setattr(editor.document, "prepare_rebase", held_prepare_rebase)
+    monkeypatch.setattr(editor, "cancel_save", recording_cancel_save)
+
+    try:
+        await app_ctx.pilot.press("x", "ctrl+s")
+        await poll_until(app_ctx.pilot, reached.is_set, max_wait=5)
+        assert reached.is_set()
+        assert editor.saving
+
+        await app_ctx.pilot.press("ctrl+w")
+        await poll_until(app_ctx.pilot, lambda: bool(cancel_calls), max_wait=5)
+        assert cancel_calls
+        assert editor.saving
+        assert app_ctx.app.screen is screen
+    finally:
+        release.set()
+
     await back_in_the_list(app_ctx)
     await poll_until(app_ctx.pilot, lambda: content(fs, "/d/f.txt") == b"xremote\n")
     await manager.wait_idle(max_wait=3)
@@ -259,8 +305,10 @@ async def test_a_member_of_a_writable_zip_is_written_back_into_the_zip(app_ctx: 
     member = ArchiveFilesystem(local.path(tmp_path), local.path(zip_path)).path("/a.txt")
     manager = install_manager(app_ctx, tmp_path, ScriptedRunner())
 
-    await open_in_editor(app_ctx, member)
-    await app_ctx.pilot.press("x", "ctrl+s", "ctrl+w")
+    screen = await open_in_editor(app_ctx, member)
+    await app_ctx.pilot.press("x", "ctrl+s")
+    await wait_for_save(app_ctx, screen)
+    await app_ctx.pilot.press("ctrl+w")
     await back_in_the_list(app_ctx)
     await manager.wait_idle(max_wait=5)
 
@@ -302,13 +350,14 @@ async def test_a_conflict_answered_with_skip_leaves_the_source_and_is_reported_a
     fs = SchemeFs({"/d/f.txt": b"remote\n"})
     runner = ScriptedRunner([Response.SKIP])
     manager = install_manager(app_ctx, tmp_path, runner)
-    await open_in_editor(app_ctx, fs.path("/d/f.txt"))
+    screen = await open_in_editor(app_ctx, fs.path("/d/f.txt"))
     entry = only_entry(manager)
     overwrite(fs, "/d/f.txt", b"server\n")
 
     await app_ctx.pilot.press("x", "ctrl+s")
     await poll_until(app_ctx.pilot, lambda: entry.status is CopyStatus.CONFLICT)
     assert isinstance(app_ctx.app.screen, EditorScreen)
+    await wait_for_save(app_ctx, screen)
     await app_ctx.pilot.press("ctrl+w")
     await back_in_the_list(app_ctx)
 
@@ -324,10 +373,12 @@ async def test_a_failed_write_back_is_reported_at_close_and_the_copy_keeps_the_t
     notices = capture_notices(app_ctx, monkeypatch)
     fs = RefusingFs({"/d/f.txt": b"remote\n"})
     manager = install_manager(app_ctx, tmp_path, ScriptedRunner())
-    await open_in_editor(app_ctx, fs.path("/d/f.txt"))
+    screen = await open_in_editor(app_ctx, fs.path("/d/f.txt"))
     entry = only_entry(manager)
 
-    await app_ctx.pilot.press("x", "ctrl+s", "ctrl+w")
+    await app_ctx.pilot.press("x", "ctrl+s")
+    await wait_for_save(app_ctx, screen)
+    await app_ctx.pilot.press("ctrl+w")
     await back_in_the_list(app_ctx)
     await poll_until(app_ctx.pilot, lambda: entry.status is CopyStatus.FAILED)
 
@@ -342,8 +393,10 @@ async def test_a_failed_write_back_is_reported_at_close_and_the_copy_keeps_the_t
 async def test_opening_the_same_file_again_reuses_the_copy_and_shows_the_saved_text(app_ctx: AppCtx, tmp_path: Path) -> None:
     fs = SchemeFs({"/d/f.txt": b"remote\n"})
     manager = install_manager(app_ctx, tmp_path, ScriptedRunner())
-    await open_in_editor(app_ctx, fs.path("/d/f.txt"))
-    await app_ctx.pilot.press("x", "ctrl+s", "ctrl+w")
+    first = await open_in_editor(app_ctx, fs.path("/d/f.txt"))
+    await app_ctx.pilot.press("x", "ctrl+s")
+    await wait_for_save(app_ctx, first)
+    await app_ctx.pilot.press("ctrl+w")
     await back_in_the_list(app_ctx)
     await manager.wait_idle(max_wait=3)
 

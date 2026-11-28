@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 from weakref import WeakKeyDictionary
 
@@ -109,12 +110,14 @@ class KeymapRegistry:
 
         return result
 
-    async def handle_key(self, key: str, app: App[Any]) -> bool:
+    async def handle_key(self, key: str, app: App[Any], pass_through: Callable[[str], bool] | None = None) -> bool:
         """Handle a key event.
 
         Args:
             key: Textual key name, e.g. "ctrl+x" or "f5".
             app: The running application.
+            pass_through: Optional predicate on an action id. When it returns True for the matched
+                action, the key is left unconsumed so the focused widget receives it.
 
         Returns:
             True if the key was consumed, False if it should propagate to widgets.
@@ -138,6 +141,8 @@ class KeymapRegistry:
         if result.action_name is not None:
             self._pending_chord_info = None
             self._hint_bar.clear_chord()
+            if pass_through is not None and pass_through(result.action_name):
+                return False
             action = self._action_map.get(result.action_name)
             if action is not None and action.action is not None:
                 # Dispatch: focused widget first, then the active screen, then the app.

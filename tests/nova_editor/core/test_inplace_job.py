@@ -600,6 +600,7 @@ def test_failure_before_the_first_write_carries_no_identity(tmp_path: Path) -> N
         doc.close()
 
 
+@pytest.mark.wall_clock
 def test_reading_original_parts_is_not_quadratic_in_the_copies(tmp_path: Path) -> None:
     doc, _ = open_pread_document(tmp_path, DATA)
     try:

@@ -11,6 +11,7 @@ from .jobs_dialog import JobsDialog
 from .local_copies_dialog import LocalCopiesDialog
 from .select_by_pattern_dialog import SelectByPatternDialog
 from .user_menu_input_dialog import InputField, UserMenuInputDialog
+from .write_back_running_dialog import WriteBackRunningDialog
 
 # from .processes_dialog import ProcessesDialog
 
@@ -31,4 +32,5 @@ __all__ = [
     "LocalCopiesDialog",
     "SelectByPatternDialog",
     "UserMenuInputDialog",
+    "WriteBackRunningDialog",
 ]

@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 
 def run(*args: str) -> dict[str, Any]:
     result = subprocess.run([sys.executable, "-m", "tools.measure_core", *args], capture_output=True, text=True, check=True, timeout=120)
@@ -34,6 +36,7 @@ def test_longline_mode(tmp_path: Path) -> None:
     assert out["checkpoints"] == 4  # the array holds the row start and one checkpoint per piece of at most 65,536 characters
 
 
+@pytest.mark.wall_clock
 def test_calls_mode_reports_worst_call(tmp_path: Path) -> None:
     path = tmp_path / "m.txt"
     path.write_bytes((b"x" * 15_000 + b"\n") * 500)

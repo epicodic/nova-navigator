@@ -13,10 +13,10 @@ def header(msg: str, style: str) -> None:
     console.rule(f"[bold white] {msg} [/]", style=style)
 
 
-def run_step(label: str, style: str, cmd: list[str]) -> bool:
+def run_step(label: str, style: str, cmd: list[str], ok_codes: tuple[int, ...] = (0,)) -> bool:
     header(label, style)
     result = subprocess.run(cmd, check=False)
-    if result.returncode == 0:
+    if result.returncode in ok_codes:
         console.print(f"  [bold green]\u2713 {label} passed[/]")
         return True
     else:
@@ -39,27 +39,55 @@ def main() -> None:
     parser.add_argument("--fix", action="store_true", help="Apply autofixes where possible.")
     args = parser.parse_args()
 
-    steps = [
+    steps: list[tuple[str, str, list[str], tuple[int, ...]]] = [
         (
             "Ruff Lint",
             "blue",
             ["uv", "run", "ruff", "check", "."] + (["--fix"] if args.fix else []),
+            (0,),
         ),
         (
             "Ruff Format",
             "yellow",
             ["uv", "run", "ruff", "format", "."] + ([] if args.fix else ["--check"]),
+            (0,),
         ),
-        ("Type Check", "green", ["uv", "run", "ty", "check", "."]),
+        ("Type Check", "green", ["uv", "run", "ty", "check", "."], (0,)),
     ]
     if not args.no_tests:
-        test_args = []
-        if args.no_integration_tests:
-            test_args += ["-m", "not integration"]
+        # Wall-clock budget tests run in their own serial pass so parallel load cannot break their timing.
+        # PYTEST_ADDOPTS may add "-n N"; "-n 0" given here overrides it for the second pass.
+        # Exit code 5 means no test was selected, which is expected when --no-integration-tests empties the pass.
+        integration_filter = " and not integration" if args.no_integration_tests else ""
+        steps.append(
+            (
+                "Tests",
+                "magenta",
+                ["uv", "run", "pytest", "-m", f"not wall_clock and not real_server{integration_filter}"],
+                (0,),
+            )
+        )
+        steps.append(
+            (
+                "Wall-clock tests (serial)",
+                "magenta",
+                ["uv", "run", "pytest", "-m", f"wall_clock{integration_filter}", "-n", "0"],
+                (0, 5) if args.no_integration_tests else (0,),
+            )
+        )
+        # Real-server tests start Docker containers, so they run serially after the parallel pass.
+        # All of them are integration tests, hence the step is skipped with --no-integration-tests.
+        if not args.no_integration_tests:
+            steps.append(
+                (
+                    "Real-server tests (serial)",
+                    "magenta",
+                    ["uv", "run", "pytest", "-m", "real_server", "-n", "0", "-rs"],
+                    (0,),
+                )
+            )
 
-        steps.append(("Tests", "magenta", ["uv", "run", "pytest", *test_args]))
-
-    failed = [label for label, style, cmd in steps if not run_step(label, style, cmd)]
+    failed = [label for label, style, cmd, ok_codes in steps if not run_step(label, style, cmd, ok_codes)]
 
     console.print()
     if not failed:

@@ -1,8 +1,10 @@
 import asyncio
 import contextlib
 import logging
+import os
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
-from pathlib import PurePosixPath
+from pathlib import PurePath, PurePosixPath
 from typing import Literal
 
 from nova_navigator.scheduler import TaskContext
@@ -11,6 +13,8 @@ from nova_widgets import Response
 from ..file_filter import FileFilter
 from ..vfs import VPath
 from ..vfs.filesystem import Filesystem, StreamReaderLike, StreamWriterLike
+from ..vfs.filesystems.local import LocalFilesystem
+from ..vfs.local_copy import MAX_LINK_HOPS
 from ..vfs.types import Stat
 from .link_target import stable_link_target
 
@@ -26,6 +30,8 @@ SKIP_BROKEN_LINK = "broken link"
 SKIP_LINK_LOOP = "link loop"
 SKIP_UNREADABLE_LINK = "unreadable link"
 SKIP_FOLDER_EXISTS = "folder exists"
+SKIP_SAME_FILE = "same file"
+SKIP_INTO_ITSELF = "into itself"
 _MAX_LINK_DEPTH = 16
 
 
@@ -65,6 +71,119 @@ class EraseFilesOptions:
     ask_before_erase: bool = True
     refresh_stat: bool = True
     """Refresh the cached stat of each path before erasing; internal children listings turn it off."""
+
+
+def _is_same_storage(a: VPath, b: VPath) -> bool:
+    """Return whether *a* and *b* are paths on the same storage."""
+    return a.filesystem.unwrap().is_same_storage(b.filesystem.unwrap()) or a.filesystem.is_same_device(a, b)
+
+
+def _is_same_entry(a: VPath, b: VPath) -> bool:
+    """Return whether *a* and *b* name the same existing entry; a final link is not followed.
+
+    Local paths compare by inode, so symlinked parent folders and hard links count.
+    Elsewhere the paths must be equal, or the names equal and the parent folders resolve to the same folder.
+    """
+    if not _is_same_storage(a, b):
+        return False
+    if a.path == b.path:  # same storage and same path: the same entry, so no stat is needed
+        return True
+    try:
+        if isinstance(a.filesystem.unwrap(), LocalFilesystem):
+            return os.path.samestat(os.lstat(a.path), os.lstat(b.path))
+        if a.name != b.name:
+            return False
+        b.filesystem.stat(b)  # raises when there is nothing at *b*; does not cache on the VPath
+        real_a = a.filesystem.real_path(a.parent)
+        real_b = b.filesystem.real_path(b.parent)
+    except OSError:
+        return False
+    return real_a is not None and real_b is not None and real_a.path == real_b.path
+
+
+def _is_onto_itself(src: VPath, dst: VPath) -> bool:
+    """Return whether writing *src* to *dst* would destroy what is being copied or moved.
+
+    That is the case when *dst* is *src* itself, or when *src* is a link and *dst* is on its way to the target.
+    """
+    if not src.stat.is_symlink:
+        return _is_same_entry(src, dst)
+    return any(_is_same_entry(hop, dst) for hop in _walk_links(src))
+
+
+def _skip_onto_itself(ctx: TaskContext, src: VPath, dst: VPath) -> bool:
+    """Report *src* as skipped and return True when it must not be written to *dst*."""
+    if not _is_onto_itself(src, dst):
+        return False
+    ctx.report_skipped(src.uri, SKIP_SAME_FILE)
+    return True
+
+
+def _walk_links(path: VPath) -> Iterator[VPath]:
+    """Yield *path* and then, while it is a link, each next step towards its target (at most MAX_LINK_HOPS steps)."""
+    yield path
+    for _ in range(MAX_LINK_HOPS):
+        try:
+            path = path.parent / path.filesystem.readlink(path)
+        except OSError:  # the end of the chain: not a link any more
+            return
+        yield path
+
+
+def _link_chain(path: VPath) -> Iterator[VPath]:
+    """Yield *path* and then, on a filesystem with links, each next step towards its target."""
+    if not path.filesystem.supports_symlinks():
+        yield path
+        return
+    yield from _walk_links(path)
+
+
+def would_overwrite_source(src: VPath, dst: VPath) -> bool:
+    """Return whether writing through *dst* would overwrite what is read through *src*; links are followed on both."""
+    targets = list(_link_chain(dst))
+    return any(_is_same_entry(source, target) for source in _link_chain(src) for target in targets)
+
+
+def _resolved(path: VPath) -> PurePath:
+    """Return *path* with links resolved as far as it exists; the rest is appended as written."""
+    for existing in (path.path, *path.path.parents):
+        try:
+            real = path.filesystem.real_path(VPath(existing, path.filesystem))
+        except OSError:
+            continue
+        if real is None:
+            break
+        return real.path / path.path.relative_to(existing)
+    return path.path
+
+
+def is_into_itself(src: VPath, dst: VPath) -> bool:
+    """Return whether *dst* is the folder *src* or lies inside it."""
+    return _is_same_storage(src, dst) and _resolved(dst).is_relative_to(_resolved(src))
+
+
+def _is_into_itself_for_write(src: VPath, dst: VPath) -> bool:
+    """Return whether writing the folder *src* to *dst* would put it inside itself.
+
+    Unlike ``is_into_itself``, a final *dst* that is a link is not followed: writing a folder replaces that link
+    (see ``_ensure_directory``), so only its parent is resolved.
+    """
+    if not _is_same_storage(src, dst):
+        return False
+    dst_stat = _fresh_stat_or_none(dst.filesystem, dst)
+    if dst_stat is not None and dst_stat.is_symlink:
+        destination = _resolved(dst.parent) / dst.name
+    else:
+        destination = _resolved(dst)
+    return destination.is_relative_to(_resolved(src))
+
+
+def _skip_into_itself(ctx: TaskContext, src: VPath, dst: VPath) -> bool:
+    """Report the folder *src* as skipped and return True when *dst* lies inside it."""
+    if not _is_into_itself_for_write(src, dst):
+        return False
+    ctx.report_skipped(src.uri, SKIP_INTO_ITSELF)
+    return True
 
 
 async def _overwrite_allowed(ctx: TaskContext, src: VPath, dst: VPath, options: FileCopyOptions, label: str) -> bool:
@@ -218,6 +337,8 @@ async def copy_file(
 
     _logger.debug("copy_file %s -> %s", src_path.path, dst_path.path)
     ctx.status.set_current_item(src_path.uri)
+    if _skip_onto_itself(ctx, src_path, dst_path):
+        return False
     reader = None
     writer = None
     claim = _Claim(proceed=False)
@@ -318,6 +439,8 @@ async def _recreate_link(
     source_root: PurePosixPath | None,
 ) -> bool:
     """Create at *dst* a link with the same target text as *link*; never reads or descends into the target."""
+    if _skip_onto_itself(ctx, link, dst):
+        return False
     try:
         text = link.filesystem.readlink(link)
     except OSError:
@@ -529,8 +652,13 @@ async def _copy_dir(
 ) -> bool:
     """Copy the folder *src_path* into *dst_path*.
 
-    Return False only when the root was skipped by the overwrite policy.
+    Return False only when the root was skipped, by the overwrite policy or because *dst_path* is the folder
+    itself or lies inside it.
     """
+    if _skip_onto_itself(ctx, src_path, dst_path) or _skip_into_itself(ctx, src_path, dst_path):
+        if count_root:
+            ctx.status.update_progress(inc_completed=1)
+        return False
     root_outcome = await _ensure_directory(ctx, src_path, dst_path, options)
     if root_outcome == "skipped":
         if count_root:
@@ -667,6 +795,8 @@ async def _move_entry(
     ctx.status.set_current_item(f.uri)
     if options.filter is not None and not options.filter.matches(f):
         return
+    if _skip_onto_itself(ctx, f, f_dst):
+        return
     if same_device:
         f_dst_stat = f_dst.stat_or_none
         if f_dst_stat is not None and _is_real_dir(f_dst_stat):
@@ -793,6 +923,11 @@ async def _move_path(
         ctx.status.update_progress(inc_completed=1)
         return
 
+    # Before any branch: each of them removes or truncates the destination.
+    if _skip_onto_itself(ctx, src_path, actual_dst) or (is_dir and _skip_into_itself(ctx, src_path, actual_dst)):
+        ctx.status.update_progress(inc_completed=1)
+        return
+
     if same_device:
         actual_dst_stat = _fresh_stat_or_none(actual_dst.filesystem, actual_dst)
         if is_dir and actual_dst_stat is not None and _is_real_dir(actual_dst_stat):
@@ -868,6 +1003,48 @@ async def move_files(
     await asyncio.gather(*subtasks)
 
 
+def _remove_if_link_now(path: VPath) -> bool:
+    """Stat *path* again, bypassing listing caches; if it is a link now, remove the link and return True."""
+    if not path.filesystem.stat_uncached(path).is_symlink:
+        return False
+    path.filesystem.remove(path)
+    return True
+
+
+async def _erase_directory(ctx: TaskContext, path: VPath, options: EraseFilesOptions) -> None:
+    """Erase the directory *path* and its content, unless the user declines.
+
+    The entry is checked again before it is listed and again after the question,
+    so a link swapped in meanwhile is removed itself and its target stays untouched.
+    """
+    if _remove_if_link_now(path):
+        return
+    path.filesystem.refresh(path)
+    children = [child async for child in path.iterdir()]
+    if len(children) > 0 and options.ask_before_erase:
+        response = await ctx.request_response(
+            "Delete non-empty directory",
+            expected_responses=[Response.YES, Response.NO, Response.ALL, Response.NONE],
+            message=f"Directory '{path.path}' is not empty. Delete it recursively?",
+        )
+        if response.is_rejected:
+            _logger.debug("erase_path skip (user declined) %s", path.path)
+            return
+        if _remove_if_link_now(path):
+            return
+    await erase_files(ctx, children, EraseFilesOptions(ask_before_erase=False, refresh_stat=False))
+    path.filesystem.rmdir(path)
+
+
+def _is_gone(path: VPath) -> bool:
+    """Return whether *path* really does not exist any more."""
+    try:
+        path.filesystem.stat_uncached(path)
+    except FileNotFoundError:
+        return True
+    return False
+
+
 async def _erase_path(
     ctx: TaskContext,
     path: VPath,
@@ -879,8 +1056,9 @@ async def _erase_path(
     without being followed or prompted for. Files are removed directly.
     Real directories are erased recursively via :func:`erase_files`; if
     non-empty and *options.ask_before_erase* is set, the user is asked to
-    confirm before deletion proceeds. Increments the overall completed
-    counter by one when done (including when skipped).
+    confirm before deletion proceeds. An entry that has vanished meanwhile is
+    counted as done. Increments the overall completed counter by one when done
+    (including when skipped).
     """
     ctx.status.check_cancelled()
     ctx.status.set_current_item(path.uri)
@@ -895,27 +1073,20 @@ async def _erase_path(
             _logger.debug("erase_path vanished %s", path.path)
             ctx.status.update_progress(inc_completed=1)
             return
-    stat = path.stat
-    if stat.is_symlink:
-        # A link of any kind is removed itself; its target is never listed, stat-followed or touched.
-        path.filesystem.remove(path)
-    elif stat.is_directory:
-        path.filesystem.refresh(path)
-        children = [child async for child in path.iterdir()]
-        if len(children) > 0 and options.ask_before_erase:
-            response = await ctx.request_response(
-                "Delete non-empty directory",
-                expected_responses=[Response.YES, Response.NO, Response.ALL, Response.NONE],
-                message=f"Directory '{path.path}' is not empty. Delete it recursively?",
-            )
-            if response.is_rejected:
-                _logger.debug("erase_path skip (user declined) %s", path.path)
-                ctx.status.update_progress(inc_completed=1)
-                return
-        await erase_files(ctx, children, EraseFilesOptions(ask_before_erase=False, refresh_stat=False))
-        path.filesystem.rmdir(path)
-    else:
-        path.filesystem.remove(path)
+    try:
+        stat = path.stat
+        if stat.is_symlink:
+            # A link of any kind is removed itself; its target is never listed, stat-followed or touched.
+            path.filesystem.remove(path)
+        elif stat.is_directory:
+            await _erase_directory(ctx, path, options)
+        else:
+            path.filesystem.remove(path)
+    except FileNotFoundError:
+        # SFTP also reports other failures as "no such file", so make sure the entry is gone.
+        if not _is_gone(path):
+            raise
+        _logger.debug("erase_path vanished %s", path.path)
     _logger.debug("erase_path done %s", path.path)
     ctx.status.update_progress(inc_completed=1)
 
