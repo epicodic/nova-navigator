@@ -15,6 +15,7 @@ import pytest
 
 from nova_navigator.commands import TerminalBusyError
 from nova_navigator.terminal import shell_driver
+from nova_navigator.terminal import terminal as terminal_module
 from nova_navigator.terminal.shell_driver import BashDriver
 from nova_navigator.terminal.terminal import Terminal
 from tests.terminal.test_terminal import FakePtyBackend, TerminalTestApp, _start_recv_only, _stop_recv_only
@@ -327,6 +328,197 @@ async def test_a_command_that_switches_bash_line_editing_off_gets_no_restore_key
         await _change_directory(terminal, home)
         assert _executed(home) == []
         assert await _buffer(terminal, home) == "touch EXECUTEDecho "
+
+
+# Lines that the shell puts at the prompt by itself, without a key press after that prompt.
+# What to type (rc line, history entry, keys), then the line then shown, and the one below it in zsh's buffer stack.
+_PUT_BACK = {
+    "hist_verify": ("setopt hist_verify", "true; touch EXECUTED", ["!!\r"], "true; touch EXECUTED", ""),
+    "push-line": ("", "", ["touch EXECUTED", _ESC + "q", "true\r"], "touch EXECUTED", ""),
+    "print-z": ("", "", ["print -z 'touch EXECUTED'\r"], "touch EXECUTED", ""),
+    "two-entries": ("", "", ["print -z 'touch EXECUTED1'; print -z 'touch EXECUTED2'\r"], "touch EXECUTED2", "touch EXECUTED1"),
+    "entry-and-typed": ("", "", ["touch EXECUTED1", _ESC + "q", "touch EXECUTED2"], "touch EXECUTED2", "touch EXECUTED1"),
+    "entry-with-newlines": ("", "", ["print -z $'  touch EXECUTED1\\ntouch EXECUTED2\\n'\r"], "  touch EXECUTED1\ntouch EXECUTED2\n", ""),
+}
+
+
+async def _put_back(terminal: Terminal, case: str) -> None:
+    _rc, history, keys, _line, _below = _PUT_BACK[case]
+    if history:
+        await _add_to_history(terminal, "zsh", history)
+    await _send(terminal, *keys)
+
+
+async def _assert_put_back_lines_survive(terminal: Terminal, home: Path, case: str) -> None:
+    _rc, _history, _keys, line, below = _PUT_BACK[case]
+    assert _executed(home) == []
+    assert await _buffer(terminal, home) == line
+    # Discard the line: zsh puts the next entry of its buffer stack at the new prompt.
+    await _send(terminal, "\x03")
+    assert await _buffer(terminal, home) == below
+    assert _executed(home) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", _PUT_BACK)
+async def test_cd_keeps_a_line_that_zsh_put_back(home: Path, case: str) -> None:
+    async with _editing_shell(home, "zsh", "emacs", _PUT_BACK[case][0]) as terminal:
+        await _put_back(terminal, case)
+        await _change_directory(terminal, home)
+        await asyncio.wait_for(terminal.set_terminal_directory(home), timeout=10)
+        await asyncio.sleep(0.5)
+        await _assert_put_back_lines_survive(terminal, home, case)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["print-z", "two-entries"])
+async def test_run_command_keeps_a_line_that_zsh_put_back(home: Path, case: str) -> None:
+    async with _editing_shell(home, "zsh", "emacs", _PUT_BACK[case][0]) as terminal:
+        await _put_back(terminal, case)
+        await asyncio.wait_for(terminal.run_command("touch RAN"), timeout=5)
+        await asyncio.sleep(0.5)
+        assert (home / "RAN").exists()
+        await _assert_put_back_lines_survive(terminal, home, case)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["print-z", "two-entries"])
+async def test_setup_line_sent_again_keeps_the_saved_lines(home: Path, case: str) -> None:
+    async with _editing_shell(home, "zsh", "emacs") as terminal:
+        await _put_back(terminal, case)
+        # As if the cd to "sub" had brought no hook report: the setup line defines everything again.
+        terminal._nav_target = home / "sub"
+        terminal._nav_busy = True
+        terminal._at_prompt = False
+        terminal._draining = True
+        terminal._on_nav_timeout()
+        await _wait_until(lambda: not terminal._nav_busy, "the navigation to end")
+        await asyncio.sleep(0.5)
+        await _assert_put_back_lines_survive(terminal, home, case)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shell", _SHELLS)
+async def test_setup_line_sent_again_keeps_a_typed_line(home: Path, shell: str) -> None:
+    async with _editing_shell(home, shell, "emacs") as terminal:
+        await _send(terminal, "touch EXECUTED")
+        terminal._nav_target = home / "sub"
+        terminal._nav_busy = True
+        terminal._at_prompt = False
+        terminal._draining = True
+        terminal._on_nav_timeout()
+        await _wait_until(lambda: not terminal._nav_busy, "the navigation to end")
+        await asyncio.sleep(0.5)
+        assert terminal.cwd == home / "sub"
+        await _assert_line_survives(terminal, home, "touch EXECUTED")
+
+
+# A cd that takes a while, as on a slow file system or connection.
+_SLOW_CD = 'cd() { builtin cd "$@"; sleep 1; }'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shell", _SHELLS)
+async def test_a_cd_that_times_out_keeps_the_typed_line(home: Path, shell: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(terminal_module, "_NAV_WATCHDOG_TIMEOUT", 0.3)
+    async with _editing_shell(home, shell, "emacs", _SLOW_CD) as terminal:
+        await _send(terminal, "touch EXECUTED")
+        await asyncio.wait_for(terminal.set_terminal_directory(home / "sub"), timeout=10)
+        assert terminal._nav_busy is False
+        # The shell still has the first cd, the setup line and the second cd to get through.
+        await _wait_until(lambda: terminal.cwd == home / "sub", "the cd")
+        await asyncio.sleep(2.5)
+        await _assert_line_survives(terminal, home, "touch EXECUTED")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("typed", ["", "echo "], ids=["empty", "typed"])
+@pytest.mark.parametrize("shell", _SHELLS)
+async def test_cd_runs_nothing_typed_while_an_earlier_cd_runs(home: Path, shell: str, typed: str) -> None:
+    async with _editing_shell(home, shell, "emacs", _SLOW_CD) as terminal:
+        if typed:
+            await _send(terminal, typed)
+        terminal.request_cd(home / "sub")
+        await _send(terminal, "touch EXECUTED")
+        terminal.request_cd(home)
+        terminal.request_cd(home / "sub")
+        terminal.request_cd(home)
+        await _wait_until(lambda: not terminal._nav_busy, "the navigations to end")
+        await asyncio.sleep(0.5)
+        assert terminal.cwd == home
+        assert terminal.has_input()
+        await _assert_line_survives(terminal, home, f"{typed}touch EXECUTED")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("typed", ["", "touch EXECUTED"], ids=["empty", "typed"])
+@pytest.mark.parametrize("shell", _SHELLS)
+async def test_a_navigation_leaves_an_empty_line_counting_as_empty(home: Path, shell: str, typed: str) -> None:
+    async with _editing_shell(home, shell, "emacs") as terminal:
+        if typed:
+            await _send(terminal, typed)
+        await _change_directory(terminal, home)
+        assert terminal.has_input() is bool(typed)
+        await asyncio.wait_for(terminal.run_command("true"), timeout=5)
+        await asyncio.sleep(0.5)
+        assert terminal.has_input() is bool(typed)
+
+
+@pytest.mark.asyncio
+async def test_cd_runs_nothing_typed_in_a_keymap_selected_with_zle_k(home: Path) -> None:
+    extra = "bindkey -N mine emacs; _usemine() { zle -K mine }; zle -N zle-line-init _usemine"
+    async with _editing_shell(home, "zsh", "emacs", extra) as terminal:
+        await _send(terminal, "touch EXECUTED")
+        await _change_directory(terminal, home)
+        await _assert_line_survives(terminal, home, "touch EXECUTED")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("options", ["nounset", "ksh_arrays", "sh_word_split", "err_return", "sh_glob", "warn_create_global"])
+async def test_cd_keeps_the_zsh_buffer_stack_with_unusual_options(home: Path, options: str) -> None:
+    async with _editing_shell(home, "zsh", "emacs", f"setopt {options}") as terminal:
+        await _put_back(terminal, "two-entries")
+        await _change_directory(terminal, home)
+        await _assert_put_back_lines_survive(terminal, home, "two-entries")
+
+
+@pytest.mark.asyncio
+async def test_cd_waits_while_bash_shows_an_expanded_line_for_review(home: Path) -> None:
+    async with _editing_shell(home, "bash", "emacs", "shopt -s histverify") as terminal:
+        await _add_to_history(terminal, "bash", "touch EXECUTED")
+        await _send(terminal, "!!\r")
+        terminal.request_cd(home / "sub")
+        await asyncio.sleep(0.5)
+        assert _executed(home) == []
+        assert terminal.cwd == home
+        assert await _buffer(terminal, home) == "touch EXECUTED"
+        await _send(terminal, "\x03")
+        await _wait_until(lambda: terminal.cwd == home / "sub", "the cd after the line was cancelled")
+        assert _executed(home) == []
+
+
+@pytest.mark.asyncio
+async def test_a_restarted_shell_gets_no_restore_for_the_old_one() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/bash", backend=backend, driver=BashDriver())
+    async with TerminalTestApp(terminal).run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._started = True
+            terminal._at_prompt = True
+            terminal._cwd = PurePath("/a")
+            terminal._note_user_input("l")
+            terminal.request_cd(PurePath("/b"))
+            terminal._reset_shell_state()
+            writes = len(backend.writes)
+            await recv_q.put(["pre_cmd", "/a", True])
+            await pilot.pause(delay=0.1)
+            assert backend.writes[writes:] == []
+            assert terminal.has_input() is False
+        finally:
+            terminal._cancel_watchdog()
+            await _stop_recv_only(terminal)
 
 
 _NO_EDITING_REPORT = False  # the fourth field of a pre_cmd message

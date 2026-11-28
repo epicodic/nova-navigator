@@ -405,7 +405,7 @@ class Terminal(ScrollView, can_focus=True):
         self._gave_up: bool = False
         # Resolved by the precmd that follows a run_command() line.
         self._run_future: Future[None] | None = None
-        # Typed input was stashed before run_command() and must be restored.
+        # The line was set aside before run_command() and must be restored.
         self._run_stashed: bool = False
 
         super().__init__(name=name, id=id, classes=classes)
@@ -426,8 +426,10 @@ class Terminal(ScrollView, can_focus=True):
         # from "the shell can't reach this target" (bounded, then give up).
         self._nav_last_sent_target: PurePath | None = None
         self._nav_same_target_attempts: int = 0
-        # User text was killed before the cd and must be yanked back on completion.
+        # The shell's line was set aside before the cd and must be restored on completion.
         self._nav_stashed: bool = False
+        # While a line is set aside: it held input, or the user typed meanwhile (see _restore_input).
+        self._stash_held_input: bool = False
         # Resolved when the transaction chain completes; awaited by set_terminal_directory.
         self._nav_future: Future[PurePath] | None = None
         # A plain-shell cd was written; the precmd that follows is not a user navigation.
@@ -687,6 +689,8 @@ class Terminal(ScrollView, can_focus=True):
         prompt and the current ``owner`` is recorded as the command's owner.
         """
         self._input_since_precmd = True
+        if self._nav_stashed or self._run_stashed:
+            self._stash_held_input = True
         submitted = submits or "\r" in data or "\n" in data
         # A started shell is either still held back (_startup_output) or revealed without a report.
         if self._startup_output is not None or self._no_integration:
@@ -820,7 +824,8 @@ class Terminal(ScrollView, can_focus=True):
     async def run_command(self, line: str) -> None:
         """Run *line* in the shell as if the user typed it, and wait until it finishes.
 
-        Typed input is stashed first and restored after the command's precmd.
+        A line-editing shell first sets aside whatever its line holds, which is
+        restored after the command's precmd.
         The command is echoed and recorded in the shell history like a user command.
 
         Completion relies on the shell's precmd hook and has no timeout, since a
@@ -841,11 +846,10 @@ class Terminal(ScrollView, can_focus=True):
             raise TerminalBusyError("The terminal line holds typed input")
         future: Future[None] = asyncio.get_running_loop().create_future()
         self._run_future = future
-        self._run_stashed = has_input
-        if has_input:
+        # has_input cannot see lines the shell put back by itself, so a real shell always stashes.
+        self._run_stashed = self._edits_lines() and (has_input or not self._driver.supports_editor_protocol)
+        if self._run_stashed:
             self._stash_input()
-        else:
-            self._prepare_line()
         self._at_prompt = False
         self._command_owner = self.owner
         self._backend.write((line + "\n").encode())
@@ -868,24 +872,22 @@ class Terminal(ScrollView, can_focus=True):
         return self._driver.supports_line_editing and self._shell_edits
 
     def _stash_input(self) -> None:
-        """Remove typed input from the shell line so it can be restored later."""
+        """Make the shell set its line aside so it can be restored later."""
+        self._stash_held_input = self._stash_held_input or self.has_input()
         if self._driver.supports_editor_protocol:
             self._backend.write(STASH_SEQUENCE)
         else:
             self._backend.write(self._driver.kill_line_sequence())
 
-    def _prepare_line(self) -> None:
-        """Make the line editor take typed text before a write that does not stash input first."""
-        sequence = self._driver.prepare_line_sequence()
-        if sequence and self._edits_lines():
-            self._backend.write(sequence)
-
     def _restore_input(self) -> None:
-        """Put back input removed by ``_stash_input``.
+        """Put back what ``_stash_input`` set aside.
 
         Nothing is written when line editing was switched off meanwhile: the keys would stay on the
         line as text.  The shell keeps the saved line for the next restore.
+        The line counts as occupied afterwards only if a stash saw input on it or the user typed while
+        it was set aside; otherwise every navigation would make Enter on a panel go to the terminal.
         """
+        held_input, self._stash_held_input = self._stash_held_input, False
         if not self._edits_lines():
             return
         if self._driver.supports_editor_protocol:
@@ -894,16 +896,17 @@ class Terminal(ScrollView, can_focus=True):
             self._backend.write(self._driver.yank_sequence())
         # The restore/yank echo arrives after the prompt and would be absorbed into
         # the snapshot, so report input as present for this prompt line.
-        self._input_since_precmd = True
+        if held_input:
+            self._input_since_precmd = True
 
     def _start_nav(self) -> None:
-        """Send the hidden ``cd`` for ``_nav_target``, stashing typed input first if needed.
+        """Send the hidden ``cd`` for ``_nav_target``, setting the shell's line aside first.
 
-        Drivers with ``supports_editor_protocol`` get an atomic stash request;
-        others get their driver's ``kill_line_sequence()``, which clears the
-        line editor's buffer using whatever keystrokes that shell needs.  The
-        stash/kill happens at most once per transaction chain; a ``cd`` without
-        it is preceded by the driver's ``prepare_line_sequence()``.
+        Drivers with ``supports_editor_protocol`` get an atomic stash request,
+        at most once per transaction chain and only with typed input.  Others get
+        their driver's ``kill_line_sequence()`` before every ``cd``: the line may
+        hold input that ``has_input`` cannot see, and the saved text accumulates
+        until the one restore at the end of the chain.
         """
         if not self._edits_lines():
             self._send_plain_cd()
@@ -920,11 +923,9 @@ class Terminal(ScrollView, can_focus=True):
         self._nav_busy = True
         self._at_prompt = False
         self._draining = True
-        if not self._nav_stashed and self.has_input():
+        if not self._driver.supports_editor_protocol or (not self._nav_stashed and self.has_input()):
             self._nav_stashed = True
             self._stash_input()
-        else:
-            self._prepare_line()
         self._backend.write((" " + self._driver.cd_command(str(self._nav_target)) + "\n").encode())
         self._arm_watchdog()
 
@@ -1006,7 +1007,9 @@ class Terminal(ScrollView, can_focus=True):
         if not self._hook_repaired:
             self._hook_repaired = True
             _logger.warning("No precmd after cd; re-installing the shell hook")
-            self._prepare_line()
+            if not self._driver.supports_editor_protocol:
+                # The setup line is a hidden line too; _start_nav marks the line as set aside.
+                self._stash_input()
             self._backend.write(self._driver.init_code().encode())
             self._start_nav()
             return
@@ -1026,6 +1029,7 @@ class Terminal(ScrollView, can_focus=True):
         self._nav_target = None
         self._nav_busy = False
         self._nav_stashed = False
+        self._stash_held_input = False
         self._plain_cd_sent = False
         self._at_prompt = False
         self._hook_repaired = False

@@ -50,17 +50,16 @@
 
 - In zsh vi mode, do not change the panel's folder while a search is pending (Esc, then `/` or `?`).
   It runs the typed line, or the command recalled from the history, possibly changed (for example cut short).
-- zsh lines that come back to the prompt by themselves (`setopt hist_verify`, `push-line`, `print -z`) are run by a change of the panel's folder.
 - In bash with line editing turned off (`set +o emacs` and no vi mode), and in bash older than 5, the shell follows the panels only on an empty command line, as plain shells do.
   A user menu or other command is refused while text is on the line.
   Text typed while a command was still running is not noticed there, and a change of the panel's folder runs it.
-- A zsh keymap selected with `zle -K` that is not `main`, `emacs`, `viins` or `vicmd` can make a change of the panel's folder run the typed line.
+- A zsh keymap first created while a command line is being edited can make a change of the panel's folder run the typed line, until the next prompt.
 - Changing the panel's folder while a line editor command waits for more keys can change or lose the typed line.
   This happens, for example, in the middle of a vi command or search:
   bash emacs Alt+[ or Esc O leaves `[95~` on the line, bash vi `m` or `@` loses the line, and zsh vi `'` swaps the case of the whole line.
 - In bash with `shopt -s histverify`, the shell does not follow the panels while an expanded line waits at the prompt, until you enter or cancel it.
 - An editor opened from the command line (bash vi `v`, Ctrl+X Ctrl+E) receives the `cd` that follows a panel change as its input.
-- bash and zsh get private key bindings (`ESC[94~` to `ESC[96~`, and in bash `ESC[95` Ctrl+U) for this.
+- bash and zsh get private key bindings (`ESC[94~` to `ESC[96~`) for this.
   In bash, removing them can make a panel change run the typed line.
 - In a shell treated as a plain shell that has a vi mode (for example `sh` linked to bash), do not leave an empty command line in vi command mode.
   The `cd` of a panel change is then read as editor commands, and what runs is unpredictable.

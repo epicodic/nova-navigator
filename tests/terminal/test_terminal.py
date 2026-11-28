@@ -2383,7 +2383,8 @@ async def test_request_cd_at_prompt_writes_cd_and_drains() -> None:
         assert terminal._draining is True
         assert terminal._at_prompt is False
         assert _cd_writes(backend) == [_expected_cd("/opt/target")]
-        assert _KILL not in backend.writes
+        # The line is set aside also when it looks empty.
+        assert backend.writes == [_KILL, _expected_cd("/opt/target")]
         terminal._cancel_watchdog()
 
 
@@ -2470,7 +2471,7 @@ async def test_request_cd_when_not_at_prompt_defers_until_precmd() -> None:
 
 
 @pytest.mark.asyncio
-async def test_abab_sequence_ends_at_b_with_one_kill_and_one_yank() -> None:
+async def test_abab_sequence_ends_at_b_with_one_kill_per_cd_and_one_yank() -> None:
     backend, terminal = _new_zsh_terminal()
     app = TerminalTestApp(terminal)
     async with app.run_test() as pilot:
@@ -2497,8 +2498,7 @@ async def test_abab_sequence_ends_at_b_with_one_kill_and_one_yank() -> None:
             assert terminal._draining is False
             assert terminal._nav_busy is False
             assert terminal._nav_target is None
-            assert backend.writes.count(_KILL) == 1
-            assert backend.writes.count(_YANK_BYTES) == 1
+            assert backend.writes == [_KILL, _expected_cd("/a"), _KILL, _expected_cd("/b"), _YANK_BYTES]
             assert await future == PurePath("/b")
             rendered = "".join(line.plain for line in terminal._display.lines)
             assert "hidden echo" not in rendered
@@ -2674,7 +2674,7 @@ async def test_user_reaching_pending_target_resolves_without_cd() -> None:
 
 
 @pytest.mark.asyncio
-async def test_enter_during_busy_transaction_resends_cd_without_second_kill() -> None:
+async def test_enter_during_busy_transaction_resends_cd_with_a_kill_before_it() -> None:
     backend, terminal = _new_zsh_terminal()
     app = TerminalTestApp(terminal)
     async with app.run_test() as pilot:
@@ -2690,7 +2690,7 @@ async def test_enter_during_busy_transaction_resends_cd_without_second_kill() ->
             await recv_q.put(["pre_cmd", "/old\n"])
             await pilot.pause(delay=0.1)
             assert _cd_writes(backend) == [_expected_cd("/a"), _expected_cd("/a")]
-            assert backend.writes.count(_KILL) == 1
+            assert backend.writes == [_KILL, _expected_cd("/a"), _KILL, _expected_cd("/a")]
             await recv_q.put(["pre_cmd", "/a\n"])
             await pilot.pause(delay=0.1)
             assert terminal._nav_busy is False

@@ -40,21 +40,16 @@ _MIN_PTY_ROWS = 2
 STASH_SEQUENCE = b"\x1b[98~"
 RESTORE_SEQUENCE = b"\x1b[97~"
 
-# Private, unassigned CSI sequences that the init code of ZshDriver and BashDriver
-# binds in the emacs, vi insert and vi command keymaps (zsh: also in the main one).
-# The terminal writes only these (and a space) to edit the line, so neither the
-# editing mode nor the user's own key bindings change what a hidden write does.
+# Private, unassigned CSI sequences that the init code of ZshDriver and BashDriver binds
+# (zsh: in every keymap that can be bound; bash: in the emacs, vi insert and vi command keymaps).
+# The terminal writes only these to edit the line, so neither the editing mode nor the
+# user's own key bindings change what a hidden write does.
 #
 # Switch to a mode that takes typed text; does nothing outside vi command mode.
 _INSERT_MODE_SEQUENCE = b"\x1b[95~"
 # One widget (zsh) or shell function (bash) each sets the whole line aside and puts it back.
 _LINE_STASH_SEQUENCE = b"\x1b[96~"
 _LINE_RESTORE_SEQUENCE = b"\x1b[94~"
-# bash without line editing (set +o emacs) reads all of these as plain input.  The one written alone,
-# before a write that stashes nothing, therefore ends in Ctrl+U: the line discipline then erases it, so
-# that the cd on an empty line works.  readline takes it as one key and does what _INSERT_MODE_SEQUENCE
-# does.  The stash must not send Ctrl+U: a pending readline search or vi command would take it as editing.
-_BASH_PREPARE_SEQUENCE = b"\x1b[95\x15"
 
 
 def _ansi_c_quote(arg: str) -> str:
@@ -132,27 +127,21 @@ class ShellDriver(ABC):
         """
         return False
 
-    def prepare_line_sequence(self) -> bytes:
-        """Return the input bytes that make the line editor take typed text.
-
-        Written before a hidden write that does not start with
-        ``kill_line_sequence``: in vi command mode its characters would act as
-        editor commands.  Empty for shells without such bindings.
-        """
-        return b""
-
     def kill_line_sequence(self) -> bytes:
-        """Return the input bytes that clear the line editor's whole buffer for hidden navigation.
+        """Return the input bytes that make the shell set aside everything its line editor holds.
 
-        The buffer may hold several lines (a command recalled from history).
-        The bytes work in every editing mode and leave a mode that takes typed
-        text.  Only called for drivers with ``supports_line_editing`` and
-        without ``supports_editor_protocol``.
+        The buffer may hold several lines (a command recalled from history), and
+        the shell may hold more lines that it would put at a later prompt.  The
+        bytes are written before every hidden line, also onto an empty line, and
+        saved text accumulates until ``yank_sequence``.  They work in every
+        editing mode and leave a mode that takes typed text.  Only called for
+        drivers with ``supports_line_editing`` and without
+        ``supports_editor_protocol``.
         """
         return b""
 
     def yank_sequence(self) -> bytes:
-        """Return the input bytes that restore text previously cleared by ``kill_line_sequence``.
+        """Return the input bytes that restore everything set aside by ``kill_line_sequence``.
 
         The cursor ends after the restored text.  Only called for drivers with
         ``supports_line_editing`` and without ``supports_editor_protocol``.
@@ -205,27 +194,36 @@ class ZshDriver(ShellDriver):
 
         The hook binds the keys before every prompt, so they survive ``bindkey -d``:
         an unbound stash key would leave the typed line to be run with the ``cd``.
-        It also binds them in ``main``, which can be a keymap of the user's own.
+        It binds them in every keymap that can be bound, including ``main`` and
+        keymaps of the user's own, and the widgets leave any keymap but ``main``,
+        ``emacs`` and ``viins`` for ``main``.
         The stash widget keeps the buffer in a variable, not in zsh's kill
         buffer: ``kill-buffer`` appends to the user's previous kill, so the
         restore could add text, and the user's kill ring stays as it was.
+        It also empties zsh's buffer stack (``push-line``, ``print -z``), whose
+        next entry the prompt after the ``cd`` would otherwise put on the line.
+        Both append to what is saved already.  Running the init code again
+        keeps the saved text.
+        The init line is parsed under the user's options, so it uses no pattern
+        syntax that an option such as ``sh_glob`` changes.
         """
         return (
             " setopt HIST_IGNORE_SPACE; "
-            "_nn_insert() { REGION_ACTIVE=0; [[ $KEYMAP != vicmd ]] || zle -K main }; "
-            "_nn_stash() { _nn_insert; typeset -g _nn_line=$BUFFER; BUFFER= }; "
-            "_nn_restore() { _nn_insert; LBUFFER+=$_nn_line }; "
+            "_nn_insert() { REGION_ACTIVE=0; [[ $KEYMAP == main || $KEYMAP == emacs || $KEYMAP == viins ]] || zle -K main }; "
+            "_nn_stash() { _nn_insert; emulate -L zsh; local x; _nn_line+=$BUFFER; BUFFER=; "
+            'while IFS= read -rz x; do _nn_stack+=("$x"); done }; '
+            "_nn_restore() { _nn_insert; emulate -L zsh; local i; "
+            'for ((i=$#_nn_stack; i>0; i--)); do print -rz -- "$_nn_stack[i]"; done; _nn_stack=(); '
+            "LBUFFER+=$_nn_line; _nn_line= }; "
+            "typeset -ga _nn_stack; : ${_nn_line=}; "
             "zle -N _nn_insert; zle -N _nn_stash; zle -N _nn_restore; "
-            "_nn_bind() { local map; for map in main emacs viins vicmd; do bindkey -M $map "
+            "_nn_bind() { emulate -L zsh; local map; for map in $keymaps; do case $map in .safe|isearch|command) continue;; esac; bindkey -M $map "
             "$'\\e[95~' _nn_insert $'\\e[96~' _nn_stash $'\\e[94~' _nn_restore; done }; "
             f"_nn_precmd() {{ {self._hook_body()}; _nn_bind }}; precmd_functions+=(_nn_precmd)\n"
         )
 
     def quote(self, arg: str) -> str:
         return _ansi_c_quote(arg)
-
-    def prepare_line_sequence(self) -> bytes:
-        return _INSERT_MODE_SEQUENCE
 
     def kill_line_sequence(self) -> bytes:
         """Send the insert mode key and then the private stash key.
@@ -267,18 +265,15 @@ class BashDriver(ShellDriver):
             # A READLINE_POINT beyond the end puts the cursor at the end.
             "_nn_restore() { READLINE_LINE+=${_nn_line-}; _nn_line=; READLINE_POINT=999999; }; "
             "for _nn_map in emacs vi-insert; do "
-            """bind -m $_nn_map '"\\e[95~": ""' '"\\e[95\\C-u": ""' 2>/dev/null; """
+            """bind -m $_nn_map '"\\e[95~": ""' 2>/dev/null; """
             """bind -m $_nn_map -x '"\\e[96~": _nn_stash' 2>/dev/null; """
             """bind -m $_nn_map -x '"\\e[94~": _nn_restore' 2>/dev/null; done; unset _nn_map; """
-            """bind -m vi-command '"\\e[95~": vi-insertion-mode' '"\\e[95\\C-u": vi-insertion-mode' 2>/dev/null; """
+            """bind -m vi-command '"\\e[95~": vi-insertion-mode' 2>/dev/null; """
             f"HISTCONTROL=\"${{HISTCONTROL:+${{HISTCONTROL}}:}}ignorespace\"; _nn_precmd() {{ {hook}; }}; PROMPT_COMMAND=${{PROMPT_COMMAND:+${{PROMPT_COMMAND}}$'\\n'}}_nn_precmd\n"
         )
 
     def quote(self, arg: str) -> str:
         return _ansi_c_quote(arg)
-
-    def prepare_line_sequence(self) -> bytes:
-        return _BASH_PREPARE_SEQUENCE
 
     def kill_line_sequence(self) -> bytes:
         """Send the insert mode key and then the private stash key.

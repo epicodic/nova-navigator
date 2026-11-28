@@ -298,7 +298,7 @@ def test_zsh_driver_init_code_defines_stash_widget_bound_to_private_sequence() -
     """The private sequence kill_line_sequence() sends must be bound in
     init_code() to a widget that clears the whole buffer."""
     code = ZshDriver().init_code()
-    assert "BUFFER= " in code
+    assert "BUFFER=; " in code
     assert "zle -N _nn_stash" in code
     assert r"\e[96~" in code
 
