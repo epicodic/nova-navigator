@@ -582,6 +582,121 @@ async def test_second_quit_key_without_a_write_back_asks_nothing(app_ctx: AppCtx
 
 
 # ---------------------------------------------------------------------------
+# The choice "Quit and keep files" is not lost between two write-backs
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_the_choice_made_between_two_write_backs_is_honoured(app_ctx: AppCtx, hung: _Hung, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager, fs = hung.manager, hung.fs
+    overwrite(fs, "/d/second.txt", b"old")
+    worker = app_ctx.app.run_worker(manager.open(fs.path("/d/second.txt")))
+    await poll_until(app_ctx.pilot, lambda: worker.is_finished)
+    second = worker.result
+    assert second is not None
+    second.copy.path.write_bytes(b"second edit")
+    await poll_until(app_ctx.pilot, lambda: fs.read(fs.path("/d/second.txt")).read(20) == b"second edit")
+    second.status = CopyStatus.MODIFIED  # unsynced, so "Sync and quit" syncs it after the first one
+    between = asyncio.Event()
+    resume = asyncio.Event()
+    sync_now = manager.sync_now
+
+    async def _sync_then_pause(entry: CopyEntry) -> None:
+        await sync_now(entry)
+        if entry is hung.entry:
+            between.set()
+            await resume.wait()  # the first write is over, the quit has not reached the second one
+
+    monkeypatch.setattr(manager, "sync_now", _sync_then_pause)
+    await _quit_and_wait_for_write(app_ctx.pilot, "SAVE")
+    await _open_write_back_dialog(app_ctx.pilot)
+    hung.write.finish(succeed=True)
+    await poll_until(app_ctx.pilot, between.is_set)
+    assert manager.writing() == []
+
+    await app_ctx.pilot.click("#IGNORE")
+    await poll_until(app_ctx.pilot, lambda: not app_ctx.app.is_running)
+
+    assert not app_ctx.app.is_running
+    assert second.copy.path.read_bytes() == b"second edit"
+    assert hung.entry.copy.path.exists()
+
+
+class _FinishedWriting(_BlockedShutdown):
+    """A fake that reports a running write until ``entries`` is emptied, and whose shutdown still waits then."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entries_written = [_entry()]
+        self.abandoned = False
+
+    def writing(self) -> list[CopyEntry]:
+        return list(self.entries_written)
+
+    def abandon(self) -> None:
+        self.abandoned = True
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_with_every_write_finished_the_app_quits_as_chosen_before(app_ctx: AppCtx) -> None:
+    fake = _FinishedWriting()
+    app_ctx.app.local_copies = fake
+    await _press_all(app_ctx, ["ctrl+q"])
+    await _open_write_back_dialog(app_ctx.pilot)
+    fake.entries_written.clear()
+
+    await app_ctx.pilot.click("#IGNORE")
+    await app_ctx.pilot.pause()
+
+    assert app_ctx.app.is_running
+    assert not fake.abandoned
+    fake.gate.set()
+    await poll_until(app_ctx.pilot, lambda: not app_ctx.app.is_running)
+    assert fake.shutdown_calls == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_write_that_fails_while_the_dialog_is_covered_closes_it_later(app_ctx: AppCtx, hung: _Hung) -> None:
+    await _quit_and_wait_for_write(app_ctx.pilot, "SAVE")
+    dialog = await _open_write_back_dialog(app_ctx.pilot)
+    cover = MessageBox("on top", title="Cover")
+    app_ctx.app.push_screen(cover)
+    await app_ctx.pilot.pause()
+
+    hung.write.finish(succeed=False)
+    await poll_until(app_ctx.pilot, lambda: not any(w.group == "quit" and not w.is_finished for w in app_ctx.app.workers))
+    assert _write_back_dialogs(app_ctx.app) == [dialog]
+    cover.dismiss(None)
+    await poll_until(app_ctx.pilot, lambda: not _write_back_dialogs(app_ctx.app))
+
+    assert _write_back_dialogs(app_ctx.app) == []
+    assert app_ctx.app.is_running
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_after_a_forced_quit_the_sync_and_quit_does_nothing_more(app_ctx: AppCtx, hung: _Hung, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The write fails after the user chose to quit, while the app is still going down."""
+    exits: list[bool] = []
+    notices: list[str] = []
+    monkeypatch.setattr(app_ctx.app, "exit", lambda *_args, **_kwargs: exits.append(True))
+    monkeypatch.setattr(app_ctx.app, "notify", lambda message, **_kwargs: notices.append(message))
+    await _quit_and_wait_for_write(app_ctx.pilot, "SAVE")
+    await _open_write_back_dialog(app_ctx.pilot)
+    await app_ctx.pilot.click("#IGNORE")
+    await poll_until(app_ctx.pilot, lambda: bool(exits))
+
+    hung.write.finish(succeed=False)
+    await poll_until(app_ctx.pilot, lambda: not any(w.group == "quit" and not w.is_finished for w in app_ctx.app.workers))
+
+    assert notices == []
+    assert exits == [True]
+
+
+# ---------------------------------------------------------------------------
 # A rebound quit key with a dialog open
 # ---------------------------------------------------------------------------
 
