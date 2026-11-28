@@ -243,6 +243,8 @@ _EXIT_AFTER_A_WHILE = "sleep 1.5\nexit 1"
 @pytest.mark.asyncio
 async def test_restart_drops_a_kept_navigation_target(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     opens = _count_opens(monkeypatch)
+    # Every exit counts as a quick exit, so the outcome does not depend on how long the shell takes under load.
+    monkeypatch.setattr(terminal_module, "_EARLY_EXIT_SECONDS", 30.0)
     dest = home / "dest"
     dest.mkdir()
     command = _write_shell(home, "exits", _EXIT_AFTER_A_WHILE)
@@ -263,6 +265,8 @@ async def test_restart_drops_a_kept_navigation_target(home: Path, monkeypatch: p
 @pytest.mark.asyncio
 async def test_giving_up_drops_a_kept_navigation_target(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     opens = _count_opens(monkeypatch)
+    # Every exit counts as a quick exit, so the outcome does not depend on how long the shell takes under load.
+    monkeypatch.setattr(terminal_module, "_EARLY_EXIT_SECONDS", 30.0)
     dest = home / "dest"
     dest.mkdir()
     command = _write_shell(home, "exits", _EXIT_AFTER_A_WHILE)

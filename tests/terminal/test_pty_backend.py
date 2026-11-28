@@ -373,8 +373,11 @@ def test_failed_exec_exits_the_child(tmp_path: Path, monkeypatch: pytest.MonkeyP
     _isolate_shell_env(tmp_path, monkeypatch)
     backend = LocalPtyBackend()
     backend.open("/nonexistent/shell", rows=24, cols=80)
-    _, status = os.waitpid(backend._pid, 0)
-    assert os.waitstatus_to_exitcode(status) == 127
+    # Wait for the exit without reaping it, so teardown() still sees the pid as its own child.
+    exit_info = os.waitid(os.P_PID, backend._pid, os.WEXITED | os.WNOWAIT)
+    assert exit_info is not None
+    assert exit_info.si_code == os.CLD_EXITED
+    assert exit_info.si_status == 127
     backend.teardown()
 
 

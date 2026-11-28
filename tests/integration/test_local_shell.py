@@ -88,6 +88,9 @@ async def test_typed_input_and_run_command(shell: str, app_ctx: AppCtx) -> None:
     terminal = app_ctx.screen._terminal_pool.active_terminal
     assert terminal.command == shell
     await _wait_for(app_ctx, lambda: terminal._at_prompt, "the first prompt")
+    # The panel-driven cd must finish before typing, or run_command would find the terminal busy.
+    await _wait_for(app_ctx, lambda: terminal.cwd == app_ctx.src_dir, "the shell in the source directory")
+    await _wait_for(app_ctx, lambda: not terminal._nav_busy, "the navigation to finish")
 
     for char in "typed":
         await terminal.on_key(events.Key(char, char))
