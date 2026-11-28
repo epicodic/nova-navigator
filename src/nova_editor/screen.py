@@ -57,6 +57,12 @@ _EDITING_ACTIONS = (
 )
 """Actions that the editor widget also binds to its own keys; the screen swallows the old key when the action moved."""
 
+_VIEW_ONLY_REMOVED = frozenset({"editor.open", "editor.save", "editor.save_as", "editor.undo", "editor.redo", "editor.cut", "editor.paste"})
+"""Actions a view-only screen does not build: they write, edit or put another document into the viewer."""
+
+_VIEW_CLOSE_KEY = "f10"
+"""The key that closes a view-only screen; no action of that screen keeps a binding that starts with it."""
+
 
 def _column_kind(state: CursorState) -> Literal["exact", "provisional", "pending"]:
     if state is CursorState.RESOLVED:
@@ -108,6 +114,7 @@ class EditorScreen(Screen[None]):
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("escape", "cancel_save", "Cancel save", show=False),
         Binding("escape", "close_embedded", "Close", show=False),
+        Binding(_VIEW_CLOSE_KEY, "close_view", "Close", show=False),
     ]
 
     def __init__(
@@ -124,6 +131,7 @@ class EditorScreen(Screen[None]):
         poll_seconds: float = 2.0,
         quit_wait_seconds: float = 2.0,
         start_hex: bool = False,
+        view_only: bool = False,
     ) -> None:
         """Create the editor screen.
 
@@ -139,11 +147,13 @@ class EditorScreen(Screen[None]):
             poll_seconds: Interval of the check for a change of the file on disk.
             quit_wait_seconds: Longest wait for a cancelled save before the quit question.
             start_hex: Show the first document in the hex view whatever its content; later documents (Open) use the binary detection.
+            view_only: Show the document without any way to change or write it; F10 closes the screen.
         """
         super().__init__()
         self._keybindings = keybindings
         self.file_provider = file_provider or default_file_provider()
         self.standalone = standalone
+        self.view_only = view_only
         self._poll_seconds = poll_seconds
         self._quit_wait_seconds = quit_wait_seconds
 
@@ -151,7 +161,12 @@ class EditorScreen(Screen[None]):
         self._open_flows = 0
 
         self.ACTIONS: list[Action] = build_editor_actions()
-        """The 19 `editor.*` actions of this screen, plus Keyboard Shortcuts… with a key config and `keyboard_shortcuts_item`; the menus, the registry and the handlers use these very objects."""
+        """The 19 `editor.*` actions of this screen, plus Keyboard Shortcuts… with a key config and `keyboard_shortcuts_item`; the menus, the registry and the handlers use these very objects.
+
+        A view-only screen leaves out the actions of `_VIEW_ONLY_REMOVED`.
+        """
+        if view_only:
+            self.ACTIONS = [a for a in self.ACTIONS if a.id not in _VIEW_ONLY_REMOVED]
         if keybindings is not None and keyboard_shortcuts_item:
             self.ACTIONS.append(build_keyboard_shortcuts_action())
         self._by_id: dict[str, Action] = {a.id: a for a in self.ACTIONS if a.id is not None}
@@ -180,12 +195,15 @@ class EditorScreen(Screen[None]):
             bindings = self._keybindings.resolve(self.ACTIONS)
         else:
             bindings = {a.id: a.initial_shortcut for a in self.ACTIONS if a.id is not None and a.initial_shortcut is not None}
+        if self.view_only:
+            close_chord = KeyChord.parse(_VIEW_CLOSE_KEY)
+            bindings = {action_id: keys for action_id, keys in bindings.items() if keys.chords[0] != close_chord}
         self.keymap_registry.reload(bindings, self.ACTIONS)
         for action in self.ACTIONS:
             if action.id not in bindings:
                 action.set_shortcut(None)  # `reload` puts the default of an unmapped action back; menu and hint bar must show no key
         self._swallowed = set()
-        for action_id in _EDITING_ACTIONS:
+        for action_id in (i for i in _EDITING_ACTIONS if i in self._by_id):
             action = self._by_id[action_id]
             initial = action.initial_shortcut
             if initial is not None and action.shortcut != initial and initial not in bindings.values():
@@ -227,7 +245,7 @@ class EditorScreen(Screen[None]):
         if any(key in binding.key.split(",") for binding in Input.BINDINGS if isinstance(binding, Binding)):
             return True
         chord = KeySequence((KeyChord.parse(key),))
-        return any(self._by_id[action_id].shortcut == chord for action_id in _EDITING_ACTIONS)
+        return any(action.shortcut == chord for action_id, action in self._by_id.items() if action_id in _EDITING_ACTIONS)
 
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
         """The hint bar follows the focus; a visible popup closes when the focus lands outside it (the controlled form of `CLOSE_ON_BLUR`)."""
@@ -367,6 +385,7 @@ class EditorScreen(Screen[None]):
             config=self._config,
             timing_file=os.environ.get("NOVA_EDIT_TIMING_FILE"),
             force_hex=force_hex,
+            view_only=self.view_only,
         )
 
     def _watch_editor(self) -> None:
@@ -652,7 +671,14 @@ class EditorScreen(Screen[None]):
         if not from_save and editor.check_external_change() is ChangeKind.UNCHANGED:  # the stale kind while the view is stale, else a fresh check
             return None
         target = path if from_save else editor.file_path
-        question = file_question(kind, target, overwrite=from_save or editor.modified, save_as=True, reload=editor.file_path is not None, modified=editor.modified)
+        question = file_question(
+            kind,
+            target,
+            overwrite=(from_save or editor.modified) and not self.view_only,
+            save_as=not self.view_only,
+            reload=editor.file_path is not None,
+            modified=editor.modified,
+        )
         return await question.run(), target
 
     async def _carry_out(self, document: DocumentView, answer: Response | None, path: Path | None) -> None:
@@ -722,16 +748,27 @@ class EditorScreen(Screen[None]):
         self.document.editor.cancel_save()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """Keep Esc for the widget and the popups unless a save runs; an embedded editor closes with Esc."""
+        """Keep Esc for the widget and the popups unless a save runs; an embedded editor closes with Esc, a view-only one with F10 as well."""
         if action == "cancel_save":
             return self.document.editor.saving
         if action == "close_embedded":
             return not self.standalone
+        if action == "close_view":
+            return self.view_only
         return super().check_action(action, parameters)
 
     async def action_close_embedded(self) -> None:
-        """Close the embedded editor (Esc); popups, menus, the widget and a running save take Esc first."""
+        """Close the embedded editor (Esc); popups, menus, the widget and a running save take Esc first.
+
+        A view-only screen closes a visible popup instead, so that F10 never closes the screen over one.
+        """
+        if self.view_only and self._dismiss_visible_popup():
+            return
         self._request_close()
+
+    async def action_close_view(self) -> None:
+        """Close the view-only screen (F10)."""
+        await self.action_close_embedded()
 
     async def action_close_editor(self) -> None:
         """Close: the same flow as Quit."""
@@ -974,11 +1011,25 @@ class EditorScreen(Screen[None]):
 
     def on_find_popup_dismissed(self, message: FindPopup.Dismissed) -> None:
         """Escape: cancel a running search first, else close the popup and focus the editor."""
+        self._dismiss_find_popup()
+
+    def _dismiss_find_popup(self) -> None:
+        """Cancel a running search, else close the Find popup."""
         editor = self.document.editor
         if editor.searching:
             editor.cancel_search()
             return
         self._close_popup(self.find_popup)
+
+    def _dismiss_visible_popup(self) -> bool:
+        """Dismiss a visible popup the way its `Dismissed` handler does; `False` when no popup is visible."""
+        if self.find_popup.display:
+            self._dismiss_find_popup()
+            return True
+        if self.goto_popup.display:
+            self._close_popup(self.goto_popup)
+            return True
+        return False
 
     def _close_popup(self, popup: PopupWidget) -> None:
         """Hide a popup and give the focus to the shown widget (`PopupWidget.close()` is not used: it would focus whatever had the focus at `show()` time)."""

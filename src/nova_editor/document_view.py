@@ -153,6 +153,7 @@ class DocumentView:
         config: LazyConfig | None,
         timing_file: str | None,
         force_hex: bool = False,
+        view_only: bool = False,
     ) -> tuple[DocumentView, str | None]:
         """Open `path`, or an empty document for `None`.
 
@@ -163,7 +164,7 @@ class DocumentView:
         """
 
         def empty() -> TimedNovaTextArea:
-            return editor_class(id="editor", text="", soft_wrap=soft_wrap, show_line_numbers=show_line_numbers, timing_file=timing_file)
+            return editor_class(id="editor", text="", soft_wrap=soft_wrap, show_line_numbers=show_line_numbers, timing_file=timing_file, view_only=view_only)
 
         def finish(view: DocumentView, error: str | None = None) -> tuple[DocumentView, str | None]:
             if force_hex:
@@ -176,7 +177,9 @@ class DocumentView:
         if reason is not None:
             return finish(cls(empty(), path, "failed"), f"Error loading file: {reason}")
         try:
-            editor = editor_class.open(path, language=language_for_path(path), id="editor", soft_wrap=soft_wrap, show_line_numbers=show_line_numbers, config=config, timing_file=timing_file)
+            editor = editor_class.open(
+                path, language=language_for_path(path), id="editor", soft_wrap=soft_wrap, show_line_numbers=show_line_numbers, config=config, timing_file=timing_file, view_only=view_only
+            )
         except OSError as error:
             state: LoadState = "new" if isinstance(error, FileNotFoundError) else "failed"
             return finish(cls(empty(), path, state), f"Error loading file: {error}")

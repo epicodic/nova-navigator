@@ -23,8 +23,10 @@ class EditorScreenHost(App[None]):
         keyboard_shortcuts_item: bool = True,
         standalone: bool = False,
         file_provider: FileProvider | None = None,
+        view_only: bool = False,
     ) -> None:
         super().__init__()
+        self.view_only = view_only
         self.path = path
         self.keybindings = keybindings
         self.keyboard_shortcuts_item = keyboard_shortcuts_item
@@ -40,6 +42,7 @@ class EditorScreenHost(App[None]):
             keyboard_shortcuts_item=self.keyboard_shortcuts_item,
             file_provider=self.file_provider,
             standalone=self.standalone,
+            view_only=self.view_only,
         )
         self.push_screen(self.screen_instance)
 

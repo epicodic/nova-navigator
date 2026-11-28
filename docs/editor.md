@@ -451,6 +451,7 @@ EditorScreen(
     poll_seconds: float = 2.0,
     quit_wait_seconds: float = 2.0,
     start_hex: bool = False,
+    view_only: bool = False,
 ) -> None:
 ```
 
@@ -470,6 +471,29 @@ EditorScreen(
 - `poll_seconds` — Interval of the check for a change of the file on disk (default 2.0).
 - `quit_wait_seconds` — Longest wait for a cancelled save before the quit question (default 2.0).
 - `start_hex` — Show the first document in the hex view whatever its content; Open uses the binary detection (default `False`).
+- `view_only` — Show the file without any way to change or write it (default `False`); see "View-only screen".
+
+### View-only screen
+
+`EditorScreen(view_only=True)` shows a file and never writes it; with the default nothing changes.
+
+Three layers guard the file, each sufficient for the paths it covers:
+
+1. The widget is `read_only`, and the hex view follows it.
+2. The document is edit-locked, also after a reload, so undo, redo and programmatic edits are refused.
+3. `NovaTextArea.save` returns `False` and writes nothing.
+
+The screen does not build the actions `editor.open`, `editor.save`, `editor.save_as`, `editor.undo`, `editor.redo`, `editor.cut` and `editor.paste`, so they are absent from the menus, the hint bar and the keymap.
+Reload, Copy, Select All, search, Go to and the View items remain.
+The widget's own bindings for Ctrl+Z, Ctrl+Y, Ctrl+X and Ctrl+V still exist and are refused by the first two layers.
+
+F10 closes the screen through a screen binding that is active only when `view_only`.
+No action keeps a binding that starts with F10, neither a default nor a user override.
+Wrap Mode therefore has no default key; it stays in the View menu and works with a user-assigned key.
+Escape, Close and Quit work as in the embedded editor, and no question appears because the document is never modified.
+Escape and F10 close a visible Find or Go to popup first, and Escape cancels a running search or a pending jump before that.
+
+A change of the file on disk asks with Keep and Reload only; Save As and Overwrite are not offered.
 
 ### Architecture
 
@@ -705,6 +729,7 @@ See the "DocumentView" section below.
 ### Embedding in the navigator
 
 `nova_navigator` opens the screen from F4 and from the user menu entry "Edit User Menu File" (`NovaNavigator.open_editor`).
+F3 and File > View open it view-only (`NovaNavigator.open_viewer`, see "Viewer session" below).
 Enter on a file keeps running the configured filetype command.
 The editor is a full-screen modal screen: only the screen on top receives keys, so the navigator's keys cannot fire while it is open, and equal default keys (Ctrl+O, Ctrl+G, Ctrl+Q) never collide.
 `NovaNavigator.on_event` forwards raw `Key` events to `EditorScreen.press_key` while the editor is the active screen.
@@ -719,6 +744,16 @@ The editor never touches the VFS; the host passes a path.
 The navigator passes a local path, so detection, the hex view, hex edits and the in-place save work on a local copy; the copy mechanism writes the saved copy back.
 The file provider of the dialogs stays the local one, so Open and Save As browse the local file system, starting in the directory of the file.
 A Save As to another local path leaves the copy, and later saves are not written back.
+
+**Viewer session.**
+F3 on a file shows it with `EditorScreen(view_only=True)`; F3 on a directory, a link to a directory or `..` does nothing.
+`open_viewer` follows `open_editor` and shares its session record, the busy guard, the key forwarding and `on_editor_screen_closed`; the session record names the function that ends the session.
+A local file is viewed in place; any other file is downloaded into a private copy (`docs/local_copies.md`) and a notice names the source and says that it is read-only.
+When the viewer closes, the private copy is removed and the panels are not reloaded.
+Escape, F10 and the editor's Close and Quit keys close it without a question.
+F3 and Shift+F3 are Find Next and Find Previous inside the viewer.
+With the terminal focused, F3 goes to the shell.
+The F1 help lists the closing keys in its Viewer group.
 
 **Read-only copies.**
 A copy that is never written back (JAR, WAR, EAR, APK, WHL, an archive on a read-only source) opens view-only.

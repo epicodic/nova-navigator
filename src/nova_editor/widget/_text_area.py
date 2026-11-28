@@ -174,6 +174,7 @@ _PAD_SLACK_CELLS = 1024
 """Cells beyond the region width that a rendered line is still padded to (a strip is never padded to the virtual width of a huge row)."""
 
 STALE_REASON = "file changed on disk"
+VIEW_ONLY_REASON = "view only"
 """The reason of the edit lock of a view whose file changed behind it."""
 
 _GuardedMethod = TypeVar("_GuardedMethod", bound=Callable[..., Any])
@@ -1214,6 +1215,7 @@ NovaTextArea {
         compact: bool = False,
         highlight_cursor_line: bool = True,
         placeholder: str | Content = "",
+        view_only: bool = False,
         _prebuilt_document: LazyDocument | None = None,
     ) -> None:
         """Construct a new `NovaTextArea`.
@@ -1338,8 +1340,13 @@ NovaTextArea {
         self._applied_language: str | None = None
         self._highlight_limit = DEFAULT_HIGHLIGHT_LIMIT
 
+        self._view_only = view_only
+        """True in view-only mode: every edit and save is refused whatever the read-only flag says."""
+
         self.document: LazyDocument = _prebuilt_document if _prebuilt_document is not None else self._text_document(text, _DEFAULT_INDENT_WIDTH)
         """The document this widget is currently editing: always a lazy document over a piece table (`text=` and small files included)."""
+
+        self._lock_view(self.document)
 
         if max_checkpoints is not None:
             self.document.history.set_max_checkpoints(max_checkpoints)
@@ -1364,7 +1371,7 @@ NovaTextArea {
         """The virtual offset of the cursor (not screen-space offset)."""
 
         self.set_reactive(NovaTextArea.soft_wrap, soft_wrap)
-        self.set_reactive(NovaTextArea.read_only, read_only)
+        self.set_reactive(NovaTextArea.read_only, read_only or view_only)
         self.set_reactive(NovaTextArea.show_cursor, show_cursor)
         self.set_reactive(NovaTextArea.show_line_numbers, show_line_numbers)
         self.set_reactive(NovaTextArea.line_number_start, line_number_start)
@@ -2702,6 +2709,11 @@ NovaTextArea {
         config = dataclasses.replace(config, sync_scan_limit=max(config.sync_scan_limit, len(data)))
         return LazyDocument(BytesSource(data), config)
 
+    def _lock_view(self, document: LazyDocument) -> None:
+        """Refuse every edit of *document* in a view-only widget."""
+        if self._view_only:
+            document.lock_edits(VIEW_ONLY_REASON)
+
     def _replace_document(self, document: LazyDocument) -> None:
         """Swap in a new document: the old one is closed, every state tied to it is reset and the scan machinery is wired to the new one."""
         old = self.document
@@ -2721,6 +2733,7 @@ NovaTextArea {
         self._line_cache.clear()
         self._remove_listener()
         self.document = document
+        self._lock_view(document)
         self._remove_listener = document.add_change_listener(self._on_document_change)
         self._stale = False
         if self._max_checkpoints is not None:
@@ -3461,6 +3474,8 @@ NovaTextArea {
         Returns:
             True when a save was started; False when one already runs, the widget is closed, there is no target, nothing needs saving or a confirmation is needed.
         """
+        if self._view_only:
+            return False
         if self._lazy_closed or self._save_run is not None:
             return False
         target = path if path is not None else self.file_path

@@ -34,6 +34,15 @@ If the final write-back fails, a notice says so, the copy keeps your changes, th
 A copy that is never written back (see Read-only sources) opens view-only with a notice: typing, Cut, Paste and Ctrl+S change nothing, and Save As writes a local file.
 A Save As to another path leaves the copy, and later saves there are not written back.
 
+### Viewing in the built-in viewer
+
+F3 on a file, and File > View, show it read-only in the editor screen.
+A file on the local filesystem is viewed in place.
+A file from SSH, Azure, or an archive is downloaded completely into a private viewer copy, and a notice names the source.
+A viewer copy is not listed in the Local Copies dialog, not watched and never written back, and it is removed when the viewer closes.
+Quitting removes viewer copies also with **Quit and keep files**.
+The viewer shows the source as it is now, also while an editor copy of the same file holds changes that were not synced yet; that copy is left alone.
+
 ### The Local Copies dialog
 
 Press **Ctrl+E**, or use **Command → Local Copies**, to see every currently open local copy.
@@ -81,7 +90,7 @@ A read-only copy shows status `read-only`, is created with restricted permission
 Quitting Nova Navigator while any local copy has unsynced, failed, or conflicting changes asks:
 
 - **Sync and quit** — sync every such copy, then quit. If any copy still cannot be synced, the dialog reports it and Nova Navigator stays open.
-- **Quit and keep files** — quit without syncing; the local files are left in place.
+- **Quit and keep files** — quit without syncing; the local files are left in place, except private viewer copies.
 - **Cancel** — do nothing.
 
 With nothing unsynced, Nova Navigator quits immediately and removes its local-copy directory.
@@ -209,6 +218,17 @@ A directory raises `IsADirectoryError`; a local file is checked by `check_readab
 `finish_editing(manager, target)` calls `release()` and returns a `SessionNotice` for a failed or conflicting write-back.
 `NovaNavigator.open_editor` runs `open_for_editing` in a Textual worker.
 The watcher of a copy starts its sync jobs from the context of the call that started it, and a job can only show its Overwrite/Skip question from a context that belongs to a worker.
+
+### Viewer session (`local_copies/viewer_session.py`)
+
+`open_for_viewing(manager, source)` returns a `ViewTarget` (the local path to show, the private copy's directory, and the source key) or `None` when the download failed or was cancelled.
+A directory raises `IsADirectoryError`; a local file is checked by `check_readable()` and viewed in place.
+Any other file is downloaded by `LocalCopyManager.create_view_copy()` into its own unique directory below `<root>/view/`, with `read_only=True`.
+A view copy is never registered, watched or synced, so viewing a file never writes it back and never touches an F4 copy of the same source.
+`finish_viewing(manager, target)` removes the view copy's directory through `discard_view_copy()`; a failed download or a failed directory setup removes its directory before `create_view_copy()` ends.
+`shutdown()` removes `<root>/view/` also with `remove_files=False`.
+`NovaNavigator.open_viewer` runs `open_for_viewing` in a Textual worker and calls `finish_viewing` when the viewer screen is gone, or when the screen could not be pushed, including a cancellation after the download finished.
+Directories left behind by a crash are covered by the cleanup of the process root (see "Where the files live").
 
 ### Writable archives
 

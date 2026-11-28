@@ -31,11 +31,13 @@ from nova_navigator.dialogs.edit_remotes_dialog import EditRemotesDialog
 from nova_navigator.dialogs.files_dialog import CopyMoveFilesDialog, DeleteFilesDialog
 from nova_navigator.dialogs.icon_picker_dialog import IconPickerDialog
 from nova_navigator.dialogs.input_name_dialog import InputNameDialog
+from nova_navigator.dialogs.key_help_dialog import KeyHelpDialog
 from nova_navigator.dialogs.local_copies_dialog import LocalCopiesDialog
 from nova_navigator.dialogs.response_dialog import OverwriteResponseDialog, ResponseDialog
 from nova_navigator.dialogs.select_by_pattern_dialog import SelectByPatternDialog
 from nova_navigator.dialogs.settings_dialog import SettingsDialog
 from nova_navigator.dialogs.user_menu_input_dialog import InputField, UserMenuInputDialog
+from nova_navigator.key_help import HelpGroup, HelpRow
 from nova_navigator.local_copies import CopyEntry, CopyStatus, LocalCopyManager
 from nova_navigator.nova_navigator_core import NovaNavigatorCore
 from nova_navigator.remotes.ssh import CHANGED_TITLE, REVOKED_TITLE, UNKNOWN_TITLE, changed_host_message, revoked_host_message
@@ -427,6 +429,11 @@ _ENTRIES: list[DialogEntry] = [
             [InputField("archive", "Archive name", "project.tar.gz"), InputField("level", "Compression level", "6")],
         ),
         result_fn=lambda d, r: f"Result: {r}  values={d.values if r == Response.OK else None}",
+    ),
+    DialogEntry(
+        "KeyHelpDialog",
+        "F1 key help list",
+        lambda: KeyHelpDialog([HelpGroup("General", [HelpRow("F1", "Help", "app.help")])]),
     ),
 ]
 
