@@ -213,6 +213,7 @@ class MainScreen(ActionsSupport, Screen[None]):
 
     _sync_state: SyncBrowsing | None
     _compare_config: _CompareConfig | None
+    _compare_mode_actions: dict[CompareMode, Action]
 
     def __init__(self, config_dir: Path | None = None) -> None:
         super().__init__()
@@ -309,6 +310,16 @@ class MainScreen(ActionsSupport, Screen[None]):
             self._act("bookmarks.add_to_bookmarks"),
             mc.action("Manage Bookmarks", action="edit_bookmarks", name="edit_bookmarks"),
         )
+        by_size, by_mtime = mc.group(
+            mc.action("By File Size", checkable=True, action="compare_by_size", name="compare_by_size"),
+            mc.action(
+                "By Modification Time",
+                checkable=True,
+                action="compare_by_mtime",
+                name="compare_by_mtime",
+            ),
+        )
+        self._compare_mode_actions = {CompareMode.BY_SIZE: by_size, CompareMode.BY_MODIFICATION_TIME: by_mtime}
         self._menu_bar.add_menu("View", name="view").add(
             self._act("browser.refresh"),
             mc.separator(),
@@ -319,15 +330,8 @@ class MainScreen(ActionsSupport, Screen[None]):
                 "Compare Directories",
                 self._act("view.compare_enable"),
                 mc.separator(),
-                *mc.group(
-                    mc.action("By File Size", checkable=True, action="compare_by_size", name="compare_by_size"),
-                    mc.action(
-                        "By Modification Time",
-                        checkable=True,
-                        action="compare_by_mtime",
-                        name="compare_by_mtime",
-                    ),
-                ),
+                by_size,
+                by_mtime,
                 mc.separator(),
                 self._act("view.compare_hide_identical"),
                 name="compare_directories",
@@ -602,10 +606,14 @@ class MainScreen(ActionsSupport, Screen[None]):
     def _action_toggle_hide_identical(self) -> None:
         self._refresh_compare()
 
+    def _checked_compare_mode(self) -> CompareMode | None:
+        """Return the mode checked in the Compare Directories menu, or None if none is checked."""
+        return next((mode for mode, action in self._compare_mode_actions.items() if action.checked), None)
+
     def _action_toggle_compare_enable(self) -> None:
         a = self._act("view.compare_enable")
         if a.checked:
-            self._compare_config = _CompareConfig(mode=None)
+            self._compare_config = _CompareConfig(mode=self._checked_compare_mode())
             self._refresh_compare()
         else:
             self._compare_config = None

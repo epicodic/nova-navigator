@@ -938,6 +938,48 @@ async def move_files(
     await asyncio.gather(*subtasks)
 
 
+def _remove_if_link_now(path: VPath) -> bool:
+    """Stat *path* again, bypassing listing caches; if it is a link now, remove the link and return True."""
+    if not path.filesystem.stat_uncached(path).is_symlink:
+        return False
+    path.filesystem.remove(path)
+    return True
+
+
+async def _erase_directory(ctx: TaskContext, path: VPath, options: EraseFilesOptions) -> None:
+    """Erase the directory *path* and its content, unless the user declines.
+
+    The entry is checked again before it is listed and again after the question,
+    so a link swapped in meanwhile is removed itself and its target stays untouched.
+    """
+    if _remove_if_link_now(path):
+        return
+    path.filesystem.refresh(path)
+    children = [child async for child in path.iterdir()]
+    if len(children) > 0 and options.ask_before_erase:
+        response = await ctx.request_response(
+            "Delete non-empty directory",
+            expected_responses=[Response.YES, Response.NO, Response.ALL, Response.NONE],
+            message=f"Directory '{path.path}' is not empty. Delete it recursively?",
+        )
+        if response.is_rejected:
+            _logger.debug("erase_path skip (user declined) %s", path.path)
+            return
+        if _remove_if_link_now(path):
+            return
+    await erase_files(ctx, children, EraseFilesOptions(ask_before_erase=False, refresh_stat=False))
+    path.filesystem.rmdir(path)
+
+
+def _is_gone(path: VPath) -> bool:
+    """Return whether *path* really does not exist any more."""
+    try:
+        path.filesystem.stat_uncached(path)
+    except FileNotFoundError:
+        return True
+    return False
+
+
 async def _erase_path(
     ctx: TaskContext,
     path: VPath,
@@ -949,8 +991,9 @@ async def _erase_path(
     without being followed or prompted for. Files are removed directly.
     Real directories are erased recursively via :func:`erase_files`; if
     non-empty and *options.ask_before_erase* is set, the user is asked to
-    confirm before deletion proceeds. Increments the overall completed
-    counter by one when done (including when skipped).
+    confirm before deletion proceeds. An entry that has vanished meanwhile is
+    counted as done. Increments the overall completed counter by one when done
+    (including when skipped).
     """
     ctx.status.check_cancelled()
     ctx.status.set_current_item(path.uri)
@@ -965,27 +1008,20 @@ async def _erase_path(
             _logger.debug("erase_path vanished %s", path.path)
             ctx.status.update_progress(inc_completed=1)
             return
-    stat = path.stat
-    if stat.is_symlink:
-        # A link of any kind is removed itself; its target is never listed, stat-followed or touched.
-        path.filesystem.remove(path)
-    elif stat.is_directory:
-        path.filesystem.refresh(path)
-        children = [child async for child in path.iterdir()]
-        if len(children) > 0 and options.ask_before_erase:
-            response = await ctx.request_response(
-                "Delete non-empty directory",
-                expected_responses=[Response.YES, Response.NO, Response.ALL, Response.NONE],
-                message=f"Directory '{path.path}' is not empty. Delete it recursively?",
-            )
-            if response.is_rejected:
-                _logger.debug("erase_path skip (user declined) %s", path.path)
-                ctx.status.update_progress(inc_completed=1)
-                return
-        await erase_files(ctx, children, EraseFilesOptions(ask_before_erase=False, refresh_stat=False))
-        path.filesystem.rmdir(path)
-    else:
-        path.filesystem.remove(path)
+    try:
+        stat = path.stat
+        if stat.is_symlink:
+            # A link of any kind is removed itself; its target is never listed, stat-followed or touched.
+            path.filesystem.remove(path)
+        elif stat.is_directory:
+            await _erase_directory(ctx, path, options)
+        else:
+            path.filesystem.remove(path)
+    except FileNotFoundError:
+        # SFTP also reports other failures as "no such file", so make sure the entry is gone.
+        if not _is_gone(path):
+            raise
+        _logger.debug("erase_path vanished %s", path.path)
     _logger.debug("erase_path done %s", path.path)
     ctx.status.update_progress(inc_completed=1)
 
