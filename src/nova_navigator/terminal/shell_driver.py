@@ -48,8 +48,8 @@ RESTORE_SEQUENCE = b"\x1b[97~"
 # Switch to a mode that takes typed text; does nothing outside vi command mode.
 _INSERT_MODE_SEQUENCE = b"\x1b[95~"
 # One widget (zsh) or shell function (bash) each sets the whole line aside and puts it back.
-_LINE_STASH_SEQUENCE = b"\x1b[96~"
-_LINE_RESTORE_SEQUENCE = b"\x1b[94~"
+_SET_ASIDE_SEQUENCE = b"\x1b[96~"
+_PUT_BACK_SEQUENCE = b"\x1b[94~"
 # zsh only: bound to vi-history-search-backward and send-break, to cancel a search or named command
 # that is waiting for more keys.
 _ZSH_SEARCH_SEQUENCE = b"\x1b[93~"
@@ -131,21 +131,21 @@ class ShellDriver(ABC):
         """
         return False
 
-    def kill_line_sequence(self) -> bytes:
+    def set_aside_sequence(self) -> bytes:
         """Return the input bytes that make the shell set aside everything its line editor holds.
 
         The buffer may hold several lines (a command recalled from history), and
         the shell may hold more lines that it would put at a later prompt.  The
         bytes are written before every hidden line, also onto an empty line, and
-        saved text accumulates until ``yank_sequence``.  They work in every
+        saved text accumulates until ``put_back_sequence``.  They work in every
         editing mode and leave a mode that takes typed text.  Only called for
         drivers with ``supports_line_editing`` and without
         ``supports_editor_protocol``.
         """
         return b""
 
-    def yank_sequence(self) -> bytes:
-        """Return the input bytes that restore everything set aside by ``kill_line_sequence``.
+    def put_back_sequence(self) -> bytes:
+        """Return the input bytes that restore everything set aside by ``set_aside_sequence``.
 
         The cursor ends after the restored text.  Only called for drivers with
         ``supports_line_editing`` and without ``supports_editor_protocol``.
@@ -232,7 +232,7 @@ class ZshDriver(ShellDriver):
     def quote(self, arg: str) -> str:
         return _ansi_c_quote(arg)
 
-    def kill_line_sequence(self) -> bytes:
+    def set_aside_sequence(self) -> bytes:
         """Stash, open a search and break it off, then stash again.
 
         A vi search or a named command (``:``, Alt+x) that is waiting for keys
@@ -247,11 +247,11 @@ class ZshDriver(ShellDriver):
         sets the buffer itself, so no key that zsh-autosuggestions treats as
         accepting a suggestion (such as Ctrl+E) is involved.
         """
-        stash = _INSERT_MODE_SEQUENCE + _LINE_STASH_SEQUENCE
+        stash = _INSERT_MODE_SEQUENCE + _SET_ASIDE_SEQUENCE
         return stash + _ZSH_SEARCH_SEQUENCE + _ZSH_BREAK_SEQUENCE + stash
 
-    def yank_sequence(self) -> bytes:
-        return _LINE_RESTORE_SEQUENCE
+    def put_back_sequence(self) -> bytes:
+        return _PUT_BACK_SEQUENCE
 
 
 class BashDriver(ShellDriver):
@@ -290,16 +290,16 @@ class BashDriver(ShellDriver):
     def quote(self, arg: str) -> str:
         return _ansi_c_quote(arg)
 
-    def kill_line_sequence(self) -> bytes:
+    def set_aside_sequence(self) -> bytes:
         """Send the insert mode key and then the private stash key.
 
         Without line editing (``set +o emacs``) this does not remove the typed line, so the terminal
         does not send it while the hook reports ``noedit``.
         """
-        return _INSERT_MODE_SEQUENCE + _LINE_STASH_SEQUENCE
+        return _INSERT_MODE_SEQUENCE + _SET_ASIDE_SEQUENCE
 
-    def yank_sequence(self) -> bytes:
-        return _INSERT_MODE_SEQUENCE + _LINE_RESTORE_SEQUENCE
+    def put_back_sequence(self) -> bytes:
+        return _INSERT_MODE_SEQUENCE + _PUT_BACK_SEQUENCE
 
 
 class FallbackDriver(ShellDriver):

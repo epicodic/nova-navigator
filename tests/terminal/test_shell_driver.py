@@ -243,59 +243,59 @@ def test_detect_driver_handles_quoted_path_with_space() -> None:
 
 
 # ---------------------------------------------------------------------------
-# kill_line_sequence / yank_sequence
+# set_aside_sequence / put_back_sequence
 # ---------------------------------------------------------------------------
 
 
-def test_bash_driver_kill_line_sequence_enters_insert_mode_before_stashing() -> None:
+def test_bash_driver_set_aside_sequence_enters_insert_mode_before_stashing() -> None:
     """The stash function is bound in the emacs and vi insert keymaps only, so vi
     command mode is left first."""
     driver = BashDriver()
-    seq = driver.kill_line_sequence()
+    seq = driver.set_aside_sequence()
     assert seq.startswith(b"\x1b[95~")  # insert mode
     assert seq.endswith(b"\x1b[96~")  # stash
 
 
-def test_bash_driver_kill_line_sequence_sends_only_private_keys() -> None:
+def test_bash_driver_set_aside_sequence_sends_only_private_keys() -> None:
     """No text is typed and no readline kill is used, so the kill ring stays as it was."""
     driver = BashDriver()
-    seq = driver.kill_line_sequence()
+    seq = driver.set_aside_sequence()
     assert seq == b"\x1b[95~\x1b[96~"
 
 
-def test_bash_driver_yank_sequence_sends_only_private_keys() -> None:
+def test_bash_driver_put_back_sequence_sends_only_private_keys() -> None:
     driver = BashDriver()
-    seq = driver.yank_sequence()
+    seq = driver.put_back_sequence()
     assert seq == b"\x1b[95~\x1b[94~"
 
 
-def test_zsh_driver_kill_line_sequence_uses_private_raw_eol_not_real_ctrl_e() -> None:
+def test_zsh_driver_set_aside_sequence_does_not_use_real_ctrl_e() -> None:
     """Real Ctrl+E (end-of-line) is one of zsh-autosuggestions' default
     accept-widgets: sending it while a suggestion is showing silently accepts
     the suggestion into the real buffer.  The private stash widget sets the
     buffer itself, so no such key is sent."""
     driver = ZshDriver()
-    seq = driver.kill_line_sequence()
+    seq = driver.set_aside_sequence()
     assert b"\x05" not in seq  # never the real Ctrl+E
     assert seq.startswith(b"\x1b[95~")
 
 
-def test_zsh_driver_kill_line_sequence_sends_only_private_keys() -> None:
+def test_zsh_driver_set_aside_sequence_sends_only_private_keys() -> None:
     driver = ZshDriver()
-    seq = driver.kill_line_sequence()
+    seq = driver.set_aside_sequence()
     assert seq == b"\x1b[95~\x1b[96~\x1b[93~\x1b[92~\x1b[95~\x1b[96~"
 
 
-def test_zsh_driver_yank_sequence_sends_only_the_private_restore_key() -> None:
+def test_zsh_driver_put_back_sequence_sends_only_the_private_restore_key() -> None:
     """No Ctrl+E: it would risk accepting a new autosuggestion formed from the
     just-restored text."""
     driver = ZshDriver()
-    seq = driver.yank_sequence()
+    seq = driver.put_back_sequence()
     assert seq == b"\x1b[94~"
 
 
 def test_zsh_driver_init_code_defines_stash_widget_bound_to_private_sequence() -> None:
-    """The private sequence kill_line_sequence() sends must be bound in
+    """The private sequence set_aside_sequence() sends must be bound in
     init_code() to a widget that clears the whole buffer."""
     code = ZshDriver().init_code()
     assert "BUFFER=; " in code
@@ -303,11 +303,11 @@ def test_zsh_driver_init_code_defines_stash_widget_bound_to_private_sequence() -
     assert r"\e[96~" in code
 
 
-def test_fallback_driver_does_not_override_kill_or_yank_sequence() -> None:
+def test_fallback_driver_does_not_override_the_line_sequences() -> None:
     """FallbackDriver has no line editor (supports_line_editing is False) and never
-    reaches hidden navigation's kill/yank step, so it relies on the base class."""
-    assert "kill_line_sequence" not in FallbackDriver.__dict__
-    assert "yank_sequence" not in FallbackDriver.__dict__
+    reaches hidden navigation's stash and restore, so it relies on the base class."""
+    assert "set_aside_sequence" not in FallbackDriver.__dict__
+    assert "put_back_sequence" not in FallbackDriver.__dict__
 
 
 # ---------------------------------------------------------------------------

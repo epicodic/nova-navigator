@@ -371,7 +371,7 @@ class Terminal(ScrollView, can_focus=True):
         )
         self._stream = pyte.Stream(self._screen)
         # True once any user-originated byte was forwarded to the shell since the
-        # last precmd.  Internal writes (kill, cd, yank, init code) never set it.
+        # last precmd.  Internal writes (set aside, cd, put back, init code) never set it.
         self._input_since_precmd: bool = False
         # User input was forwarded before this shell's first hook report and has not been
         # followed by a later Enter, so a prompt line may hold text nobody can see as typed.
@@ -877,7 +877,7 @@ class Terminal(ScrollView, can_focus=True):
         if self._driver.supports_editor_protocol:
             self._backend.write(STASH_SEQUENCE)
         else:
-            self._backend.write(self._driver.kill_line_sequence())
+            self._backend.write(self._driver.set_aside_sequence())
 
     def _restore_input(self) -> None:
         """Put back what ``_stash_input`` set aside.
@@ -893,8 +893,8 @@ class Terminal(ScrollView, can_focus=True):
         if self._driver.supports_editor_protocol:
             self._backend.write(RESTORE_SEQUENCE)
         else:
-            self._backend.write(self._driver.yank_sequence())
-        # The restore/yank echo arrives after the prompt and would be absorbed into
+            self._backend.write(self._driver.put_back_sequence())
+        # The echo of the restored line arrives after the prompt and would be absorbed into
         # the snapshot, so report input as present for this prompt line.
         if held_input:
             self._input_since_precmd = True
@@ -904,7 +904,7 @@ class Terminal(ScrollView, can_focus=True):
 
         Drivers with ``supports_editor_protocol`` get an atomic stash request,
         at most once per transaction chain and only with typed input.  Others get
-        their driver's ``kill_line_sequence()`` before every ``cd``: the line may
+        their driver's ``set_aside_sequence()`` before every ``cd``: the line may
         hold input that ``has_input`` cannot see, and the saved text accumulates
         until the one restore at the end of the chain.
         """

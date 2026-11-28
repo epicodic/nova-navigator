@@ -147,7 +147,7 @@ Nothing ends the shell when Nova Navigator itself crashes or is killed; it only 
 | `min_rows` | Property — smallest height of the PTY and the screen model, 0 for none (see [Two-row minimum](#two-row-minimum-and-the-one-row-view)) |
 | `cd_command(path)` | Return a complete `cd` command string |
 | `supports_line_editing` | Property — True if the shell has a line editor the terminal can clear and refill for hidden navigation |
-| `kill_line_sequence()`, `yank_sequence()` | Bytes that make the shell set aside everything its line editor holds and put it back (see [Kill/yank sequences](#killyank-sequences-are-driver-specific)) |
+| `set_aside_sequence()`, `put_back_sequence()` | Bytes that make the shell set aside everything its line editor holds and put it back (see [Line sequences](#the-line-sequences-are-driver-specific)) |
 
 ### Concrete Drivers
 
@@ -434,7 +434,7 @@ It uses two facts that Nova Navigator owns and needs nothing from the shell.
 
 Every path into the shell goes through the widget: `on_key`, `_paste_text`, and `send()`.
 Each sets `_input_since_precmd`; every precmd clears it, except while input typed before the first hook report may still be on the line (see [Input typed before the first hook report](#input-typed-before-the-first-hook-report)).
-Internal writes (kill, `cd`, yank, init code) never set it.
+Internal writes (set aside, `cd`, put back, init code) never set it.
 A restore sets it only when the line set aside held input or the user typed meanwhile.
 If no user byte was sent since the last precmd, the line is taken to be empty.
 This is wrong for input typed while a command was still running: that command's precmd clears the flag, so such input is not detected, for any driver.
@@ -497,18 +497,18 @@ A pane-driven directory change is one serialised transaction per terminal.
 If the shell is running a command, the target waits and is applied on the next precmd.
 If the shell already reports *path* and nothing is pending, the request is a no-op.
 
-`_start_nav()` enables draining, has the shell set its line aside with the driver's `kill_line_sequence()`, writes ` cd <quoted>\n`, and arms the watchdog.
+`_start_nav()` enables draining, has the shell set its line aside with the driver's `set_aside_sequence()`, writes ` cd <quoted>\n`, and arms the watchdog.
 This happens before every `cd`, also when the line looks empty, because the shell can hold input that `has_input()` cannot see.
 For a driver with `supports_editor_protocol` the stash request is sent only when `has_input()` is true, once per chain.
 
 The precmd hook's OSC 7 completes the step.
 If a newer target arrived meanwhile, `_handle_pre_cmd` chains directly into another `_start_nav()` while draining stays on, so intermediate prompts are never shown.
-Otherwise `_finish_nav()` restores what was set aside, once per chain, with the driver's `yank_sequence()`, ends draining with the `\r\x1b[K` in-place redraw, and resolves `_nav_future`.
+Otherwise `_finish_nav()` restores what was set aside, once per chain, with the driver's `put_back_sequence()`, ends draining with the `\r\x1b[K` in-place redraw, and resolves `_nav_future`.
 See [Giving up on an unreachable target](#giving-up-on-an-unreachable-target) for what happens when the reported cwd keeps mismatching the *same* target instead.
 
-### Kill/yank sequences are driver-specific
+### The line sequences are driver-specific
 
-`ShellDriver.kill_line_sequence()` and `yank_sequence()` return the exact bytes each shell needs, so `Terminal` never hardcodes control characters itself.
+`ShellDriver.set_aside_sequence()` and `put_back_sequence()` return the exact bytes each shell needs, so `Terminal` never hardcodes control characters itself.
 
 The rule for a line-editing shell is: before every hidden line (a `cd`, the line of `run_command()`, the setup line sent again) the shell itself sets aside whatever its editor holds, empty or not, and one restore follows.
 Nothing is guessed from the screen.
@@ -521,8 +521,8 @@ zsh binds them in every keymap except the protected `.safe` and the special `ise
 
 | Sequence | zsh | bash |
 |---|---|---|
-| `kill_line_sequence()` | S, `ESC[93~` (vi-history-search-backward), `ESC[92~` (send-break), S, where S is `ESC[95~`, `ESC[96~` (stash widget) | `ESC[95~`, `ESC[96~` (stash function) |
-| `yank_sequence()` | `ESC[94~` (restore widget) | `ESC[95~`, `ESC[94~` (restore function) |
+| `set_aside_sequence()` | S, `ESC[93~` (vi-history-search-backward), `ESC[92~` (send-break), S, where S is `ESC[95~`, `ESC[96~` (stash widget) | `ESC[95~`, `ESC[96~` (stash function) |
+| `put_back_sequence()` | `ESC[94~` (restore widget) | `ESC[95~`, `ESC[94~` (restore function) |
 
 `ESC[95~` leaves vi command mode, so after a hidden write the shell is in vi insert mode also when the user was in vi command mode before.
 The zsh widgets also leave visual mode, and every keymap that is not `main`, `emacs` or `viins`, for `main`.
@@ -576,7 +576,7 @@ Like any plain shell, it does not detect input typed while a command was still r
 #### Known limits of hidden writes
 
 A line editor command that waits for further keys takes the first bytes of a hidden write.
-The first key of `kill_line_sequence()` absorbs this for a pending Ctrl+V or a lone Escape, and the stash key still arrives whole.
+The first key of `set_aside_sequence()` absorbs this for a pending Ctrl+V or a lone Escape, and the stash key still arrives whole.
 A pending zsh vi search or named command is cancelled (see above).
 
 In the cases tried nothing typed was run, but the line can differ:
@@ -627,7 +627,7 @@ different directory is already in flight, clobbering it.
 ### Watchdog and hook repair
 
 If no precmd follows a `cd` within `_NAV_WATCHDOG_TIMEOUT`, the precmd hook was most likely removed by an rc file or plugin.
-On the first timeout in a session the driver's `init_code()` is re-sent (after another `kill_line_sequence()`) followed by the `cd`; the init line's own precmd reports the old directory, so the normal chaining rule re-sends the `cd` and the transaction completes.
+On the first timeout in a session the driver's `init_code()` is re-sent (after another `set_aside_sequence()`) followed by the `cd`; the init line's own precmd reports the old directory, so the normal chaining rule re-sends the `cd` and the transaction completes.
 On a second timeout the transaction gives up, restores what was set aside, ends draining, and resolves the future with the last known cwd.
 The keys of a hidden write reach a shell that is still busy later and in order, so the restore also follows then.
 
