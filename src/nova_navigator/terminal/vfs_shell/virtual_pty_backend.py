@@ -31,6 +31,11 @@ class VfsShellDriver(ShellDriver):
         super().__init__(line_editing=True)
 
     @property
+    def min_rows(self) -> int:
+        """No minimum: the virtual shell has its own line editor, not readline."""
+        return 0
+
+    @property
     def supports_editor_protocol(self) -> bool:
         return True
 

@@ -9,6 +9,13 @@
   SSH is tested with OpenSSH servers on Debian and on Alpine (BusyBox) in containers: password and key-file login, identity files from `~/.ssh/config`, ProxyJump, host key prompts, listing, copy, move, delete, symbolic links and editing.
 - Open tar and zip archives as folders.
 - A live shell in the same window.
+  The embedded terminal runs the shell named by `$SHELL`; bash and zsh have full integration.
+  With them, text you are typing on the command line is normally kept when the shell follows the panels, in emacs and vi editing modes.
+  Known issues lists the cases where it is changed, lost or run.
+  With bash and plain shells, a long line wraps when the terminal is one row high, and only the row with the cursor shows.
+  zsh behaves as it does in any one-row terminal.
+  Horizontal scrolling of the command line (readline's `horizontal-scroll-mode`) is turned off in the embedded bash once the setup line has run.
+  It is not turned off for a bash that is treated as a plain shell: `sh` linked to bash, or an SSH shell that could not be detected.
 - A built-in text editor, `ned`, which opens from the file manager with F4 and can also run on its own.
 - Copy (F5), move (F6) and delete (F8), with progress and conflict resolution.
 - Long operations run in the background and can be cancelled.
@@ -38,6 +45,23 @@
 - Killing the application while it replaces a link can leave the destination missing.
   Changes made by other programs during a copy are not detected.
 - An interrupted save can damage a configuration file: `remotes.toml` and `keybindings.toml` always, `settings.toml` and `bookmarks.toml` when the directory is read-only.
+
+#### Terminal
+
+- In zsh vi mode, do not change the panel's folder while a search is pending (Esc, then `/` or `?`).
+  It runs the typed line, or the command recalled from the history, possibly changed (for example cut short).
+- zsh lines that come back to the prompt by themselves (`setopt hist_verify`, `push-line`, `print -z`) are run by a change of the panel's folder.
+- In bash with line editing turned off (`set +o emacs` and no vi mode), a change of the panel's folder runs the typed line.
+- A zsh keymap selected with `zle -K` that is not `main`, `emacs`, `viins` or `vicmd` can make a change of the panel's folder run the typed line.
+- Changing the panel's folder while a line editor command waits for more keys can change or lose the typed line.
+  This happens, for example, in the middle of a vi command or search:
+  bash emacs Alt+[ or Esc O leaves `[95~` on the line, bash vi `m` or `@` loses the line, and zsh vi `'` swaps the case of the whole line.
+- In bash with `shopt -s histverify`, the shell does not follow the panels while an expanded line waits at the prompt, until you enter or cancel it.
+- An editor opened from the command line (bash vi `v`, Ctrl+X Ctrl+E) receives the `cd` that follows a panel change as its input.
+- bash and zsh get private key bindings (`ESC[91~` to `ESC[96~`, and in bash `ESC[95` Ctrl+U) for this.
+  In bash, removing them can make a panel change run the typed line.
+- In a shell treated as a plain shell that has a vi mode (for example `sh` linked to bash), do not leave an empty command line in vi command mode.
+  The `cd` of a panel change is then read as editor commands, and what runs is unpredictable.
 
 #### SSH
 
@@ -136,8 +160,24 @@
 - Crash reports may hide more than necessary.
 - Passwords written into a URI in `remotes.toml` or `bookmarks.toml` stay on disk.
 
+#### Terminal
+
+- Typing text and then deleting it can leave Nova Navigator treating the line as still occupied.
+  One Enter on a file panel is then sent to the terminal instead of navigating.
+  That Enter clears the state, and the next Enter navigates.
+  It happens with bash after a line of more than two rows in the one-row terminal (which then shows an empty row until Ctrl+L or Enter), with zsh after a line wider than a one-row terminal, with `sh` or dash after a line that had wrapped, and after typing before a slow prompt has appeared.
+- bash can loop forever, using a whole CPU, when its prompt has colour or other invisible codes, the typed line is wider than the terminal and the width changes, with a one-row terminal or with `horizontal-scroll-mode` on.
+  The embedded bash is protected from this.
+  A bash started inside zsh or inside the embedded shell, or reached by a typed `ssh`, can still do it where one of these applies.
+- Nothing ends a looping shell if Nova Navigator itself crashes or is killed, and a looping shell on an SSH server cannot be killed by closing its terminal.
+
 #### Other
 
+- Text typed while a command is still running is not detected, even when it was already entered, so a later panel change can write its `cd` into that text and the combined line may run.
+  In shells without bracketed paste (sh, dash), further lines of a multi-line paste at a prompt are not detected either.
+- If you type or paste into the terminal, or keys are passed to it from a file panel (such as typed characters or inserted file names), while its shell is still starting, the shell stops following the panels until you press Enter in it once more after it is ready, even if you cleared the line.
+  Once it is ready and until that Enter, Enter in a file panel goes to the terminal, and runs any early text still on the line.
+  Ctrl+C pressed before the shell is ready can discard its setup; the shell then does not follow the panels until it is restarted (for the local shell, type `exit`).
 - On a slow shell, Enter pressed before the typed command appears may act on the file panel instead of the terminal.
   This was seen in the code, but not reproduced in the application.
 - A move across devices that follows links (or to a destination without links) can skip, as broken, a link whose target was already moved in the same move.
@@ -159,6 +199,8 @@
 - There are no rename masks for copy and move.
 - The copy and move dialog has no "Background" button; jobs already run in the background.
 - The developer script `create_bundle_shiv.sh` does not include the Azure SDK in the bundle it builds.
-- The embedded terminal needs zsh at `/usr/bin/zsh`; your login shell is not used for it.
+- fish, csh and other shells without a POSIX hook run as a plain terminal: no directory sync, no user menu commands in the terminal; the screen appears after a few seconds.
+- With `sh` or dash the shell has no line editing; a panel change waits while text is typed.
+- In vi editing mode, outside insert mode, directory sync and terminal commands can report the terminal as busy.
 - While the terminal is focused, F1 and F3 go to the shell, not to help or the viewer.
 - The menu bar cannot be opened from the keyboard.

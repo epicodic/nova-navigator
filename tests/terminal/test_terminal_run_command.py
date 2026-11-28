@@ -17,8 +17,9 @@ from tests.terminal.test_terminal import (
     _stop_recv_only,
 )
 
-_KILL = b"\x1b[96~ \x15"  # ZshDriver.kill_line_sequence()
-_YANK = b"\x19\x08"  # ZshDriver.yank_sequence()
+_KILL = b"\x1b[95~\x1b[96~"  # ZshDriver.kill_line_sequence()
+_YANK = b"\x1b[94~"  # ZshDriver.yank_sequence()
+_PREPARE = b"\x1b[95~"  # ZshDriver.prepare_line_sequence()
 
 
 def _terminal() -> tuple[FakePtyBackend, Terminal]:
@@ -47,7 +48,7 @@ async def test_run_command_writes_line_and_waits_for_precmd() -> None:
             _ready(terminal)
             task = asyncio.ensure_future(terminal.run_command("make"))
             await asyncio.sleep(0.01)
-            assert backend.writes == [b"make\n"]
+            assert backend.writes == [_PREPARE, b"make\n"]
             assert not task.done()
             await recv_q.put(["pre_cmd", "/w\n"])
             await pilot.pause(delay=0.1)
