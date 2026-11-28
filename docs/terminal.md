@@ -27,10 +27,28 @@ nova_navigator/terminal/
 ├── __init__.py          # Public API re-exports
 ├── pty_backend.py       # PtyBackend ABC + LocalPtyBackend
 ├── ssh_pty_backend.py   # SshPtyBackend (paramiko-based)
+├── local_shell.py       # resolve_local_shell(): the local shell from $SHELL, the login shell or /bin/sh
 ├── shell_driver.py      # ShellDriver ABC + ZshDriver, BashDriver, FallbackDriver, detect_driver()
 ├── terminal.py          # Terminal widget, TerminalDisplay, TerminalPyteScreen
 └── terminal_pool.py     # TerminalPool — manages one terminal per filesystem
 ```
+
+---
+
+## Shell Choice
+
+The local terminal starts the shell named by `$SHELL`.
+`resolve_local_shell()` (`local_shell.py`) picks it:
+
+1. `$SHELL`, when `shutil.which` finds it executable, whatever shell it is.
+2. Otherwise the login shell of the account from the password database, when it is executable.
+3. Otherwise `/bin/sh`.
+
+When `$SHELL` is set but cannot be executed, the choice is reported to `MainScreen`, which shows a warning naming the rejected value.
+An unset or empty `$SHELL` is not reported.
+
+The shell's driver comes from `detect_driver()`: `ZshDriver` and `BashDriver` have full integration, and every other shell gets `FallbackDriver`.
+A shell that reports no hook within 5 s of starting (see [Startup Bootstrap](#startup-bootstrap)) runs as a plain terminal.
 
 ---
 
@@ -128,7 +146,7 @@ Line continuations (`\\\n`) are inserted every 250 bytes to stay within kernel c
 
 ### detect_driver()
 
-`detect_driver(command)` inspects the basename of the first word in the command string.
+`detect_driver(command)` splits the command string with `shlex` and inspects the basename of the first word.
 It returns `ZshDriver` for `zsh`, `BashDriver` for `bash`, and `FallbackDriver` for anything else.
 
 ---
@@ -151,7 +169,7 @@ The stored lines in `_display` are never mutated.
 
 | Attribute | Type | Purpose |
 |-----------|------|---------|
-| `command` | `str` | The shell command to run (e.g. `"/usr/bin/zsh"`) |
+| `command` | `str` | The shell command to run, quoted with `shlex.quote` (e.g. `"/bin/bash"`; the local terminal passes the shell chosen by `resolve_local_shell()`) |
 | `ncol`, `nrow` | `int` | Current terminal dimensions |
 | `mouse_tracking` | `bool` | Whether the child app has enabled mouse reporting |
 | `keep_alive` | `bool` | Whether to respawn the shell on disconnect |
@@ -301,6 +319,7 @@ While startup draining is on, the discarded output is also kept in `_startup_out
 A timer (`_STARTUP_TIMEOUT`, 5 s) is armed per shell process; it is cancelled on every hook report, restart and `stop()`, and a timer of an older shell is ignored.
 If no hook report arrives in time, `_reveal_startup_output()` shows the buffer and ends draining.
 The terminal is then a plain terminal: `_at_prompt` stays False, a pending `cd` is dropped, a waiting navigation is resolved, and `run_command()` reports busy.
+A `cd` requested before the timeout is dropped too: until the timeout the target is only stored, and nothing is written at a prompt because the shell never reports one.
 A hook report that arrives later still enables the integration.
 
 A shell that exits within `_EARLY_EXIT_SECONDS` (2 s) without any hook report counts as a quick exit.

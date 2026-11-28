@@ -9,6 +9,7 @@
   SSH is tested with OpenSSH servers on Debian and on Alpine (BusyBox) in containers: password and key-file login, identity files from `~/.ssh/config`, ProxyJump, host key prompts, listing, copy, move, delete, symbolic links and editing.
 - Open tar and zip archives as folders.
 - A live shell in the same window.
+  The embedded terminal runs the shell named by `$SHELL`; bash and zsh have full integration.
 - A built-in text editor, `ned`, which opens from the file manager with F4 and can also run on its own.
 - Copy (F5), move (F6) and delete (F8), with progress and conflict resolution.
 - Long operations run in the background and can be cancelled.
@@ -159,6 +160,8 @@
 - There are no rename masks for copy and move.
 - The copy and move dialog has no "Background" button; jobs already run in the background.
 - The developer script `create_bundle_shiv.sh` does not include the Azure SDK in the bundle it builds.
-- The embedded terminal needs zsh at `/usr/bin/zsh`; your login shell is not used for it.
+- fish, csh and other shells without a POSIX hook run as a plain terminal: no directory sync, no user menu commands in the terminal; the screen appears after a few seconds.
+- With `sh` or dash the shell has no line editing; a panel change waits while text is typed.
+- In vi editing mode, outside insert mode, directory sync and terminal commands can report the terminal as busy.
 - While the terminal is focused, F1 and F3 go to the shell, not to help or the viewer.
 - The menu bar cannot be opened from the keyboard.

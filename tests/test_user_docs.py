@@ -96,3 +96,14 @@ def test_readme_needs_no_source_checkout() -> None:
     text = _read("README.md")
     assert "uv sync" not in text
     assert "uv run" not in text
+
+
+def test_readme_does_not_require_zsh() -> None:
+    text = _read("README.md")
+    assert "/usr/bin/zsh" not in text
+    assert "apt install zsh" not in text
+    assert "$SHELL" in text
+
+
+def test_changelog_drops_the_zsh_requirement() -> None:
+    assert "needs zsh" not in _read("CHANGELOG.md")

@@ -9,18 +9,18 @@ It shows two file panels side by side, with an embedded shell.
 - **Remote and archive folders**: browse SSH servers, Azure Blob Storage containers, and tar and zip archives as if they were folders.
 - **Built-in editor**: press `F4` to edit a file in `ned`, a text editor that comes with the package.
 - **Read-only viewer**: press `F3` to look at a file without any risk of changing it.
-- **Live shell**: an embedded zsh terminal in the same window.
+- **Live shell**: an embedded terminal running your shell (`$SHELL`) in the same window.
 - **File operations**: copy (`F5`), move (`F6`), rename (`Shift+F6`), delete (`F8`), with progress, cancellation and conflict handling.
 - **Background jobs**: long operations run in the background, and the Jobs dialog lists and cancels them.
 - **Bookmarks**, a **user menu** (`F2`) and **file type** icons and openers, all set in configuration files.
 - **Keyboard driven**: rebindable key bindings and a key help screen (`F1`); the menu bar is opened with the mouse.
 
+The terminal starts the shell in `$SHELL`. bash and zsh have full integration.
+
 ## Requirements
 
 - Ubuntu 24.04 or 26.04. macOS and Windows are not supported.
 - Python 3.12, 3.13 or 3.14.
-- zsh at `/usr/bin/zsh`, which the embedded terminal uses.
-  Install it with `sudo apt install zsh`.
 - `xdg-open`, the default program for opening a file when you press Enter.
 - A Nerd Font is optional.
   When one is installed, the icons are shown; otherwise Unicode icons are used.

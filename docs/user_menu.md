@@ -64,7 +64,7 @@ The table name is the entry id, used in messages and logs.
 | `when` | no | always visible | Python expression deciding visibility |
 | `default` | no | `false` | Python expression or boolean; the first visible entry where it is true is highlighted |
 | `mode` | no | `"terminal"` | `"terminal"` or `"background"` |
-| `run` | yes | — | POSIX `sh` script, single or multi-line; must not be blank |
+| `run` | yes | — | Shell script, single or multi-line; must not be blank. Which shell runs it depends on `mode`, see [Terminal Mode](#terminal-mode-default) |
 | `input` | no | none | Array of `{name, prompt, default}` tables asked in one dialog before running |
 
 `input.name` must be a valid Python identifier, must not be a Python keyword, must not shadow a context name (see below), and must be unique within the entry.
@@ -163,6 +163,8 @@ Archive panels and the (incomplete) Azure filesystem never support running comma
 ### Terminal Mode (Default)
 
 Running the entry uses the panel's terminal at its current size without changing the terminal layout or focus.
+A one-line script is typed into the terminal as it is, so the terminal's shell interprets it (see the "Shell Choice" section of `docs/terminal.md`).
+A multi-line script is wrapped as `sh -c '<script>'` and so run by `sh`.
 If the terminal is minimized, command output is retained in scrollback and can be viewed afterwards with Ctrl+O (toggle maximized terminal).
 See `docs/commands.md` → "Terminal Mode" for how the script is sent to the shell and why there is no exit code in this mode.
 
