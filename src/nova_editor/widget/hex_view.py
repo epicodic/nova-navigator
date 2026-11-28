@@ -285,9 +285,9 @@ HexView {
         row = offset // bytes_per_row
         top = self.scroll_offset.y
         document = self._document
-        if document is not None and not top <= row < top + max(1, self.scrollable_content_region.height):
-            if not self._window_holds((document, self._revision, bytes_per_row), row):
-                return self._read_far_byte(document, offset)
+        visible = top <= row < top + max(1, self.scrollable_content_region.height)
+        if document is not None and not visible and not self._window_holds((document, self._revision, bytes_per_row), row):
+            return self._read_far_byte(document, offset)
         data = self._row_bytes(row)
         index = offset - row * bytes_per_row
         if data is None or index >= len(data):
