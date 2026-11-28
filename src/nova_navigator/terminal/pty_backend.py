@@ -26,20 +26,20 @@ import logging
 import os
 import pty
 import re
-import select
 import shlex
 import signal
 import struct
 import termios
 import threading
+import time
 from abc import ABC, abstractmethod
 
 _OSC_COMPLETE = re.compile(r"\033\](\d+);(.*?)(?:\007|\033\\)", re.DOTALL)
 _OSC_PARTIAL = re.compile(r"\033\].*$", re.DOTALL)
 _OSC_CWD = 7
 
-_HANGUP_GRACE = 1.0  # seconds a shell may take to end after its terminal is closed
-_KILL_WAIT = 1.0  # seconds to wait for a killed shell to become reapable
+_HANGUP_GRACE = 3.0  # seconds a shell may take to end after its terminal is closed, exit hooks included
+_EXIT_POLL_INTERVAL = 0.02  # seconds between checks whether such a shell has ended
 
 _logger = logging.getLogger(__name__)
 
@@ -180,28 +180,37 @@ class PtyBackend(ABC):
         """
 
 
-def _exits_within(pidfd: int, seconds: float) -> bool:
-    return bool(select.select([pidfd], [], [], seconds)[0])
+def _reap_if_exited(pid: int) -> bool:
+    """Reap the child *pid* if it has ended; return True when there is no child left to end."""
+    try:
+        return os.waitpid(pid, os.WNOHANG)[0] == pid
+    except ChildProcessError:
+        return True
 
 
-def _end_child(pid: int, pidfd: int) -> None:
-    """Reap the child *pid*, killing it first when it does not end by itself; closes *pidfd*.
+def _kill_child(pid: int) -> None:
+    """Kill and reap the child *pid*, which must not have been reaped yet.
 
-    The signal goes through *pidfd*, so it can never reach another process that got the same pid.
     Only the child is signalled, not its jobs.
     """
     try:
-        if not _exits_within(pidfd, _HANGUP_GRACE):
-            with contextlib.suppress(ProcessLookupError):
-                signal.pidfd_send_signal(pidfd, signal.SIGKILL)
-            # A process in uninterruptible sleep does not end yet; do not hold up the application for it.
-            if not _exits_within(pidfd, _KILL_WAIT):
-                _logger.warning("shell %d did not end after SIGKILL", pid)
-                return
-        with contextlib.suppress(ChildProcessError):
-            os.waitpid(pid, 0)
-    finally:
-        os.close(pidfd)
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+    except OSError as error:
+        _logger.warning("cannot kill shell %d: %s", pid, error)
+
+
+def _end_child(pid: int) -> None:
+    """Reap the child *pid*, killing it first when it does not end within ``_HANGUP_GRACE`` seconds.
+
+    Nothing else reaps *pid*, so until it is reaped here it cannot belong to another process.
+    """
+    deadline = time.monotonic() + _HANGUP_GRACE
+    while not _reap_if_exited(pid):
+        if time.monotonic() >= deadline:
+            _kill_child(pid)
+            return
+        time.sleep(_EXIT_POLL_INTERVAL)
 
 
 class LocalPtyBackend(PtyBackend):
@@ -300,7 +309,7 @@ class LocalPtyBackend(PtyBackend):
 
         A shell that is still alive afterwards is watched by a thread, which reaps it and, after
         ``_HANGUP_GRACE`` seconds, kills it.  The thread is not a daemon, so the interpreter does
-        not exit before the shell is gone.
+        not exit before the shell is gone.  When no thread can be started the shell is killed at once.
         """
         # The reader must go first: the loop cannot remove it once the file is closed.
         self.detach_readers()
@@ -316,8 +325,10 @@ class LocalPtyBackend(PtyBackend):
         # The child is reaped here or by the thread.  Once reaped the pid may be reused by another
         # process, so it is forgotten and never signalled again.
         pid, self._pid = self._pid, -1
-        with contextlib.suppress(ChildProcessError, OSError):
-            if os.waitpid(pid, os.WNOHANG)[0] == pid:
-                return
-            # The child is not reaped yet, so the pidfd is certain to refer to it.
-            threading.Thread(target=_end_child, args=(pid, os.pidfd_open(pid)), name=f"end-shell-{pid}").start()
+        if _reap_if_exited(pid):
+            return
+        try:
+            threading.Thread(target=_end_child, args=(pid,), name=f"end-shell-{pid}").start()
+        except RuntimeError as error:
+            _logger.warning("cannot watch shell %d, killing it: %s", pid, error)
+            _kill_child(pid)

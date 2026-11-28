@@ -110,17 +110,17 @@ async def _real_bash(home: Path, prompt: str, height: int, width: int = 80) -> A
     terminal = Terminal(_BASH, backend=backend, driver=BashDriver(), keep_alive=True, scrollback_lines=100)
     app = _HostApp(terminal, height)
     async with app.run_test(size=(width, 24)) as pilot:
-        shell = os.pidfd_open(backend._pid)
+        pid = backend._pid
         try:
             await pilot.pause()
             await _wait_until(lambda: terminal._at_prompt and "$" in _screen_text(terminal), "the first prompt")
             await asyncio.sleep(0.3)
             yield terminal, pilot
         finally:
-            # A shell that loops ignores everything else.
+            # A shell that loops ignores everything else.  Nothing reaps it before teardown(), so
+            # the pid is still the shell's.
             with contextlib.suppress(ProcessLookupError):
-                signal.pidfd_send_signal(shell, signal.SIGKILL)
-            os.close(shell)
+                os.kill(pid, signal.SIGKILL)
             terminal.stop()
 
 
@@ -200,7 +200,6 @@ async def test_deleting_a_line_after_maximizing_and_minimizing_leaves_no_input(h
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not shutil.which("zsh"), reason="zsh is not installed")
 async def test_zsh_keeps_a_one_row_pty(home: Path) -> None:
     (home / ".zshrc").write_text("PS1='pp$ '\n")
     zsh = shutil.which("zsh")

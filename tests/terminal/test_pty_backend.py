@@ -9,6 +9,7 @@ import select
 import signal
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -416,22 +417,35 @@ def _run_until_ready(backend: LocalPtyBackend, script: str = "") -> None:
         output += os.read(backend._master_fd, 65536)
 
 
-def _exits_within(pidfd: int, seconds: float) -> bool:
-    return bool(select.select([pidfd], [], [], seconds)[0])
+def _has_exited(pid: int) -> bool:
+    """Return True if *pid* no longer runs: it is a zombie or has left the process table."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except (FileNotFoundError, ProcessLookupError):
+        return True
+    return stat.rpartition(")")[2].split()[0] in ("Z", "X")
+
+
+def _exits_within(pid: int, seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while not _has_exited(pid):
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.02)
+    return True
 
 
 @contextlib.contextmanager
 def _killed_afterwards(pid: int) -> Iterator[int]:
-    """Yield a pidfd for *pid* and make sure the process is gone when the block ends."""
-    pidfd = os.pidfd_open(pid)
+    """Yield *pid* and make sure the process is gone when the block ends."""
     try:
-        yield pidfd
+        yield pid
     finally:
-        with contextlib.suppress(ProcessLookupError):
-            signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+        if not _has_exited(pid):
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)
         with contextlib.suppress(ChildProcessError):
             os.waitpid(pid, 0)
-        os.close(pidfd)
 
 
 def _interactive_bash(home: Path, monkeypatch: pytest.MonkeyPatch) -> LocalPtyBackend:
@@ -583,14 +597,56 @@ print(backend._pid, flush=True)
 backend.teardown()
 """
     result = subprocess.run([sys.executable, "-c", script, _STUBBORN_SHELL], capture_output=True, text=True, timeout=30, check=True)
-    pid = int(result.stdout)
-    try:
-        shell = os.pidfd_open(pid)
-    except ProcessLookupError:
-        return  # killed and reaped before the process exited
-    try:
+    with _killed_afterwards(int(result.stdout)) as shell:
         assert _exits_within(shell, 0), "the shell outlived the process that tore it down"
-    finally:
-        with contextlib.suppress(ProcessLookupError):
-            signal.pidfd_send_signal(shell, signal.SIGKILL)
-        os.close(shell)
+
+
+def _open_stubborn_shell(home: Path, monkeypatch: pytest.MonkeyPatch) -> LocalPtyBackend:
+    _isolate_shell_env(home, monkeypatch)
+    backend = LocalPtyBackend()
+    backend.open(_STUBBORN_SHELL, rows=24, cols=80)
+    return backend
+
+
+def test_teardown_needs_no_pidfd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Some Python builds, those installed by uv among them, have no pidfd functions.
+    monkeypatch.delattr(os, "pidfd_open", raising=False)
+    monkeypatch.delattr(signal, "pidfd_send_signal", raising=False)
+    backend = _open_stubborn_shell(tmp_path, monkeypatch)
+    pid = backend._pid
+    with _killed_afterwards(pid):
+        _wait_for_output(backend, b"stubborn-ready")
+        backend.teardown()
+        assert _is_reaped_within(pid, 8), "the shell was not killed and reaped"
+
+
+def test_teardown_kills_the_shell_when_no_thread_can_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = _open_stubborn_shell(tmp_path, monkeypatch)
+    pid = backend._pid
+
+    def no_thread(_thread: threading.Thread) -> None:
+        raise RuntimeError("can't start new thread")
+
+    with _killed_afterwards(pid):
+        _wait_for_output(backend, b"stubborn-ready")
+        with monkeypatch.context() as patched:
+            patched.setattr(threading.Thread, "start", no_thread)
+            backend.teardown()
+        assert not Path(f"/proc/{pid}").exists(), "the shell was not killed and reaped"
+
+
+# A shell that needs two seconds to finish after the hangup, as with a slow exit hook.
+_SLOW_EXIT_SHELL = """/bin/sh -c "trap '' TERM; trap 'sleep 2; echo done > saved; exit 0' HUP; echo slow-ready; sleep 60 & wait" """
+
+
+def test_teardown_lets_a_slow_exit_finish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _isolate_shell_env(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    backend = LocalPtyBackend()
+    backend.open(_SLOW_EXIT_SHELL, rows=24, cols=80)
+    pid = backend._pid
+    with _killed_afterwards(pid):
+        _wait_for_output(backend, b"slow-ready")
+        backend.teardown()
+        assert _is_reaped_within(pid, 8)
+        assert (tmp_path / "saved").exists(), "the shell was killed before it had finished"

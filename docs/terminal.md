@@ -119,10 +119,13 @@ After `teardown()`, `write()` and `resize()` do nothing.
 
 `teardown()` does not wait for the shell to exit.
 A local child that has already exited is reaped with `WNOHANG`.
-For one that is still alive, a thread watches a pidfd of the child: it reaps the child when it ends, and sends `SIGKILL` first when it is still alive after `_HANGUP_GRACE` (1 s).
-Only the shell itself is killed, not its jobs, and the pidfd cannot refer to another process that got the same pid.
+For one that is still alive, a thread polls it with `waitpid(WNOHANG)`: it reaps the child when it ends, and sends `SIGKILL` first when it is still alive after `_HANGUP_GRACE` (3 s), which leaves time for exit hooks and for saving the history.
+Only the shell itself is killed, not its jobs.
+Nothing else waits for this child, so its pid cannot belong to another process before the thread has reaped it.
+No pidfd is used, because some Python builds have none.
 The thread is not a daemon, so the interpreter does not exit before it is done, also when `teardown()` was the last thing the application did.
-A killed process that does not end within another second (uninterruptible sleep) is left behind.
+A killed process that does not end (uninterruptible sleep) therefore holds up the exit.
+When no thread can be started, `teardown()` kills and reaps the child itself.
 In every case the pid is forgotten (`-1`), so a later `teardown()` or `resume()` never signals a reused pid.
 Nothing ends the shell when Nova Navigator itself crashes or is killed; it only sees its terminal hang up then.
 
