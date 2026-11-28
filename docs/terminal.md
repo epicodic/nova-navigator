@@ -283,6 +283,9 @@ A shell starts with horizontal scrolling still as the user configured it, and a 
 For a driver with `resize_waits_for_hook` (`BashDriver`), the PTY therefore keeps the size it was opened with until the first hook report, also after a restart of the shell.
 The screen model follows the widget at once, and `_send_size()` gives the PTY the same size with that report.
 When no report arrives within the startup timeout (5 s, see [Startup Bootstrap](#startup-bootstrap)), the size is sent then, so that a shell without the hook is not left with a stale one.
+Until its first prompt report, bash and its startup files see the opening size (80x24 at first start), not the real terminal size.
+A startup file that asks a question or starts another program keeps that size until the startup timeout.
+Output shown by the timeout was formatted for that size.
 
 When a widget of such a terminal has one row, the document it displays ends with the cursor's row.
 The rows above the cursor and the scrollback are reached by scrolling back; rows below the cursor are not shown.
@@ -588,7 +591,8 @@ The shell reports a prompt before its line editor reads.
 Until then, for example while a prompt with a slow command is drawn, the PTY is in its cooked mode and echoes whatever is written, so the private keys would stay on screen as `^[[95~...`.
 `_write_keys()` therefore remembers what it wrote, in the `^X` form and in the raw form (`stty -echoctl`), and `_strip_key_echo()` removes that text once from the output.
 The keys themselves stay queued and reach the editor.
-An echo cut off at the end of a read is held back until the rest arrives.
+An echo cut off at the end of a read is held back until the rest arrives, but only when the cut-off part is at least three characters long (`^[[`); a shorter part is shown at once.
+Output that ends in such a prefix therefore shows it only when more output arrives.
 The next hook report drops what is still expected.
 
 ### bash without line editing
@@ -645,6 +649,9 @@ These remain too, and run nothing:
   The terminal still takes the entered command as running: it writes no `cd` while the line is there, and the line is not run.
   The panel's folder is followed after you enter the line, or cancel it with Ctrl+C.
   `shopt -s histreedit` behaves the same way after a failed history expansion.
+- In zsh, a lone Esc typed while a directory change is still running can keep the set-aside line from being put back.
+  It stays hidden and returns joined with later input at the next directory change.
+- In zsh with `zstyle ':completion:*' menu select`, Ctrl+S (search) inside the completion menu stops the terminal following the panel: the folder is not changed and a command run from the application does not start.
 
 `has_input()`'s snapshot cannot be safely recaptured immediately after a restore: the shell's echo of the restored text can arrive fused with the freshly drawn prompt in the very same stdout chunk, so there is no reliable way to isolate "prompt only" from "prompt plus restored text" by observing chunk boundaries.
 This is why a restore of input sets `_input_since_precmd` rather than trying to snapshot.

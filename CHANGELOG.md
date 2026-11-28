@@ -17,6 +17,9 @@
   Horizontal scrolling of the command line (readline's `horizontal-scroll-mode`) is turned off in the embedded bash once the setup line has run.
   It is not turned off for a bash that is treated as a plain shell: `sh` linked to bash, or an SSH shell that could not be detected.
   Until the embedded bash has reported its first prompt, size changes do not reach it, so that this setting cannot make it hang at startup; the protection ends after 5 s.
+  Until its first prompt report, bash and its startup files see the opening size (80x24 at first start), not the real terminal size.
+  A startup file that asks a question or starts another program keeps that size until the 5 s startup timeout.
+  Output shown by the timeout was formatted for that size.
 - A built-in text editor, `ned`, which opens from the file manager with F4 and can also run on its own.
 - Copy (F5), move (F6) and delete (F8), with progress and conflict resolution.
 - Long operations run in the background and can be cancelled.
@@ -72,6 +75,8 @@
 - Line editor plugins such as zsh-vi-mode or zsh-autosuggestions were not tried with these bindings.
 - In a shell treated as a plain shell that has a vi mode (for example `sh` linked to bash), do not leave an empty command line in vi command mode.
   The `cd` of a panel change is then read as editor commands, and what runs is unpredictable.
+- With bash 5.3 (Ubuntu 26.04), once a typed line is taller than the terminal, which in the one-row view means more than two rows, bash redraws it by clearing the screen.
+  These redraws add copies of the prompt to the scrollback.
 
 #### SSH
 
