@@ -17,7 +17,7 @@ from tests.terminal.test_terminal import (
     _stop_recv_only,
 )
 
-_KILL = b"\x1b[95~\x1b[96~"  # ZshDriver.kill_line_sequence()
+_KILL = b"\x1b[95~\x1b[96~\x1b[93~\x1b[92~\x1b[95~\x1b[96~"  # ZshDriver.kill_line_sequence()
 _YANK = b"\x1b[94~"  # ZshDriver.yank_sequence()
 
 

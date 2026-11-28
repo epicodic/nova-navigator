@@ -521,12 +521,19 @@ zsh binds them in every keymap except the protected `.safe` and the special `ise
 
 | Sequence | zsh | bash |
 |---|---|---|
-| `kill_line_sequence()` | `ESC[95~`, `ESC[96~` (stash widget) | `ESC[95~`, `ESC[96~` (stash function) |
+| `kill_line_sequence()` | S, `ESC[93~` (vi-history-search-backward), `ESC[92~` (send-break), S, where S is `ESC[95~`, `ESC[96~` (stash widget) | `ESC[95~`, `ESC[96~` (stash function) |
 | `yank_sequence()` | `ESC[94~` (restore widget) | `ESC[95~`, `ESC[94~` (restore function) |
 
 `ESC[95~` leaves vi command mode, so after a hidden write the shell is in vi insert mode also when the user was in vi command mode before.
 The zsh widgets also leave visual mode, and every keymap that is not `main`, `emacs` or `viins`, for `main`.
 A keymap selected with `zle -K` is therefore left for `main`.
+
+A zsh vi search (`/`, `?`) or named command (`:`, Alt+x) that waits for keys would take the `cd` as its text and run the typed line.
+It ignores the first S, `send-break` cancels it with the line intact, and the second S sets the line aside.
+With nothing waiting, the first S sets the line aside, a search opens, and `send-break` closes it again on the empty line.
+The user's last search pattern stays, so `n` still repeats it.
+Widget wrappers and hooks see the search open and break off, and the keymap change, at every hidden write.
+A pending search or named command of the user's is cancelled.
 
 The stash clears the whole buffer, which holds several lines after a multi-line command was recalled from the history.
 The restored text is the same, with the cursor at its end.
@@ -570,17 +577,20 @@ Like any plain shell, it does not detect input typed while a command was still r
 
 A line editor command that waits for further keys takes the first bytes of a hidden write.
 The first key of `kill_line_sequence()` absorbs this for a pending Ctrl+V or a lone Escape, and the stash key still arrives whole.
+A pending zsh vi search or named command is cancelled (see above).
 
-**A pending vi search in zsh runs the line.**
-After Esc and then `/` or `?`, a panel change runs the typed line, or the command recalled from the history that is on the line.
-The command need not run as it was shown: in a test a recalled command lost its last character and got other text appended.
+In the cases tried nothing typed was run, but the line can differ:
 
-In the other cases tried nothing typed was run, but the line can differ:
+- after a pending Ctrl+V, lone Escape or Ctrl+X, and in emacs mode after Alt+[ or Esc O, it ends with characters of the first key (such as `[95~`);
+- the same happens when zsh asks whether to list all completions;
+- in zsh vi command mode, after a pending `r`, `f`, `F`, `t`, `T`, `m`, backtick, `"` or `g`, the case of one character can change, and after a pending `'` the case of the whole line is swapped;
+- in bash vi command mode, after a pending `m`, backtick, `@` or `R`, the case of one character can change;
+- after Ctrl+R with a pattern, the line found in the history stays instead of the typed line;
+- in a zsh completion menu, the selected completion is accepted into the line;
+- in bash, an emacs mode search with Alt+P or Alt+N drops a line recalled from the history (it stays in the history).
 
-- after a pending Ctrl+V or lone Escape it ends with characters of the first key;
-- in bash emacs mode, a pending Alt+[ or Esc O leaves `[95~` at the end of the restored line;
-- in zsh vi command mode, after a pending `r`, `f` or `"` or `g`, the case of one character can change, and after a pending `'` the case of the whole line is swapped;
-- in bash, a pending vi command mode `m`, `@` or search (`/`, `?`), replace mode (`R`), and an emacs mode search with Alt+P or Alt+N lose the line.
+In bash, a pending vi command mode `m`, backtick, `@`, `R`, `/` or `?`, Ctrl+V, and a search with Alt+P or Alt+N also take the first `cd`.
+The watchdog then sends it again, which uses up the one hook repair of the session; after that, such a navigation gives up and the shell does not follow the panel.
 
 What also remains:
 

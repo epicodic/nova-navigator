@@ -50,6 +50,10 @@ _INSERT_MODE_SEQUENCE = b"\x1b[95~"
 # One widget (zsh) or shell function (bash) each sets the whole line aside and puts it back.
 _LINE_STASH_SEQUENCE = b"\x1b[96~"
 _LINE_RESTORE_SEQUENCE = b"\x1b[94~"
+# zsh only: bound to vi-history-search-backward and send-break, to cancel a search or named command
+# that is waiting for more keys.
+_ZSH_SEARCH_SEQUENCE = b"\x1b[93~"
+_ZSH_BREAK_SEQUENCE = b"\x1b[92~"
 
 
 def _ansi_c_quote(arg: str) -> str:
@@ -218,7 +222,8 @@ class ZshDriver(ShellDriver):
             "typeset -ga _nn_stack; : ${_nn_line=}; "
             "zle -N _nn_insert; zle -N _nn_stash; zle -N _nn_restore; "
             "_nn_bind() { emulate -L zsh; local map; for map in $keymaps; do case $map in .safe|isearch|command) continue;; esac; bindkey -M $map "
-            "$'\\e[95~' _nn_insert $'\\e[96~' _nn_stash $'\\e[94~' _nn_restore; done }; "
+            "$'\\e[95~' _nn_insert $'\\e[96~' _nn_stash $'\\e[94~' _nn_restore "
+            "$'\\e[93~' vi-history-search-backward $'\\e[92~' send-break; done }; "
             f"_nn_precmd() {{ {self._hook_body()}; _nn_bind }}; precmd_functions+=(_nn_precmd)\n"
         )
 
@@ -226,14 +231,22 @@ class ZshDriver(ShellDriver):
         return _ansi_c_quote(arg)
 
     def kill_line_sequence(self) -> bytes:
-        """Send the insert mode key and then the private stash key.
+        """Stash, open a search and break it off, then stash again.
 
-        A command waiting for a key (Ctrl+V, a lone Escape) takes the escape
+        A vi search or a named command (``:``, Alt+x) that is waiting for keys
+        would take the ``cd`` as its text and run the typed line.  It ignores the
+        first stash, and ``send-break`` cancels it with the line intact, which the
+        second stash then sets aside.  With nothing waiting, the first stash sets
+        the line aside and ``send-break`` cancels the search opened just before,
+        on the empty line; ``send-break`` never reaches the editor without one.
+
+        A command waiting for a single key (Ctrl+V, a lone Escape) takes the escape
         byte of the first key, so the stash key still arrives whole.  Its widget
         sets the buffer itself, so no key that zsh-autosuggestions treats as
         accepting a suggestion (such as Ctrl+E) is involved.
         """
-        return _INSERT_MODE_SEQUENCE + _LINE_STASH_SEQUENCE
+        stash = _INSERT_MODE_SEQUENCE + _LINE_STASH_SEQUENCE
+        return stash + _ZSH_SEARCH_SEQUENCE + _ZSH_BREAK_SEQUENCE + stash
 
     def yank_sequence(self) -> bytes:
         return _LINE_RESTORE_SEQUENCE

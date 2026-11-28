@@ -521,6 +521,65 @@ async def test_a_restarted_shell_gets_no_restore_for_the_old_one() -> None:
             await _stop_recv_only(terminal)
 
 
+# zsh commands that read further keys in a line of their own at the bottom: the editing mode and what opens them.
+_ZSH_READERS = {
+    "search-forward": ("vi-command", "/"),
+    "search-backward": ("vi-command", "?"),
+    "named-command-vi": ("vi-command", ":"),
+    "named-command-emacs": ("emacs", _ESC + "x"),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("partial", ["", "tou"], ids=["nothing", "partial"])
+@pytest.mark.parametrize("reader", _ZSH_READERS)
+async def test_cd_cancels_a_pending_zsh_reader_and_keeps_the_line(home: Path, reader: str, partial: str) -> None:
+    mode, key = _ZSH_READERS[reader]
+    async with _editing_shell(home, "zsh", mode) as terminal:
+        await _add_to_history(terminal, "zsh", "touch EXECUTED_OLD")
+        await _send(terminal, "touch EXECUTED")
+        await _enter_mode(terminal, mode)
+        await _send(terminal, key)
+        if partial:
+            await _send(terminal, partial)
+        await _change_directory(terminal, home)
+        await asyncio.wait_for(terminal.set_terminal_directory(home), timeout=10)
+        await asyncio.sleep(0.5)
+        assert terminal.cwd == home
+        # The cd arrived on its own, not by way of the watchdog's second try.
+        assert not terminal._hook_repaired
+        await _assert_line_survives(terminal, home, "touch EXECUTED")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reader", _ZSH_READERS)
+async def test_run_command_cancels_a_pending_zsh_reader(home: Path, reader: str) -> None:
+    mode, key = _ZSH_READERS[reader]
+    async with _editing_shell(home, "zsh", mode) as terminal:
+        await _send(terminal, "touch EXECUTED")
+        await _enter_mode(terminal, mode)
+        await _send(terminal, key, "tou")
+        await asyncio.wait_for(terminal.run_command("touch RAN"), timeout=5)
+        await asyncio.sleep(0.5)
+        assert (home / "RAN").exists()
+        await _assert_line_survives(terminal, home, "touch EXECUTED")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rc", ["HISTSIZE=0", "HISTSIZE=1"], ids=["no-history", "one-line-history"])
+async def test_cd_on_zsh_with_hardly_any_history_gets_one_prompt_report(home: Path, rc: str) -> None:
+    counter = '_count() { print -n . >>"$HOME/prompts" }; precmd_functions+=(_count)'
+    async with _editing_shell(home, "zsh", "emacs", counter) as terminal:
+        # Set at the prompt: the rc file written by the helper sets HISTSIZE after its extra lines.
+        await asyncio.wait_for(terminal.run_command(rc), timeout=5)
+        await asyncio.sleep(0.3)
+        before = len((home / "prompts").read_text())
+        await _send(terminal, "touch EXECUTED")
+        await _change_directory(terminal, home)
+        assert len((home / "prompts").read_text()) == before + 1
+        await _assert_line_survives(terminal, home, "touch EXECUTED")
+
+
 _NO_EDITING_REPORT = False  # the fourth field of a pre_cmd message
 
 

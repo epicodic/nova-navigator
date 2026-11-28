@@ -283,7 +283,7 @@ def test_zsh_driver_kill_line_sequence_uses_private_raw_eol_not_real_ctrl_e() ->
 def test_zsh_driver_kill_line_sequence_sends_only_private_keys() -> None:
     driver = ZshDriver()
     seq = driver.kill_line_sequence()
-    assert seq == b"\x1b[95~\x1b[96~"
+    assert seq == b"\x1b[95~\x1b[96~\x1b[93~\x1b[92~\x1b[95~\x1b[96~"
 
 
 def test_zsh_driver_yank_sequence_sends_only_the_private_restore_key() -> None:

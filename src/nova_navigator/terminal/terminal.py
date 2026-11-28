@@ -280,7 +280,7 @@ class Terminal(ScrollView, can_focus=True):
     logic to a ``ShellDriver``.
 
     Programmatic directory changes run as one serialised transaction per
-    terminal: typed input is killed, a history-excluded ``cd`` is sent under
+    terminal: the shell sets its line aside, a history-excluded ``cd`` is sent under
     output draining, and the shell's precmd hook (OSC 7) signals completion.
     Newer requests replace the pending target, so the terminal always converges
     on the last requested directory without showing intermediate prompts.
