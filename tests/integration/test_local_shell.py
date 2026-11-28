@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import shlex
 from collections.abc import Callable
 from typing import Any
@@ -55,7 +54,7 @@ async def _wait_for(app_ctx: AppCtx, predicate: Callable[[], bool], what: str) -
 @pytest.mark.integration
 async def test_terminal_runs_the_shell_from_environment(shell: str, app_ctx: AppCtx) -> None:
     terminal = app_ctx.screen._terminal_pool.active_terminal
-    assert terminal.command == os.environ["SHELL"]
+    assert terminal.command == shell
     expected_driver = ZshDriver if shell.endswith("zsh") else BashDriver
     assert isinstance(terminal._driver, expected_driver)
     await _wait_for(app_ctx, lambda: terminal.cwd is not None, "the first working directory")
@@ -63,13 +62,12 @@ async def test_terminal_runs_the_shell_from_environment(shell: str, app_ctx: App
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-@pytest.mark.usefixtures("shell")
-async def test_panel_and_shell_directories_follow_each_other(app_ctx: AppCtx) -> None:
+async def test_panel_and_shell_directories_follow_each_other(shell: str, app_ctx: AppCtx) -> None:
     subdir = app_ctx.dst_dir / "sub"
     subdir.mkdir()
     await set_panels(app_ctx)
     terminal = app_ctx.screen._terminal_pool.active_terminal
-    assert terminal.command == os.environ["SHELL"]
+    assert terminal.command == shell
     await _wait_for(app_ctx, lambda: terminal.cwd == app_ctx.src_dir, "the shell in the source directory")
 
     app_ctx.screen._left_panel.set_path(VPath(subdir, app_ctx.fs))
@@ -85,11 +83,10 @@ async def test_panel_and_shell_directories_follow_each_other(app_ctx: AppCtx) ->
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-@pytest.mark.usefixtures("shell")
-async def test_typed_input_and_run_command(app_ctx: AppCtx) -> None:
+async def test_typed_input_and_run_command(shell: str, app_ctx: AppCtx) -> None:
     await set_panels(app_ctx)
     terminal = app_ctx.screen._terminal_pool.active_terminal
-    assert terminal.command == os.environ["SHELL"]
+    assert terminal.command == shell
     await _wait_for(app_ctx, lambda: terminal._at_prompt, "the first prompt")
 
     for char in "typed":
