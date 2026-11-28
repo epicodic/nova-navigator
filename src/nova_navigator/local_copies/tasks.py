@@ -24,6 +24,8 @@ class TaskResult:
     copy: LocalCopy | None = None
     conflict: bool = False
     opened: bool = False
+    writing: bool = False
+    """Set once the task starts to write the local copy to its source."""
     error: str | None = None
     details: list[str] = field(default_factory=list)
 
@@ -59,6 +61,7 @@ async def reopen_copy_task(ctx: TaskContext, copy: LocalCopy, result: TaskResult
             f"{copy.source.uri}\n\nOverwrite: write the local copy to the source and open it.\nDiscard: drop local edits and open the current source.",
         )
         if answer == Response.OVERWRITE:
+            result.writing = True
             copy.write_back()
         elif answer == Response.DISCARD:
             copy.refresh()

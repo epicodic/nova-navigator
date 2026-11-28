@@ -124,6 +124,10 @@
 - A zip or TAR member that you edit and save back keeps its old date.
 - A zip directory without its own entry may show no date.
 - Archives do not keep empty directories.
+- Quitting does not wait for a file that F5, F6 or the terminal's `cp` is writing into an archive on SSH or Azure.
+  Tried with F5 and F6: with no unsynced local copy, Ctrl+Q asks nothing and removes the local working copy of the archive while the write is running, and the process waits for the write to end, forever if it hangs.
+  In the cases tried the source file was kept; a move can leave the file in both places.
+  The terminal's `cp` was not tried for this.
 - `.jar`, `.war`, `.ear`, `.apk`, `.whl` and single compressed files are read-only.
 - Writing into a large archive rebuilds it for every file.
   Opening a large `.gz`, `.bz2` or `.xz` blocks while it is decompressed.
@@ -138,14 +142,28 @@
 - A failed download for F3 or F4 shows no message, only a failed job.
 - Choosing "Abort" in the error dialog for an unreadable file ends the application.
 - "Quit and keep files" while a file is still downloading for viewing can make that download fail.
-- If writing a local copy back to its source hangs, quitting waits for it and further quit keys are ignored.
-  The unsynced local file stays on disk.
+- A hung write-back of a local copy is not detected: quitting waits for it until you press the quit key again and choose "Quit and keep files".
+  The source may then lack your changes, and a temporary `.nn-tmp` file can stay beside it.
+  That quit stops the file operations running inside Nova Navigator.
+  Background commands are not stopped; one that writes output after a quit can be ended by that.
+- A later Nova Navigator that gets the same process ID as an earlier one reuses the directory of its kept local copies.
+  It can overwrite a kept copy when it opens the same source, and removes the directory at its normal quit.
+- If a write-back over SSH stalls, an action that needs the same connection can freeze the whole application, and then no key works.
+  This was seen in the code and not tried.
 - Cancelling F4 just after the download may leave a local copy behind.
   This was not reproduced.
 - Saving in the editor creates a new file, except for a plain Save that only overwrites bytes (same length, nothing moved) in a file not changed on disk, which is patched in place.
   When the editor creates a new file, hard links, owner, group, ACLs and extended attributes are not kept; only permission bits are restored.
   See the [Known Limits section of the editor documentation](https://github.com/epicodic/nova-navigator/blob/main/docs/editor.md#known-limits-1).
 - The viewer has no default key for Wrap Mode.
+- With a dialog open, a rebound Quit key does nothing while the focused control or the dialog uses that key itself, for example a letter or `Ctrl+X` in a text field, Enter on a button, or an arrow key in a table.
+  `Ctrl+Q` also still quits when Quit is rebound.
+- Pressing Ctrl+Q while the dialog that captures a new key binding is open (inside the Key Bindings dialog) can leave the application's process running with its screen gone.
+  Close that dialog with Esc first.
+  This also exists in earlier code.
+- With Quit rebound to a chord, a half-typed chord on the main screen survives a dialog opening and closing, so the second key alone then quits.
+- With Quit rebound to a printable key, typing that key in the filter or go-to-path field quits.
+- Rebinding the navigator's Quit does not change the editor's quit key; rebind "Editor: Quit" (`editor.quit`) in the Key Bindings dialog too.
 - F1 help does not list the editor's cursor movement, selection and other fixed text keys.
 
 #### Settings and layout

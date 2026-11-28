@@ -96,10 +96,42 @@ Quitting Nova Navigator while any local copy has unsynced, failed, or conflictin
 With nothing unsynced, Nova Navigator quits immediately and removes its local-copy directory.
 
 `Ctrl+Q` asks only when a local copy is unsynced.
+`Ctrl+Q` works with a dialog open, and still does so when Quit is rebound.
+A rebound quit key works with a dialog open only when the focused control and the dialog do not use it themselves.
+A text field keeps the characters typed into it, Space included, and its editing keys such as `Ctrl+X`.
+Buttons, tables, lists and menus keep the keys they act on, such as Enter, the arrow keys or the hotkey of a menu entry.
+The Key Bindings dialog keeps Space, Backspace and Delete in its table, and the dialog that captures a new key binding takes every key except Esc and Ctrl+Q.
+A rebound quit chord such as `Ctrl+X Ctrl+C` must be typed again from the start after the screen or the focus changed, or after one of its keys was used by the focused control.
 With the built-in editor or viewer open, `Ctrl+Q` first closes that screen and asks about its unsaved text; the quit prompt for the copies is asked by a later `Ctrl+Q`.
-While a quit is under way, a quit key is ignored, except that it still closes a built-in editor or viewer opened meanwhile.
-A running sync cannot be interrupted, so the application stays open until the sync finishes or fails.
+While a quit is under way, a quit key is ignored, except that it still closes a built-in editor or viewer opened meanwhile, and except while the quit waits for a write-back.
+A running write-back cannot be interrupted, so the application stays open until it finishes or fails.
 Any other way the application ends, such as a crash, keeps the local files whenever a copy is unsynced.
+
+### When a write-back does not finish
+
+**Sync and quit** and **Quit and keep files** both wait for a running write-back: a sync, or a reopen answered **Overwrite**.
+Nova Navigator does not guess whether a write-back is slow or hung.
+Press the quit key again to decide; the dialog names the files being written and the directory of the local copies:
+
+- **Keep waiting** (also Escape, and Enter while this button has the focus, as it has when the dialog opens) — go on waiting; the next quit key asks again.
+- **Quit and keep files** — end Nova Navigator now (Enter presses it once Tab has moved the focus to it).
+  This also stops every other file operation running inside Nova Navigator.
+  Background commands are not stopped and keep running; one that writes output afterwards can be ended by that, because nothing reads it any more.
+
+If the write-back finishes while the dialog is open, Nova Navigator quits as chosen before.
+If it fails and Nova Navigator stays open, the dialog closes.
+
+After quitting this way, the terminal shows the directory holding the local copies and the names of the files not written back.
+This quit removes no local copy, except private viewer copies, and the next start names the directory again.
+A later Nova Navigator can still change or remove the kept files, see the known issue under "Where the files live".
+The temporary directory can be emptied at a restart of the computer, so save what you need.
+
+Check the source: it may not contain your changes.
+SSH, local, and Azure targets are replaced in one step, so they hold the old or the new content (for Azure this relies on the service and is not tested).
+A temporary `.<name>.<hex>.nn-tmp` file can stay beside an SSH or local target.
+For an archive member, the member copy is kept, and so is the local copy of a non-local archive.
+
+This does not cover a file copied or moved into an archive with F5, F6 or the terminal's `cp`, which is not listed as a local copy and is not waited for.
 
 ### Reopening a changed file
 
@@ -121,6 +153,10 @@ Below that, the path mirrors the source's URI, for example:
 
 On startup, Nova Navigator looks for directories left behind by earlier processes that are no longer running.
 An empty one is removed silently; one that still holds files produces a notification naming it, since the earlier session's changes may not have been synced.
+
+Known issue: a later Nova Navigator that gets the same process ID as an earlier one reuses its kept directory.
+It can overwrite a kept copy when it opens the same source, and it removes the directory, with the kept files, at its normal quit.
+Move or copy what you need out of the directory.
 
 ### Limits
 
@@ -148,7 +184,7 @@ An empty one is removed silently; one that still holds files produces a notifica
 | Change detection | `vfs/change_detector.py` | Report settled content changes of one local file. |
 | Copy manager | `local_copies/manager.py`, `local_copies/tasks.py` | Registry of open copies and their detectors; runs open/sync jobs through the scheduler; Textual-free. |
 | Editor session | `local_copies/editor_session.py` | Decide local file or local copy for the built-in editor, pre-check a local file, end the session with `release()` and report a failed or conflicting write-back; Textual-free. |
-| UI | `dialogs/local_copies_dialog.py`, `nova_navigator.py` | Local Copies dialog, quit prompt, startup orphan notice. |
+| UI | `dialogs/local_copies_dialog.py`, `dialogs/write_back_running_dialog.py`, `nova_navigator.py` | Local Copies dialog, quit prompt and write-back dialog, startup orphan notice. |
 
 ### `write_atomic()` and `version_tag()`
 
@@ -213,9 +249,45 @@ A settled `ChangeDetector` change starts a `sync_copy_task`; a change arriving w
 A sync conflict sets `CopyStatus.CONFLICT` and pauses automatic syncing for that entry; `sync_now()` retries with `force=True` when the entry is already in `CONFLICT`, skipping the prompt.
 `mount_archive()` mounts a local archive directly (matching `LocalCopy.create()`'s own pass-through) or, for a non-local archive, downloads it as a `LocalCopy` and wraps it in an `ArchiveFilesystem`, caching the instance by source URI so sibling-member rebasing can match archive filesystems by identity.
 `unsynced()`, `close()`, `discard()`, and `shutdown()` back the dialog actions and the quit prompt; `shutdown()` is idempotent, so an explicit quit-time shutdown is not undone by the app's unconditional cleanup on unmount.
+`writing()` lists the entries with a running sync or a reopen that is writing, and `shutdown()` waits for both.
+`abandon()` gives up on them: it starts no further write, and no `shutdown()`, also not one already waiting, removes a local copy afterwards.
 `release(entry)` ends a built-in editor session: it stops the detector first, waits for a running sync, and then syncs a modified copy once unless the entry is read-only or in `CONFLICT`.
 It never forces the overwrite of a conflicting copy and never queues a second upload for a save that settles while it runs, which is why the editor session does not use `close()`.
 External applications never call it.
+
+### Quitting during a write-back (`nova_navigator.py`)
+
+`request_quit()` marks the parts in which it waits for the manager.
+A quit key in such a part, with `writing()` not empty, opens `WriteBackRunningDialog` (`dialogs/write_back_running_dialog.py`).
+**Quit and keep files** calls `abandon()`, saves the session state and exits.
+The choice also counts between two write-backs of **Sync and quit**, when nothing is being written for a moment.
+
+Exiting alone would not end the process: `asyncio` and the interpreter wait for the worker thread stuck in the write.
+`NovaNavigator.run_async()` therefore ends the process with `os._exit()` after Textual has given the terminal back, once it has printed the report and joined the threads that end closed shells.
+An exception from Textual's run is printed after the report, and the exit status is then not zero.
+This skips `atexit` handlers, on purpose, because some of them can block on the same stalled connection.
+
+The forced quit has `BACKSTOP_SECONDS` in all.
+A timer is armed right after `abandon()`, so a hang in reading the unsynced state, saving the session state or the teardown is covered.
+It fires early enough to leave the shells time to end, restores the terminal itself if Textual has not, and ends the process the same way.
+To restore the terminal, it first gives back the line settings and stops Textual's input thread, which would otherwise swallow what is typed after the report.
+Both come before the first write, because a write blocks for ever when Textual's output queue is full.
+Input that is pending after the writes, such as mouse reports, is dropped.
+The joins of the shell threads share the one deadline.
+If the terminal does not take the output, the process is ended `_LAST_OUTPUT_SECONDS` after the deadline without it.
+
+### The quit key over a dialog
+
+The keymap registry is consulted only on the main screen.
+On other screens `NovaNavigator.on_event` matches the configured quit key alone, so a rebound Quit works there too.
+`KeyCaptureDialog` is left out, and the editor handles its own keys.
+A key is not matched when the focused widget or the screen uses it: it is in the screen's active bindings, or a widget declares it with `check_consume_key()`.
+A text field declares its printable characters this way.
+A widget or dialog that takes a key in a key handler, without a binding, must declare it with `check_consume_key()` too, as `KeybindingsDialog` and `UserMenuPopup` do.
+The `Ctrl+C` binding that every screen has for copying selected text counts only while text is selected.
+A half-typed chord is dropped when another screen becomes active, when the focus moves, and on every key that is not matched against it.
+With Quit rebound, Textual's own `Ctrl+Q` binding of the application still quits.
+`run_test()` does not call `run_async()`, so a pilot test never ends the test process; `tests/integration/test_hung_write_back_exit.py` runs the application in a child process instead.
 
 ### Editor session (`local_copies/editor_session.py`)
 

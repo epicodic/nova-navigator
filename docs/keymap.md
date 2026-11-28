@@ -277,6 +277,8 @@ This is the map passed to `KeymapRegistry.reload()`.
 3. On every key event, `NovaNavigator.on_event` calls `KeymapRegistry.handle_key(key, app)` when a `MainScreen` is the active screen.
    If consumed, the event is stopped.
    Otherwise, it falls through to terminal and panel key handling.
+   With any other screen on top, except an editor and `KeyCaptureDialog`, only the `app.quit` key is matched (`MainScreen.quit_keys`), so that it also works over a dialog.
+   A key that the focused widget or that screen uses itself is left to it, see "The quit key over a dialog" in `local_copies.md`.
 4. `MainScreen.on_focus` calls `KeymapRegistry.on_focus_changed(self.app.focused)` on every focus change.
 5. `MainScreen.on_hints_changed` calls `KeymapRegistry.update_hint_priorities(event.widget, event.priorities)` when any widget posts a `HintsChanged` message.
 

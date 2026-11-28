@@ -1,3 +1,6 @@
+WriteBackRunningDialog
+  Quit key while a quit waits for a write-back.
+
 ConnectToDialog
   Pick a saved remote connection (uses real config).
 

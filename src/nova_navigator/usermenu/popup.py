@@ -25,6 +25,10 @@ class UserMenuPopup(Menu):
     def on_mount(self) -> None:
         self._set_highlighted(self._view.default_index, self._HighlightReason.PROGRAMMATIC)
 
+    def check_consume_key(self, key: str, character: str | None) -> bool:
+        """The hotkeys of the entries, which `on_key` takes."""
+        return character is not None and any(row is not None and row.key == character for row in self._view.rows)
+
     def on_key(self, event: events.Key) -> None:
         if event.character is None:
             return
