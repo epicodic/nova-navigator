@@ -50,8 +50,12 @@ def _ansi_c_quote(arg: str) -> str:
     *arg* is encoded to UTF-8 first and escaped byte by byte, not by Unicode
     codepoint: a codepoint above ``0x7f`` spans multiple UTF-8 bytes, so escaping
     by codepoint would emit the wrong (single, invalid) byte for it.
-    Line continuations (``\\\\\\n``) are inserted every 250 bytes to stay within
-    the kernel cooked-mode buffer limit on some platforms.
+    Every 250 bytes the quote is split as ``'\\<newline>$'``: the quote is closed,
+    a backslash and newline are written outside it, and ``$'`` reopens it.  The
+    shell reads the result as one word, and each physical line stays within the
+    kernel cooked-mode buffer limit on some platforms.  A backslash and newline
+    inside ``$'...'`` would not be a line continuation, so the split must sit
+    outside the quote.
     """
     parts: list[str] = []
     line_len = 0
@@ -65,7 +69,7 @@ def _ansi_c_quote(arg: str) -> str:
             parts.append(escaped)
             line_len += len(escaped)
         if line_len >= _LINE_CONTINUATION_LIMIT:
-            parts.append("\\\n")
+            parts.append("'\\\n$'")
             line_len = 0
     return "$'" + "".join(parts) + "'"
 

@@ -144,7 +144,7 @@ Uses `printf '%b_'` with octal escapes for cd commands (Midnight Commander techn
 ### Quoting
 
 `ZshDriver` and `BashDriver` use ANSI-C `$'...'` quoting with octal escapes for every byte outside `[a-zA-Z0-9/._-]`.
-Line continuations (`\\\n`) are inserted every 250 bytes to stay within kernel cooked-mode buffer limits.
+Every 250 bytes the quote is split as `'\<newline>$'` (the quote is closed, a backslash and newline follow outside it, and `$'` reopens it), so the shell still reads one word and each physical line stays within kernel cooked-mode buffer limits.
 
 `FallbackDriver.cd_command()` uses POSIX octal escapes via `printf '%b_'` because POSIX sh does not support `$'...'`.
 
