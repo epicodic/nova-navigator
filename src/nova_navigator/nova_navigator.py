@@ -21,6 +21,7 @@ from enum import Enum
 from functools import partial
 from pathlib import Path, PurePath, PurePosixPath
 from typing import ClassVar, NamedTuple, cast, override
+from weakref import WeakSet
 
 from rich.console import Console
 from rich.text import Text
@@ -1378,6 +1379,7 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         self._end_lock = threading.Lock()  # held by the one thread that ends the process
         self._owns_process = False  # True inside run_async(), never under run_test()
         self._teardown_started = False
+        self._quit_chord_screens: WeakSet[Screen[object]] = WeakSet()  # watched for the end of a half-typed quit chord
         register_remote_scheme(conf_.remotes)
 
     def action_help_quit(self) -> None:
@@ -1389,24 +1391,64 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
             if event.key == "backspace" and event.character == "\x08":
                 event.key = "ctrl+h"
             screen = self.screen
+            if not event.is_forwarded and isinstance(screen, MainScreen | EditorScreen | KeyCaptureDialog):
+                self._end_quit_chord()  # these screens get the key without feeding it to the quit chord
             if isinstance(screen, MainScreen) and screen._keymap_registry is not None and await screen._keymap_registry.handle_key(event.key, self, pass_through=screen._passes_to_terminal):
                 return
             if isinstance(screen, EditorScreen):
                 if not event.is_forwarded and await screen.press_key(event.key):
                     return
-            elif not isinstance(screen, MainScreen | KeyCaptureDialog) and not event.is_forwarded and await self._press_quit_key(event.key):
+            elif not isinstance(screen, MainScreen | KeyCaptureDialog) and not event.is_forwarded and await self._press_quit_key(event):
                 return
         await super().on_event(event)
 
-    async def _press_quit_key(self, key: str) -> bool:
-        """Handle the configured quit key over a dialog, where no keymap is consulted. True if *key* was taken."""
+    async def _press_quit_key(self, event: events.Key) -> bool:
+        """Handle the configured quit key over a dialog, where no keymap is consulted. True if the key was taken.
+
+        A key that the focused control or the dialog uses itself is left to it.
+        """
         main = getattr(self, "_main_screen", None)
         if main is None:
             return False
-        result = main.quit_keys.feed(KeyChord.parse(key))
+        screen = self.screen
+        if self._is_used_by_focus(screen, event):
+            self._end_quit_chord()
+            return False
+        result = main.quit_keys.feed(KeyChord.parse(event.key))
+        if main.quit_keys.is_pending:
+            self._end_quit_chord_on_change(screen)
         if result.action_name is not None:
             await self.run_action("quit")
         return result.consumed
+
+    def _is_used_by_focus(self, screen: Screen[object], event: events.Key) -> bool:
+        """Whether the focused widget or *screen* does something with the key of *event*.
+
+        Either it binds the key, or it declares through ``check_consume_key`` that it takes it in its key handler,
+        as a text field does with a printable character.
+        """
+        focused = screen.focused
+        nodes = focused.ancestors_with_self if focused is not None else [screen]
+        if any(node.check_consume_key(event.key, event.character) for node in nodes):
+            return True
+        active = screen.active_bindings.get(event.key)
+        if active is None or active.node is self:
+            return False
+        # Every screen binds Ctrl+C to copy selected text; without a selection it does nothing.
+        return active.binding.action != "screen.copy_text" or bool(screen.get_selected_text())
+
+    def _end_quit_chord(self, _changed: object = None) -> None:
+        main = getattr(self, "_main_screen", None)
+        if main is not None:
+            main.quit_keys.reset()
+
+    def _end_quit_chord_on_change(self, screen: Screen[object]) -> None:
+        """End a half-typed quit chord when another screen becomes active or the focus on *screen* moves."""
+        if screen in self._quit_chord_screens:
+            return
+        self._quit_chord_screens.add(screen)
+        self.screen_change_signal.subscribe(screen, self._end_quit_chord, immediate=True)
+        self.watch(screen, "focused", self._end_quit_chord, init=False)
 
     def on_app_focus(self, event: events.AppFocus) -> None:
         """The terminal got the focus back: the edited file may have changed meanwhile."""

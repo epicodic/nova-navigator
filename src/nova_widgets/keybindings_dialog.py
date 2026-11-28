@@ -185,6 +185,10 @@ class KeybindingsDialog(Dialog):
             if 0 <= idx < len(self._actions):
                 self._description_label.update(self._actions[idx].description or "")
 
+    def check_consume_key(self, key: str, character: str | None) -> bool:
+        """The keys that `_on_key` takes for the table: Space, Backspace and Delete."""
+        return key in ("space", "backspace", "delete") and isinstance(self.focused, DataTable)
+
     async def _on_key(self, event: events.Key) -> None:
         if event.key == "space" and isinstance(self.focused, DataTable):
             await self._open_key_capture()

@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import tempfile
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,17 +27,20 @@ import pytest_asyncio
 from textual import widgets
 from textual.pilot import Pilot
 
+from nova_editor.screen import EditorScreen
 from nova_navigator import nova_navigator as nova_navigator_module
 from nova_navigator.config import loader
-from nova_navigator.dialogs import WriteBackRunningDialog
+from nova_navigator.dialogs import InputNameDialog, WriteBackRunningDialog
 from nova_navigator.local_copies import CopyEntry, CopyStatus, LocalCopyManager
 from nova_navigator.nova_navigator import NovaNavigator
 from nova_navigator.scheduler import Job
+from nova_navigator.usermenu import MenuEntry, MenuView
+from nova_navigator.usermenu.popup import UserMenuPopup
 from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_navigator.vfs.local_copy import Baseline, LocalCopy, ProgressCallback, SourceFingerprint
 from nova_navigator.vfs.vpath import VPath
 from nova_widgets import MessageBox
-from nova_widgets.keybindings_dialog import KeyCaptureDialog
+from nova_widgets.keybindings_dialog import KeybindingsDialog, KeyCaptureDialog
 from tests._utils.local_copy_helpers import SchemeFs, overwrite
 from tests.integration.conftest import AppCtx, poll_until
 
@@ -770,4 +773,265 @@ async def test_the_key_capture_dialog_still_receives_the_quit_key(rebound_app: t
 
     assert app.screen is capture
     assert capture.value is not None
+    assert _quit_prompts(app) == []
+
+
+# ---------------------------------------------------------------------------
+# A rebound quit key that the focused control uses itself
+# ---------------------------------------------------------------------------
+
+
+async def _name_dialog(app: NovaNavigator, pilot: Pilot[None], value: str = "") -> widgets.Input:
+    """Open a dialog with a focused text field."""
+    dialog = InputNameDialog("Name", "Name:", value)
+    app.push_screen(dialog)
+    await pilot.pause()
+    field = dialog.query_one(widgets.Input)
+    assert app.focused is field
+    return field
+
+
+def _pending_copy(app: NovaNavigator) -> _FakeLocalCopyManager:
+    fake = _FakeLocalCopyManager(pending=[_entry()])
+    app.local_copies = fake
+    return fake
+
+
+async def _press(pilot: Pilot[None], *keys: str) -> None:
+    for key in keys:
+        await pilot.press(key)
+        await pilot.pause()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize(("rebound_app", "typed"), [("q", "q"), ("space", " ")], ids=["letter", "space"], indirect=["rebound_app"])
+async def test_a_printable_quit_key_is_typed_into_a_text_field(rebound_app: tuple[NovaNavigator, Pilot[None]], typed: str) -> None:
+    app, pilot = rebound_app
+    _pending_copy(app)
+    field = await _name_dialog(app, pilot)
+
+    await _press(pilot, "q" if typed == "q" else "space")
+
+    assert field.value == typed
+    assert _quit_prompts(app) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["q"], indirect=True)
+async def test_a_printable_quit_key_asks_when_a_button_has_the_focus(rebound_app: tuple[NovaNavigator, Pilot[None]]) -> None:
+    app, pilot = rebound_app
+    fake = _pending_copy(app)
+    await _name_dialog(app, pilot)
+    app.screen.query_one("#CANCEL", widgets.Button).focus()
+    await pilot.pause()
+
+    await _press(pilot, "q")
+
+    _assert_asking(app, fake)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["ctrl+x ctrl+c"], indirect=True)
+async def test_a_text_field_keeps_a_key_that_starts_the_quit_chord(rebound_app: tuple[NovaNavigator, Pilot[None]]) -> None:
+    app, pilot = rebound_app
+    _pending_copy(app)
+    field = await _name_dialog(app, pilot, "text")
+    field.select_all()
+
+    await _press(pilot, "ctrl+x")
+    assert field.value == ""
+    await _press(pilot, "ctrl+c")
+
+    assert _quit_prompts(app) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["space"], indirect=True)
+async def test_a_key_the_key_bindings_dialog_handles_stays_with_it(rebound_app: tuple[NovaNavigator, Pilot[None]]) -> None:
+    app, pilot = rebound_app
+    _pending_copy(app)
+    app._main_screen.action_keybindings()
+    await poll_until(pilot, lambda: isinstance(app.screen, KeybindingsDialog))
+    app.screen.query_one(widgets.DataTable).focus()
+    await pilot.pause()
+
+    await _press(pilot, "space")
+
+    assert isinstance(app.screen, KeyCaptureDialog)
+    assert _quit_prompts(app) == []
+    await _press(pilot, "escape", "escape")  # the capture dialog holds up the table dialog until it is closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["down"], indirect=True)
+async def test_a_key_the_focused_table_binds_stays_with_it(rebound_app: tuple[NovaNavigator, Pilot[None]]) -> None:
+    app, pilot = rebound_app
+    _pending_copy(app)
+    app._main_screen.action_keybindings()
+    await poll_until(pilot, lambda: isinstance(app.screen, KeybindingsDialog))
+    table = app.screen.query_one(widgets.DataTable)
+    table.focus()
+    await pilot.pause()
+
+    await _press(pilot, "down")
+
+    assert table.cursor_row == 1
+    assert _quit_prompts(app) == []
+    await _press(pilot, "escape")
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["enter"], indirect=True)
+async def test_a_key_the_dialog_binds_stays_with_it(rebound_app: tuple[NovaNavigator, Pilot[None]]) -> None:
+    app, pilot = rebound_app
+    _pending_copy(app)
+    await _name_dialog(app, pilot, "name")
+    app.screen.query_one("#CANCEL", widgets.Button).focus()
+    await pilot.pause()
+
+    await _press(pilot, "enter")
+
+    assert not isinstance(app.screen, InputNameDialog)
+    assert _quit_prompts(app) == []
+
+
+def _menu_view(key: str) -> MenuView:
+    return MenuView(rows=(MenuEntry(id="one", label="One", run="true", key=key),), default_index=0, names={})
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["q"], indirect=True)
+@pytest.mark.parametrize("hotkey", ["q", "z"], ids=["entry hotkey", "other hotkey"])
+async def test_a_menu_screen_keeps_its_own_hotkeys(rebound_app: tuple[NovaNavigator, Pilot[None]], hotkey: str) -> None:
+    app, pilot = rebound_app
+    fake = _pending_copy(app)
+    worker = app.run_worker(UserMenuPopup(_menu_view(hotkey)).exec())
+    await poll_until(pilot, lambda: isinstance(app.focused, UserMenuPopup))
+
+    await _press(pilot, "q")
+
+    if hotkey == "q":
+        await poll_until(pilot, lambda: worker.is_finished)
+        assert worker.result is not None
+        assert _quit_prompts(app) == []
+    else:
+        _assert_asking(app, fake)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["q"], indirect=True)
+async def test_a_text_field_of_a_dialog_above_the_editor_keeps_the_quit_key(rebound_app: tuple[NovaNavigator, Pilot[None]], tmp_path: Path) -> None:
+    app, pilot = rebound_app
+    file = tmp_path / "file.txt"
+    file.write_text("text")
+    await app.open_editor(VPath(file, LocalFilesystem.singleton()))
+    await poll_until(pilot, lambda: isinstance(app.screen, EditorScreen))
+    editor = app.screen
+    field = await _name_dialog(app, pilot)
+
+    await _press(pilot, "q")
+
+    assert field.value == "q"
+    assert editor in app.screen_stack
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["f10"], indirect=True)
+async def test_the_default_quit_key_still_asks_over_a_dialog_when_quit_is_rebound(rebound_app: tuple[NovaNavigator, Pilot[None]]) -> None:
+    app, pilot = rebound_app
+    fake = _pending_copy(app)
+    await _name_dialog(app, pilot)
+
+    await _press(pilot, "ctrl+q")
+
+    _assert_asking(app, fake)
+
+
+# ---------------------------------------------------------------------------
+# A half-typed quit chord ends
+# ---------------------------------------------------------------------------
+
+_CHORD = "f9 f10"
+
+
+async def _focus_away_and_back(app: NovaNavigator, pilot: Pilot[None]) -> None:
+    field = app.screen.query_one(widgets.Input)
+    app.screen.query_one("#CANCEL", widgets.Button).focus()
+    await pilot.pause()
+    field.focus()
+    await pilot.pause()
+
+
+async def _cover_and_uncover(app: NovaNavigator, pilot: Pilot[None]) -> None:
+    cover = InputNameDialog("Cover", "Cover:")
+    app.push_screen(cover)
+    await pilot.pause()
+    cover.dismiss(None)
+    await pilot.pause()
+
+
+async def _another_dialog(app: NovaNavigator, pilot: Pilot[None]) -> None:
+    app.screen.dismiss(None)
+    await pilot.pause()
+    await _name_dialog(app, pilot)
+
+
+async def _key_on_the_main_screen(app: NovaNavigator, pilot: Pilot[None]) -> None:
+    dialog = app.screen
+    dialog.dismiss(None)
+    await pilot.pause()
+    await _press(pilot, "down")
+    app.push_screen(InputNameDialog("Name", "Name:"))
+    await pilot.pause()
+
+
+_INTERRUPTIONS = {
+    "the focus changes": _focus_away_and_back,
+    "a screen comes and goes": _cover_and_uncover,
+    "another dialog": _another_dialog,
+    "a key on the main screen": _key_on_the_main_screen,
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", [_CHORD], indirect=True)
+@pytest.mark.parametrize("interrupt", _INTERRUPTIONS.values(), ids=_INTERRUPTIONS.keys())
+async def test_a_half_typed_quit_chord_ends(rebound_app: tuple[NovaNavigator, Pilot[None]], interrupt: Callable[[NovaNavigator, Pilot[None]], Awaitable[None]]) -> None:
+    app, pilot = rebound_app
+    fake = _pending_copy(app)
+    await _name_dialog(app, pilot)
+    await _press(pilot, "f9")
+
+    await interrupt(app, pilot)
+    await _press(pilot, "f10")
+
+    assert _quit_prompts(app) == []
+    await _press(pilot, "f9", "f10")  # the whole chord still works
+    _assert_asking(app, fake)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["f9 q"], indirect=True)
+async def test_a_key_the_text_field_takes_ends_a_half_typed_quit_chord(rebound_app: tuple[NovaNavigator, Pilot[None]]) -> None:
+    app, pilot = rebound_app
+    _pending_copy(app)
+    field = await _name_dialog(app, pilot)
+
+    await _press(pilot, "f9", "q")
+
+    assert field.value == "q"
+    app.screen.query_one("#CANCEL", widgets.Button).focus()
+    await pilot.pause()
+    await _press(pilot, "q")
     assert _quit_prompts(app) == []
