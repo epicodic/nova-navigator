@@ -247,31 +247,26 @@ def test_detect_driver_handles_quoted_path_with_space() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_bash_driver_kill_line_sequence_moves_to_end_before_killing() -> None:
-    """Bash's Ctrl+U (unix-line-discard) only kills backward from the cursor, so
-    the cursor must reach the true end (Ctrl+E) before it, or trailing typed text
-    would survive the kill."""
+def test_bash_driver_kill_line_sequence_enters_insert_mode_before_stashing() -> None:
+    """The stash function is bound in the emacs and vi insert keymaps only, so vi
+    command mode is left first."""
     driver = BashDriver()
     seq = driver.kill_line_sequence()
-    assert seq.startswith(b"\x1b[95~\x1b[91~")  # insert mode, then end-of-line
-    assert seq.endswith(b"\x1b[92~")  # unix-line-discard
+    assert seq.startswith(b"\x1b[95~")  # insert mode
+    assert seq.endswith(b"\x1b[96~")  # stash
 
 
-def test_bash_driver_kill_line_sequence_types_a_space_before_killing() -> None:
-    """A literal space is typed before the kill so it is never empty: an empty kill
-    leaves the kill ring untouched, so a later kill of an already-empty line would
-    still yank back stale, unrelated text on the next ``yank_sequence()``."""
+def test_bash_driver_kill_line_sequence_sends_only_private_keys() -> None:
+    """No text is typed and no readline kill is used, so the kill ring stays as it was."""
     driver = BashDriver()
     seq = driver.kill_line_sequence()
-    assert seq == b"\x1b[95~\x1b[91~ \x1b[92~"
+    assert seq == b"\x1b[95~\x1b[96~"
 
 
-def test_bash_driver_yank_sequence_backspaces_off_the_marker_space() -> None:
-    """Backspace (not Ctrl+E) reaches the true end: the marker space is always
-    the last character restored, so backspace removes exactly it."""
+def test_bash_driver_yank_sequence_sends_only_private_keys() -> None:
     driver = BashDriver()
     seq = driver.yank_sequence()
-    assert seq == b"\x1b[95~\x1b[93~\x1b[94~"
+    assert seq == b"\x1b[95~\x1b[94~"
 
 
 def test_zsh_driver_kill_line_sequence_uses_private_raw_eol_not_real_ctrl_e() -> None:

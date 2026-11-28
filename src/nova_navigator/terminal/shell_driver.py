@@ -42,19 +42,14 @@ RESTORE_SEQUENCE = b"\x1b[97~"
 #
 # Switch to a mode that takes typed text; does nothing outside vi command mode.
 _INSERT_MODE_SEQUENCE = b"\x1b[95~"
-# zsh: one widget each stashes and restores the whole buffer.
-_ZSH_STASH_SEQUENCE = b"\x1b[96~"
-_ZSH_RESTORE_SEQUENCE = b"\x1b[94~"
-# bash: readline functions, bound in the emacs and vi insert keymaps.
-# Without line editing (set +o emacs) all of them stay plain input.  The one written alone, before a
-# write that stashes nothing, therefore ends in Ctrl+U: the line discipline then erases it, so that the
-# cd on an empty line works.  readline takes it as one key and does what _INSERT_MODE_SEQUENCE does.
-# The stash must not send Ctrl+U: a pending readline search or vi command would take it as editing.
+# One widget (zsh) or shell function (bash) each sets the whole line aside and puts it back.
+_LINE_STASH_SEQUENCE = b"\x1b[96~"
+_LINE_RESTORE_SEQUENCE = b"\x1b[94~"
+# bash without line editing (set +o emacs) reads all of these as plain input.  The one written alone,
+# before a write that stashes nothing, therefore ends in Ctrl+U: the line discipline then erases it, so
+# that the cd on an empty line works.  readline takes it as one key and does what _INSERT_MODE_SEQUENCE
+# does.  The stash must not send Ctrl+U: a pending readline search or vi command would take it as editing.
 _BASH_PREPARE_SEQUENCE = b"\x1b[95\x15"
-_BASH_END_OF_LINE_SEQUENCE = b"\x1b[91~"  # end-of-line
-_BASH_KILL_SEQUENCE = b"\x1b[92~"  # unix-line-discard
-_BASH_YANK_SEQUENCE = b"\x1b[93~"  # yank
-_BASH_BACKSPACE_SEQUENCE = b"\x1b[94~"  # backward-delete-char
 
 
 def _ansi_c_quote(arg: str) -> str:
@@ -234,10 +229,10 @@ class ZshDriver(ShellDriver):
         sets the buffer itself, so no key that zsh-autosuggestions treats as
         accepting a suggestion (such as Ctrl+E) is involved.
         """
-        return _INSERT_MODE_SEQUENCE + _ZSH_STASH_SEQUENCE
+        return _INSERT_MODE_SEQUENCE + _LINE_STASH_SEQUENCE
 
     def yank_sequence(self) -> bytes:
-        return _ZSH_RESTORE_SEQUENCE
+        return _LINE_RESTORE_SEQUENCE
 
 
 class BashDriver(ShellDriver):
@@ -251,13 +246,19 @@ class BashDriver(ShellDriver):
 
         With horizontal scrolling, bash 5.2 can loop forever when the width changes, whatever the
         height.  A bash without line editing only warns about each ``bind``, which is discarded.
+        The stash function keeps the line in a variable, not in the kill ring, which stays as it was.
+        It appends, so a second stash never overwrites the saved line.
         """
         # An empty macro does nothing: outside vi command mode there is no mode to change.
         return (
             f" bind 'set horizontal-scroll-mode off' 2>/dev/null; "
-            "for _nn_map in emacs vi-insert; do bind -m $_nn_map "
-            """'"\\e[95~": ""' '"\\e[95\\C-u": ""' '"\\e[91~": end-of-line' '"\\e[92~": unix-line-discard' """
-            """'"\\e[93~": yank' '"\\e[94~": backward-delete-char' 2>/dev/null; done; unset _nn_map; """
+            "_nn_stash() { _nn_line+=$READLINE_LINE; READLINE_LINE=; READLINE_POINT=0; }; "
+            # A READLINE_POINT beyond the end puts the cursor at the end.
+            "_nn_restore() { READLINE_LINE+=${_nn_line-}; _nn_line=; READLINE_POINT=999999; }; "
+            "for _nn_map in emacs vi-insert; do "
+            """bind -m $_nn_map '"\\e[95~": ""' '"\\e[95\\C-u": ""' 2>/dev/null; """
+            """bind -m $_nn_map -x '"\\e[96~": _nn_stash' 2>/dev/null; """
+            """bind -m $_nn_map -x '"\\e[94~": _nn_restore' 2>/dev/null; done; unset _nn_map; """
             """bind -m vi-command '"\\e[95~": vi-insertion-mode' '"\\e[95\\C-u": vi-insertion-mode' 2>/dev/null; """
             f"HISTCONTROL=\"${{HISTCONTROL:+${{HISTCONTROL}}:}}ignorespace\"; _nn_precmd() {{ {self._hook_body()}; }}; PROMPT_COMMAND=${{PROMPT_COMMAND:+${{PROMPT_COMMAND}}$'\\n'}}_nn_precmd\n"
         )
@@ -269,19 +270,14 @@ class BashDriver(ShellDriver):
         return _BASH_PREPARE_SEQUENCE
 
     def kill_line_sequence(self) -> bytes:
-        """Move to the end of the buffer, type a space, and kill back to the start.
+        """Send the insert mode key and then the private stash key.
 
-        Readline's kill only reaches back from the cursor, hence the move.  The
-        space makes sure the kill is never empty: an empty kill leaves the kill
-        ring untouched, so a later restore would yank back stale text.  Being
-        killed last, it is also restored last, and ``yank_sequence`` deletes it.
         Without line editing (``set +o emacs``) this does not remove the typed line.
         """
-        return _INSERT_MODE_SEQUENCE + _BASH_END_OF_LINE_SEQUENCE + b" " + _BASH_KILL_SEQUENCE
+        return _INSERT_MODE_SEQUENCE + _LINE_STASH_SEQUENCE
 
     def yank_sequence(self) -> bytes:
-        """Yank, then delete the space ``kill_line_sequence`` typed."""
-        return _INSERT_MODE_SEQUENCE + _BASH_YANK_SEQUENCE + _BASH_BACKSPACE_SEQUENCE
+        return _INSERT_MODE_SEQUENCE + _LINE_RESTORE_SEQUENCE
 
 
 class FallbackDriver(ShellDriver):

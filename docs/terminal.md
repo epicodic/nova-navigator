@@ -509,8 +509,8 @@ Standard keys are not usable here: in vi insert mode Ctrl+E inserts itself (and 
 | Sequence | zsh | bash |
 |---|---|---|
 | `prepare_line_sequence()` | `ESC[95~`: leave vi command mode | `ESC[95` Ctrl+U: leave vi command mode |
-| `kill_line_sequence()` | `ESC[95~`, `ESC[96~` (stash widget) | `ESC[95~`, `ESC[91~` (end-of-line), a space, `ESC[92~` (unix-line-discard) |
-| `yank_sequence()` | `ESC[94~` (restore widget) | `ESC[95~`, `ESC[93~` (yank), `ESC[94~` (backward-delete-char) |
+| `kill_line_sequence()` | `ESC[95~`, `ESC[96~` (stash widget) | `ESC[95~`, `ESC[96~` (stash function) |
+| `yank_sequence()` | `ESC[94~` (restore widget) | `ESC[95~`, `ESC[94~` (restore function) |
 
 Every hidden write starts with a sequence that leaves vi command mode: a `cd` with or without a stash, the line of `run_command()`, the restore, and the setup line the watchdog sends again.
 The shell is then in vi insert mode, also when the user was in vi command mode before.
@@ -530,11 +530,10 @@ The widgets set the buffer themselves, so no key that zsh-autosuggestions treats
 The zsh precmd hook binds the sequences again before every prompt, so they survive `bindkey -d` and follow a `main` keymap that was changed.
 An unbound stash key would leave the typed line in place, to be run together with the `cd`.
 
-bash kills and yanks.
-Readline's kill only reaches back from the cursor, hence the move to the end of the buffer first.
-The space makes sure the kill is never empty.
-An empty kill leaves the kill ring untouched, so a spurious kill on an already-empty line (`has_input()` can return a conservative `True` after a restore, see below) would otherwise yank back stale text from an earlier kill.
-The space is killed last and therefore restored last, so the backspace removes exactly it.
+bash runs two shell functions with `bind -x`, which see the line as `READLINE_LINE`.
+The stash function appends the line to a shell variable and empties it; the restore function puts it back and moves the cursor to the end.
+The kill ring is left alone.
+Appending means that a second stash, also of an empty line, never overwrites saved text.
 
 #### Known limits of hidden writes
 
@@ -571,7 +570,7 @@ What also remains:
   dash has no vi mode editing: Escape becomes part of the line, which then counts as typed input.
 
 `has_input()`'s snapshot cannot be safely recaptured immediately after a restore: the shell's echo of the restored text can arrive fused with the freshly drawn prompt in the very same stdout chunk, so there is no reliable way to isolate "prompt only" from "prompt plus restored text" by observing chunk boundaries.
-This is why `_finish_nav()` forces `_input_since_precmd = True` rather than trying to snapshot, and why the never-empty-kill guarantee above is the actual defense against stale-text resurrection, not snapshot accuracy.
+This is why `_finish_nav()` forces `_input_since_precmd = True` rather than trying to snapshot.
 
 ### Precmd classification
 

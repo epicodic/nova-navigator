@@ -58,7 +58,7 @@
   bash emacs Alt+[ or Esc O leaves `[95~` on the line, bash vi `m` or `@` loses the line, and zsh vi `'` swaps the case of the whole line.
 - In bash with `shopt -s histverify`, the shell does not follow the panels while an expanded line waits at the prompt, until you enter or cancel it.
 - An editor opened from the command line (bash vi `v`, Ctrl+X Ctrl+E) receives the `cd` that follows a panel change as its input.
-- bash and zsh get private key bindings (`ESC[91~` to `ESC[96~`, and in bash `ESC[95` Ctrl+U) for this.
+- bash and zsh get private key bindings (`ESC[94~` to `ESC[96~`, and in bash `ESC[95` Ctrl+U) for this.
   In bash, removing them can make a panel change run the typed line.
 - In a shell treated as a plain shell that has a vi mode (for example `sh` linked to bash), do not leave an empty command line in vi command mode.
   The `cd` of a panel change is then read as editor commands, and what runs is unpredictable.

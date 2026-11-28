@@ -23,6 +23,8 @@ _LEFT = "\x1b[D"
 _ESC = "\x1b"
 _DUMP = "\x18\x10"  # Ctrl+X Ctrl+P, bound by the rc files below to write the line editor's buffer
 _CTRL_W = "\x17"
+_CTRL_U = "\x15"
+_CTRL_Y = "\x19"
 
 _SHELLS = ["bash", "zsh"]
 _MODES = ["emacs", "vi-insert", "vi-command"]
@@ -131,6 +133,15 @@ async def test_cd_after_a_word_was_killed_restores_only_the_line(home: Path, she
         await _send(terminal, "echo aaa bbb", _CTRL_W)
         await _change_directory(terminal, home)
         await _assert_line_survives(terminal, home, "echo aaa ")
+
+
+@pytest.mark.asyncio
+async def test_cd_leaves_the_bash_kill_ring_alone(home: Path) -> None:
+    async with _editing_shell(home, "bash", "emacs") as terminal:
+        await _send(terminal, "KILLED", _CTRL_U, "echo ")
+        await _change_directory(terminal, home)
+        await _send(terminal, _CTRL_Y)
+        assert await _buffer(terminal, home) == "echo KILLED"
 
 
 @pytest.mark.asyncio
