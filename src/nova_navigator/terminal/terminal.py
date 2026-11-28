@@ -1232,7 +1232,8 @@ class Terminal(ScrollView, can_focus=True):
         is not accessible), so the transaction gives up rather than resending
         the identical ``cd`` forever.
         A transaction also ends when the shell reports that it cannot set its line
-        aside (*line_editing* False): no further ``cd`` of it may be written.
+        aside (*line_editing* False): no further ``cd`` of it may be written now.  A target not
+        reached yet is kept and applied at the next precmd, as for a plain shell.
         Any other precmd is a user command cycle: it may report a user-initiated
         directory change and then applies a target stored while the shell was busy.
         """
@@ -1258,10 +1259,16 @@ class Terminal(ScrollView, can_focus=True):
         if self._nav_busy:
             self._cancel_watchdog()
             can_retry = self._nav_same_target_attempts < _NAV_MAX_SAME_TARGET_ATTEMPTS
-            if self._nav_target is not None and cwd != self._nav_target and can_retry and self._edits_lines():
+            if self._nav_target is not None and cwd != self._nav_target and not self._edits_lines():
+                # The shell can no longer set its line aside: as with a plain shell, the target waits
+                # for the next prompt.
+                target = self._nav_target
+                self._finish_nav(cwd)
+                self._nav_target = target
+            elif self._nav_target is not None and cwd != self._nav_target and can_retry:
                 self._start_nav()
             else:
-                if self._nav_target is not None and cwd != self._nav_target and not can_retry:
+                if self._nav_target is not None and cwd != self._nav_target:
                     _logger.warning("Navigation to %s did not take effect after %d attempts; giving up", self._nav_target, self._nav_same_target_attempts)
                 self._finish_nav(cwd)
         else:

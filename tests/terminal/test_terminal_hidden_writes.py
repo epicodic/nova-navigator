@@ -813,6 +813,20 @@ async def test_run_command_during_a_slow_prompt_shows_no_key_text(home: Path, sh
         await _assert_line_survives(terminal, home, "touch EXECUTED")
 
 
+@pytest.mark.asyncio
+async def test_a_target_requested_before_bash_stopped_editing_is_followed_after_enter(home: Path) -> None:
+    # The first cd switches line editing off, so the report after it says that the line cannot be set aside.
+    switching = 'cd() { builtin cd "$@"; sleep 0.5; set +o emacs; }'
+    async with _editing_shell(home, "bash", "emacs", switching) as terminal:
+        terminal.request_cd(home / "sub")
+        terminal.request_cd(home)
+        await _wait_until(lambda: not terminal._nav_busy, "the navigation to end")
+        assert terminal.cwd == home / "sub"
+        await asyncio.sleep(0.5)
+        await _send(terminal, "\r")
+        await _wait_until(lambda: terminal.cwd == home, "the cd to the newest target")
+
+
 @pytest.mark.parametrize("echo", ["^[[95~^[[93^G^[[95~^[[94~", "\x1b[95~\x1b[93\x07\x1b[95~\x1b[94~"], ids=["echoctl", "raw"])
 def test_echo_of_private_keys_is_removed_also_when_it_is_split(echo: str) -> None:
     terminal = Terminal("/bin/bash", backend=FakePtyBackend(), driver=BashDriver())

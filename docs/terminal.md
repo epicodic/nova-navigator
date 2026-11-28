@@ -589,7 +589,8 @@ While the last report was `noedit`, the terminal treats the shell like a plain s
 - `run_command()` reports busy while the line holds typed input;
 - `set_terminal_directory` returns at once.
 
-A navigation that is under way when the report arrives ends there.
+A navigation that is under way when the report arrives ends there, and waiting callers get the reported directory.
+A target it has not reached yet is kept and applied at the next precmd, as for a plain shell.
 A line set aside before the report stays in the shell's variable and is put back by the first restore after editing is on again, in front of what the line then holds.
 Like any plain shell, it does not detect input typed while a command was still running.
 
