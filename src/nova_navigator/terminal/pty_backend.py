@@ -169,7 +169,10 @@ class PtyBackend(ABC):
 
     @abstractmethod
     def teardown(self) -> None:
-        """Terminate the shell process and close all file objects."""
+        """Terminate the shell process and close all file objects.
+
+        Safe to call before ``open()`` and more than once.
+        """
 
 
 class LocalPtyBackend(PtyBackend):
@@ -210,6 +213,9 @@ class LocalPtyBackend(PtyBackend):
             finally:
                 os._exit(127)
 
+        # pty.fork() returns an inheritable master.  No later child may hold it open,
+        # or closing it in teardown() would not hang up the terminal.
+        os.set_inheritable(fd, False)
         self._pid = pid
         self._master_fd = fd
         self._p_out = os.fdopen(fd, "w+b", 0)
@@ -217,10 +223,15 @@ class LocalPtyBackend(PtyBackend):
         return None
 
     def write(self, data: bytes) -> None:
+        """Write raw bytes to the shell's stdin; ignored after ``teardown()``."""
         assert self._p_out is not None
-        self._p_out.write(data)
+        if not self._p_out.closed:
+            self._p_out.write(data)
 
     def resize(self, rows: int, cols: int) -> None:
+        """Resize the terminal; ignored while no master is open."""
+        if self._master_fd < 0:
+            return
         winsize = struct.pack("HH", rows, cols)
         fcntl.ioctl(self._master_fd, termios.TIOCSWINSZ, winsize)
 
@@ -256,10 +267,18 @@ class LocalPtyBackend(PtyBackend):
                 self._loop.remove_reader(self._p_out)
 
     def teardown(self) -> None:
+        """Hang up the terminal and signal the shell to end, without waiting for it."""
+        # The reader must go first: the loop cannot remove it once the file is closed.
+        self.detach_readers()
+        if self._pid > 0:
+            with contextlib.suppress(OSError):
+                os.kill(self._pid, signal.SIGTERM)
+        # Interactive shells ignore SIGTERM.  Closing the master hangs up the terminal.
+        if self._p_out is not None:
+            self._p_out.close()
+            self._master_fd = -1
         if self._pid <= 0:
             return
-        with contextlib.suppress(OSError):
-            os.kill(self._pid, signal.SIGTERM)
         # Reap the child if it has already exited, so it does not stay a zombie.  Once reaped
         # the pid may be reused by another process, so it is forgotten and never signalled again.
         with contextlib.suppress(ChildProcessError, OSError):

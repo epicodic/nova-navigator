@@ -89,7 +89,8 @@ It uses `pty.fork()` to create a pseudo-terminal.
 
 In `open()`, the child process prepares a clean environment (sets `TERM`, removes inherited `VIRTUAL_ENV` variables) and calls `os.execvpe()`.
 The child never returns into the application: a failed start is reported on the terminal and the child exits with status 127 (`os._exit` in a `finally`).
-The parent process stores the master fd and applies the initial terminal size.
+The parent process makes the master fd non-inheritable, stores it and applies the initial terminal size.
+Without this, every later shell and its jobs would hold the master of an earlier terminal open, and closing it would not hang that terminal up.
 
 A reader callback registered via `attach_readers()` uses `loop.add_reader()` on the master fd.
 It pushes `["stdout", ...]` messages (with OSC sequences extracted) into `recv_queue`.
@@ -105,6 +106,16 @@ The `resume()` method is a no-op since SIGSTOP is not used over SSH.
 
 The full lifecycle is: `open()` → `attach_readers()` → normal operation → `detach_readers()` → `teardown()`.
 `teardown()` sends `SIGTERM` (local) or closes the channel (SSH), then closes file objects.
+It is safe to call before `open()` and more than once.
+
+The local `teardown()` removes its own reader before it closes the master, because the event loop cannot remove the reader of a closed file.
+Interactive shells ignore `SIGTERM`; they end because closing the master hangs up the terminal (`SIGHUP`).
+The effect on the shell's jobs is that of closing a terminal window.
+The kernel sends `SIGHUP` to the foreground process group, and bash and zsh, at their default settings, normally pass the hangup on to their other jobs.
+Passing it on is not guaranteed: the shell can read the end of its input before it acts on the signal, and then ends without hanging up its jobs.
+A job started with `nohup`, removed from the job table with `disown`, or put into its own session with `setsid` keeps running.
+After `teardown()`, `write()` and `resize()` do nothing.
+`teardown()` does not wait for the shell to exit, so a shell that is still alive at that moment is not reaped by it.
 A local child that has already exited is reaped with `WNOHANG`; after that its pid is forgotten (`-1`), so a later `teardown()` never signals a reused pid.
 
 ---

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
+import select
 import signal
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -397,3 +400,119 @@ def test_teardown_twice_is_safe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     backend.teardown()
     backend.resume()
     assert signals_sent == []
+
+
+def _run_until_ready(backend: LocalPtyBackend, script: str = "") -> None:
+    """Run *script* in bash and read its output until bash shows its next prompt."""
+    # The quotes keep both markers out of the echoed command line.
+    backend.write(f"PS1='shell-pro''mpt$ '\n{script}echo shell-rea''dy\n".encode())
+    output = b""
+    deadline = time.monotonic() + 10
+    while b"shell-prompt$ " not in output.partition(b"shell-ready")[2]:
+        readable, _, _ = select.select([backend._master_fd], [], [], max(0.0, deadline - time.monotonic()))
+        assert readable, f"the shell did not answer: {output!r}"
+        output += os.read(backend._master_fd, 65536)
+
+
+def _exits_within(pidfd: int, seconds: float) -> bool:
+    return bool(select.select([pidfd], [], [], seconds)[0])
+
+
+@contextlib.contextmanager
+def _killed_afterwards(pid: int) -> Iterator[int]:
+    """Yield a pidfd for *pid* and make sure the process is gone when the block ends."""
+    pidfd = os.pidfd_open(pid)
+    try:
+        yield pidfd
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+        with contextlib.suppress(ChildProcessError):
+            os.waitpid(pid, 0)
+        os.close(pidfd)
+
+
+def _interactive_bash(home: Path, monkeypatch: pytest.MonkeyPatch) -> LocalPtyBackend:
+    _isolate_shell_env(home, monkeypatch)
+    for name in ("PS1", "PROMPT_COMMAND", "HISTFILE", "BASH_ENV"):
+        monkeypatch.delenv(name, raising=False)
+    backend = LocalPtyBackend()
+    backend.open("/bin/bash", rows=24, cols=80)
+    return backend
+
+
+def test_teardown_ends_an_interactive_shell(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = _interactive_bash(tmp_path, monkeypatch)
+    with _killed_afterwards(backend._pid) as shell:
+        # Once the shell answers it ignores SIGTERM, as every interactive shell does.
+        _run_until_ready(backend)
+        backend.teardown()
+        assert _exits_within(shell, 10), "the shell outlived teardown()"
+
+
+def test_later_shell_holds_no_earlier_master(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    first = _interactive_bash(tmp_path, monkeypatch)
+    with _killed_afterwards(first._pid):
+        second = _interactive_bash(tmp_path, monkeypatch)
+        with _killed_afterwards(second._pid):
+            _run_until_ready(second)  # the shell has been exec'ed
+            targets = []
+            for entry in Path(f"/proc/{second._pid}/fd").iterdir():
+                with contextlib.suppress(FileNotFoundError):
+                    targets.append(str(entry.readlink()))
+            second.teardown()
+        first.teardown()
+    assert targets
+    assert [target for target in targets if target.endswith("ptmx")] == []
+
+
+def test_teardown_leaves_detached_jobs_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = _interactive_bash(tmp_path, monkeypatch)
+    names = ("nohup", "disown", "setsid")
+    jobs = {name: f"sh -c 'echo $$ > {tmp_path}/{name}.pid; exec sleep 60'" for name in names}
+    with _killed_afterwards(backend._pid) as shell:
+        waits = " && ".join(f"[ -s {tmp_path}/{name}.pid ]" for name in names)
+        _run_until_ready(
+            backend,
+            f"nohup {jobs['nohup']} >/dev/null 2>&1 &\n{jobs['disown']} >/dev/null 2>&1 & disown\nsetsid -f {jobs['setsid']} >/dev/null 2>&1\nuntil {waits}; do sleep 0.05; done\n",
+        )
+        pids = {name: int((tmp_path / f"{name}.pid").read_text()) for name in names}
+        with (
+            _killed_afterwards(pids["nohup"]) as nohup,
+            _killed_afterwards(pids["disown"]) as disowned,
+            _killed_afterwards(pids["setsid"]) as new_session,
+        ):
+            backend.teardown()
+            assert _exits_within(shell, 10), "the shell outlived teardown()"
+            # The shell has exited, so it has sent every hangup it is going to send.  Ordinary jobs
+            # are not asserted on: bash usually hangs them up, but not on every hangup of its terminal.
+            assert not _exits_within(nohup, 0.5)
+            assert not _exits_within(disowned, 0)
+            assert not _exits_within(new_session, 0)
+
+
+@pytest.mark.asyncio
+async def test_teardown_removes_an_attached_reader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = _interactive_bash(tmp_path, monkeypatch)
+    loop = asyncio.get_running_loop()
+    with _killed_afterwards(backend._pid):
+        master = backend._master_fd
+        backend.attach_readers(loop, asyncio.Queue())
+        backend.teardown()
+        assert loop.remove_reader(master) is False
+
+
+def test_write_and_resize_after_teardown_do_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = _interactive_bash(tmp_path, monkeypatch)
+    with _killed_afterwards(backend._pid):
+        backend.teardown()
+        backend.write(b"ignored\n")
+        backend.resize(rows=30, cols=100)
+        backend.teardown()
+        assert backend._master_fd == -1
+
+
+def test_teardown_before_open_is_safe() -> None:
+    backend = LocalPtyBackend()
+    backend.teardown()
+    backend.teardown()
