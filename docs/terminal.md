@@ -132,7 +132,10 @@ The hook emits an OSC 7 CWD sequence.
 **FallbackDriver** — generic POSIX sh driver.
 Installs a `PS1`-based hook that emits OSC 7.
 Has no line editor, so directory navigation writes a visible `cd` without input preservation.
-A `cd` is written only at a prompt whose line is empty; otherwise the target is kept and tried again at the next precmd, so a command that is running or typed text is never joined by a `cd`.
+A `cd` is written only at a prompt whose line looks empty to the terminal; otherwise the target is kept and tried again at the next precmd.
+The check covers a command that is running and text visible on the prompt line.
+It does not detect input typed ahead while a command is still running, whether or not it was submitted, nor further lines of a multi-line paste, for any shell.
+A panel change then can write the `cd` into that input, so the combined line may run.
 No `_nav_future` is created for this driver, so `set_terminal_directory` returns at once and `run_command` never waits for a plain `cd`.
 The init code sets `stty erase '^H'` so that Backspace erases in shells that do not use the PTY's `^?` default.
 Uses `printf '%b_'` with octal escapes for cd commands (Midnight Commander technique).
@@ -318,12 +321,14 @@ When the first OSC 7 arrives, draining ends and the prompt is displayed.
 While startup draining is on, the discarded output is also kept in `_startup_output` (last 64 KiB).
 A timer (`_STARTUP_TIMEOUT`, 5 s) is armed per shell process; it is cancelled on every hook report, restart and `stop()`, and a timer of an older shell is ignored.
 If no hook report arrives in time, `_reveal_startup_output()` shows the buffer and ends draining.
-The terminal is then a plain terminal: `_at_prompt` stays False, a pending `cd` is dropped, a waiting navigation is resolved, and `run_command()` reports busy.
-A `cd` requested before the timeout is dropped too: until the timeout the target is only stored, and nothing is written at a prompt because the shell never reports one.
+The terminal is then a plain terminal: `_at_prompt` stays False, nothing is written to the shell, a waiting navigation is resolved with the requested path, and `run_command()` reports busy.
+The newest navigation target is kept, both one requested before the timeout and one requested after it.
+No future is created for it and nothing is written; a hook report that arrives later enables the integration and applies the kept target through the normal guarded path (the plain driver's empty-line check, or the line-editing transaction).
+Giving up or restarting the shell drops the kept target.
 A hook report that arrives later still enables the integration.
 
 A shell that exits within `_EARLY_EXIT_SECONDS` (2 s) without any hook report counts as a quick exit.
-After `_MAX_EARLY_EXITS` (3) quick exits in a row the shell is not restarted (`_give_up()`): its output and a message stay visible, the reader and run task are removed, `send()` is ignored, and the pid is reaped by `teardown()`.
+After `_MAX_EARLY_EXITS` (3) quick exits in a row the shell is not restarted (`_give_up()`): its output and a message stay visible, the reader and run task are removed, `send()` is ignored, and `teardown()` reaps the child only if it has already exited when it checks (`WNOHANG`); a child that exits later is not reaped by it.
 Any hook report resets the count.
 
 ---
@@ -445,6 +450,7 @@ Because the target is derived rather than passed, a delayed handler can never mo
 
 `_start_backend()` enables draining and writes the init code.
 The first precmd ends draining and marks the shell as at a prompt; a target stored before that is applied then.
+This holds for a hook report that arrives after the startup timeout as well (see [Startup Bootstrap](#startup-bootstrap)).
 That first precmd does not post `PathChanged` (see [Precmd classification](#precmd-classification)).
 
 ### Awaitable Return Value

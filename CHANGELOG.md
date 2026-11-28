@@ -139,6 +139,8 @@
 
 #### Other
 
+- Text typed ahead while a command is still running is not detected in any shell, so a later panel change can write its `cd` into that text and the combined line may run.
+  This also applies to further lines of a multi-line paste.
 - On a slow shell, Enter pressed before the typed command appears may act on the file panel instead of the terminal.
   This was seen in the code, but not reproduced in the application.
 - A move across devices that follows links (or to a destination without links) can skip, as broken, a link whose target was already moved in the same move.

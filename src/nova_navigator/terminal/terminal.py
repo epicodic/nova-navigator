@@ -712,7 +712,9 @@ class Terminal(ScrollView, can_focus=True):
         if not self._started or self._gave_up:
             return
         if self._no_integration:
-            # Without the hook the shell is never at a prompt, so a cd could never be written.
+            # Without the hook the shell is never at a prompt, so nothing may be written yet.
+            # The newest target is kept; the first hook report applies it (see _handle_pre_cmd).
+            self._nav_target = path
             return
         if not self._nav_busy and self._nav_target is None and path == self._cwd:
             return
@@ -1127,9 +1129,10 @@ class Terminal(ScrollView, can_focus=True):
     def _reveal_startup_output(self) -> None:
         """Show what the shell printed before its hook reported and stop draining.
 
-        Without the hook the terminal is a plain terminal: it is never at a prompt, a pending
-        ``cd`` is dropped and a waiting navigation is resolved so no caller waits forever.
-        A hook report that arrives later still enables the integration.
+        Without the hook the terminal is a plain terminal: it is never at a prompt, nothing is
+        written to it and a waiting navigation is resolved so no caller waits forever.
+        The newest navigation target is kept: a hook report that arrives later still enables the
+        integration and applies it through the normal guarded path.
         """
         if self._startup_output is None:
             return
@@ -1140,7 +1143,6 @@ class Terminal(ScrollView, can_focus=True):
         self._feed_stdout(text)
         self._refresh_prompt_snapshot()
         fallback = self._cwd if self._cwd is not None else self._nav_target_or_root()
-        self._nav_target = None
         self._resolve_nav_future(fallback)
         self._schedule_rebuild()
 

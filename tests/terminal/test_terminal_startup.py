@@ -193,3 +193,45 @@ async def test_late_hook_report_after_the_timeout_enables_the_integration(home: 
             assert terminal.cwd == PurePath(home)
         finally:
             terminal.stop()
+
+
+_SLOW_START = "echo SLOW-START\nsleep 1.5\nexec sh"
+
+
+@pytest.mark.asyncio
+async def test_cd_requested_before_a_slow_start_is_written_by_the_late_hook(home: Path) -> None:
+    dest = home / "dest"
+    dest.mkdir()
+    command = _write_shell(home, "slow", _SLOW_START)
+    terminal = Terminal(command, backend=LocalPtyBackend(), driver=FallbackDriver(), keep_alive=True)
+    app = _HostApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.start()
+        try:
+            terminal.request_cd(dest)
+            await _wait_until(lambda: terminal._no_integration, "the startup timeout")
+            assert terminal.cwd != PurePath(dest)
+            await _wait_until(lambda: terminal.cwd == PurePath(dest), "the late hook to apply the cd")
+        finally:
+            terminal.stop()
+
+
+@pytest.mark.asyncio
+async def test_cd_requested_after_the_timeout_is_written_by_the_late_hook(home: Path) -> None:
+    dest = home / "dest"
+    dest.mkdir()
+    command = _write_shell(home, "slow", _SLOW_START)
+    terminal = Terminal(command, backend=LocalPtyBackend(), driver=FallbackDriver(), keep_alive=True)
+    app = _HostApp(terminal)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        terminal.start()
+        try:
+            await _wait_until(lambda: terminal._no_integration, "the startup timeout")
+            terminal.request_cd(dest)
+            assert terminal._nav_future is None
+            assert terminal.cwd != PurePath(dest)
+            await _wait_until(lambda: terminal.cwd == PurePath(dest), "the late hook to apply the cd")
+        finally:
+            terminal.stop()

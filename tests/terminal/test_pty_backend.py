@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from pathlib import Path
 
 import pytest
 
@@ -361,7 +362,14 @@ async def test_attach_readers_posts_osc7_as_pre_cmd_via_stdout() -> None:
         backend.teardown()
 
 
-def test_failed_exec_exits_the_child() -> None:
+def _isolate_shell_env(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep a shell started by a test away from the real home directory and its ``ENV`` file."""
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("ENV", raising=False)
+
+
+def test_failed_exec_exits_the_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _isolate_shell_env(tmp_path, monkeypatch)
     backend = LocalPtyBackend()
     backend.open("/nonexistent/shell", rows=24, cols=80)
     _, status = os.waitpid(backend._pid, 0)
@@ -369,7 +377,8 @@ def test_failed_exec_exits_the_child() -> None:
     backend.teardown()
 
 
-def test_teardown_twice_is_safe() -> None:
+def test_teardown_twice_is_safe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _isolate_shell_env(tmp_path, monkeypatch)
     backend = LocalPtyBackend()
     backend.open("/bin/sh", rows=24, cols=80)
     backend.teardown()
