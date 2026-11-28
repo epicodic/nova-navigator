@@ -6,11 +6,15 @@ The effects that need a real process are in ``test_hung_write_back_exit.py``.
 from __future__ import annotations
 
 import io
+import os
+import select
 import sys
 import threading
 import time
+from typing import cast
 
 import pytest
+from textual.driver import Driver
 
 from nova_navigator import debug_analytics
 from nova_navigator.nova_navigator import NovaNavigator
@@ -80,6 +84,37 @@ def test_a_second_thread_cannot_end_the_process_while_the_report_is_being_printe
 def _join(thread: threading.Thread) -> None:
     if thread.ident is not None:  # started
         thread.join(_GUARD)
+
+
+class _SilentDriver:
+    """A driver of textual that writes nothing, so that only what NovaNavigator itself does reaches the terminal."""
+
+    def write(self, data: str) -> None:
+        pass
+
+    def stop_application_mode(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+def test_input_pending_when_the_terminal_is_given_back_is_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
+    controlling, terminal = os.openpty()
+    try:
+        with open(terminal, closefd=False) as stdin:
+            monkeypatch.setattr(sys, "__stdin__", stdin)
+            app = NovaNavigator()
+            app._driver = cast("Driver", _SilentDriver())
+            os.write(controlling, b"\x1b[<35;1;1M\n")  # a mouse report that nobody has read
+            assert select.select([terminal], [], [], _GUARD)[0]
+
+            app._release_terminal()
+
+            assert not select.select([terminal], [], [], 0)[0]
+    finally:
+        os.close(terminal)
+        os.close(controlling)
 
 
 class _ShellReaper:

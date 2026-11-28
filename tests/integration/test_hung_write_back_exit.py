@@ -16,6 +16,7 @@ import subprocess
 import sys
 import termios
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,6 +28,7 @@ _APP = Path(__file__).with_name("hung_write_back_app.py")
 _HANG_LIMIT = 60.0  # not a time budget: only a process that does not end at all gets here
 _LEAVE_ALTERNATE_SCREEN = b"\x1b[?1049l"
 _MESSAGE = b"Nova Navigator quit while a write-back was still running."
+_LAST_LINE = b"save what you need."
 _MOUSE_MODES = (1000, 1003, 1006)
 _MARKER = "NN_TEST_PROCESS"
 
@@ -39,6 +41,8 @@ class _Run:
     copy_root: Path
     terminal_before: list[object]
     terminal_after: list[object]
+    pending_input: bytes
+    """What was typed and is still there for the next reader of the terminal."""
 
 
 def _marked_processes(marker: str) -> list[int]:
@@ -52,7 +56,7 @@ def _marked_processes(marker: str) -> list[int]:
     return found
 
 
-def _read_until_exit(process: subprocess.Popen[bytes], terminal: int) -> tuple[bytes, bool]:
+def _read_until_exit(process: subprocess.Popen[bytes], terminal: int, on_output: Callable[[bytes], None]) -> tuple[bytes, bool]:
     """Collect the terminal output until *process* ends; the flag is False when it did not end within the limit."""
     output = bytearray()
     deadline = time.monotonic() + _HANG_LIMIT
@@ -64,6 +68,7 @@ def _read_until_exit(process: subprocess.Popen[bytes], terminal: int) -> tuple[b
             except OSError:
                 data = b""
             output += data
+            on_output(bytes(output))
             if data:
                 continue
         if ended:
@@ -71,7 +76,7 @@ def _read_until_exit(process: subprocess.Popen[bytes], terminal: int) -> tuple[b
     return bytes(output), False
 
 
-def _run_app(case: str, root: Path, bashrc: str = "") -> _Run:
+def _run_app(case: str, root: Path, bashrc: str = "", type_after_report: bytes = b"") -> _Run:
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "TERM": "xterm-256color", "LANG": "C.UTF-8", "SHELL": "/bin/bash", _MARKER: str(root)}
     directories = {"HOME": "home", "TMPDIR": "tmp", "XDG_CONFIG_HOME": "config", "XDG_DATA_HOME": "data", "XDG_CACHE_HOME": "cache", "XDG_STATE_HOME": "state"}
     for variable, name in directories.items():
@@ -87,8 +92,15 @@ def _run_app(case: str, root: Path, bashrc: str = "") -> _Run:
         fcntl.ioctl(child_side, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
         terminal_before = termios.tcgetattr(child_side)
         process = subprocess.Popen([sys.executable, str(_APP), case, str(work)], stdin=child_side, stdout=child_side, stderr=child_side, env=env, cwd=work, start_new_session=True)
+        to_type = [type_after_report] if type_after_report else []
+
+        def _type_after_report(output: bytes) -> None:
+            if to_type and _LAST_LINE in output:
+                os.write(terminal, to_type.pop())
+                (work / "typed").touch()
+
         try:
-            output, ended = _read_until_exit(process, terminal)
+            output, ended = _read_until_exit(process, terminal, _type_after_report)
             failure = work / "failure"
             assert not failure.exists(), failure.read_text()
             assert ended, f"the process did not end; terminal output ends with {output[-1500:]!r}"
@@ -97,6 +109,7 @@ def _run_app(case: str, root: Path, bashrc: str = "") -> _Run:
                 time.sleep(0.05)
             assert _marked_processes(str(root)) == [], "the application left processes behind"
             terminal_after = termios.tcgetattr(child_side)
+            pending_input = os.read(child_side, 4096) if select.select([child_side], [], [], 0)[0] else b""
         finally:
             process.kill()
             process.wait()
@@ -106,7 +119,7 @@ def _run_app(case: str, root: Path, bashrc: str = "") -> _Run:
     finally:
         os.close(child_side)
         os.close(terminal)
-    return _Run(process.returncode, output, work, root / "tmp" / "nova-navigator", terminal_before, terminal_after)
+    return _Run(process.returncode, output, work, root / "tmp" / "nova-navigator", terminal_before, terminal_after, pending_input)
 
 
 def _assert_copy_kept(run: _Run) -> Path:
@@ -170,6 +183,26 @@ def test_the_process_ends_although_nothing_reads_its_output(tmp_path: Path) -> N
     assert (run.work / "exit-entered").exists()
     assert run.exit_status == 0, run.output[-1500:]
     assert run.terminal_after == run.terminal_before
+    _assert_copy_kept(run)
+
+
+@pytest.mark.integration
+def test_the_line_settings_are_restored_although_textual_takes_no_more_output(tmp_path: Path) -> None:
+    run = _run_app("full_output_queue", tmp_path)
+
+    assert (run.work / "exit-entered").exists()
+    assert run.exit_status == 0, run.output[-1500:]
+    assert run.terminal_after == run.terminal_before
+    _assert_copy_kept(run)
+
+
+@pytest.mark.integration
+def test_typing_after_the_report_is_left_for_the_shell(tmp_path: Path) -> None:
+    run = _run_app("typed_after_report", tmp_path, type_after_report=b"echo typed\n")
+
+    assert (run.work / "exit-entered").exists()
+    assert run.exit_status == 0, run.output[-1500:]
+    assert run.pending_input == b"echo typed\n"
     _assert_copy_kept(run)
 
 

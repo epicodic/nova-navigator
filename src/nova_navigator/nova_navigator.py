@@ -28,6 +28,7 @@ from rich.text import Text
 from textual import events, work
 from textual.app import App, AutopilotCallbackType, ComposeResult
 from textual.containers import Horizontal
+from textual.drivers.linux_driver import LinuxDriver
 from textual.geometry import Offset
 from textual.logging import TextualHandler
 from textual.screen import Screen
@@ -1351,7 +1352,23 @@ _SHELL_END_SECONDS = 4.0
 """Part of the backstop's time kept for ending closed shells: a shell is killed 3 s after its terminal closes."""
 _LAST_OUTPUT_SECONDS = 1.0
 """How long writing to the terminal may take at the end of a forced quit, beyond its deadline."""
+_INPUT_THREAD_SECONDS = 0.5
+"""How long to wait for textual's input thread, which looks for its exit event every 0.1 s."""
 _MOUSE_REPORTING_OFF = "\x1b[?1000l\x1b[?1003l\x1b[?1015l\x1b[?1006l"
+
+
+def _restore_terminal_input(driver: LinuxDriver) -> None:
+    """Give the line settings of the terminal back and stop textual from reading what is typed.
+
+    Neither writes to the terminal, so both work when the terminal takes no output.
+    """
+    if driver.attrs_before is not None:
+        with contextlib.suppress(termios.error):
+            termios.tcsetattr(driver.fileno, termios.TCSANOW, driver.attrs_before)
+    driver.exit_event.set()  # textual's own disable_input() does nothing once this is set
+    reader = driver._key_thread
+    if reader is not None and reader is not threading.current_thread():
+        reader.join(_INPUT_THREAD_SECONDS)
 
 
 class NovaNavigator(NovaNavigatorCore, App[None]):
@@ -1590,6 +1607,8 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         if driver is None:
             return
         restore = not self._teardown_started
+        if restore and isinstance(driver, LinuxDriver):
+            _restore_terminal_input(driver)  # before any write, which blocks for ever when textual's output queue is full
         with contextlib.suppress(Exception):
             if restore:
                 # Off the main thread, textual's stop_application_mode() fails inside before it turns mouse reporting
