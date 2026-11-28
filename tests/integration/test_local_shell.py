@@ -29,9 +29,10 @@ def shell(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> st
 
 
 @pytest.fixture
-def short_prompt() -> None:
+def short_prompt(_isolated_shell: None) -> None:
     """Give bash and zsh a short fixed prompt; use it through ``usefixtures``, so that it runs before
-    ``app_ctx`` starts the shell.
+    ``app_ctx`` starts the shell.  It writes into the temporary home of ``_isolated_shell``, never
+    into the developer's rc files.
 
     The terminal here is one row high, and ``has_input()`` has a documented limitation there for a
     prompt about as wide as the terminal (see ``docs/terminal.md``).  The default bash prompt
