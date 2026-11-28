@@ -755,3 +755,77 @@ async def test_hidden_write_leaves_the_bash_completion_pager(home: Path, operati
             await asyncio.wait_for(terminal.run_command("touch RAN"), timeout=5)
             assert (home / "RAN").exists()
         await _assert_line_survives(terminal, home, "touch EXECUTED f")
+
+
+# A prompt of two lines that takes a while to be drawn, as one that asks git about a large tree does.
+_SLOW_PROMPTS = {
+    "bash": """PS1='$(sleep 0.3)TOP\\n$ '""",
+    "zsh": """setopt prompt_subst; PS1='$(sleep 0.3)TOP'$'\\n''$ '""",
+}
+
+
+def _assert_no_key_text(terminal: Terminal) -> None:
+    screen = _screen_text(terminal)
+    assert "^[" not in screen
+    assert "^G" not in screen
+    assert "~" not in screen.replace(str(Path.home()), "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("typed", ["", "touch EXECUTED"], ids=["empty", "typed"])
+@pytest.mark.parametrize("shell", _SHELLS)
+async def test_cd_with_a_slow_two_line_prompt_leaves_no_key_text(home: Path, shell: str, typed: str) -> None:
+    async with _editing_shell(home, shell, "emacs", _SLOW_PROMPTS[shell]) as terminal:
+        await _wait_for_screen(terminal, "$ ")
+        if typed:
+            await _send(terminal, typed)
+        for target in (home / "sub", home, home / "sub"):
+            await asyncio.wait_for(terminal.set_terminal_directory(target), timeout=10)
+            await asyncio.sleep(0.8)
+            assert terminal.cwd == target
+            _assert_no_key_text(terminal)
+        await _assert_line_survives(terminal, home, typed)
+        assert "TOP" in _screen_text(terminal)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shell", _SHELLS)
+async def test_cd_with_a_slow_prompt_leaves_no_key_text_without_echoctl(home: Path, shell: str) -> None:
+    async with _editing_shell(home, shell, "emacs", "stty -echoctl\n" + _SLOW_PROMPTS[shell]) as terminal:
+        await _wait_for_screen(terminal, "$ ")
+        await asyncio.wait_for(terminal.set_terminal_directory(home / "sub"), timeout=10)
+        await asyncio.sleep(0.8)
+        _assert_no_key_text(terminal)
+        assert "[9" not in _screen_text(terminal)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shell", _SHELLS)
+async def test_run_command_during_a_slow_prompt_shows_no_key_text(home: Path, shell: str) -> None:
+    async with _editing_shell(home, shell, "emacs", _SLOW_PROMPTS[shell]) as terminal:
+        await _send(terminal, "touch EXECUTED")
+        # The second command is written right after the first one's report, while the prompt is still being drawn.
+        await asyncio.wait_for(terminal.run_command("true"), timeout=5)
+        await asyncio.wait_for(terminal.run_command("touch RAN"), timeout=5)
+        await _wait_until((home / "RAN").exists, "the command")
+        await asyncio.sleep(0.8)
+        _assert_no_key_text(terminal)
+        await _assert_line_survives(terminal, home, "touch EXECUTED")
+
+
+@pytest.mark.parametrize("echo", ["^[[95~^[[93^G^[[95~^[[94~", "\x1b[95~\x1b[93\x07\x1b[95~\x1b[94~"], ids=["echoctl", "raw"])
+def test_echo_of_private_keys_is_removed_also_when_it_is_split(echo: str) -> None:
+    terminal = Terminal("/bin/bash", backend=FakePtyBackend(), driver=BashDriver())
+    terminal._write_keys(BashDriver().put_back_sequence())
+    shown = terminal._strip_key_echo("TOP\r\n" + echo[:7])
+    shown += terminal._strip_key_echo(echo[7:] + "$ ")
+    assert shown == "TOP\r\n$ "
+    # Removed once: the same text in later output is shown.
+    assert echo in terminal._strip_key_echo(echo) + terminal._strip_key_echo(echo)
+
+
+def test_output_that_only_starts_like_a_key_echo_is_shown() -> None:
+    terminal = Terminal("/bin/bash", backend=FakePtyBackend(), driver=BashDriver())
+    terminal._write_keys(BashDriver().put_back_sequence())
+    assert terminal._strip_key_echo("2^") == "2^"
+    assert terminal._strip_key_echo("a ^[[") + terminal._strip_key_echo("m done") == "a ^[[m done"

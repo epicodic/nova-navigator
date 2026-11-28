@@ -231,6 +231,7 @@ The stored lines in `_display` are never mutated.
 | `_nav_stashed` | `bool` | The line was set aside and is restored on completion |
 | `_stash_held_input` | `bool` | The line set aside held input, or the user typed while it was set aside |
 | `_shell_edits` | `bool` | False while the hook reports `noedit` (see [bash without line editing](#bash-without-line-editing)) |
+| `_key_echoes`, `_held_echo` | `list[str]`, `str` | Echoes of private keys still to be removed from the output (see [Echo of the private keys](#echo-of-the-private-keys)) |
 | `_nav_future` | `Future[PurePath] \| None` | Resolved when the transaction chain completes |
 | `_nav_watchdog` | `TimerHandle \| None` | Fires when no precmd follows a `cd` |
 | `_hook_repaired` | `bool` | True after the precmd hook has been re-installed once this shell session |
@@ -565,6 +566,15 @@ With `shopt -s extdebug`, a trap that returns non-zero skips them, and the typed
 
 Appending means that a second stash, also of an empty line, never overwrites saved text.
 The saved text is lost only with the shell process (exit, restart, `exec`).
+
+### Echo of the private keys
+
+The shell reports a prompt before its line editor reads.
+Until then, for example while a prompt with a slow command is drawn, the PTY is in its cooked mode and echoes whatever is written, so the private keys would stay on screen as `^[[95~...`.
+`_write_keys()` therefore remembers what it wrote, in the `^X` form and in the raw form (`stty -echoctl`), and `_strip_key_echo()` removes that text once from the output.
+The keys themselves stay queued and reach the editor.
+An echo cut off at the end of a read is held back until the rest arrives.
+The next hook report drops what is still expected.
 
 ### bash without line editing
 

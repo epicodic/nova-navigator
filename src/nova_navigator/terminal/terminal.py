@@ -75,6 +75,8 @@ _DISPLAY_FPS: float = 60.0
 _ED_ERASE_SCROLLBACK = 3  # ED (erase in display) parameter for "erase saved lines"
 _NAV_WATCHDOG_TIMEOUT = 2.0
 _NAV_MAX_SAME_TARGET_ATTEMPTS = 3
+# Bytes below this are control characters; a terminal driver with echoctl shows them as ^X.
+_FIRST_PRINTABLE = 0x20
 _STARTUP_TIMEOUT = 5.0  # seconds a new shell may take to report its hook before its output is shown
 _EARLY_EXIT_SECONDS = 2.0  # a shell that exits sooner than this, without a hook report, is a quick exit
 _MAX_EARLY_EXITS = 3  # quick exits in a row after which the shell is not restarted
@@ -440,6 +442,10 @@ class Terminal(ScrollView, can_focus=True):
         self._hook_repaired: bool = False
         # False while the hook reports that the shell cannot set its line aside.
         self._shell_edits: bool = True
+        # Echoes of private keys still to be removed from the output, and the start of one cut off
+        # at the end of the last output (see _write_keys).
+        self._key_echoes: list[str] = []
+        self._held_echo: str = ""
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -877,7 +883,37 @@ class Terminal(ScrollView, can_focus=True):
         if self._driver.supports_editor_protocol:
             self._backend.write(STASH_SEQUENCE)
         else:
-            self._backend.write(self._driver.set_aside_sequence())
+            self._write_keys(self._driver.set_aside_sequence())
+
+    def _write_keys(self, keys: bytes) -> None:
+        """Write private key sequences and expect the terminal driver to echo them.
+
+        The shell reports a prompt before its line editor reads: until then (a slow prompt) the PTY
+        is in its cooked mode and echoes the keys.  ``_strip_key_echo`` removes that echo; the keys
+        stay queued for the editor.
+        """
+        # Control characters are echoed as ^X with ``stty echoctl``, the default, and as they are without.
+        self._key_echoes.append("".join(f"^{chr(byte ^ 0x40)}" if byte < _FIRST_PRINTABLE else chr(byte) for byte in keys))
+        self._key_echoes.append(keys.decode("ascii"))
+        self._backend.write(keys)
+
+    def _strip_key_echo(self, chars: str) -> str:
+        """Remove the expected echoes of private keys from shell output.
+
+        An echo cut off at the end of *chars* is held back until the rest arrives.
+        """
+        chars, self._held_echo = self._held_echo + chars, ""
+        for echo in list(self._key_echoes):
+            if echo in chars:
+                chars = chars.replace(echo, "", 1)
+                self._key_echoes.remove(echo)
+        for echo in self._key_echoes:
+            # At least "^[[", so that a lone "^" at the end of a prompt is shown at once.
+            for length in range(min(len(echo) - 1, len(chars)), 2, -1):
+                if chars.endswith(echo[:length]):
+                    self._held_echo = chars[-length:]
+                    return chars[:-length]
+        return chars
 
     def _restore_input(self) -> None:
         """Put back what ``_stash_input`` set aside.
@@ -893,7 +929,7 @@ class Terminal(ScrollView, can_focus=True):
         if self._driver.supports_editor_protocol:
             self._backend.write(RESTORE_SEQUENCE)
         else:
-            self._backend.write(self._driver.put_back_sequence())
+            self._write_keys(self._driver.put_back_sequence())
         # The echo of the restored line arrives after the prompt and would be absorbed into
         # the snapshot, so report input as present for this prompt line.
         if held_input:
@@ -1034,6 +1070,8 @@ class Terminal(ScrollView, can_focus=True):
         self._at_prompt = False
         self._hook_repaired = False
         self._shell_edits = True
+        self._key_echoes.clear()
+        self._held_echo = ""
         self._input_since_precmd = False
         self._startup_input = False
         self._prompt_snapshot = None
@@ -1200,6 +1238,8 @@ class Terminal(ScrollView, can_focus=True):
         """
         if not from_nn:
             return
+        # Keys written before this report were read by now, or their echo has arrived before it.
+        self._key_echoes.clear()
         self._shell_hooked = True
         self._shell_edits = line_editing
         self._no_integration = False
@@ -1256,7 +1296,7 @@ class Terminal(ScrollView, can_focus=True):
                         self._handle_pre_cmd(str(message[1]), from_nn, line_editing)
                     elif cmd == "stdout":
                         if not self._draining:
-                            self._feed_stdout(str(message[1]))
+                            self._feed_stdout(self._strip_key_echo(str(message[1])))
                             stdout_fed = True
                             self._refresh_prompt_snapshot()
                         elif self._startup_output is not None:
