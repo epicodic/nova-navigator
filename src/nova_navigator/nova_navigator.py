@@ -36,6 +36,7 @@ from nova_navigator.commands import (
     CommandRunner,
 )
 from nova_navigator.config import app_config_dir, conf_
+from nova_navigator.config.settings import Settings
 from nova_navigator.dialogs import (
     BookmarksDialog,
     ConnectToDialog,
@@ -64,6 +65,8 @@ from nova_navigator.remotes.remote import RemoteConnector, register_remote_schem
 from nova_navigator.remotes.ssh import SSH_PLUGIN
 from nova_navigator.runtime_patches import apply_runtime_patches
 from nova_navigator.scheduler import Job, ResponseRequest, skipped_summary
+from nova_navigator.session_state import PanelState, SessionState, load_session_state, usable_directory
+from nova_navigator.session_state import save_session_state as write_session_state_file
 from nova_navigator.terminal import Terminal, TerminalPool
 from nova_navigator.usermenu import (
     USER_MENU_FILENAME,
@@ -83,7 +86,7 @@ from nova_navigator.vfs.parse_uri import parse_uri
 from nova_navigator.vfs.process_root import find_orphans
 from nova_navigator.vfs.scheme_registry import SCHEME_REGISTRY, vfspath_from_uri
 from nova_navigator.widgets import DirectoryBrowser, JobStatusIcon
-from nova_navigator.widgets.directory_browser import GoToPathWidget, UpPath
+from nova_navigator.widgets.directory_browser import GoToPathWidget, SortKey, UpPath
 from nova_widgets import ButtonSpec, KeybindingsConfig, KeybindingsDialog, MessageBox, Response
 from nova_widgets.actions_support import ActionsSupport
 from nova_widgets.keymap import HintBar, HintsChanged, KeymapRegistry
@@ -96,6 +99,21 @@ logging.basicConfig(
 )
 
 _logger = logging.getLogger("nova_navigator.nova_navigator")
+
+
+def _store_show_hidden(value: bool) -> None:
+    """Save the show_hidden_files setting, reloading settings.toml first so hand edits survive.
+
+    A settings file that cannot be read or written is logged and left as it is; the toggle still applies.
+    """
+    conf_.settings.general.show_hidden_files = value
+    # a damaged or unwritable settings file must not break the toggle
+    try:
+        stored = Settings.load()
+        stored.general.show_hidden_files = value
+        stored.save()
+    except Exception:
+        _logger.exception("Could not save the show_hidden_files setting")
 
 
 class CommandInput(Input):
@@ -228,6 +246,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         self._hint_bar = HintBar()
         self._user_menu_store = UserMenuStore(_config_dir / USER_MENU_FILENAME)
         self._command_runner: CommandRunner | None = None
+        self._session_state = load_session_state()
 
     @property
     def app(self) -> NovaNavigator:  # type: ignore[override]
@@ -349,7 +368,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         self._left_panel = DirectoryBrowser(id="pane-left", path=LocalFilesystem.singleton().cwd())
         self._last_active_panel = self._left_panel
 
-        self._right_panel = DirectoryBrowser(id="pane-right", path=LocalFilesystem.singleton().cwd())
+        self._right_panel = DirectoryBrowser(id="pane-right", path=self._restored_right_path())
         yield Horizontal(
             self._left_panel,
             self._right_panel,
@@ -387,9 +406,37 @@ class MainScreen(ActionsSupport, Screen[None]):
             case PanelRef.ACTIVE:
                 return self._last_active_panel
 
+    def _restored_right_path(self) -> VPath:
+        """The directory the right panel starts in: the stored one when it is still usable, else the cwd."""
+        local = LocalFilesystem.singleton()
+        stored = usable_directory(self._session_state.right_path)
+        return VPath(stored, local) if stored is not None else local.cwd()
+
     async def on_mount(self) -> None:
         self._keymap_registry = KeymapRegistry(self._hint_bar)
         self._reload_keymap()
+        panels_state = (
+            (self._left_panel, self._session_state.left),
+            (self._right_panel, self._session_state.right),
+        )
+        for panel, state in panels_state:
+            if state.sort_column is not None:
+                panel.sort_column = SortKey[state.sort_column.upper()]
+            if state.sort_ascending is not None:
+                panel.sort_ascending = state.sort_ascending
+        self._set_show_hidden(conf_.settings.general.show_hidden_files is True)
+        self._left_panel.focus()
+
+    def save_session_state(self) -> None:
+        """Store the sort orders and the right panel's last local directory."""
+        left, right = self._left_panel, self._right_panel
+        write_session_state_file(
+            SessionState(
+                left=PanelState(left.sort_column.name.lower(), left.sort_ascending),
+                right=PanelState(right.sort_column.name.lower(), right.sort_ascending),
+                right_path=right.last_local_path or self._session_state.right_path,
+            )
+        )
 
     @property
     def keymap_config(self) -> KeybindingsConfig:
@@ -546,6 +593,8 @@ class MainScreen(ActionsSupport, Screen[None]):
         stale target for a panel that is no longer active.
         """
         panel = self.active_panel()
+        if not panel.has_committed_path:
+            return  # the first listing has not succeeded yet, so there is no directory to point the terminal at
         path = panel.path
         await self._ensure_terminal_for(path)
         self._terminal_pool.switch_to(path.filesystem)
@@ -964,15 +1013,18 @@ class MainScreen(ActionsSupport, Screen[None]):
         if event.action and event.action:
             await self._run_action(event.action)
 
+    def _set_show_hidden(self, value: bool) -> None:
+        self._act("view.show_hidden_files").set_checked(value)
+        self._left_panel.show_hidden_files = value
+        self._right_panel.show_hidden_files = value
+
     def _action_toggle_hidden(self) -> None:
-        new_state = not self._left_panel.show_hidden_files
-        self._act("view.show_hidden_files").set_checked(new_state)
-        self._action_show_hidden_files()
+        self._set_show_hidden(not self._left_panel.show_hidden_files)
+        _store_show_hidden(self._left_panel.show_hidden_files)
 
     def _action_show_hidden_files(self) -> None:
-        a = self._act("view.show_hidden_files")
-        self._left_panel.show_hidden_files = a.checked
-        self._right_panel.show_hidden_files = a.checked
+        # the menu flips the checked state, but a key bound to this action does not, so toggle from the panels
+        self._action_toggle_hidden()
 
     async def _action_open_editor(self) -> None:
         path = self.active_panel().path_item_under_cursor
@@ -1107,6 +1159,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         dialog = SettingsDialog(copy.deepcopy(conf_.settings))
         if await dialog.run() == Response.OK:
             conf_.settings = dialog.config
+            self._set_show_hidden(conf_.settings.general.show_hidden_files is True)
             conf_.settings.save()
 
     @work
@@ -1372,7 +1425,11 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         Prompting about unsynced copies before quitting is a separate concern (not handled
         here); this only ensures a clean, non-leaking shutdown on a normal exit. Bounded by a
         timeout so a stuck sync (e.g. an unreachable remote) can never hang app shutdown.
+        The session state is saved first, and only when the main screen has built its panels.
         """
+        main = getattr(self, "_main_screen", None)
+        if main is not None and hasattr(main, "_right_panel"):
+            main.save_session_state()
         try:
             await asyncio.wait_for(self.local_copies.shutdown(), timeout=5)
         except TimeoutError:

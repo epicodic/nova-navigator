@@ -154,6 +154,7 @@ Filtering hides any item whose name does not contain the filter string (case-ins
 
 `show_hidden_files: Reactive[bool]` (default `False`, `repaint=False`, `always_update=False`) controls dotfile visibility independently of filtering.
 Changing it triggers `watch_show_hidden_files` → `update(WhatChanged.FILTERING)`.
+`MainScreen` sets both panels from the `general.show_hidden_files` setting at start and saves it when the toggle changes.
 
 `set_hidden_names(names)` hides items by name, in addition to the text filter and the hidden-files rule.
 The hidden items stay in `_all_items` and in `items`.
@@ -256,3 +257,13 @@ It is instantiated once as the module-level constant `UP_PATH`.
 `UpPath.parent` returns `self`, and `UpPath.__eq__` matches any other `UpPath`.
 `stat` reports `is_directory=True` and all other fields at their defaults.
 Code that must skip the `..` entry checks `isinstance(item, UpPath)`.
+
+## Persistence
+
+The right panel's directory and the sort orders of both panels are saved between runs.
+The state is stored in `~/.local/state/nova-navigator/state.toml`.
+It is read once at start and written once, when the app quits normally (`MainScreen.save_session_state`, called from `NovaNavigator.on_unmount`).
+The right panel's stored directory is its last local directory, so an archive or remote location does not replace it.
+The left panel always starts in the current working directory.
+A stored directory that cannot be listed or entered falls back to the current working directory.
+Damaged state is ignored, and a failed write is logged without blocking quit.
