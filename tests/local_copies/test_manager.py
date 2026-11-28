@@ -730,7 +730,7 @@ async def test_a_waiting_shutdown_deletes_nothing_after_abandon(tmp_path: Path, 
     manager, entry, blocked, fs = await _blocked_sync(tmp_path, monkeypatch)
     shutdown = asyncio.create_task(manager.shutdown(remove_files=True))
     try:
-        await asyncio.wait({shutdown}, timeout=0.1)
+        await _wait_until(lambda: entry.detector is None)  # shutdown is now waiting for the write
         manager.abandon()
     finally:
         blocked.release.set()

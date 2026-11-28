@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import importlib.metadata
 import logging
@@ -8,16 +9,21 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
+import threading
+import time
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import partial
 from pathlib import Path, PurePath, PurePosixPath
-from typing import ClassVar, NamedTuple, cast
+from typing import ClassVar, NamedTuple, cast, override
 
+from rich.console import Console
+from rich.text import Text
 from textual import events, work
-from textual.app import App, ComposeResult
+from textual.app import App, AutopilotCallbackType, ComposeResult
 from textual.containers import Horizontal
 from textual.geometry import Offset
 from textual.logging import TextualHandler
@@ -1320,12 +1326,26 @@ class _EditorSession:
     """False when the session cannot have changed a file."""
 
 
+def _format_forced_quit_report(root: Path, names: list[str]) -> str:
+    """What the terminal says after a forced quit. Only names of files are listed: a copy's path can hold a password."""
+    lines = [
+        "Nova Navigator quit while a write-back was still running. Check the source: it may not contain your changes.",
+        f"Local copies were kept in {root}",
+    ]
+    if names:
+        lines.append(f"Not written back: {', '.join(name if name.isprintable() else repr(name) for name in names)}")
+    lines.append(f"{tempfile.gettempdir()} can be emptied at restart; save what you need.")
+    return "\n".join(lines)
+
+
 class NovaNavigator(NovaNavigatorCore, App[None]):
     """Nova Navigator App."""
 
     CSS_PATH = "nn.tcss"
     ENABLE_COMMAND_PALETTE = False
     _main_screen: MainScreen
+    BACKSTOP_SECONDS: ClassVar[float] = 10.0
+    """How long a forced quit may take before the process is ended regardless."""
 
     def __init__(self, config_dir: Path | None = None) -> None:
         apply_runtime_patches()
@@ -1337,7 +1357,10 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         self._editor_session: _EditorSession | None = None
         self._quit_awaits_write_back = False
         self._write_back_dialog: WriteBackRunningDialog | None = None
-        self._forced_quit = False
+        self._forced_quit_report: str | None = None
+        self._report_lock = threading.Lock()
+        self._owns_process = False  # True inside run_async(), never under run_test()
+        self._teardown_started = False
         register_remote_scheme(conf_.remotes)
 
     def action_help_quit(self) -> None:
@@ -1400,11 +1423,75 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
             self._force_quit()
 
     def _force_quit(self) -> None:
-        """Exit without waiting for the running write-backs, keeping every local copy."""
-        self._forced_quit = True
+        """Exit without waiting for the running write-backs, keeping every local copy.
+
+        Inside :meth:`run_async` the process is then ended without joining the threads stuck in a write,
+        at the latest after ``BACKSTOP_SECONDS``.
+        """
         self.local_copies.abandon()  # first: from here on nothing removes a local copy
+        entries = self.local_copies.writing()
+        with contextlib.suppress(OSError):  # a copy that cannot be read must not stop the quit
+            entries += [entry for entry in self.local_copies.unsynced() if entry not in entries]
+        self._forced_quit_report = _format_forced_quit_report(self.local_copies.root, [entry.copy.source.name for entry in entries])
         self._main_screen.save_session_state()
+        if self._owns_process:
+            backstop = threading.Timer(self.BACKSTOP_SECONDS, self._end_hung_process)
+            backstop.daemon = True
+            backstop.start()
         self.exit()
+
+    @override
+    async def run_async(
+        self,
+        *,
+        headless: bool = False,
+        inline: bool = False,
+        inline_no_clear: bool = False,
+        mouse: bool = True,
+        size: tuple[int, int] | None = None,
+        auto_pilot: AutopilotCallbackType | None = None,
+    ) -> None:
+        """Run the app; after a forced quit, end the process here.
+
+        Returning would not end it: asyncio and the interpreter wait for the thread stuck in the write.
+        """
+        self._owns_process = True
+        try:
+            await super().run_async(headless=headless, inline=inline, inline_no_clear=inline_no_clear, mouse=mouse, size=size, auto_pilot=auto_pilot)
+        finally:
+            self._owns_process = False
+            if self._forced_quit_report is not None:
+                self._end_process()
+
+    @override
+    async def _shutdown(self) -> None:
+        self._teardown_started = True  # textual has given the terminal back before it calls this
+        await super()._shutdown()
+
+    def _end_hung_process(self) -> None:
+        """Backstop of a forced quit, run on a timer thread: the teardown itself hangs, for example closing a stalled SSH terminal."""
+        if not self._teardown_started and self._driver is not None:
+            with contextlib.suppress(Exception):
+                self._driver.stop_application_mode()
+                time.sleep(0.5)  # the driver writes from a thread of its own
+        self._end_process()
+
+    def _end_process(self) -> None:
+        """Report the kept copies, let closed shells end and leave the process at once."""
+        try:
+            if self._report_lock.acquire(blocking=False):  # never released: the report is printed once
+                console = Console(file=sys.__stderr__, markup=False, highlight=False)
+                console.print(Text(self._forced_quit_report or ""), soft_wrap=True)
+            deadline = time.monotonic() + self.BACKSTOP_SECONDS
+            for thread in threading.enumerate():
+                if thread.name.startswith("end-shell-"):  # kills a shell that ignored the hangup
+                    thread.join(max(0.0, deadline - time.monotonic()))
+            debug_analytics.cleanup()
+            for stream in (sys.__stdout__, sys.__stderr__):
+                if stream is not None:
+                    stream.flush()
+        finally:
+            os._exit(self.return_code or 0)
 
     @contextmanager
     def _awaiting_write_back(self) -> Iterator[None]:
@@ -1499,7 +1586,7 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
         if not pending:
             with self._awaiting_write_back():
                 await self.local_copies.shutdown()
-            if not self._forced_quit:
+            if self._forced_quit_report is None:
                 self.exit()
             return
 
@@ -1517,7 +1604,7 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
             with self._awaiting_write_back():
                 for entry in pending:
                     await self.local_copies.sync_now(entry)
-            if self._forced_quit:
+            if self._forced_quit_report is not None:
                 return
             if self.local_copies.unsynced():
                 if self._write_back_dialog is not None:
@@ -1528,7 +1615,7 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
             return
         with self._awaiting_write_back():
             await self.local_copies.shutdown(remove_files=answer != Response.IGNORE)
-        if not self._forced_quit:
+        if self._forced_quit_report is None:
             self.exit()
 
     async def on_unmount(self) -> None:

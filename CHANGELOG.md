@@ -124,6 +124,9 @@
 - A zip or TAR member that you edit and save back keeps its old date.
 - A zip directory without its own entry may show no date.
 - Archives do not keep empty directories.
+- Quitting does not wait for a file that F5, F6 or the terminal's `cp` is writing into an archive on SSH or Azure.
+  With no unsynced local copy it removes the local working copy of the archive, so the archive may not get the file, and the process stays until the operation ends.
+  This was seen in the code and not tried.
 - `.jar`, `.war`, `.ear`, `.apk`, `.whl` and single compressed files are read-only.
 - Writing into a large archive rebuilds it for every file.
   Opening a large `.gz`, `.bz2` or `.xz` blocks while it is decompressed.
@@ -138,8 +141,10 @@
 - A failed download for F3 or F4 shows no message, only a failed job.
 - Choosing "Abort" in the error dialog for an unreadable file ends the application.
 - "Quit and keep files" while a file is still downloading for viewing can make that download fail.
-- If writing a local copy back to its source hangs, quitting waits for it and further quit keys are ignored.
-  The unsynced local file stays on disk.
+- A hung write-back of a local copy is not detected: quitting waits for it until you press the quit key again and choose "Quit and keep files".
+  The source may then lack your changes, and a temporary `.nn-tmp` file can stay beside it.
+- If a write-back over SSH stalls, an action that needs the same connection can freeze the whole application, and then no key works.
+  This was seen in the code and not tried.
 - Cancelling F4 just after the download may leave a local copy behind.
   This was not reproduced.
 - Saving in the editor creates a new file, except for a plain Save that only overwrites bytes (same length, nothing moved) in a file not changed on disk, which is patched in place.
