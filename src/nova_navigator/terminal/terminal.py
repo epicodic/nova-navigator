@@ -445,8 +445,9 @@ class Terminal(ScrollView, can_focus=True):
         """Open the backend, start the send loop, and inject shell init code.
 
         Draining is enabled immediately so that the init code echo and
-        startup prompt are suppressed.  Draining ends when the first
-        precmd fires (the shell's hook emits an OSC 7 CWD sequence).
+        startup prompt are held back.  Draining ends when the first precmd
+        fires (the shell's hook emits an OSC 7 CWD sequence), or when the
+        startup timeout reveals the held output without a hook report.
         """
         self._reset_shell_state()
         self._shell_generation += 1
@@ -457,7 +458,8 @@ class Terminal(ScrollView, can_focus=True):
         self._backend.open(self.command, self.nrow, self.ncol)
         self.send_queue = asyncio.Queue()
         self._run_task = asyncio.create_task(self._run())
-        # Suppress init code echo until the first precmd arrives.
+        # Hold back the init code echo and startup prompt until the first precmd
+        # arrives or the startup timeout reveals them.
         if self._backend.supports_precmd:
             self._draining = True
             self._startup_output = ""
@@ -704,10 +706,14 @@ class Terminal(ScrollView, can_focus=True):
     def request_cd(self, path: PurePath) -> None:
         """Ask the shell to change to *path* without waiting for completion.
 
-        Requests are coalesced: only the newest target is kept.  When the shell
-        is at a prompt and no transaction is active the ``cd`` is sent now,
-        otherwise it is sent on the next precmd.  See ``_start_nav`` for the
-        hidden, input-preserving transaction.
+        Requests are coalesced: only the newest target is kept.  A terminal that
+        has given up ignores the request.  Until the first hook report
+        (``_no_integration``) nothing is written: the target is kept and the
+        first hook report applies it.  Otherwise the ``cd`` is sent now when the
+        shell is at a prompt and no transaction is active, or on the next precmd.
+        Line-editing shells run the awaitable, input-preserving transaction (see
+        ``_start_nav``); a plain shell gets its ``cd`` on an empty prompt
+        (see ``_send_plain_cd``) and nobody waits for it.
         """
         if not self._started or self._gave_up:
             return
@@ -729,8 +735,10 @@ class Terminal(ScrollView, can_focus=True):
     async def set_terminal_directory(self, path: PurePath) -> PurePath:
         """Change the shell's working directory to *path*, preserving typed input.
 
-        Returns the CWD reported by the shell once the transaction chain
-        completes, or the last known CWD when no navigation was needed.
+        Returns the directory the transaction chain ends in: the CWD reported by
+        the shell, or the fallback of ``_reset_shell_state`` / ``_reveal_startup_output``
+        when the chain is cut short.  Returns the last known CWD when no navigation
+        was needed.
         """
         if not self._started:
             return path
@@ -1129,8 +1137,10 @@ class Terminal(ScrollView, can_focus=True):
     def _reveal_startup_output(self) -> None:
         """Show what the shell printed before its hook reported and stop draining.
 
-        Without the hook the terminal is a plain terminal: it is never at a prompt, nothing is
-        written to it and a waiting navigation is resolved so no caller waits forever.
+        Without the hook the terminal is a plain terminal: it is never at a prompt and the terminal
+        itself writes no ``cd`` (user input from ``send`` still goes to the shell).  A waiting
+        navigation is resolved with the last known CWD, or the requested path when none is known,
+        not with a CWD reported by the shell, so no caller waits forever.
         The newest navigation target is kept: a hook report that arrives later still enables the
         integration and applies it through the normal guarded path.
         """

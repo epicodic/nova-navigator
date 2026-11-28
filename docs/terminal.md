@@ -138,6 +138,7 @@ It does not detect input typed while the shell is still starting or while a comm
 A panel change then can write the `cd` into that input, so the combined line may run.
 No `_nav_future` is created for this driver, so `set_terminal_directory` returns at once and `run_command` never waits for a plain `cd`.
 The init code sets `stty erase '^H'` so that Backspace erases in shells that do not use the PTY's `^?` default.
+The same fallback init code is used for SSH hosts whose shell gets `FallbackDriver` (remote shells are started through `remotes/ssh.py`), so the erase setting also applies on those remote hosts.
 Uses `printf '%b_'` with octal escapes for cd commands (Midnight Commander technique).
 
 ### Quoting
@@ -321,11 +322,13 @@ When the first OSC 7 arrives, draining ends and the prompt is displayed.
 While startup draining is on, the discarded output is also kept in `_startup_output` (last 64 KiB).
 A timer (`_STARTUP_TIMEOUT`, 5 s) is armed per shell process; it is cancelled on every hook report, restart and `stop()`, and a timer of an older shell is ignored.
 If no hook report arrives in time, `_reveal_startup_output()` shows the buffer and ends draining.
-The terminal is then a plain terminal: `_at_prompt` stays False, nothing is written to the shell, a waiting navigation is resolved with the last known directory (after a restart, the previous shell's) or, when none is known, the requested path, and `run_command()` reports busy.
-The newest navigation target is kept, both one requested before the timeout and one requested after it, except that a request before the timeout equal to the last known directory is not stored.
+The revealed output can include the echoed init code (the setup line that `_start_backend()` wrote); it is shown as it was printed and is not stripped.
+The terminal is then a plain terminal: `_at_prompt` stays False, the terminal itself writes no `cd` to the shell, a waiting navigation is resolved with the last known directory (after a restart, the previous shell's) or, when none is known, the requested path, and `run_command()` reports busy.
+The newest navigation target is kept, both one requested before the timeout and one requested after it, except that before the timeout a request equal to the last known directory, with no other target pending, is not stored.
 No future is created for it and nothing is written; a hook report that arrives later enables the integration and applies the kept target through the normal path (the plain driver's empty-line check, or the line-editing transaction), which does not detect text typed while the shell was still starting.
 Giving up or restarting the shell drops the kept target.
 A hook report that arrives later still enables the integration.
+A restart also discards the output held back for the previous shell, so a shell that exits quickly without a hook report leaves nothing of its output on screen; only the give-up keeps it visible.
 
 A shell that exits within `_EARLY_EXIT_SECONDS` (2 s) without any hook report counts as a quick exit.
 After `_MAX_EARLY_EXITS` (3) quick exits in a row the shell is not restarted (`_give_up()`): its output and a message stay visible, the reader and run task are removed, `send()` is ignored, and `teardown()` reaps the child only if it has already exited when it checks (`WNOHANG`); a child that exits later is not reaped by it.
