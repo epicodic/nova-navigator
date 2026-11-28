@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from nova_navigator.secret_registry import clear_secrets
 from tests._utils.trace import restored_trace_function
 
 # Redirect __pycache__ to avoid polluting the source tree.
@@ -19,3 +20,11 @@ collect_ignore_glob = ["cleanup/*"]
 def _restore_trace_function() -> Generator[None, None, None]:
     with restored_trace_function():
         yield
+
+
+@pytest.fixture(autouse=True)
+def _clear_registered_secrets() -> Generator[None, None, None]:
+    """Keep secrets registered by one test out of the next."""
+    clear_secrets()
+    yield
+    clear_secrets()

@@ -33,6 +33,7 @@ from nova_navigator.remotes.known_hosts import (
 )
 from nova_navigator.remotes.ssh_config import SshConfig
 from nova_navigator.remotes.ssh_route import SshHop
+from nova_navigator.secret_registry import register_secret
 
 from ..filesystem import AtomicWriterLike, Filesystem, FilesystemCapabilities, Stat, StreamReaderLike, StreamWriterLike
 from ..tail_buffer import TailBuffer
@@ -1202,6 +1203,9 @@ class SSHFilesystem(Filesystem):
             SshHopError: A hop failed (named in the message); ``SshConnectTimeoutError`` when it timed out.
             HopAuthenticationError: Authentication failed on a hop.
         """
+        register_secret(password)
+        for _, hop_password in (credentials or {}).values():
+            register_secret(hop_password)
         self.host_key_save_error: OSError | None = None
         self.host_key_save_path: Path | None = None
         # One SFTP session serves all threads, and paramiko reads replies without a lock: a thread that reads another's

@@ -1,6 +1,8 @@
 import re
 from dataclasses import dataclass
 
+from nova_navigator.secret_registry import register_uri_secrets
+
 SCHEME_SEPARATOR = "://"
 PATH_SEPARATOR = "/"
 
@@ -67,6 +69,7 @@ def parse_uri(uri: str) -> ParseResult:
 
     Raises :exc:`ValueError` for syntactically invalid URIs.
     """
+    register_uri_secrets(uri)
     components: list[URIComponent] = []
 
     uri = uri.strip()
