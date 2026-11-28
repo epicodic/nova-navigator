@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import threading
 import time
 import zipfile
 from collections.abc import Callable
@@ -11,9 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from nova_navigator.local_copies.manager import CopyStatus, JobStarter, LocalCopyManager
+from nova_navigator.local_copies.manager import CopyEntry, CopyStatus, JobStarter, LocalCopyManager
 from nova_navigator.scheduler import Job
 from nova_navigator.vfs.filesystem import FilesystemCapabilities, StreamWriterLike
+from nova_navigator.vfs.local_copy import LocalCopy, ProgressCallback
 from nova_navigator.vfs.vpath import VPath
 from nova_widgets import Response
 from tests._utils.local_copy_helpers import SchemeFs, overwrite
@@ -611,3 +613,147 @@ async def test_shutdown_removes_the_files_when_everything_is_synced(tmp_path: Pa
     await manager.shutdown()
 
     assert not (tmp_path / "root").exists()
+
+
+# ---------------------------------------------------------------------------
+# Running writes: writing(), shutdown() waiting for them, and abandon()
+# ---------------------------------------------------------------------------
+
+
+class _BlockedWrite:
+    """Replace a copy's write_back() so it waits until released, then writes for real."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, copy: LocalCopy) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.calls = 0
+        original = copy.write_back
+
+        def write_back(progress: ProgressCallback | None = None) -> None:
+            self.calls += 1
+            self.entered.set()
+            if not self.release.wait(timeout=30):  # a failing test must not keep the worker thread for ever
+                raise OSError("write was never released")
+            original(progress)
+
+        monkeypatch.setattr(copy, "write_back", write_back)
+
+
+async def _blocked_sync(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[LocalCopyManager, CopyEntry, _BlockedWrite, SchemeFs]:
+    fs = SchemeFs({"/d/f.txt": b"old"})
+    manager = await _manager(tmp_path, _Runner())
+    entry = await manager.open(fs.path("/d/f.txt"))
+    assert entry is not None
+    blocked = _BlockedWrite(monkeypatch, entry.copy)
+    entry.copy.path.write_bytes(b"new")
+    await _wait_until(blocked.entered.is_set)
+    return manager, entry, blocked, fs
+
+
+async def _blocked_reopen(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[LocalCopyManager, CopyEntry, _BlockedWrite, asyncio.Task[CopyEntry | None]]:
+    """A reopen of a conflicting copy, answered Overwrite, whose write waits."""
+    fs = SchemeFs({"/d/f.txt": b"old"})
+    manager = await _manager(tmp_path, _Runner([Response.OVERWRITE]))
+    entry = await manager.open(fs.path("/d/f.txt"))
+    assert entry is not None
+    await manager.close(entry)
+    entry.copy.path.write_bytes(b"local edit")
+    overwrite(fs, "/d/f.txt", b"server edit")
+    blocked = _BlockedWrite(monkeypatch, entry.copy)
+    reopen = asyncio.create_task(manager.open(fs.path("/d/f.txt")))
+    await _wait_until(blocked.entered.is_set)
+    return manager, entry, blocked, reopen
+
+
+@pytest.mark.asyncio
+async def test_writing_lists_an_entry_with_a_blocked_sync(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager, entry, blocked, _fs = await _blocked_sync(tmp_path, monkeypatch)
+    try:
+        assert manager.writing() == [entry]
+    finally:
+        blocked.release.set()
+    await _wait_until(lambda: manager.writing() == [])
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_writing_lists_an_entry_with_a_blocked_reopen_overwrite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager, entry, blocked, reopen = await _blocked_reopen(tmp_path, monkeypatch)
+    try:
+        assert manager.writing() == [entry]
+    finally:
+        blocked.release.set()
+    assert await reopen is entry
+    assert manager.writing() == []
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_waits_for_a_reopen_overwrite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager, entry, blocked, reopen = await _blocked_reopen(tmp_path, monkeypatch)
+    shutdown = asyncio.create_task(manager.shutdown(remove_files=False))
+    try:
+        done, _pending = await asyncio.wait({shutdown}, timeout=0.3)
+        assert not done
+    finally:
+        blocked.release.set()
+    await asyncio.wait_for(shutdown, timeout=5)
+
+    assert entry.copy.path.read_bytes() == b"local edit"
+    assert await reopen is None  # the application is quitting, so nothing is opened any more
+    assert entry.detector is None
+
+
+@pytest.mark.asyncio
+async def test_abandon_makes_shutdown_return_at_once_and_keeps_the_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager, entry, blocked, _fs = await _blocked_sync(tmp_path, monkeypatch)
+    view = tmp_path / "root" / "view" / "one"
+    view.mkdir(parents=True)
+    (view / "viewed.txt").write_bytes(b"x")
+    try:
+        manager.abandon()
+        await asyncio.wait_for(manager.shutdown(), timeout=5)
+
+        assert entry.copy.path.read_bytes() == b"new"
+        assert not (tmp_path / "root" / "view").exists()
+        assert manager.writing() == [entry]
+    finally:
+        blocked.release.set()
+    await _wait_until(lambda: manager.writing() == [])
+    assert entry.detector is not None
+    await entry.detector.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_waiting_shutdown_deletes_nothing_after_abandon(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The write succeeds after the user gave up on it, so nothing is unsynced; the copy must stay all the same."""
+    manager, entry, blocked, fs = await _blocked_sync(tmp_path, monkeypatch)
+    shutdown = asyncio.create_task(manager.shutdown(remove_files=True))
+    try:
+        await asyncio.wait({shutdown}, timeout=0.1)
+        manager.abandon()
+    finally:
+        blocked.release.set()
+    await asyncio.wait_for(shutdown, timeout=5)
+
+    assert fs.read(fs.path("/d/f.txt")).read(10) == b"new"
+    assert entry.copy.path.read_bytes() == b"new"
+
+
+@pytest.mark.asyncio
+async def test_abandon_starts_no_further_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager, entry, blocked, _fs = await _blocked_sync(tmp_path, monkeypatch)
+    try:
+        entry.copy.path.write_bytes(b"newer")
+        await _wait_until(lambda: entry.sync_queued)
+        manager.abandon()
+    finally:
+        blocked.release.set()
+    await _wait_until(lambda: manager.writing() == [])
+    await manager.sync_now(entry)
+
+    assert blocked.calls == 1
+    assert entry.has_unsynced_changes
+    assert entry.copy.path.read_bytes() == b"newer"
+    assert entry.detector is not None
+    await entry.detector.stop()

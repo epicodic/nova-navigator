@@ -101,6 +101,14 @@ class LocalCopyManager:
         # very same local file.
         self._archive_mounts: dict[str, ArchiveFilesystem] = {}
         self._shutdown_started = False
+        self._abandoned = False
+        # Reopen jobs by the task running them, so a write of an "Overwrite" answer is known like a sync is.
+        self._reopens: dict[asyncio.Task[None], tuple[CopyEntry, TaskResult]] = {}
+
+    @property
+    def root(self) -> Path:
+        """Directory holding the local copies of this manager."""
+        return self._root
 
     @property
     def entries(self) -> list[CopyEntry]:
@@ -137,11 +145,17 @@ class LocalCopyManager:
     async def _reopen(self, entry: CopyEntry) -> CopyEntry | None:
         result = TaskResult()
         job = Job(f"Open: {entry.copy.source.name}", reopen_copy_task, entry.copy, result)
-        await self._start_job(job)
+        # A task of its own (it takes over this context, so the job can still ask its question), so shutdown() can wait for its write.
+        task = asyncio.ensure_future(self._start_job(job))
+        self._reopens[task] = (entry, result)
+        task.add_done_callback(lambda done: self._reopens.pop(done, None))
+        await task
         if not result.opened or job.state is not Job.State.COMPLETED:
             return None
         entry.status = CopyStatus.READ_ONLY if entry.copy.read_only else CopyStatus.SYNCED
         entry.error = None
+        if self._shutdown_started:
+            return None  # quitting: nothing is watched or opened any more
         if not entry.copy.read_only:
             if entry.detector is None:
                 entry.detector = self._make_detector(entry)
@@ -175,6 +189,8 @@ class LocalCopyManager:
         self._schedule_sync(entry, force=False)
 
     def _schedule_sync(self, entry: CopyEntry, force: bool) -> None:
+        if self._abandoned:
+            return
         if entry.sync_task is not None and not entry.sync_task.done():
             entry.sync_queued = True
             return
@@ -220,6 +236,8 @@ class LocalCopyManager:
                 if job.state is Job.State.COMPLETED:
                     entry.status = CopyStatus.SYNCED
                 break
+            if self._abandoned:
+                break  # the queued edit stays unwritten, so the status stays SYNCING
             entry.sync_queued = False
             force = False
         entry.sync_task = None
@@ -301,6 +319,25 @@ class LocalCopyManager:
         """Entries with changes not safely on the source: by status, or an unsynced writable copy."""
         return [e for e in self._entries.values() if e.has_unsynced_changes or (not e.copy.read_only and e.copy.is_modified())]
 
+    def writing(self) -> list[CopyEntry]:
+        """Entries with a running sync, or a reopen that is writing the copy to its source."""
+        entries = [e for e in self._entries.values() if e.sync_task is not None and not e.sync_task.done()]
+        for task, (entry, result) in self._reopens.items():
+            if result.writing and not task.done() and entry not in entries:
+                entries.append(entry)
+        return entries
+
+    def abandon(self) -> None:
+        """Give up on every running write: keep all local files and start no further write.
+
+        A running write cannot be interrupted and may still finish. From this call on, no
+        :meth:`shutdown` removes the local-copy root, also not one that is already waiting.
+        Only the viewer copies are removed, as with ``shutdown(remove_files=False)``.
+        """
+        self._abandoned = True
+        self._shutdown_started = True
+        shutil.rmtree(self._root / "view", ignore_errors=True)
+
     async def wait_idle(self, max_wait: float) -> None:
         """Test/quit helper: wait for detectors to settle and all sync tasks to finish."""
         await asyncio.sleep(2 * (self._settle_time + self._poll_interval))
@@ -312,7 +349,9 @@ class LocalCopyManager:
             await asyncio.sleep(0.05)
 
     async def shutdown(self, remove_files: bool = True) -> None:
-        """Stop all detectors, await any running syncs, close cached archive mounts, and optionally remove the local-copy root.
+        """Stop all detectors, await any running writes, close cached archive mounts, and optionally remove the local-copy root.
+
+        After :meth:`abandon` nothing is removed.
 
         Viewer copies are removed also when *remove_files* is false: they hold no changes and no later session would list them.
         The files are also kept when any copy is still unsynced, whatever *remove_files* says.
@@ -325,13 +364,17 @@ class LocalCopyManager:
         if self._shutdown_started:
             return
         self._shutdown_started = True
-        for entry in self._entries.values():
+        for entry in list(self._entries.values()):
             if entry.detector is not None:
                 await entry.detector.stop()
                 entry.detector = None
             if entry.sync_task is not None:
                 with contextlib.suppress(Exception):
                     await entry.sync_task
+        while writes := [task for task, (_, result) in self._reopens.items() if result.writing and not task.done()]:
+            await asyncio.wait(writes)  # unlike awaiting the task, a cancelled shutdown does not cancel the write
+        if self._abandoned:
+            return  # checked after the last wait and before any removal
         if remove_files and self.unsynced():
             remove_files = False  # only a synced copy may be deleted without the user asking for it
         self._entries.clear()
