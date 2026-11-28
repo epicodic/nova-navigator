@@ -65,6 +65,7 @@ __all__ = [
 
 
 _PRE_CMD_FROM_NN_IDX = 2  # index of the from_nn flag in a pre_cmd message
+_PRE_CMD_LINE_EDITING_IDX = 3  # index of the optional line_editing flag in a pre_cmd message
 
 
 _MOUSE_TRACKING_MODES: frozenset[str] = frozenset({"1000", "1002", "1003", "1006"})
@@ -435,6 +436,8 @@ class Terminal(ScrollView, can_focus=True):
         self._nav_watchdog: TimerHandle | None = None
         # The precmd hook was re-installed once this shell session.
         self._hook_repaired: bool = False
+        # False while the hook reports that the shell cannot set its line aside.
+        self._shell_edits: bool = True
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -794,7 +797,7 @@ class Terminal(ScrollView, can_focus=True):
         self._nav_target = path
         # Only line-editing shells run the awaitable transaction; a plain shell
         # gets its cd on an empty prompt and nobody waits for it.
-        if self._driver.supports_line_editing and (self._nav_future is None or self._nav_future.done()):
+        if self._edits_lines() and (self._nav_future is None or self._nav_future.done()):
             self._nav_future = asyncio.get_running_loop().create_future()
         if not self._nav_busy and self._at_prompt:
             self._start_nav()
@@ -834,7 +837,7 @@ class Terminal(ScrollView, can_focus=True):
         if not self._started or not self._at_prompt or self._nav_busy or self._run_future is not None:
             raise TerminalBusyError("The terminal is busy")
         has_input = self.has_input()
-        if has_input and not self._driver.supports_line_editing:
+        if has_input and not self._edits_lines():
             raise TerminalBusyError("The terminal line holds typed input")
         future: Future[None] = asyncio.get_running_loop().create_future()
         self._run_future = future
@@ -860,6 +863,10 @@ class Terminal(ScrollView, can_focus=True):
         if not future.done():
             future.set_result(None)
 
+    def _edits_lines(self) -> bool:
+        """Return True if the shell can set its line aside now; otherwise it is treated as a plain shell."""
+        return self._driver.supports_line_editing and self._shell_edits
+
     def _stash_input(self) -> None:
         """Remove typed input from the shell line so it can be restored later."""
         if self._driver.supports_editor_protocol:
@@ -870,11 +877,17 @@ class Terminal(ScrollView, can_focus=True):
     def _prepare_line(self) -> None:
         """Make the line editor take typed text before a write that does not stash input first."""
         sequence = self._driver.prepare_line_sequence()
-        if sequence:
+        if sequence and self._edits_lines():
             self._backend.write(sequence)
 
     def _restore_input(self) -> None:
-        """Put back input removed by ``_stash_input``."""
+        """Put back input removed by ``_stash_input``.
+
+        Nothing is written when line editing was switched off meanwhile: the keys would stay on the
+        line as text.  The shell keeps the saved line for the next restore.
+        """
+        if not self._edits_lines():
+            return
         if self._driver.supports_editor_protocol:
             self._backend.write(RESTORE_SEQUENCE)
         else:
@@ -892,8 +905,11 @@ class Terminal(ScrollView, can_focus=True):
         stash/kill happens at most once per transaction chain; a ``cd`` without
         it is preceded by the driver's ``prepare_line_sequence()``.
         """
-        if not self._driver.supports_line_editing:
+        if not self._edits_lines():
             self._send_plain_cd()
+            # A caller may wait since before the shell reported that it cannot edit lines.
+            if self._cwd is not None:
+                self._resolve_nav_future(self._cwd)
             return
         assert self._nav_target is not None
         if self._nav_target == self._nav_last_sent_target:
@@ -1013,6 +1029,7 @@ class Terminal(ScrollView, can_focus=True):
         self._plain_cd_sent = False
         self._at_prompt = False
         self._hook_repaired = False
+        self._shell_edits = True
         self._input_since_precmd = False
         self._startup_input = False
         self._prompt_snapshot = None
@@ -1162,7 +1179,7 @@ class Terminal(ScrollView, can_focus=True):
     # recv loop
     # ------------------------------------------------------------------
 
-    def _handle_pre_cmd(self, raw: str, from_nn: bool = True) -> None:
+    def _handle_pre_cmd(self, raw: str, from_nn: bool = True, line_editing: bool = True) -> None:
         """Process a precmd notification from Nova Navigator's own shell hook.
 
         Third-party OSC 7 sequences (``from_nn`` False, e.g. oh-my-zsh) are
@@ -1172,12 +1189,15 @@ class Terminal(ScrollView, can_focus=True):
         row means the shell cannot reach it (e.g. the directory was deleted or
         is not accessible), so the transaction gives up rather than resending
         the identical ``cd`` forever.
+        A transaction also ends when the shell reports that it cannot set its line
+        aside (*line_editing* False): no further ``cd`` of it may be written.
         Any other precmd is a user command cycle: it may report a user-initiated
         directory change and then applies a target stored while the shell was busy.
         """
         if not from_nn:
             return
         self._shell_hooked = True
+        self._shell_edits = line_editing
         self._no_integration = False
         self._early_exits = 0
         self._startup_output = None
@@ -1194,10 +1214,10 @@ class Terminal(ScrollView, can_focus=True):
         if self._nav_busy:
             self._cancel_watchdog()
             can_retry = self._nav_same_target_attempts < _NAV_MAX_SAME_TARGET_ATTEMPTS
-            if self._nav_target is not None and cwd != self._nav_target and can_retry:
+            if self._nav_target is not None and cwd != self._nav_target and can_retry and self._edits_lines():
                 self._start_nav()
             else:
-                if self._nav_target is not None and cwd != self._nav_target:
+                if self._nav_target is not None and cwd != self._nav_target and not can_retry:
                     _logger.warning("Navigation to %s did not take effect after %d attempts; giving up", self._nav_target, self._nav_same_target_attempts)
                 self._finish_nav(cwd)
         else:
@@ -1228,7 +1248,8 @@ class Terminal(ScrollView, can_focus=True):
                         self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
                     elif cmd == "pre_cmd":
                         from_nn = bool(message[_PRE_CMD_FROM_NN_IDX]) if len(message) > _PRE_CMD_FROM_NN_IDX else True
-                        self._handle_pre_cmd(str(message[1]), from_nn)
+                        line_editing = bool(message[_PRE_CMD_LINE_EDITING_IDX]) if len(message) > _PRE_CMD_LINE_EDITING_IDX else True
+                        self._handle_pre_cmd(str(message[1]), from_nn, line_editing)
                     elif cmd == "stdout":
                         if not self._draining:
                             self._feed_stdout(str(message[1]))

@@ -51,7 +51,9 @@
 - In zsh vi mode, do not change the panel's folder while a search is pending (Esc, then `/` or `?`).
   It runs the typed line, or the command recalled from the history, possibly changed (for example cut short).
 - zsh lines that come back to the prompt by themselves (`setopt hist_verify`, `push-line`, `print -z`) are run by a change of the panel's folder.
-- In bash with line editing turned off (`set +o emacs` and no vi mode), a change of the panel's folder runs the typed line.
+- In bash with line editing turned off (`set +o emacs` and no vi mode), and in bash older than 5, the shell follows the panels only on an empty command line, as plain shells do.
+  A user menu or other command is refused while text is on the line.
+  Text typed while a command was still running is not noticed there, and a change of the panel's folder runs it.
 - A zsh keymap selected with `zle -K` that is not `main`, `emacs`, `viins` or `vicmd` can make a change of the panel's folder run the typed line.
 - Changing the panel's folder while a line editor command waits for more keys can change or lose the typed line.
   This happens, for example, in the middle of a vi command or search:

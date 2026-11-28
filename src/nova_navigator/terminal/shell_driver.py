@@ -26,6 +26,11 @@ _SAFE_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012
 
 _LINE_CONTINUATION_LIMIT = 250
 
+# The oldest bash major version whose line the terminal sets aside.  An older bash may not run a
+# function bound with bind -x to a multi-byte key, and a stash that does nothing would let a hidden cd
+# run the typed line.  Such a bash is treated like one without line editing.
+_BASH_MIN_EDITING_VERSION = 5
+
 # bash 5.2 can loop forever when the PTY has one row and its width changes, or shrinks to one row,
 # while a typed line is wider than the terminal and the prompt has invisible characters.
 _MIN_PTY_ROWS = 2
@@ -154,15 +159,16 @@ class ShellDriver(ABC):
         """
         return b""
 
-    def _hook_body(self) -> str:
+    def _hook_body(self, panel: str = "") -> str:
         """Return the core of the precmd hook function body.
 
         Emits an OSC 7 sequence reporting the current directory.
         The payload format is ``panel=;file:///path``.  The ``panel=`` prefix
         marks the sequence as originating from Nova Navigator's own hook
         (as opposed to third-party chpwd hooks that emit plain ``file://``).
+        *panel* is ``noedit`` when the shell cannot set its line aside.
         """
-        return "printf '\\033]7;panel=;file://%s\\007' \"$(pwd)\""
+        return f"printf '\\033]7;panel={panel};file://%s\\007' \"$(pwd)\""
 
     @abstractmethod
     def init_code(self) -> str:
@@ -244,11 +250,16 @@ class BashDriver(ShellDriver):
     def init_code(self) -> str:
         """Install the hook and the keys for hidden writes, and turn readline's horizontal scrolling off.
 
+        The hook reports ``noedit`` before a prompt without line editing (``set +o emacs`` and no vi
+        mode) and in a bash older than ``_BASH_MIN_EDITING_VERSION``.
+
         With horizontal scrolling, bash 5.2 can loop forever when the width changes, whatever the
         height.  A bash without line editing only warns about each ``bind``, which is discarded.
         The stash function keeps the line in a variable, not in the kill ring, which stays as it was.
         It appends, so a second stash never overwrites the saved line.
         """
+        editing = f"(( BASH_VERSINFO[0] >= {_BASH_MIN_EDITING_VERSION} )) && [[ -o emacs || -o vi ]]"
+        hook = f"if {editing}; then {self._hook_body()}; else {self._hook_body('noedit')}; fi"
         # An empty macro does nothing: outside vi command mode there is no mode to change.
         return (
             f" bind 'set horizontal-scroll-mode off' 2>/dev/null; "
@@ -260,7 +271,7 @@ class BashDriver(ShellDriver):
             """bind -m $_nn_map -x '"\\e[96~": _nn_stash' 2>/dev/null; """
             """bind -m $_nn_map -x '"\\e[94~": _nn_restore' 2>/dev/null; done; unset _nn_map; """
             """bind -m vi-command '"\\e[95~": vi-insertion-mode' '"\\e[95\\C-u": vi-insertion-mode' 2>/dev/null; """
-            f"HISTCONTROL=\"${{HISTCONTROL:+${{HISTCONTROL}}:}}ignorespace\"; _nn_precmd() {{ {self._hook_body()}; }}; PROMPT_COMMAND=${{PROMPT_COMMAND:+${{PROMPT_COMMAND}}$'\\n'}}_nn_precmd\n"
+            f"HISTCONTROL=\"${{HISTCONTROL:+${{HISTCONTROL}}:}}ignorespace\"; _nn_precmd() {{ {hook}; }}; PROMPT_COMMAND=${{PROMPT_COMMAND:+${{PROMPT_COMMAND}}$'\\n'}}_nn_precmd\n"
         )
 
     def quote(self, arg: str) -> str:
@@ -272,7 +283,8 @@ class BashDriver(ShellDriver):
     def kill_line_sequence(self) -> bytes:
         """Send the insert mode key and then the private stash key.
 
-        Without line editing (``set +o emacs``) this does not remove the typed line.
+        Without line editing (``set +o emacs``) this does not remove the typed line, so the terminal
+        does not send it while the hook reports ``noedit``.
         """
         return _INSERT_MODE_SEQUENCE + _LINE_STASH_SEQUENCE
 

@@ -79,8 +79,11 @@ The shell's precmd hook (installed by `ShellDriver.init_code()`) emits:
 \033]7;panel=;file:///current/path\007
 ```
 
+bash emits `panel=noedit;` instead when it cannot set its line aside (see [bash without line editing](#bash-without-line-editing)).
+
 The `panel=` prefix distinguishes Nova Navigator's own hook from third-party hooks (e.g. oh-my-zsh) that emit plain `file://` OSC 7 sequences.
 The inherited `PtyBackend._process_chunk()` method scans stdout for OSC sequences, strips them, and posts `["pre_cmd", path, from_nn]` messages.
+A `noedit` report adds `False` as a fourth field.
 
 ### LocalPtyBackend
 
@@ -515,11 +518,25 @@ Standard keys are not usable here: in vi insert mode Ctrl+E inserts itself (and 
 Every hidden write starts with a sequence that leaves vi command mode: a `cd` with or without a stash, the line of `run_command()`, the restore, and the setup line the watchdog sends again.
 The shell is then in vi insert mode, also when the user was in vi command mode before.
 
-bash without line editing (`set +o emacs` with no vi mode) reads all of these as plain input.
-The sequence of `prepare_line_sequence()` ends in Ctrl+U for this case: the terminal's line discipline then erases it, so a `cd` or `run_command()` on an empty line works.
-readline takes the whole sequence as one key.
-It relies on Ctrl+U being the terminal's kill character.
+In bash, the sequence of `prepare_line_sequence()` ends in Ctrl+U, and readline takes the whole sequence as one key.
 The stash sends no Ctrl+U, because a pending readline search or vi command would take it as editing (see [Known limits](#known-limits-of-hidden-writes)).
+
+### bash without line editing
+
+bash without line editing (`set +o emacs` with no vi mode) reads all of these sequences as plain input, and nothing can set its line aside.
+Its precmd hook therefore reports `noedit` before every prompt where this is so, also after editing was switched off at the prompt.
+A bash older than version 5 always reports it, because such a bash may not run the functions behind the private keys.
+
+While the last report was `noedit`, the terminal treats the shell like a plain shell:
+
+- no stash, restore or other key sequence is written;
+- a `cd` is written only onto a line that looks empty, otherwise the target waits for the next precmd;
+- `run_command()` reports busy while the line holds typed input;
+- `set_terminal_directory` returns at once.
+
+A navigation that is under way when the report arrives ends there.
+A line set aside before the report stays in the shell's variable and is put back by the first restore after editing is on again, in front of what the line then holds.
+Like any plain shell, it does not detect input typed while a command was still running.
 
 The stash clears the whole buffer, which holds several lines after a multi-line command was recalled from the history.
 The restored text is the same, with the cursor at its end.
@@ -559,8 +576,8 @@ What also remains:
   The terminal still takes the entered command as running: it writes no `cd` while the line is there, and the line is not run.
   The panel's folder is followed after you enter the line, or cancel it with Ctrl+C.
   `shopt -s histreedit` behaves the same way after a failed history expansion.
-- bash without line editing: a panel change runs the typed line, with the stash keys and the `cd` appended to it as arguments.
-  The restore then leaves its key sequences on the next line as text.
+- bash without line editing (see [above](#bash-without-line-editing)): a panel change can run input that was typed while a command was still running.
+  With `stty -echo` typed input is invisible to the terminal, and a panel change runs it.
 - A zsh keymap selected with `zle -K` that is none of `main`, `emacs`, `viins` and `vicmd` has no private bindings, and a panel change can run the typed line.
 - An editor opened from the line (bash vi `v`, Ctrl+X Ctrl+E) gets the hidden writes as its input, because no precmd or Enter tells the terminal that the prompt is gone.
 - In bash, removing the private bindings (`bind -r`) makes the stash do nothing, and the typed line can run with the `cd`.

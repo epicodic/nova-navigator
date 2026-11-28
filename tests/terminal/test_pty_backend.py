@@ -650,3 +650,18 @@ def test_teardown_lets_a_slow_exit_finish(tmp_path: Path, monkeypatch: pytest.Mo
         backend.teardown()
         assert _is_reaped_within(pid, 8)
         assert (tmp_path / "saved").exists(), "the shell was killed before it had finished"
+
+
+@pytest.mark.asyncio
+async def test_process_chunk_osc7_of_a_shell_without_line_editing_marks_the_message() -> None:
+    """OSC 7 with panel=noedit;file:///path posts ["pre_cmd", "/path", True, False]."""
+    backend = LocalPtyBackend.__new__(LocalPtyBackend)
+    backend._osc_buf = ""
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[list[object]] = asyncio.Queue()
+
+    backend._process_chunk(b"\033]7;panel=noedit;file:///home/user\007", loop, queue)
+    await asyncio.sleep(0)  # let call_soon_threadsafe callbacks run
+
+    assert queue.get_nowait() == ["pre_cmd", "/home/user", True, False]
+    assert queue.empty()

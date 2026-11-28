@@ -9,11 +9,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator
-from pathlib import Path
+from pathlib import Path, PurePath
 
 import pytest
 
+from nova_navigator.commands import TerminalBusyError
+from nova_navigator.terminal import shell_driver
+from nova_navigator.terminal.shell_driver import BashDriver
 from nova_navigator.terminal.terminal import Terminal
+from tests.terminal.test_terminal import FakePtyBackend, TerminalTestApp, _start_recv_only, _stop_recv_only
 from tests.terminal.test_terminal_has_input import _add_to_history, _real_shell, _send, _wait_until, home
 
 __all__ = ["home"]  # a fixture used by the tests below
@@ -246,6 +250,129 @@ async def test_cd_on_an_empty_line_works_without_bash_line_editing(home: Path) -
         assert terminal.cwd == home
         # Nothing of the hidden writes was run as a command.
         assert "command not found" not in "".join(terminal._screen.display)
+
+
+async def _assert_followed_only_after_enter(terminal: Terminal, home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The typed "touch EXECUTED" stays unrun and alone on the line until the user enters it."""
+    written: list[bytes] = []
+    write = terminal._backend.write
+
+    def record(data: bytes) -> None:
+        written.append(data)
+        write(data)
+
+    monkeypatch.setattr(terminal._backend, "write", record)
+    await _send(terminal, "touch EXECUTED")
+    await asyncio.wait_for(terminal.set_terminal_directory(home / "sub"), timeout=10)
+    await asyncio.sleep(0.5)
+    assert _executed(home) == []
+    assert written == [b"touch EXECUTED"]
+    assert terminal.cwd == home
+    with pytest.raises(TerminalBusyError):
+        await terminal.run_command("touch RAN")
+    await _send(terminal, "\r")
+    await _wait_until(lambda: terminal.cwd == home / "sub", "the cd after Enter")
+    await asyncio.sleep(0.5)
+    # Exactly the typed command ran, where it was typed, with nothing appended to it.
+    assert _executed(home) == ["EXECUTED"]
+    assert (home / "EXECUTED").exists()
+    assert sorted(path.name for path in home.glob("*[~[]*")) == []
+    screen = "".join(terminal._screen.display)
+    assert "~" not in screen
+    assert "command not found" not in screen
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("mode", "switch"), [("emacs", "set +o emacs"), ("vi-insert", "set +o vi")])
+@pytest.mark.parametrize("when", ["rc", "prompt"])
+async def test_cd_runs_nothing_typed_without_bash_line_editing(home: Path, monkeypatch: pytest.MonkeyPatch, when: str, mode: str, switch: str) -> None:
+    async with _editing_shell(home, "bash", mode, switch if when == "rc" else "") as terminal:
+        if when == "prompt":
+            await _send(terminal, f"{switch}\r")
+        await _assert_followed_only_after_enter(terminal, home, monkeypatch)
+
+
+@pytest.mark.asyncio
+async def test_cd_runs_nothing_typed_with_a_bash_older_than_the_minimum(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # An old bash cannot be run here: the installed one is told that it is older than the minimum.
+    monkeypatch.setattr(shell_driver, "_BASH_MIN_EDITING_VERSION", 99, raising=False)
+    async with _editing_shell(home, "bash", "emacs") as terminal:
+        await _assert_followed_only_after_enter(terminal, home, monkeypatch)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("switch", ["rc", "prompt"])
+async def test_bash_line_editing_switched_on_again_keeps_the_line(home: Path, switch: str) -> None:
+    async with _editing_shell(home, "bash", "emacs", _NO_EDITING if switch == "rc" else "") as terminal:
+        if switch == "prompt":
+            await _send(terminal, f"{_NO_EDITING}\r")
+        await _send(terminal, "set -o emacs\r")
+        await _send(terminal, "touch EXECUTED")
+        await _change_directory(terminal, home)
+        await _assert_line_survives(terminal, home, "touch EXECUTED")
+
+
+@pytest.mark.asyncio
+async def test_a_command_that_switches_bash_line_editing_off_gets_no_restore_keys(home: Path) -> None:
+    async with _editing_shell(home, "bash", "emacs") as terminal:
+        await _send(terminal, "touch EXECUTED")
+        await asyncio.wait_for(terminal.run_command(_NO_EDITING), timeout=5)
+        await asyncio.sleep(0.5)
+        assert _executed(home) == []
+        assert "~" not in "".join(terminal._screen.display)
+        # The line set aside comes back with the first restore after editing is on again,
+        # in front of what was typed meanwhile, and nothing of it is lost.
+        await _send(terminal, "set -o emacs\r")
+        await _send(terminal, "echo ")
+        await _change_directory(terminal, home)
+        assert _executed(home) == []
+        assert await _buffer(terminal, home) == "touch EXECUTEDecho "
+
+
+_NO_EDITING_REPORT = False  # the fourth field of a pre_cmd message
+
+
+@pytest.mark.asyncio
+async def test_a_navigation_requested_before_a_shell_without_editing_reported_does_not_hang() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/bash", backend=backend, driver=BashDriver())
+    async with TerminalTestApp(terminal).run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._started = True
+            navigation = asyncio.ensure_future(terminal.set_terminal_directory(PurePath("/b")))
+            await asyncio.sleep(0)
+            await recv_q.put(["pre_cmd", "/a", True, _NO_EDITING_REPORT])
+            assert await asyncio.wait_for(navigation, timeout=2) == PurePath("/a")
+            assert backend.writes == [(" " + BashDriver().cd_command("/b") + "\n").encode()]
+        finally:
+            await _stop_recv_only(terminal)
+
+
+@pytest.mark.asyncio
+async def test_a_navigation_ends_when_the_shell_stops_editing_during_it() -> None:
+    backend = FakePtyBackend()
+    terminal = Terminal("/bin/bash", backend=backend, driver=BashDriver())
+    async with TerminalTestApp(terminal).run_test() as pilot:
+        await pilot.pause()
+        recv_q = await _start_recv_only(terminal)
+        try:
+            terminal._started = True
+            terminal._at_prompt = True
+            terminal._cwd = PurePath("/a")
+            terminal._note_user_input("l")
+            navigation = asyncio.ensure_future(terminal.set_terminal_directory(PurePath("/b")))
+            await asyncio.sleep(0)
+            writes = len(backend.writes)
+            await recv_q.put(["pre_cmd", "/elsewhere", True, _NO_EDITING_REPORT])
+            assert await asyncio.wait_for(navigation, timeout=2) == PurePath("/elsewhere")
+            assert backend.writes[writes:] == []
+            assert terminal._nav_busy is False
+            assert terminal._draining is False
+        finally:
+            terminal._cancel_watchdog()
+            await _stop_recv_only(terminal)
 
 
 @pytest.mark.asyncio
