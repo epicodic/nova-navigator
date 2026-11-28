@@ -36,9 +36,9 @@ STASH_SEQUENCE = b"\x1b[98~"
 RESTORE_SEQUENCE = b"\x1b[97~"
 
 # Private, unassigned CSI sequences that the init code of ZshDriver and BashDriver
-# binds in the emacs, vi insert and vi command keymaps.  The terminal writes only
-# these (and a space) to edit the line, so neither the editing mode nor the user's
-# own key bindings change what a hidden write does.
+# binds in the emacs, vi insert and vi command keymaps (zsh: also in the main one).
+# The terminal writes only these (and a space) to edit the line, so neither the
+# editing mode nor the user's own key bindings change what a hidden write does.
 #
 # Switch to a mode that takes typed text; does nothing outside vi command mode.
 _INSERT_MODE_SEQUENCE = b"\x1b[95~"
@@ -46,6 +46,11 @@ _INSERT_MODE_SEQUENCE = b"\x1b[95~"
 _ZSH_STASH_SEQUENCE = b"\x1b[96~"
 _ZSH_RESTORE_SEQUENCE = b"\x1b[94~"
 # bash: readline functions, bound in the emacs and vi insert keymaps.
+# Without line editing (set +o emacs) all of them stay plain input.  The one written alone, before a
+# write that stashes nothing, therefore ends in Ctrl+U: the line discipline then erases it, so that the
+# cd on an empty line works.  readline takes it as one key and does what _INSERT_MODE_SEQUENCE does.
+# The stash must not send Ctrl+U: a pending readline search or vi command would take it as editing.
+_BASH_PREPARE_SEQUENCE = b"\x1b[95\x15"
 _BASH_END_OF_LINE_SEQUENCE = b"\x1b[91~"  # end-of-line
 _BASH_KILL_SEQUENCE = b"\x1b[92~"  # unix-line-discard
 _BASH_YANK_SEQUENCE = b"\x1b[93~"  # yank
@@ -199,6 +204,7 @@ class ZshDriver(ShellDriver):
 
         The hook binds the keys before every prompt, so they survive ``bindkey -d``:
         an unbound stash key would leave the typed line to be run with the ``cd``.
+        It also binds them in ``main``, which can be a keymap of the user's own.
         The stash widget keeps the buffer in a variable, not in zsh's kill
         buffer: ``kill-buffer`` appends to the user's previous kill, so the
         restore could add text, and the user's kill ring stays as it was.
@@ -209,7 +215,7 @@ class ZshDriver(ShellDriver):
             "_nn_stash() { _nn_insert; typeset -g _nn_line=$BUFFER; BUFFER= }; "
             "_nn_restore() { _nn_insert; LBUFFER+=$_nn_line }; "
             "zle -N _nn_insert; zle -N _nn_stash; zle -N _nn_restore; "
-            "_nn_bind() { local map; for map in emacs viins vicmd; do bindkey -M $map "
+            "_nn_bind() { local map; for map in main emacs viins vicmd; do bindkey -M $map "
             "$'\\e[95~' _nn_insert $'\\e[96~' _nn_stash $'\\e[94~' _nn_restore; done }; "
             f"_nn_precmd() {{ {self._hook_body()}; _nn_bind }}; precmd_functions+=(_nn_precmd)\n"
         )
@@ -244,15 +250,15 @@ class BashDriver(ShellDriver):
         """Install the hook and the keys for hidden writes, and turn readline's horizontal scrolling off.
 
         With horizontal scrolling, bash 5.2 can loop forever when the width changes, whatever the
-        height.  A bash without line editing only reports the ``bind`` as unusable, which is discarded.
+        height.  A bash without line editing only warns about each ``bind``, which is discarded.
         """
         # An empty macro does nothing: outside vi command mode there is no mode to change.
         return (
             f" bind 'set horizontal-scroll-mode off' 2>/dev/null; "
             "for _nn_map in emacs vi-insert; do bind -m $_nn_map "
-            """'"\\e[95~": ""' '"\\e[91~": end-of-line' '"\\e[92~": unix-line-discard' """
+            """'"\\e[95~": ""' '"\\e[95\\C-u": ""' '"\\e[91~": end-of-line' '"\\e[92~": unix-line-discard' """
             """'"\\e[93~": yank' '"\\e[94~": backward-delete-char' 2>/dev/null; done; unset _nn_map; """
-            """bind -m vi-command '"\\e[95~": vi-insertion-mode' 2>/dev/null; """
+            """bind -m vi-command '"\\e[95~": vi-insertion-mode' '"\\e[95\\C-u": vi-insertion-mode' 2>/dev/null; """
             f"HISTCONTROL=\"${{HISTCONTROL:+${{HISTCONTROL}}:}}ignorespace\"; _nn_precmd() {{ {self._hook_body()}; }}; PROMPT_COMMAND=${{PROMPT_COMMAND:+${{PROMPT_COMMAND}}$'\\n'}}_nn_precmd\n"
         )
 
@@ -260,7 +266,7 @@ class BashDriver(ShellDriver):
         return _ansi_c_quote(arg)
 
     def prepare_line_sequence(self) -> bytes:
-        return _INSERT_MODE_SEQUENCE
+        return _BASH_PREPARE_SEQUENCE
 
     def kill_line_sequence(self) -> bytes:
         """Move to the end of the buffer, type a space, and kill back to the start.
@@ -269,6 +275,7 @@ class BashDriver(ShellDriver):
         space makes sure the kill is never empty: an empty kill leaves the kill
         ring untouched, so a later restore would yank back stale text.  Being
         killed last, it is also restored last, and ``yank_sequence`` deletes it.
+        Without line editing (``set +o emacs``) this does not remove the typed line.
         """
         return _INSERT_MODE_SEQUENCE + _BASH_END_OF_LINE_SEQUENCE + b" " + _BASH_KILL_SEQUENCE
 

@@ -199,3 +199,47 @@ async def test_cd_waits_while_a_command_continues_on_the_next_line(home: Path, s
         await _send(terminal, finish)
         await _wait_until(lambda: terminal.cwd == home / "sub", "the cd after the command")
         assert (home / "DONE").exists()
+
+
+# A main keymap of the user's own, instead of emacs or viins.  The copy of .safe has none of our keys.
+_OWN_ZSH_KEYMAP = "bindkey -N mine .safe; bindkey -A mine main"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("when", ["rc", "later"])
+async def test_cd_runs_nothing_typed_with_an_own_zsh_main_keymap(home: Path, when: str) -> None:
+    extra = "bindkey -N mine emacs; bindkey -A mine main" if when == "rc" else ""
+    async with _editing_shell(home, "zsh", "emacs", extra) as terminal:
+        if when == "later":
+            await asyncio.wait_for(terminal.run_command(_OWN_ZSH_KEYMAP), timeout=5)
+            await asyncio.sleep(0.3)
+        await _send(terminal, "touch EXECUTED; echo ")
+        await _change_directory(terminal, home)
+        assert _executed(home) == []
+        # The restored line is the typed one: running it now creates exactly that file.
+        await _send(terminal, "\r")
+        await _wait_until(lambda: _executed(home) == ["EXECUTED"], "the restored line to run")
+        assert "4~" not in "".join(terminal._screen.display)
+
+
+# bash without line editing: the line is edited by the PTY's line discipline alone.
+_NO_EDITING = "set +o emacs"
+
+
+@pytest.mark.asyncio
+async def test_cd_on_an_empty_line_works_without_bash_line_editing(home: Path) -> None:
+    async with _editing_shell(home, "bash", "emacs", _NO_EDITING) as terminal:
+        await _change_directory(terminal, home)
+        await asyncio.wait_for(terminal.set_terminal_directory(home), timeout=10)
+        await asyncio.sleep(0.5)
+        assert terminal.cwd == home
+        # Nothing of the hidden writes was run as a command.
+        assert "command not found" not in "".join(terminal._screen.display)
+
+
+@pytest.mark.asyncio
+async def test_run_command_on_an_empty_line_works_without_bash_line_editing(home: Path) -> None:
+    async with _editing_shell(home, "bash", "emacs", _NO_EDITING) as terminal:
+        await asyncio.wait_for(terminal.run_command("touch RAN"), timeout=5)
+        await asyncio.sleep(0.5)
+        assert (home / "RAN").exists()
