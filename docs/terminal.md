@@ -353,6 +353,7 @@ The kept target is applied at the next precmd, also when the entered command cha
 Until that Enter the state stays, even if the early input already ended with Enter (for example an answer to a question in an rc file) or the line was cleared with Ctrl+U, or with Ctrl+C after the first report: panel changes are not followed, and one Enter, also on an empty line, resumes them.
 Ctrl+C pressed before the shell is ready can discard the setup line that installs the hooks.
 No report then arrives, Enter does not help, and the shell does not follow the panels until it is restarted (a local shell restarts after `exit`).
+Restart Nova Navigator to recover, for SSH terminals too: an SSH shell does not restart after `exit`.
 A restart of the shell clears the flag.
 
 ---
@@ -390,6 +391,11 @@ After a navigation that restored typed text, the flag is set and the snapshot is
 The only misjudgement is "typed, deleted everything, and the prompt repainted asynchronously", which yields `True`; Enter then executes an empty line, which is harmless.
 
 The mechanism is identical for zsh, bash, local, and SSH terminals.
+
+**Known limitation.** With bash or zsh, when the shell prompt is about as wide as the terminal or wider, and the terminal is one row high, typing text and then deleting it can leave `has_input()` True on the empty line.
+The line is then treated as occupied, so one Enter on a file panel goes to the terminal instead of navigating.
+That Enter clears the state, and the next Enter navigates.
+The screen cannot tell an empty line from one with typed text in this case, so no safe fix based on the screen is known.
 
 ---
 

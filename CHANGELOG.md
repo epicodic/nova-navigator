@@ -137,6 +137,12 @@
 - Crash reports may hide more than necessary.
 - Passwords written into a URI in `remotes.toml` or `bookmarks.toml` stay on disk.
 
+#### Terminal
+
+- With bash or zsh, when the shell prompt is about as wide as the terminal or wider and the terminal is one row high, typing text and then deleting it can leave Nova Navigator treating the line as still occupied.
+  One Enter on a file panel is then sent to the terminal instead of navigating.
+  That Enter clears the state, and the next Enter navigates.
+
 #### Other
 
 - Text typed while a command is still running is not detected, even when it was already entered, so a later panel change can write its `cd` into that text and the combined line may run.
