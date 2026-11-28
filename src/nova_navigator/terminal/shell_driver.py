@@ -209,15 +209,17 @@ class ZshDriver(ShellDriver):
         Both append to what is saved already.  Running the init code again
         keeps the saved text.
         The init line is parsed under the user's options, so it uses no pattern
-        syntax that an option such as ``sh_glob`` changes.
+        syntax that an option such as ``sh_glob`` changes.  ``read`` and ``print``
+        are named as builtins, so that a function or alias of the user's does not
+        take their place and lose saved lines.
         """
         return (
             " setopt HIST_IGNORE_SPACE; "
             "_nn_insert() { REGION_ACTIVE=0; [[ $KEYMAP == main || $KEYMAP == emacs || $KEYMAP == viins ]] || zle -K main }; "
             "_nn_stash() { _nn_insert; emulate -L zsh; local x; _nn_line+=$BUFFER; BUFFER=; "
-            'while IFS= read -rz x; do _nn_stack+=("$x"); done }; '
+            'while IFS= builtin read -rz x; do _nn_stack+=("$x"); done }; '
             "_nn_restore() { _nn_insert; emulate -L zsh; local i; "
-            'for ((i=$#_nn_stack; i>0; i--)); do print -rz -- "$_nn_stack[i]"; done; _nn_stack=(); '
+            'for ((i=$#_nn_stack; i>0; i--)); do builtin print -rz -- "$_nn_stack[i]"; done; _nn_stack=(); '
             "LBUFFER+=$_nn_line; _nn_line= }; "
             "typeset -ga _nn_stack; : ${_nn_line=}; "
             "zle -N _nn_insert; zle -N _nn_stash; zle -N _nn_restore; "

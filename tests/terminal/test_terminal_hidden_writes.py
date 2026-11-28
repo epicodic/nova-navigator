@@ -483,6 +483,18 @@ async def test_cd_keeps_the_zsh_buffer_stack_with_unusual_options(home: Path, op
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("override", ["alias read=false print=true", "read() { false }; print() { true }"], ids=["aliases", "functions"])
+async def test_cd_keeps_the_zsh_buffer_stack_when_read_and_print_are_overridden(home: Path, override: str) -> None:
+    async with _editing_shell(home, "zsh", "emacs", override) as terminal:
+        # The buffer dump of the helper uses print too, so it names the builtin from here on.
+        await asyncio.wait_for(terminal.run_command('_dump() { builtin print -rn -- "$BUFFER" >"$HOME/buffer" }'), timeout=5)
+        await asyncio.sleep(0.3)
+        await _send(terminal, "builtin print -z 'touch EXECUTED1'; builtin print -z 'touch EXECUTED2'\r")
+        await _change_directory(terminal, home)
+        await _assert_put_back_lines_survive(terminal, home, "two-entries")
+
+
+@pytest.mark.asyncio
 async def test_cd_waits_while_bash_shows_an_expanded_line_for_review(home: Path) -> None:
     async with _editing_shell(home, "bash", "emacs", "shopt -s histverify") as terminal:
         await _add_to_history(terminal, "bash", "touch EXECUTED")
