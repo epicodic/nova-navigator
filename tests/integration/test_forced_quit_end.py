@@ -52,20 +52,34 @@ def test_a_second_thread_cannot_end_the_process_while_the_report_is_being_printe
     monkeypatch.setattr(debug_analytics, "cleanup", _slow_cleanup)
     first = threading.Thread(target=app._end_process, daemon=True)
     second = threading.Thread(target=app._end_process, daemon=True)
-    first.start()
-    assert busy.wait(_GUARD)
+    # Both threads must be over before monkeypatch gives back the real os._exit, also when an assertion fails:
+    # a thread still in _end_process would then end pytest itself, with the status of a success.
+    try:
+        first.start()
+        assert busy.wait(_GUARD)
 
-    second.start()
-    second.join(0.3)
+        second.start()
+        second.join(0.3)
 
-    assert second.is_alive()
-    assert exits == []
-    release.set()
-    first.join(_GUARD)
-    assert exits == [0]
-    assert printed.getvalue().count(_REPORT) == 1
-    app._end_lock.release()  # in a real process the exit above ends the waiting thread
-    second.join(_GUARD)
+        assert second.is_alive()
+        assert exits == []
+        release.set()
+        first.join(_GUARD)
+        assert exits == [0]
+        assert printed.getvalue().count(_REPORT) == 1
+    finally:
+        release.set()
+        _join(first)
+        if app._end_lock.locked():
+            app._end_lock.release()  # in a real process the exit above ends the waiting thread
+        _join(second)
+        assert not first.is_alive()
+        assert not second.is_alive()
+
+
+def _join(thread: threading.Thread) -> None:
+    if thread.ident is not None:  # started
+        thread.join(_GUARD)
 
 
 class _ShellReaper:
