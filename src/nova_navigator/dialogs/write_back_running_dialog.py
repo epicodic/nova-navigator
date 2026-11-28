@@ -46,7 +46,8 @@ class WriteBackRunningDialog(Dialog):
     def compose_content(self) -> ComposeResult:
         # markup=False: a file or directory name may contain brackets
         yield Label(f"Still writing back: {', '.join(self._names)}", markup=False)
-        yield Label("Quitting now stops it, and any other running file operation. The source may not contain your changes.")
+        yield Label("Quitting now stops it, and any other file operation running in Nova Navigator. Background commands are not stopped.")
+        yield Label("The source may not contain your changes.")
         yield Label(f"Your local copies stay in {self._directory}", markup=False)
 
     def withdraw(self) -> None:

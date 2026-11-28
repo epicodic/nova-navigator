@@ -125,8 +125,9 @@
 - A zip directory without its own entry may show no date.
 - Archives do not keep empty directories.
 - Quitting does not wait for a file that F5, F6 or the terminal's `cp` is writing into an archive on SSH or Azure.
-  With no unsynced local copy it removes the local working copy of the archive, so the archive may not get the file, and the process stays until the operation ends.
-  This was seen in the code and not tried.
+  Tried with F5 and F6: with no unsynced local copy, Ctrl+Q asks nothing and removes the local working copy of the archive while the write is running, and the process waits for the write to end, forever if it hangs.
+  In the cases tried the source file was kept; a move can leave the file in both places.
+  The terminal's `cp` was not tried for this.
 - `.jar`, `.war`, `.ear`, `.apk`, `.whl` and single compressed files are read-only.
 - Writing into a large archive rebuilds it for every file.
   Opening a large `.gz`, `.bz2` or `.xz` blocks while it is decompressed.
@@ -143,6 +144,10 @@
 - "Quit and keep files" while a file is still downloading for viewing can make that download fail.
 - A hung write-back of a local copy is not detected: quitting waits for it until you press the quit key again and choose "Quit and keep files".
   The source may then lack your changes, and a temporary `.nn-tmp` file can stay beside it.
+  That quit stops the file operations running inside Nova Navigator.
+  Background commands are not stopped; one that writes output after a quit can be ended by that.
+- A later Nova Navigator that gets the same process ID as an earlier one reuses the directory of its kept local copies.
+  It can overwrite a kept copy when it opens the same source, and removes the directory at its normal quit.
 - If a write-back over SSH stalls, an action that needs the same connection can freeze the whole application, and then no key works.
   This was seen in the code and not tried.
 - Cancelling F4 just after the download may leave a local copy behind.
