@@ -2906,6 +2906,9 @@ NovaTextArea {
         return Text(line_string, end="", no_wrap=True)
 
     def render_lines(self, crop: Region) -> list[Strip]:
+        # A screen update between a removal and the next layout still renders the widget; its component styles are gone by then.
+        if self.parent is None:
+            return [Strip.blank(crop.width)] * crop.height
         theme = self._theme
         if theme:
             theme.apply_css(self)
