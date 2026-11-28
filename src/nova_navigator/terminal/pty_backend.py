@@ -26,15 +26,20 @@ import logging
 import os
 import pty
 import re
+import select
 import shlex
 import signal
 import struct
 import termios
+import threading
 from abc import ABC, abstractmethod
 
 _OSC_COMPLETE = re.compile(r"\033\](\d+);(.*?)(?:\007|\033\\)", re.DOTALL)
 _OSC_PARTIAL = re.compile(r"\033\].*$", re.DOTALL)
 _OSC_CWD = 7
+
+_HANGUP_GRACE = 1.0  # seconds a shell may take to end after its terminal is closed
+_KILL_WAIT = 1.0  # seconds to wait for a killed shell to become reapable
 
 _logger = logging.getLogger(__name__)
 
@@ -175,6 +180,30 @@ class PtyBackend(ABC):
         """
 
 
+def _exits_within(pidfd: int, seconds: float) -> bool:
+    return bool(select.select([pidfd], [], [], seconds)[0])
+
+
+def _end_child(pid: int, pidfd: int) -> None:
+    """Reap the child *pid*, killing it first when it does not end by itself; closes *pidfd*.
+
+    The signal goes through *pidfd*, so it can never reach another process that got the same pid.
+    Only the child is signalled, not its jobs.
+    """
+    try:
+        if not _exits_within(pidfd, _HANGUP_GRACE):
+            with contextlib.suppress(ProcessLookupError):
+                signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+            # A process in uninterruptible sleep does not end yet; do not hold up the application for it.
+            if not _exits_within(pidfd, _KILL_WAIT):
+                _logger.warning("shell %d did not end after SIGKILL", pid)
+                return
+        with contextlib.suppress(ChildProcessError):
+            os.waitpid(pid, 0)
+    finally:
+        os.close(pidfd)
+
+
 class LocalPtyBackend(PtyBackend):
     """PTY backend for local shell processes.
 
@@ -267,7 +296,12 @@ class LocalPtyBackend(PtyBackend):
                 self._loop.remove_reader(self._p_out)
 
     def teardown(self) -> None:
-        """Hang up the terminal and signal the shell to end, without waiting for it."""
+        """Hang up the terminal and signal the shell to end, without waiting for it.
+
+        A shell that is still alive afterwards is watched by a thread, which reaps it and, after
+        ``_HANGUP_GRACE`` seconds, kills it.  The thread is not a daemon, so the interpreter does
+        not exit before the shell is gone.
+        """
         # The reader must go first: the loop cannot remove it once the file is closed.
         self.detach_readers()
         if self._pid > 0:
@@ -279,8 +313,11 @@ class LocalPtyBackend(PtyBackend):
             self._master_fd = -1
         if self._pid <= 0:
             return
-        # Reap the child if it has already exited, so it does not stay a zombie.  Once reaped
-        # the pid may be reused by another process, so it is forgotten and never signalled again.
+        # The child is reaped here or by the thread.  Once reaped the pid may be reused by another
+        # process, so it is forgotten and never signalled again.
+        pid, self._pid = self._pid, -1
         with contextlib.suppress(ChildProcessError, OSError):
-            if os.waitpid(self._pid, os.WNOHANG)[0] == self._pid:
-                self._pid = -1
+            if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                return
+            # The child is not reaped yet, so the pidfd is certain to refer to it.
+            threading.Thread(target=_end_child, args=(pid, os.pidfd_open(pid)), name=f"end-shell-{pid}").start()

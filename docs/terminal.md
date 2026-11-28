@@ -107,6 +107,7 @@ The `resume()` method is a no-op since SIGSTOP is not used over SSH.
 The full lifecycle is: `open()` → `attach_readers()` → normal operation → `detach_readers()` → `teardown()`.
 `teardown()` sends `SIGTERM` (local) or closes the channel (SSH), then closes file objects.
 It is safe to call before `open()` and more than once.
+`SshPtyBackend` cannot signal the remote shell: closing the channel is all it does.
 
 The local `teardown()` removes its own reader before it closes the master, because the event loop cannot remove the reader of a closed file.
 Interactive shells ignore `SIGTERM`; they end because closing the master hangs up the terminal (`SIGHUP`).
@@ -115,8 +116,15 @@ The kernel sends `SIGHUP` to the foreground process group, and bash and zsh, at 
 Passing it on is not guaranteed: the shell can read the end of its input before it acts on the signal, and then ends without hanging up its jobs.
 A job started with `nohup`, removed from the job table with `disown`, or put into its own session with `setsid` keeps running.
 After `teardown()`, `write()` and `resize()` do nothing.
-`teardown()` does not wait for the shell to exit, so a shell that is still alive at that moment is not reaped by it.
-A local child that has already exited is reaped with `WNOHANG`; after that its pid is forgotten (`-1`), so a later `teardown()` never signals a reused pid.
+
+`teardown()` does not wait for the shell to exit.
+A local child that has already exited is reaped with `WNOHANG`.
+For one that is still alive, a thread watches a pidfd of the child: it reaps the child when it ends, and sends `SIGKILL` first when it is still alive after `_HANGUP_GRACE` (1 s).
+Only the shell itself is killed, not its jobs, and the pidfd cannot refer to another process that got the same pid.
+The thread is not a daemon, so the interpreter does not exit before it is done, also when `teardown()` was the last thing the application did.
+A killed process that does not end within another second (uninterruptible sleep) is left behind.
+In every case the pid is forgotten (`-1`), so a later `teardown()` or `resume()` never signals a reused pid.
+Nothing ends the shell when Nova Navigator itself crashes or is killed; it only sees its terminal hang up then.
 
 ---
 
@@ -343,7 +351,7 @@ A hook report that arrives later still enables the integration.
 A restart also discards the output held back for the previous shell, so a shell that exits quickly without a hook report leaves nothing of its output on screen; only the give-up keeps it visible.
 
 A shell that exits within `_EARLY_EXIT_SECONDS` (2 s) without any hook report counts as a quick exit.
-After `_MAX_EARLY_EXITS` (3) quick exits in a row the shell is not restarted (`_give_up()`): its output and a message stay visible, the reader and run task are removed, `send()` is ignored, and `teardown()` reaps the child only if it has already exited when it checks (`WNOHANG`); a child that exits later is not reaped by it.
+After `_MAX_EARLY_EXITS` (3) quick exits in a row the shell is not restarted (`_give_up()`): its output and a message stay visible, the reader and run task are removed, `send()` is ignored, and the backend is torn down (see [LocalPtyBackend](#localptybackend)).
 Any hook report resets the count.
 
 ### Input typed before the first hook report

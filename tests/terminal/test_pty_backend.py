@@ -7,6 +7,8 @@ import contextlib
 import os
 import select
 import signal
+import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -516,3 +518,79 @@ def test_teardown_before_open_is_safe() -> None:
     backend = LocalPtyBackend()
     backend.teardown()
     backend.teardown()
+
+
+# A shell that ignores everything that normally ends it, the hangup of its terminal included.
+_STUBBORN_SHELL = """/bin/sh -c "trap '' HUP TERM INT; echo stubborn-ready; exec sleep 60" """
+
+
+def _wait_for_output(backend: LocalPtyBackend, marker: bytes) -> None:
+    output = b""
+    deadline = time.monotonic() + 10
+    while marker not in output:
+        readable, _, _ = select.select([backend._master_fd], [], [], max(0.0, deadline - time.monotonic()))
+        assert readable, f"the shell did not answer: {output!r}"
+        output += os.read(backend._master_fd, 65536)
+
+
+def _is_reaped_within(pid: int, seconds: float) -> bool:
+    """Return True once *pid* has left the process table, so it is neither running nor a zombie."""
+    deadline = time.monotonic() + seconds
+    while Path(f"/proc/{pid}").exists():
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.02)
+    return True
+
+
+def test_teardown_kills_a_shell_that_ignores_the_hangup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _isolate_shell_env(tmp_path, monkeypatch)
+    backend = LocalPtyBackend()
+    backend.open(_STUBBORN_SHELL, rows=24, cols=80)
+    pid = backend._pid
+    with _killed_afterwards(pid) as shell:
+        _wait_for_output(backend, b"stubborn-ready")
+        started = time.monotonic()
+        backend.teardown()
+        assert time.monotonic() - started < 0.5, "teardown() waited for the shell"
+        assert not _exits_within(shell, 0.5), "the shell got no time to end by itself"
+        assert _exits_within(shell, 5), "the shell outlived teardown()"
+        assert _is_reaped_within(pid, 5)
+
+
+def test_teardown_reaps_a_shell_that_ends_after_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = _interactive_bash(tmp_path, monkeypatch)
+    pid = backend._pid
+    with _killed_afterwards(pid):
+        _run_until_ready(backend)
+        backend.teardown()
+        assert _is_reaped_within(pid, 5)
+
+
+def test_stubborn_shell_is_killed_when_teardown_is_the_last_thing_before_exit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _isolate_shell_env(tmp_path, monkeypatch)
+    script = """
+import os, select, sys
+from nova_navigator.terminal.pty_backend import LocalPtyBackend
+
+backend = LocalPtyBackend()
+backend.open(sys.argv[1], rows=24, cols=80)
+output = b""
+while b"stubborn-ready" not in output:
+    assert select.select([backend._master_fd], [], [], 10)[0]
+    output += os.read(backend._master_fd, 65536)
+print(backend._pid, flush=True)
+backend.teardown()
+"""
+    result = subprocess.run([sys.executable, "-c", script, _STUBBORN_SHELL], capture_output=True, text=True, timeout=30, check=True)
+    pid = int(result.stdout)
+    try:
+        shell = os.pidfd_open(pid)
+    except ProcessLookupError:
+        return  # killed and reaped before the process exited
+    try:
+        assert _exits_within(shell, 0), "the shell outlived the process that tore it down"
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            signal.pidfd_send_signal(shell, signal.SIGKILL)
+        os.close(shell)
