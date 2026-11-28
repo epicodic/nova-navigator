@@ -156,6 +156,7 @@
   When the editor creates a new file, hard links, owner, group, ACLs and extended attributes are not kept; only permission bits are restored.
   See the [Known Limits section of the editor documentation](https://github.com/epicodic/nova-navigator/blob/main/docs/editor.md#known-limits-1).
 - The viewer has no default key for Wrap Mode.
+- Rebinding the navigator's Quit does not change the editor's quit key; rebind "Editor: Quit" (`editor.quit`) in the Key Bindings dialog too.
 - F1 help does not list the editor's cursor movement, selection and other fixed text keys.
 
 #### Settings and layout
