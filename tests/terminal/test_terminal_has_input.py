@@ -68,10 +68,10 @@ async def _wait_until(predicate: Callable[[], bool], what: str, seconds: float =
 
 
 @contextlib.asynccontextmanager
-async def _real_shell(home: Path, shell: str, height: int, prompt: str = "PS1='pp$ '", *, at_bottom: bool = False) -> AsyncIterator[tuple[Terminal, Pilot[None]]]:
+async def _real_shell(home: Path, shell: str, height: int, prompt: str = "PS1='pp$ '", *, at_bottom: bool = False, zsh_keys: str = "bindkey -e") -> AsyncIterator[tuple[Terminal, Pilot[None]]]:
     """Run *shell* in a terminal widget of *height* rows; the shell is killed at the end in any case."""
     (home / ".bashrc").write_text(f"{prompt}\n")
-    (home / ".zshrc").write_text(f"{prompt}\nbindkey -e\nHISTSIZE=100\n")
+    (home / ".zshrc").write_text(f"{prompt}\n{zsh_keys}\nHISTSIZE=100\n")
     (home / "shrc").write_text(f"{prompt}\n")
     os.environ["ENV"] = str(home / "shrc")  # restored by the monkeypatch of the home fixture
     name, driver = _SHELLS[shell]

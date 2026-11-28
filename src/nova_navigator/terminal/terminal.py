@@ -841,6 +841,8 @@ class Terminal(ScrollView, can_focus=True):
         self._run_stashed = has_input
         if has_input:
             self._stash_input()
+        else:
+            self._prepare_line()
         self._at_prompt = False
         self._command_owner = self.owner
         self._backend.write((line + "\n").encode())
@@ -865,6 +867,12 @@ class Terminal(ScrollView, can_focus=True):
         else:
             self._backend.write(self._driver.kill_line_sequence())
 
+    def _prepare_line(self) -> None:
+        """Make the line editor take typed text before a write that does not stash input first."""
+        sequence = self._driver.prepare_line_sequence()
+        if sequence:
+            self._backend.write(sequence)
+
     def _restore_input(self) -> None:
         """Put back input removed by ``_stash_input``."""
         if self._driver.supports_editor_protocol:
@@ -881,7 +889,8 @@ class Terminal(ScrollView, can_focus=True):
         Drivers with ``supports_editor_protocol`` get an atomic stash request;
         others get their driver's ``kill_line_sequence()``, which clears the
         line editor's buffer using whatever keystrokes that shell needs.  The
-        stash/kill happens at most once per transaction chain.
+        stash/kill happens at most once per transaction chain; a ``cd`` without
+        it is preceded by the driver's ``prepare_line_sequence()``.
         """
         if not self._driver.supports_line_editing:
             self._send_plain_cd()
@@ -898,6 +907,8 @@ class Terminal(ScrollView, can_focus=True):
         if not self._nav_stashed and self.has_input():
             self._nav_stashed = True
             self._stash_input()
+        else:
+            self._prepare_line()
         self._backend.write((" " + self._driver.cd_command(str(self._nav_target)) + "\n").encode())
         self._arm_watchdog()
 
@@ -979,6 +990,7 @@ class Terminal(ScrollView, can_focus=True):
         if not self._hook_repaired:
             self._hook_repaired = True
             _logger.warning("No precmd after cd; re-installing the shell hook")
+            self._prepare_line()
             self._backend.write(self._driver.init_code().encode())
             self._start_nav()
             return

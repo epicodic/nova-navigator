@@ -35,16 +35,21 @@ _MIN_PTY_ROWS = 2
 STASH_SEQUENCE = b"\x1b[98~"
 RESTORE_SEQUENCE = b"\x1b[97~"
 
-# Private, unassigned CSI sequence bound by ZshDriver.init_code() to a widget
-# that calls the shell's raw, unwrapped end-of-line motion (see
-# ZshDriver.kill_line_sequence()).
-_ZSH_RAW_END_OF_LINE_SEQUENCE = b"\x1b[96~"
-
-# Real-shell (emacs-mode) line editor control characters for hidden navigation.
-_END_OF_LINE = "\x05"  # Ctrl+E
-_KILL_LINE = "\x15"  # Ctrl+U
-_YANK = "\x19"  # Ctrl+Y
-_BACKSPACE = "\x08"  # Backward-delete-char
+# Private, unassigned CSI sequences that the init code of ZshDriver and BashDriver
+# binds in the emacs, vi insert and vi command keymaps.  The terminal writes only
+# these (and a space) to edit the line, so neither the editing mode nor the user's
+# own key bindings change what a hidden write does.
+#
+# Switch to a mode that takes typed text; does nothing outside vi command mode.
+_INSERT_MODE_SEQUENCE = b"\x1b[95~"
+# zsh: one widget each stashes and restores the whole buffer.
+_ZSH_STASH_SEQUENCE = b"\x1b[96~"
+_ZSH_RESTORE_SEQUENCE = b"\x1b[94~"
+# bash: readline functions, bound in the emacs and vi insert keymaps.
+_BASH_END_OF_LINE_SEQUENCE = b"\x1b[91~"  # end-of-line
+_BASH_KILL_SEQUENCE = b"\x1b[92~"  # unix-line-discard
+_BASH_YANK_SEQUENCE = b"\x1b[93~"  # yank
+_BASH_BACKSPACE_SEQUENCE = b"\x1b[94~"  # backward-delete-char
 
 
 def _ansi_c_quote(arg: str) -> str:
@@ -97,10 +102,10 @@ class ShellDriver(ABC):
 
     @property
     def supports_line_editing(self) -> bool:
-        """True if the shell has an interactive line editor with emacs-style kill and yank.
+        """True if the shell has an interactive line editor the terminal can clear and refill.
 
         Drivers with line editing take part in hidden directory navigation:
-        typed text is killed before the internal ``cd`` and yanked back after it.
+        typed text is stashed before the internal ``cd`` and restored after it.
         """
         return self._line_editing
 
@@ -118,36 +123,36 @@ class ShellDriver(ABC):
 
         Only the virtual VFS shell driver supports this: it owns the line
         editor directly, so it can swap its state in one step instead of
-        injecting Ctrl+E/Ctrl+U/Ctrl+Y bytes as real shells require.
+        sending the key sequences real shells have to bind first.
         """
         return False
 
-    def kill_line_sequence(self) -> bytes:
-        """Return the input bytes that clear the line editor's buffer for hidden navigation.
+    def prepare_line_sequence(self) -> bytes:
+        """Return the input bytes that make the line editor take typed text.
 
-        Moves to the end of the line first (a backward-only kill, as in bash,
-        would otherwise leave trailing text behind), then types a literal space
-        before killing so the kill is never empty: an empty kill leaves the line
-        editor's kill ring/cutbuffer untouched, so a later spurious kill (e.g.
-        one issued on an already-empty line) would still yank back stale,
-        unrelated text via :meth:`yank_sequence`.  Moving to the end first also
-        guarantees the marker space is always the *last* character killed, so
-        :meth:`yank_sequence` can always remove exactly it and nothing else.
-        Only called for drivers with ``supports_line_editing``.
+        Written before a hidden write that does not start with
+        ``kill_line_sequence``: in vi command mode its characters would act as
+        editor commands.  Empty for shells without such bindings.
         """
-        return (_END_OF_LINE + " " + _KILL_LINE).encode()
+        return b""
+
+    def kill_line_sequence(self) -> bytes:
+        """Return the input bytes that clear the line editor's whole buffer for hidden navigation.
+
+        The buffer may hold several lines (a command recalled from history).
+        The bytes work in every editing mode and leave a mode that takes typed
+        text.  Only called for drivers with ``supports_line_editing`` and
+        without ``supports_editor_protocol``.
+        """
+        return b""
 
     def yank_sequence(self) -> bytes:
         """Return the input bytes that restore text previously cleared by ``kill_line_sequence``.
 
-        A trailing backspace removes the marker space ``kill_line_sequence``
-        typed before the kill.  Because that space is always the last character
-        killed, it is also always the last character yank restores, so the
-        backspace removes exactly it -- never real typed text -- leaving the
-        cursor at the true end of the restored line.  Only called for drivers
-        with ``supports_line_editing``.
+        The cursor ends after the restored text.  Only called for drivers with
+        ``supports_line_editing`` and without ``supports_editor_protocol``.
         """
-        return (_YANK + _BACKSPACE).encode()
+        return b""
 
     def _hook_body(self) -> str:
         """Return the core of the precmd hook function body.
@@ -190,39 +195,43 @@ class ZshDriver(ShellDriver):
         return 0
 
     def init_code(self) -> str:
+        """Install the hook and the widgets for hidden writes.
+
+        The hook binds the keys before every prompt, so they survive ``bindkey -d``:
+        an unbound stash key would leave the typed line to be run with the ``cd``.
+        The stash widget keeps the buffer in a variable, not in zsh's kill
+        buffer: ``kill-buffer`` appends to the user's previous kill, so the
+        restore could add text, and the user's kill ring stays as it was.
+        """
         return (
-            f" setopt HIST_IGNORE_SPACE; _nn_precmd() {{ {self._hook_body()} }}; precmd_functions+=(_nn_precmd); "
-            "_nn_raw_eol() { zle .end-of-line }; zle -N _nn_raw_eol; bindkey $'\\e[96~' _nn_raw_eol\n"
+            " setopt HIST_IGNORE_SPACE; "
+            "_nn_insert() { REGION_ACTIVE=0; [[ $KEYMAP != vicmd ]] || zle -K main }; "
+            "_nn_stash() { _nn_insert; typeset -g _nn_line=$BUFFER; BUFFER= }; "
+            "_nn_restore() { _nn_insert; LBUFFER+=$_nn_line }; "
+            "zle -N _nn_insert; zle -N _nn_stash; zle -N _nn_restore; "
+            "_nn_bind() { local map; for map in emacs viins vicmd; do bindkey -M $map "
+            "$'\\e[95~' _nn_insert $'\\e[96~' _nn_stash $'\\e[94~' _nn_restore; done }; "
+            f"_nn_precmd() {{ {self._hook_body()}; _nn_bind }}; precmd_functions+=(_nn_precmd)\n"
         )
 
     def quote(self, arg: str) -> str:
         return _ansi_c_quote(arg)
 
-    def kill_line_sequence(self) -> bytes:
-        """Kill after moving to the end via a private, unwrapped end-of-line widget.
+    def prepare_line_sequence(self) -> bytes:
+        return _INSERT_MODE_SEQUENCE
 
-        Real Ctrl+E (the ``end-of-line`` widget) is one of zsh-autosuggestions'
-        default accept-widgets: sending it while a suggestion is showing
-        silently accepts that suggestion into the real buffer.  ``init_code()``
-        binds :data:`_ZSH_RAW_END_OF_LINE_SEQUENCE` to a widget that calls
-        ``zle .end-of-line`` -- the dot-prefixed form always refers to zsh's
-        original, unwrapped builtin, regardless of what any plugin has layered
-        onto the public ``end-of-line`` name -- so this reaches the true end of
-        the line without ever risking acceptance.  Zsh's Ctrl+U (kill-whole-line)
-        then removes the whole buffer regardless of cursor position, same as the
-        base implementation.
+    def kill_line_sequence(self) -> bytes:
+        """Send the insert mode key and then the private stash key.
+
+        A command waiting for a key (Ctrl+V, a lone Escape) takes the escape
+        byte of the first key, so the stash key still arrives whole.  Its widget
+        sets the buffer itself, so no key that zsh-autosuggestions treats as
+        accepting a suggestion (such as Ctrl+E) is involved.
         """
-        return _ZSH_RAW_END_OF_LINE_SEQUENCE + (" " + _KILL_LINE).encode()
+        return _INSERT_MODE_SEQUENCE + _ZSH_STASH_SEQUENCE
 
     def yank_sequence(self) -> bytes:
-        """Yank, then backspace off the marker space typed by ``kill_line_sequence``.
-
-        Same rationale as the base implementation, plus: a trailing Ctrl+E here
-        would risk accepting a new autosuggestion formed from the just-restored
-        text, so backspace (not Ctrl+E) is used to reach the true end, same as
-        ``kill_line_sequence`` avoids Ctrl+E to position before the kill.
-        """
-        return (_YANK + _BACKSPACE).encode()
+        return _ZSH_RESTORE_SEQUENCE
 
 
 class BashDriver(ShellDriver):
@@ -232,18 +241,40 @@ class BashDriver(ShellDriver):
         super().__init__(line_editing=True)
 
     def init_code(self) -> str:
-        """Install the hook and turn readline's horizontal scrolling off.
+        """Install the hook and the keys for hidden writes, and turn readline's horizontal scrolling off.
 
         With horizontal scrolling, bash 5.2 can loop forever when the width changes, whatever the
         height.  A bash without line editing only reports the ``bind`` as unusable, which is discarded.
         """
+        # An empty macro does nothing: outside vi command mode there is no mode to change.
         return (
             f" bind 'set horizontal-scroll-mode off' 2>/dev/null; "
+            "for _nn_map in emacs vi-insert; do bind -m $_nn_map "
+            """'"\\e[95~": ""' '"\\e[91~": end-of-line' '"\\e[92~": unix-line-discard' """
+            """'"\\e[93~": yank' '"\\e[94~": backward-delete-char' 2>/dev/null; done; unset _nn_map; """
+            """bind -m vi-command '"\\e[95~": vi-insertion-mode' 2>/dev/null; """
             f"HISTCONTROL=\"${{HISTCONTROL:+${{HISTCONTROL}}:}}ignorespace\"; _nn_precmd() {{ {self._hook_body()}; }}; PROMPT_COMMAND=${{PROMPT_COMMAND:+${{PROMPT_COMMAND}}$'\\n'}}_nn_precmd\n"
         )
 
     def quote(self, arg: str) -> str:
         return _ansi_c_quote(arg)
+
+    def prepare_line_sequence(self) -> bytes:
+        return _INSERT_MODE_SEQUENCE
+
+    def kill_line_sequence(self) -> bytes:
+        """Move to the end of the buffer, type a space, and kill back to the start.
+
+        Readline's kill only reaches back from the cursor, hence the move.  The
+        space makes sure the kill is never empty: an empty kill leaves the kill
+        ring untouched, so a later restore would yank back stale text.  Being
+        killed last, it is also restored last, and ``yank_sequence`` deletes it.
+        """
+        return _INSERT_MODE_SEQUENCE + _BASH_END_OF_LINE_SEQUENCE + b" " + _BASH_KILL_SEQUENCE
+
+    def yank_sequence(self) -> bytes:
+        """Yank, then delete the space ``kill_line_sequence`` typed."""
+        return _INSERT_MODE_SEQUENCE + _BASH_YANK_SEQUENCE + _BASH_BACKSPACE_SEQUENCE
 
 
 class FallbackDriver(ShellDriver):

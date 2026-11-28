@@ -10,6 +10,7 @@
 - Open tar and zip archives as folders.
 - A live shell in the same window.
   The embedded terminal runs the shell named by `$SHELL`; bash and zsh have full integration.
+  With them, text typed on the command line is kept when the shell follows the panels, in emacs and vi editing modes.
   With bash and plain shells, a long line wraps when the terminal is one row high, and only the row with the cursor shows.
   zsh behaves as it does in any one-row terminal.
   Horizontal scrolling of the command line (readline's `horizontal-scroll-mode`) is turned off in the embedded bash once the setup line has run.
@@ -43,6 +44,16 @@
 - Killing the application while it replaces a link can leave the destination missing.
   Changes made by other programs during a copy are not detected.
 - An interrupted save can damage a configuration file: `remotes.toml` and `keybindings.toml` always, `settings.toml` and `bookmarks.toml` when the directory is read-only.
+
+#### Terminal
+
+- Changing the panel's folder while a line editor command waits for more keys can change or lose the typed line.
+  This happens, for example, in the middle of a vi command or search.
+- An editor opened from the command line (bash vi `v`, Ctrl+X Ctrl+E) receives the `cd` that follows a panel change as its input.
+- bash and zsh get private key bindings (`ESC[91~` to `ESC[96~`) for this.
+  In bash, removing them can make a panel change run the typed line.
+- In a shell treated as a plain shell that has a vi mode (for example `sh` linked to bash), do not leave an empty command line in vi command mode.
+  The `cd` of a panel change is then read as editor commands, and what runs is unpredictable.
 
 #### SSH
 
