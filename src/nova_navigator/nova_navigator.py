@@ -103,7 +103,10 @@ from nova_navigator.widgets import DirectoryBrowser, JobStatusIcon
 from nova_navigator.widgets.directory_browser import GoToPathWidget, SortKey, UpPath
 from nova_widgets import ButtonSpec, KeybindingsConfig, KeybindingsDialog, MessageBox, Response
 from nova_widgets.actions_support import ActionsSupport
+from nova_widgets.keybindings_dialog import KeyCaptureDialog
 from nova_widgets.keymap import HintBar, HintsChanged, KeymapRegistry
+from nova_widgets.keymap.key_sequence import KeyChord
+from nova_widgets.keymap.key_sequence_state_machine import KeySequenceStateMachine
 from nova_widgets.menu import Action, Menu, MenuBar
 from nova_widgets.menu import constructor as mc
 
@@ -263,6 +266,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         _config_dir = config_dir if config_dir is not None else app_config_dir()
         self._keymap_config = KeybindingsConfig(_config_dir)
         self._keymap_registry: KeymapRegistry | None = None
+        self.quit_keys = KeySequenceStateMachine()  # the quit key alone, for the screens without a keymap
         self._hint_bar = HintBar()
         self._user_menu_store = UserMenuStore(_config_dir / USER_MENU_FILENAME)
         self._command_runner: CommandRunner | None = None
@@ -486,6 +490,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         style = conf_.settings.general.key_display_style
         self._keymap_registry.set_key_display_style(style)
         self._keymap_registry.reload(bindings, all_actions)
+        self.quit_keys.build_trie({name: keys for name, keys in bindings.items() if name == "app.quit"})
 
     def on_focus(self, event: events.Focus) -> None:
         if self._keymap_registry is not None:
@@ -1374,9 +1379,22 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
             screen = self.screen
             if isinstance(screen, MainScreen) and screen._keymap_registry is not None and await screen._keymap_registry.handle_key(event.key, self, pass_through=screen._passes_to_terminal):
                 return
-            if isinstance(screen, EditorScreen) and not event.is_forwarded and await screen.press_key(event.key):
+            if isinstance(screen, EditorScreen):
+                if not event.is_forwarded and await screen.press_key(event.key):
+                    return
+            elif not isinstance(screen, MainScreen | KeyCaptureDialog) and not event.is_forwarded and await self._press_quit_key(event.key):
                 return
         await super().on_event(event)
+
+    async def _press_quit_key(self, key: str) -> bool:
+        """Handle the configured quit key over a dialog, where no keymap is consulted. True if *key* was taken."""
+        main = getattr(self, "_main_screen", None)
+        if main is None:
+            return False
+        result = main.quit_keys.feed(KeyChord.parse(key))
+        if result.action_name is not None:
+            await self.run_action("quit")
+        return result.consumed
 
     def on_app_focus(self, event: events.AppFocus) -> None:
         """The terminal got the focus back: the edited file may have changed meanwhile."""

@@ -37,6 +37,7 @@ from nova_navigator.vfs.filesystems.local import LocalFilesystem
 from nova_navigator.vfs.local_copy import Baseline, LocalCopy, ProgressCallback, SourceFingerprint
 from nova_navigator.vfs.vpath import VPath
 from nova_widgets import MessageBox
+from nova_widgets.keybindings_dialog import KeyCaptureDialog
 from tests._utils.local_copy_helpers import SchemeFs, overwrite
 from tests.integration.conftest import AppCtx, poll_until
 
@@ -578,3 +579,80 @@ async def test_second_quit_key_without_a_write_back_asks_nothing(app_ctx: AppCtx
     fake.gate.set()
     await poll_until(app_ctx.pilot, lambda: not app_ctx.app.is_running)
     assert fake.shutdown_calls == [True]
+
+
+# ---------------------------------------------------------------------------
+# A rebound quit key with a dialog open
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def rebound_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> AsyncIterator[tuple[NovaNavigator, Pilot[None]]]:
+    """The application with Quit rebound to the keys given as the fixture's parameter."""
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "keybindings.toml").write_text(f'[bindings]\n"app.quit" = "{request.param}"\n')
+    monkeypatch.setattr(loader, "_APP_CONFIG_DIR", config)
+    app = NovaNavigator(config_dir=config)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        yield app, pilot
+
+
+_DIALOGS = {
+    "settings dialog": ["ctrl+f1"],
+    "local copies dialog": ["ctrl+e"],
+    "help": ["f1"],
+    "new directory dialog": ["f7"],
+    "quit prompt itself": ["f10"],
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["f10"], indirect=True)
+@pytest.mark.parametrize("keys", _DIALOGS.values(), ids=_DIALOGS.keys())
+async def test_rebound_quit_key_asks_with_a_dialog_open(rebound_app: tuple[NovaNavigator, Pilot[None]], keys: list[str]) -> None:
+    app, pilot = rebound_app
+    fake = _FakeLocalCopyManager(pending=[_entry()])
+    app.local_copies = fake
+
+    for key in [*keys, "f10"]:
+        await pilot.press(key)
+        await pilot.pause()
+
+    _assert_asking(app, fake)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["ctrl+x ctrl+c"], indirect=True)
+async def test_rebound_quit_chord_asks_with_a_dialog_open(rebound_app: tuple[NovaNavigator, Pilot[None]]) -> None:
+    app, pilot = rebound_app
+    fake = _FakeLocalCopyManager(pending=[_entry()])
+    app.local_copies = fake
+
+    for key in ["ctrl+e", "ctrl+x", "ctrl+c"]:
+        await pilot.press(key)
+        await pilot.pause()
+
+    _assert_asking(app, fake)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("rebound_app", ["f10"], indirect=True)
+async def test_the_key_capture_dialog_still_receives_the_quit_key(rebound_app: tuple[NovaNavigator, Pilot[None]]) -> None:
+    app, pilot = rebound_app
+    fake = _FakeLocalCopyManager(pending=[_entry()])
+    app.local_copies = fake
+    capture = KeyCaptureDialog(app._main_screen.ACTIONS[0])
+    app.push_screen(capture)
+    await pilot.pause()
+
+    await pilot.press("f10")
+    await pilot.pause()
+
+    assert app.screen is capture
+    assert capture.value is not None
+    assert _quit_prompts(app) == []
