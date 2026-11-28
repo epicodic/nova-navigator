@@ -16,6 +16,10 @@
   zsh behaves as it does in any one-row terminal.
   Horizontal scrolling of the command line (readline's `horizontal-scroll-mode`) is turned off in the embedded bash once the setup line has run.
   It is not turned off for a bash that is treated as a plain shell: `sh` linked to bash, or an SSH shell that could not be detected.
+  Until the embedded bash has reported its first prompt, size changes do not reach it, so that this setting cannot make it hang at startup; the protection ends after 5 s.
+  Until its first prompt report, bash and its startup files see the opening size (80x24 at first start), not the real terminal size.
+  A startup file that asks a question or starts another program keeps that size until the 5 s startup timeout.
+  Output shown by the timeout was formatted for that size.
 - A built-in text editor, `ned`, which opens from the file manager with F4 and can also run on its own.
 - Copy (F5), move (F6) and delete (F8), with progress and conflict resolution.
 - Long operations run in the background and can be cancelled.
@@ -48,20 +52,31 @@
 
 #### Terminal
 
-- In zsh vi mode, do not change the panel's folder while a search is pending (Esc, then `/` or `?`).
-  It runs the typed line, or the command recalled from the history, possibly changed (for example cut short).
-- zsh lines that come back to the prompt by themselves (`setopt hist_verify`, `push-line`, `print -z`) are run by a change of the panel's folder.
-- In bash with line editing turned off (`set +o emacs` and no vi mode), a change of the panel's folder runs the typed line.
-- A zsh keymap selected with `zle -K` that is not `main`, `emacs`, `viins` or `vicmd` can make a change of the panel's folder run the typed line.
-- Changing the panel's folder while a line editor command waits for more keys can change or lose the typed line.
+- Changing the panel's folder while a line editor command waits for more keys can change the typed line.
   This happens, for example, in the middle of a vi command or search:
-  bash emacs Alt+[ or Esc O leaves `[95~` on the line, bash vi `m` or `@` loses the line, and zsh vi `'` swaps the case of the whole line.
-- In bash with `shopt -s histverify`, the shell does not follow the panels while an expanded line waits at the prompt, until you enter or cancel it.
+  after Ctrl+V, Esc, Alt+[, Esc O or Ctrl+X the line can end in extra characters such as `[95~`, in vi command mode the case of letters can change (zsh `'` swaps the case of the whole line), and Ctrl+R with a pattern leaves the line found in the history.
+  zsh's question whether to list all completions also leaves `[95~`, and a zsh completion menu accepts the selected completion.
+  In bash, an Alt+P or Alt+N search drops a line recalled from the history.
+- A bash completion question (`Display all ... possibilities?`) or `--More--` list is closed by a change of the panel's folder or by a command.
+- A pending zsh vi search or named command (`/`, `?`, `:`, Alt+x) is cancelled by a change of the panel's folder.
+- A line that the shell puts back at the prompt by itself (zsh `hist_verify`, `push-line`, `print -z`) is kept, but Enter on a file panel treats the command line as empty.
+- With zsh `hist_verify`, a user menu or other command that contains `!` is put back at the prompt instead of run.
+- In bash with line editing turned off (`set +o emacs` and no vi mode), and in bash older than 5, the shell follows the panels only on an empty command line, as plain shells do.
+  A user menu or other command is refused while text is on the line.
+  Text typed while a command was still running is not noticed there, and a change of the panel's folder runs it; so is text typed with `stty -echo`.
+- In bash with `shopt -s histverify` or `histreedit`, the shell does not follow the panels while a line waits at the prompt for your review, until you enter or cancel it.
 - An editor opened from the command line (bash vi `v`, Ctrl+X Ctrl+E) receives the `cd` that follows a panel change as its input.
-- bash and zsh get private key bindings (`ESC[91~` to `ESC[96~`, and in bash `ESC[95` Ctrl+U) for this.
+- bash and zsh get private key bindings for this (`ESC[92~` to `ESC[96~`, in bash also `ESC[93` followed by Ctrl+G).
   In bash, removing them can make a panel change run the typed line.
+  The same can happen with a `DEBUG` trap that returns non-zero under `shopt -s extdebug`.
+  Tools that use the `DEBUG` trap see two extra shell functions, `_nn_stash` and `_nn_restore`, at every panel change.
+- A zsh keymap first created while a command line is being edited has no private bindings until the next prompt, and a change of the panel's folder can then run the typed line.
+  The same holds for a protected keymap linked as `main`, which also prints an error at each prompt.
+- Line editor plugins such as zsh-vi-mode or zsh-autosuggestions were not tried with these bindings.
 - In a shell treated as a plain shell that has a vi mode (for example `sh` linked to bash), do not leave an empty command line in vi command mode.
   The `cd` of a panel change is then read as editor commands, and what runs is unpredictable.
+- With bash 5.3 (Ubuntu 26.04), once a typed line is taller than the terminal, which in the one-row view means more than two rows, bash redraws it by clearing the screen.
+  These redraws add copies of the prompt to the scrollback.
 
 #### SSH
 

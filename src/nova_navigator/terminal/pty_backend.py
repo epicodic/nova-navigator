@@ -109,7 +109,8 @@ class PtyBackend(ABC):
         The payload may be ``panel=;file:///path`` (NN format, ``from_nn=True``) or
         plain ``file:///path`` (third-party chpwd hook, ``from_nn=False``).
         ``from_nn`` lets callers ignore third-party hooks that would miscount
-        in-flight navigations.
+        in-flight navigations.  A hook that reports ``panel=noedit;`` (the shell
+        cannot set its line aside) adds ``False`` to the message.
         All other OSC codes, including OSC 133 prompt markers emitted by
         third-party shell integrations, are silently discarded.
         """
@@ -127,7 +128,10 @@ class PtyBackend(ABC):
                 else:
                     slash = remainder.find("/")
                     path = remainder[slash:] if slash != -1 else "/"
-                loop.call_soon_threadsafe(recv_queue.put_nowait, ["pre_cmd", path, from_nn])
+                message: list[object] = ["pre_cmd", path, from_nn]
+                if data.startswith("panel=noedit;"):
+                    message.append(False)
+                loop.call_soon_threadsafe(recv_queue.put_nowait, message)
 
     @abstractmethod
     def open(self, command: str, rows: int, cols: int) -> int | None:

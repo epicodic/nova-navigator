@@ -79,8 +79,11 @@ The shell's precmd hook (installed by `ShellDriver.init_code()`) emits:
 \033]7;panel=;file:///current/path\007
 ```
 
+bash emits `panel=noedit;` instead when it cannot set its line aside (see [bash without line editing](#bash-without-line-editing)).
+
 The `panel=` prefix distinguishes Nova Navigator's own hook from third-party hooks (e.g. oh-my-zsh) that emit plain `file://` OSC 7 sequences.
 The inherited `PtyBackend._process_chunk()` method scans stdout for OSC sequences, strips them, and posts `["pre_cmd", path, from_nn]` messages.
+A `noedit` report adds `False` as a fourth field.
 
 ### LocalPtyBackend
 
@@ -142,9 +145,10 @@ Nothing ends the shell when Nova Navigator itself crashes or is killed; it only 
 | `init_code()` | Return shell code to inject at startup (installs precmd hook) |
 | `quote(arg)` | Return a shell-safe quoted form of an argument |
 | `min_rows` | Property — smallest height of the PTY and the screen model, 0 for none (see [Two-row minimum](#two-row-minimum-and-the-one-row-view)) |
+| `resize_waits_for_hook` | Property — True if the PTY's size changes wait for the first hook report (see [Two-row minimum](#two-row-minimum-and-the-one-row-view)) |
 | `cd_command(path)` | Return a complete `cd` command string |
 | `supports_line_editing` | Property — True if the shell has a line editor the terminal can clear and refill for hidden navigation |
-| `prepare_line_sequence()`, `kill_line_sequence()`, `yank_sequence()` | Bytes that make the line editor take text, stash its buffer and restore it (see [Kill/yank sequences](#killyank-sequences-are-driver-specific)) |
+| `set_aside_sequence()`, `put_back_sequence()` | Bytes that make the shell set aside everything its line editor holds and put it back (see [Line sequences](#the-line-sequences-are-driver-specific)) |
 
 ### Concrete Drivers
 
@@ -225,7 +229,10 @@ The stored lines in `_display` are never mutated.
 | `_nav_busy` | `bool` | A `cd` was written and its precmd is awaited |
 | `_nav_last_sent_target` | `PurePath \| None` | The target most recently written as a `cd`; used to tell a newer target from a repeated one |
 | `_nav_same_target_attempts` | `int` | Consecutive `cd` writes for `_nav_last_sent_target` without the shell reporting it as cwd |
-| `_nav_stashed` | `bool` | Typed text was stashed and is restored on completion |
+| `_nav_stashed` | `bool` | The line was set aside and is restored on completion |
+| `_stash_held_input` | `bool` | The line set aside held input, or the user typed while it was set aside |
+| `_shell_edits` | `bool` | False while the hook reports `noedit` (see [bash without line editing](#bash-without-line-editing)) |
+| `_key_echoes`, `_held_echo` | `list[str]`, `str` | Echoes of private keys still to be removed from the output (see [Echo of the private keys](#echo-of-the-private-keys)) |
 | `_nav_future` | `Future[PurePath] \| None` | Resolved when the transaction chain completes |
 | `_nav_watchdog` | `TimerHandle \| None` | Fires when no precmd follows a `cd` |
 | `_hook_repaired` | `bool` | True after the precmd hook has been re-installed once this shell session |
@@ -272,6 +279,14 @@ The navigator's terminal is one row high by default, so for every driver whose `
 `VfsShellDriver` has none either: the virtual shell does not use readline.
 The driver is fixed when the `Terminal` is constructed, so no size reaches a shell without its minimum applied.
 
+A shell starts with horizontal scrolling still as the user configured it, and a size change that arrives while bash reads the setup line can already start the loop.
+For a driver with `resize_waits_for_hook` (`BashDriver`), the PTY therefore keeps the size it was opened with until the first hook report, also after a restart of the shell.
+The screen model follows the widget at once, and `_send_size()` gives the PTY the same size with that report.
+When no report arrives within the startup timeout (5 s, see [Startup Bootstrap](#startup-bootstrap)), the size is sent then, so that a shell without the hook is not left with a stale one.
+Until its first prompt report, bash and its startup files see the opening size (80x24 at first start), not the real terminal size.
+A startup file that asks a question or starts another program keeps that size until the startup timeout.
+Output shown by the timeout was formatted for that size.
+
 When a widget of such a terminal has one row, the document it displays ends with the cursor's row.
 The rows above the cursor and the scrollback are reached by scrolling back; rows below the cursor are not shown.
 A long line therefore wraps, and the view shows the part with the cursor.
@@ -279,6 +294,8 @@ Mouse reports name the cursor's row, and selection and double-click work on the 
 
 What remains:
 
+- A bash that takes longer than the startup timeout (5 s) to report, for example because of a slow rc file, gets size changes again while it may still be reading the setup line.
+  With `horizontal-scroll-mode` on, it can then loop.
 - Horizontal scrolling is turned off only by `BashDriver`, and only once its init line has run.
   A bash behind `FallbackDriver` (`sh` linking to bash, or an SSH shell that could not be detected) keeps its own setting.
   A bash started inside it, or reached by a typed `ssh`, reads its own configuration and can still loop if that turns the mode on, also if you turn it on again yourself.
@@ -429,10 +446,14 @@ It uses two facts that Nova Navigator owns and needs nothing from the shell.
 
 Every path into the shell goes through the widget: `on_key`, `_paste_text`, and `send()`.
 Each sets `_input_since_precmd`; every precmd clears it, except while input typed before the first hook report may still be on the line (see [Input typed before the first hook report](#input-typed-before-the-first-hook-report)).
-Internal writes (kill, `cd`, yank, init code) never set it.
+Internal writes (set aside, `cd`, put back, init code) never set it.
+A restore sets it only when the line set aside held input or the user typed meanwhile.
+Keys typed into a running command count as such typing: after a `run_command()` line that read keys (a question, a pager, an editor), `has_input()` stays True also when the line was and is empty.
+The terminal cannot tell whether the program read the keys or left them for the prompt, so it takes the safe side: the next Enter on a panel goes to the terminal, and the one after it navigates.
 If no user byte was sent since the last precmd, the line is taken to be empty.
 This is wrong for input typed while a command was still running: that command's precmd clears the flag, so such input is not detected, for any driver.
-It is also wrong for a line that the shell puts at the prompt by itself, such as zsh's `hist_verify`, `push-line` and `print -z` (see [Known limits of hidden writes](#known-limits-of-hidden-writes)).
+It is also wrong for a line that the shell puts at the prompt by itself, such as zsh's `hist_verify`, `push-line` and `print -z`.
+Hidden writes to a line-editing shell therefore do not depend on `has_input()`; only the choice what Enter on a panel does is affected, and plain shells.
 
 ### Fact B: the screen before the first user byte
 
@@ -458,7 +479,7 @@ When the screen gets smaller and drops new rows, the snapshot is discarded, and 
 | yes | cursor or row text differs, or a row is new | `True` |
 
 Comparing the row text as well as the cursor handles Home, wide characters, and wrapped input.
-After a navigation that restored typed text, the flag is set and the snapshot is left empty, so the answer is `True` for that prompt line.
+After a navigation that restored input, the flag is set and the snapshot is left empty, so the answer is `True` for that prompt line.
 A `True` for an empty line is harmless: Enter then executes an empty line (see the limitations below).
 A `False` for a line with input is not, because an automatic `cd` is then written into it.
 The screen cannot show input that is not echoed (`stty -echo`), or input that leaves every row as it was when the prompt was drawn.
@@ -472,6 +493,7 @@ A plain shell (no line editor) also holds back panel changes until then.
 
 - **bash:** after deleting a line that needed more rows than the screen has, which in the one-row view means more than two.
   The prompt has scrolled off, so the one-row view also shows an empty row until the prompt is drawn again (Ctrl+L or Enter).
+  bash 5.3 instead redraws such a line on a cleared screen (see the known issue below).
 - **zsh:** in a one-row terminal, after deleting a line that was wider than the terminal.
 - **Plain shells (sh, dash):** after deleting a line that had wrapped, at any height, because the cursor cannot be erased back over the line break.
 - **Any shell:** when the prompt is drawn late, for example by a slow command in it, and you type in the gap, deleting that text can likewise leave one Enter swallowed.
@@ -479,6 +501,10 @@ A plain shell (no line editor) also holds back panel changes until then.
 - **Any shell:** when the terminal was made smaller while input was in rows that the smaller screen dropped.
 
 The screen cannot tell an empty line from one with typed text in these cases, so no safe fix based on the screen is known.
+
+**Known issue (bash 5.3, as in Ubuntu 26.04).** Once a typed line is taller than the terminal, which in the one-row view means more than two rows, bash redraws it by clearing the screen.
+These redraws add copies of the prompt to the scrollback.
+After deleting such a line, `has_input()` stays True.
 
 ---
 
@@ -490,79 +516,124 @@ A pane-driven directory change is one serialised transaction per terminal.
 If the shell is running a command, the target waits and is applied on the next precmd.
 If the shell already reports *path* and nothing is pending, the request is a no-op.
 
-`_start_nav()` enables draining, stashes typed input with the driver's `kill_line_sequence()` if `has_input()` is true (once per chain) and otherwise writes `prepare_line_sequence()`, writes ` cd <quoted>\n`, and arms the watchdog.
+`_start_nav()` enables draining, has the shell set its line aside with the driver's `set_aside_sequence()`, writes ` cd <quoted>\n`, and arms the watchdog.
+This happens before every `cd`, also when the line looks empty, because the shell can hold input that `has_input()` cannot see.
+For a driver with `supports_editor_protocol` the stash request is sent only when `has_input()` is true, once per chain.
 
 The precmd hook's OSC 7 completes the step.
 If a newer target arrived meanwhile, `_handle_pre_cmd` chains directly into another `_start_nav()` while draining stays on, so intermediate prompts are never shown.
-Otherwise `_finish_nav()` yanks stashed text back with the driver's `yank_sequence()`, ends draining with the `\r\x1b[K` in-place redraw, and resolves `_nav_future`.
+Otherwise `_finish_nav()` restores what was set aside, once per chain, with the driver's `put_back_sequence()`, ends draining with the `\r\x1b[K` in-place redraw, and resolves `_nav_future`.
 See [Giving up on an unreachable target](#giving-up-on-an-unreachable-target) for what happens when the reported cwd keeps mismatching the *same* target instead.
 
-### Kill/yank sequences are driver-specific
+### The line sequences are driver-specific
 
-`ShellDriver.kill_line_sequence()`, `yank_sequence()` and `prepare_line_sequence()` return the exact bytes each shell needs, so `Terminal` never hardcodes control characters itself.
+`ShellDriver.set_aside_sequence()` and `put_back_sequence()` return the exact bytes each shell needs, so `Terminal` never hardcodes control characters itself.
 
-`ZshDriver` and `BashDriver` bind private, unassigned CSI sequences in their init code, in the emacs, vi insert and vi command keymaps.
-zsh also binds them in `main`, which can be a keymap of the user's own.
+The rule for a line-editing shell is: before every hidden line (a `cd`, the line of `run_command()`, the setup line sent again) the shell itself sets aside whatever its editor holds, empty or not, and one restore follows.
+Nothing is guessed from the screen.
+What is set aside accumulates in shell variables until the restore, so a second stash never overwrites saved text, and running the setup line again keeps it.
+
+`ZshDriver` and `BashDriver` bind private, unassigned CSI sequences in their init code.
 No other binding is changed.
 Standard keys are not usable here: in vi insert mode Ctrl+E inserts itself (and in zsh so does Ctrl+Y), in vi command mode characters are editor commands, and the user can bind any of them to something else.
+zsh binds them in every keymap except the protected `.safe` and the special `isearch` and `command` ones; bash in the emacs and vi insert keymaps, and `ESC[95~` and the dismiss key also in vi command mode.
 
 | Sequence | zsh | bash |
 |---|---|---|
-| `prepare_line_sequence()` | `ESC[95~`: leave vi command mode | `ESC[95` Ctrl+U: leave vi command mode |
-| `kill_line_sequence()` | `ESC[95~`, `ESC[96~` (stash widget) | `ESC[95~`, `ESC[91~` (end-of-line), a space, `ESC[92~` (unix-line-discard) |
-| `yank_sequence()` | `ESC[94~` (restore widget) | `ESC[95~`, `ESC[93~` (yank), `ESC[94~` (backward-delete-char) |
+| `set_aside_sequence()` | S, `ESC[93~` (vi-history-search-backward), `ESC[92~` (send-break), S, where S is `ESC[95~`, `ESC[96~` (stash widget) | I, D, I, `ESC[96~` (stash function) |
+| `put_back_sequence()` | `ESC[94~` (restore widget) | I, D, I, `ESC[94~` (restore function) |
 
-Every hidden write starts with a sequence that leaves vi command mode: a `cd` with or without a stash, the line of `run_command()`, the restore, and the setup line the watchdog sends again.
-The shell is then in vi insert mode, also when the user was in vi command mode before.
+In the bash column, I is `ESC[95~` (leave vi command mode) and D is the dismiss key, `ESC[93` followed by Ctrl+G.
 
-bash without line editing (`set +o emacs` with no vi mode) reads all of these as plain input.
-The sequence of `prepare_line_sequence()` ends in Ctrl+U for this case: the terminal's line discipline then erases it, so a `cd` or `run_command()` on an empty line works.
-readline takes the whole sequence as one key.
-It relies on Ctrl+U being the terminal's kill character.
-The stash sends no Ctrl+U, because a pending readline search or vi command would take it as editing (see [Known limits](#known-limits-of-hidden-writes)).
+readline's completion question (`Display all 150 possibilities? (y or n)`) and its `--More--` list read single keys.
+They would ignore the private keys and take the space in front of ` cd` as "yes", so that the rest, with its Enter, reached the line editor behind the typed line and ran it.
+Both ignore the bytes of I and of `ESC[93`, and Ctrl+G ends them without touching the line.
+At the line editor D is bound to nothing, so the user's own Ctrl+G binding is not involved.
+The first I takes the escape byte that a pending Ctrl+V or lone Escape reads, and the second one is needed because a question asked in vi command mode leaves that mode on.
+The put-back starts the same way, because keys typed while a `cd` ran can open a question before it arrives.
+zsh needs no extra key: its question and its scrolling list take the private keys without running anything.
+
+`ESC[95~` leaves vi command mode, so after a hidden write the shell is in vi insert mode also when the user was in vi command mode before.
+The zsh widgets also leave visual mode, and every keymap that is not `main`, `emacs` or `viins`, for `main`.
+A keymap selected with `zle -K` is therefore left for `main`.
+
+A zsh vi search (`/`, `?`) or named command (`:`, Alt+x) that waits for keys would take the `cd` as its text and run the typed line.
+It ignores the first S, `send-break` cancels it with the line intact, and the second S sets the line aside.
+With nothing waiting, the first S sets the line aside, a search opens, and `send-break` closes it again on the empty line.
+The user's last search pattern stays, so `n` still repeats it.
+Widget wrappers and hooks see the search open and break off, and the keymap change, at every hidden write.
+A pending search or named command of the user's is cancelled.
 
 The stash clears the whole buffer, which holds several lines after a multi-line command was recalled from the history.
 The restored text is the same, with the cursor at its end.
 
 The zsh widget keeps the buffer in a shell variable and leaves the kill ring alone.
 `kill-buffer` would append to a kill the user made just before, so the restore would add text.
+It also empties zsh's buffer stack (`push-line`, `push-input`, `print -z`) into a shell array, and the restore pushes the entries back in their order.
+Without this, the prompt after the `cd` would put the next entry on the line.
+Empty entries are dropped.
 The widgets set the buffer themselves, so no key that zsh-autosuggestions treats as accepting a suggestion is involved.
 The zsh precmd hook binds the sequences again before every prompt, so they survive `bindkey -d` and follow a `main` keymap that was changed.
 An unbound stash key would leave the typed line in place, to be run together with the `cd`.
 
-bash kills and yanks.
-Readline's kill only reaches back from the cursor, hence the move to the end of the buffer first.
-The space makes sure the kill is never empty.
-An empty kill leaves the kill ring untouched, so a spurious kill on an already-empty line (`has_input()` can return a conservative `True` after a restore, see below) would otherwise yank back stale text from an earlier kill.
-The space is killed last and therefore restored last, so the backspace removes exactly it.
+bash runs two shell functions with `bind -x`, which see the line as `READLINE_LINE`.
+The stash function appends the line to a shell variable and empties it; the restore function puts it back and moves the cursor to the end.
+The kill ring is left alone.
+bash runs a `DEBUG` trap for these functions like for any command, so a trap (as installed by bash-preexec or a title setter) sees `_nn_stash` and `_nn_restore` at every hidden write.
+With `shopt -s extdebug`, a trap that returns non-zero skips them, and the typed line can then run with the `cd`.
+
+Appending means that a second stash, also of an empty line, never overwrites saved text.
+The saved text is lost only with the shell process (exit, restart, `exec`).
+
+### Echo of the private keys
+
+The shell reports a prompt before its line editor reads.
+Until then, for example while a prompt with a slow command is drawn, the PTY is in its cooked mode and echoes whatever is written, so the private keys would stay on screen as `^[[95~...`.
+`_write_keys()` therefore remembers what it wrote, in the `^X` form and in the raw form (`stty -echoctl`), and `_strip_key_echo()` removes that text once from the output.
+The keys themselves stay queued and reach the editor.
+An echo cut off at the end of a read is held back until the rest arrives, but only when the cut-off part is at least three characters long (`^[[`); a shorter part is shown at once.
+Output that ends in such a prefix therefore shows it only when more output arrives.
+The next hook report drops what is still expected.
+
+### bash without line editing
+
+bash without line editing (`set +o emacs` with no vi mode) reads all of these sequences as plain input, and nothing can set its line aside.
+Its precmd hook therefore reports `noedit` before every prompt where this is so, also after editing was switched off at the prompt.
+A bash older than version 5 always reports it, because such a bash may not run the functions behind the private keys.
+
+While the last report was `noedit`, the terminal treats the shell like a plain shell:
+
+- no stash, restore or other key sequence is written;
+- a `cd` is written only onto a line that looks empty, otherwise the target waits for the next precmd;
+- `run_command()` reports busy while the line holds typed input;
+- `set_terminal_directory` returns at once.
+
+A navigation that is under way when the report arrives ends there, and waiting callers get the reported directory.
+A target it has not reached yet is kept and applied at the next precmd, as for a plain shell.
+A line set aside before the report stays in the shell's variable and is put back by the first restore after editing is on again, in front of what the line then holds.
+Like any plain shell, it does not detect input typed while a command was still running.
 
 #### Known limits of hidden writes
 
 A line editor command that waits for further keys takes the first bytes of a hidden write.
-The first of the two keys in `kill_line_sequence()` absorbs this for a pending Ctrl+V or a lone Escape, and the stash key still arrives whole.
+The first key of `set_aside_sequence()` absorbs this for a pending Ctrl+V or a lone Escape, and the stash key still arrives whole.
+bash's completion question and `--More--` list are ended (see above), and a pending zsh vi search or named command is cancelled.
 
-**A pending vi search in zsh runs the line.**
-After Esc and then `/` or `?`, a panel change runs the typed line, or the command recalled from the history that is on the line.
-The command need not run as it was shown: in a test a recalled command lost its last character and got other text appended.
+With bash 5.2 and zsh 5.9, none of the pending commands tried ran the typed line or one recalled from the history, but the line can differ:
 
-In the other cases tried nothing typed was run, but the line can differ:
+- after a pending Ctrl+V, lone Escape or Ctrl+X, and in emacs mode after Alt+[ or Esc O, it ends with characters of the first key (such as `[95~`);
+- the same happens when zsh asks whether to list all completions;
+- in zsh vi command mode, after a pending `r`, `f`, `F`, `t`, `T`, `m`, backtick, `"` or `g`, the case of one character can change, and after a pending `'` the case of the whole line is swapped;
+- in bash vi command mode, after a pending `m`, backtick, `@` or `R`, the case of one character can change;
+- after Ctrl+R with a pattern, the line found in the history stays instead of the typed line;
+- in a zsh completion menu, the selected completion is accepted into the line;
+- in bash, an emacs mode search with Alt+P or Alt+N drops a line recalled from the history (it stays in the history).
 
-- after a pending Ctrl+V or lone Escape it ends with characters of the first key;
-- in bash emacs mode, a pending Alt+[ or Esc O leaves `[95~` at the end of the restored line;
-- in zsh vi command mode, after a pending `r`, `f` or `"` or `g`, the case of one character can change, and after a pending `'` the case of the whole line is swapped;
-- in bash, a pending vi command mode `m`, `@` or search (`/`, `?`), replace mode (`R`), and an emacs mode search with Alt+P or Alt+N lose the line.
+The following can still run what was typed.
 
-What also remains:
-
-- Lines that zsh puts back at the prompt by itself (`setopt hist_verify`, `push-line`, `print -z`) count as empty, because no key was sent since the prompt (see [Input Detection](#input-detection-has_input)).
-  A panel change writes the `cd` into such a line and runs it.
-- bash with `shopt -s histverify` puts the expanded line back without reporting a new prompt.
-  The terminal still takes the entered command as running: it writes no `cd` while the line is there, and the line is not run.
-  The panel's folder is followed after you enter the line, or cancel it with Ctrl+C.
-  `shopt -s histreedit` behaves the same way after a failed history expansion.
-- bash without line editing: a panel change runs the typed line, with the stash keys and the `cd` appended to it as arguments.
-  The restore then leaves its key sequences on the next line as text.
-- A zsh keymap selected with `zle -K` that is none of `main`, `emacs`, `viins` and `vicmd` has no private bindings, and a panel change can run the typed line.
+- bash without line editing (see [above](#bash-without-line-editing)): a panel change can run input that was typed while a command was still running.
+  With `stty -echo` typed input is invisible to the terminal, and a panel change runs it.
+- A zsh keymap first created after the prompt hook ran has no private bindings until the next prompt, and a panel change can run the typed line while it is selected.
 - An editor opened from the line (bash vi `v`, Ctrl+X Ctrl+E) gets the hidden writes as its input, because no precmd or Enter tells the terminal that the prompt is gone.
 - In bash, removing the private bindings (`bind -r`) makes the stash do nothing, and the typed line can run with the `cd`.
 - The private bindings were not tried together with line editor plugins such as zsh-vi-mode or zsh-autosuggestions.
@@ -570,8 +641,20 @@ What also remains:
   The `cd` is garbled, and what runs then is unpredictable.
   dash has no vi mode editing: Escape becomes part of the line, which then counts as typed input.
 
+These remain too, and run nothing:
+
+- Lines that zsh puts back at the prompt by itself (`setopt hist_verify`, `push-line`, `print -z`) are kept by hidden writes but count as empty for Enter on a panel, because no key was sent since the prompt (see [Input Detection](#input-detection-has_input)).
+- With zsh `hist_verify`, a `run_command()` line that contains a history expansion is put back expanded instead of run, and the call reports done.
+- bash with `shopt -s histverify` puts the expanded line back without reporting a new prompt.
+  The terminal still takes the entered command as running: it writes no `cd` while the line is there, and the line is not run.
+  The panel's folder is followed after you enter the line, or cancel it with Ctrl+C.
+  `shopt -s histreedit` behaves the same way after a failed history expansion.
+- In zsh, a lone Esc typed while a directory change is still running can keep the set-aside line from being put back.
+  It stays hidden and returns joined with later input at the next directory change.
+- In zsh with `zstyle ':completion:*' menu select`, Ctrl+S (search) inside the completion menu stops the terminal following the panel: the folder is not changed and a command run from the application does not start.
+
 `has_input()`'s snapshot cannot be safely recaptured immediately after a restore: the shell's echo of the restored text can arrive fused with the freshly drawn prompt in the very same stdout chunk, so there is no reliable way to isolate "prompt only" from "prompt plus restored text" by observing chunk boundaries.
-This is why `_finish_nav()` forces `_input_since_precmd = True` rather than trying to snapshot, and why the never-empty-kill guarantee above is the actual defense against stale-text resurrection, not snapshot accuracy.
+This is why a restore of input sets `_input_since_precmd` rather than trying to snapshot.
 
 ### Precmd classification
 
@@ -587,8 +670,9 @@ different directory is already in flight, clobbering it.
 ### Watchdog and hook repair
 
 If no precmd follows a `cd` within `_NAV_WATCHDOG_TIMEOUT`, the precmd hook was most likely removed by an rc file or plugin.
-On the first timeout in a session the driver's `init_code()` is re-sent (after `prepare_line_sequence()`) followed by the `cd`; the init line's own precmd reports the old directory, so the normal chaining rule re-sends the `cd` and the transaction completes.
-On a second timeout the transaction gives up, yanks stashed text, ends draining, and resolves the future with the last known cwd.
+On the first timeout in a session the driver's `init_code()` is re-sent (after another `set_aside_sequence()`) followed by the `cd`; the init line's own precmd reports the old directory, so the normal chaining rule re-sends the `cd` and the transaction completes.
+On a second timeout the transaction gives up, restores what was set aside, ends draining, and resolves the future with the last known cwd.
+The keys of a hidden write reach a shell that is still busy later and in order, so the restore also follows then.
 
 ### Giving up on an unreachable target
 
@@ -638,7 +722,7 @@ Both settings are idempotent and have no effect on user-typed commands that do n
 
 `Terminal.run_command(line)` types *line* into the shell as if the user had typed it, then waits for it to finish.
 It refuses with `TerminalBusyError` when the shell is not at a prompt, is running a command, is navigating, or holds typed input on a shell without line editing.
-Typed input is stashed with the shared `_stash_input()` helper (without it, `prepare_line_sequence()` is written) before the line is sent and restored with `_restore_input()` once the command's precmd fires; these are the same helpers the [Directory Navigation Flow](#directory-navigation-flow) uses to protect typed input around a `cd`.
+A line-editing shell sets its line aside with the shared `_stash_input()` helper before the line is sent, also when it looks empty, and restores it with `_restore_input()` once the command's precmd fires; these are the same helpers the [Directory Navigation Flow](#directory-navigation-flow) uses to protect input around a `cd`.
 The line is sent to the real shell, so it is echoed on screen and recorded in the shell's history exactly like a command the user typed.
 
 Completion relies entirely on the shell's precmd hook and has no timeout, since a command may legitimately run for a long time.
@@ -728,7 +812,7 @@ Both queues carry `list[object]` messages with a string command as the first ele
 | Message | Format | Purpose |
 |---------|--------|---------|
 | `stdin` | `["stdin", str]` | Text to write to the PTY |
-| `set_size` | `["set_size", rows, cols]` | Resize the PTY window |
+| `set_size` | `["set_size", rows, cols]` | Resize the PTY window (held back for bash until its first hook report) |
 | `click` | `["click", x, y, button]` | Mouse click event |
 | `scroll` | `["scroll", "up"/"down", x, y]` | Mouse scroll event |
 

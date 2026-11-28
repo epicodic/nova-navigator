@@ -17,9 +17,8 @@ from tests.terminal.test_terminal import (
     _stop_recv_only,
 )
 
-_KILL = b"\x1b[95~\x1b[96~"  # ZshDriver.kill_line_sequence()
-_YANK = b"\x1b[94~"  # ZshDriver.yank_sequence()
-_PREPARE = b"\x1b[95~"  # ZshDriver.prepare_line_sequence()
+_SET_ASIDE = b"\x1b[95~\x1b[96~\x1b[93~\x1b[92~\x1b[95~\x1b[96~"  # ZshDriver.set_aside_sequence()
+_PUT_BACK = b"\x1b[94~"  # ZshDriver.put_back_sequence()
 
 
 def _terminal() -> tuple[FakePtyBackend, Terminal]:
@@ -48,11 +47,12 @@ async def test_run_command_writes_line_and_waits_for_precmd() -> None:
             _ready(terminal)
             task = asyncio.ensure_future(terminal.run_command("make"))
             await asyncio.sleep(0.01)
-            assert backend.writes == [_PREPARE, b"make\n"]
+            assert backend.writes == [_SET_ASIDE, b"make\n"]
             assert not task.done()
             await recv_q.put(["pre_cmd", "/w\n"])
             await pilot.pause(delay=0.1)
             assert task.done()
+            assert backend.writes == [_SET_ASIDE, b"make\n", _PUT_BACK]
             assert terminal.cwd == PurePath("/w")
         finally:
             await _stop_recv_only(terminal)
@@ -91,11 +91,11 @@ async def test_run_command_stashes_and_restores_typed_input() -> None:
             terminal._note_user_input("l")
             task = asyncio.ensure_future(terminal.run_command("make"))
             await asyncio.sleep(0.01)
-            assert backend.writes == [_KILL, b"make\n"]
+            assert backend.writes == [_SET_ASIDE, b"make\n"]
             await recv_q.put(["pre_cmd", "/w\n"])
             await pilot.pause(delay=0.1)
             assert task.done()
-            assert backend.writes[-1] == _YANK
+            assert backend.writes[-1] == _PUT_BACK
             assert terminal.has_input() is True
         finally:
             await _stop_recv_only(terminal)

@@ -65,6 +65,7 @@ __all__ = [
 
 
 _PRE_CMD_FROM_NN_IDX = 2  # index of the from_nn flag in a pre_cmd message
+_PRE_CMD_LINE_EDITING_IDX = 3  # index of the optional line_editing flag in a pre_cmd message
 
 
 _MOUSE_TRACKING_MODES: frozenset[str] = frozenset({"1000", "1002", "1003", "1006"})
@@ -74,6 +75,8 @@ _DISPLAY_FPS: float = 60.0
 _ED_ERASE_SCROLLBACK = 3  # ED (erase in display) parameter for "erase saved lines"
 _NAV_WATCHDOG_TIMEOUT = 2.0
 _NAV_MAX_SAME_TARGET_ATTEMPTS = 3
+# Bytes below this are control characters; a terminal driver with echoctl shows them as ^X.
+_FIRST_PRINTABLE = 0x20
 _STARTUP_TIMEOUT = 5.0  # seconds a new shell may take to report its hook before its output is shown
 _EARLY_EXIT_SECONDS = 2.0  # a shell that exits sooner than this, without a hook report, is a quick exit
 _MAX_EARLY_EXITS = 3  # quick exits in a row after which the shell is not restarted
@@ -279,7 +282,7 @@ class Terminal(ScrollView, can_focus=True):
     logic to a ``ShellDriver``.
 
     Programmatic directory changes run as one serialised transaction per
-    terminal: typed input is killed, a history-excluded ``cd`` is sent under
+    terminal: the shell sets its line aside, a history-excluded ``cd`` is sent under
     output draining, and the shell's precmd hook (OSC 7) signals completion.
     Newer requests replace the pending target, so the terminal always converges
     on the last requested directory without showing intermediate prompts.
@@ -370,7 +373,7 @@ class Terminal(ScrollView, can_focus=True):
         )
         self._stream = pyte.Stream(self._screen)
         # True once any user-originated byte was forwarded to the shell since the
-        # last precmd.  Internal writes (kill, cd, yank, init code) never set it.
+        # last precmd.  Internal writes (set aside, cd, put back, init code) never set it.
         self._input_since_precmd: bool = False
         # User input was forwarded before this shell's first hook report and has not been
         # followed by a later Enter, so a prompt line may hold text nobody can see as typed.
@@ -404,7 +407,7 @@ class Terminal(ScrollView, can_focus=True):
         self._gave_up: bool = False
         # Resolved by the precmd that follows a run_command() line.
         self._run_future: Future[None] | None = None
-        # Typed input was stashed before run_command() and must be restored.
+        # The line was set aside before run_command() and must be restored.
         self._run_stashed: bool = False
 
         super().__init__(name=name, id=id, classes=classes)
@@ -425,8 +428,10 @@ class Terminal(ScrollView, can_focus=True):
         # from "the shell can't reach this target" (bounded, then give up).
         self._nav_last_sent_target: PurePath | None = None
         self._nav_same_target_attempts: int = 0
-        # User text was killed before the cd and must be yanked back on completion.
+        # The shell's line was set aside before the cd and must be restored on completion.
         self._nav_stashed: bool = False
+        # While a line is set aside: it held input, or the user typed meanwhile (see _restore_input).
+        self._stash_held_input: bool = False
         # Resolved when the transaction chain completes; awaited by set_terminal_directory.
         self._nav_future: Future[PurePath] | None = None
         # A plain-shell cd was written; the precmd that follows is not a user navigation.
@@ -435,6 +440,12 @@ class Terminal(ScrollView, can_focus=True):
         self._nav_watchdog: TimerHandle | None = None
         # The precmd hook was re-installed once this shell session.
         self._hook_repaired: bool = False
+        # False while the hook reports that the shell cannot set its line aside.
+        self._shell_edits: bool = True
+        # Echoes of private keys still to be removed from the output, and the start of one cut off
+        # at the end of the last output (see _write_keys).
+        self._key_echoes: list[str] = []
+        self._held_echo: str = ""
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -684,6 +695,8 @@ class Terminal(ScrollView, can_focus=True):
         prompt and the current ``owner`` is recorded as the command's owner.
         """
         self._input_since_precmd = True
+        if self._nav_stashed or self._run_stashed:
+            self._stash_held_input = True
         submitted = submits or "\r" in data or "\n" in data
         # A started shell is either still held back (_startup_output) or revealed without a report.
         if self._startup_output is not None or self._no_integration:
@@ -794,7 +807,7 @@ class Terminal(ScrollView, can_focus=True):
         self._nav_target = path
         # Only line-editing shells run the awaitable transaction; a plain shell
         # gets its cd on an empty prompt and nobody waits for it.
-        if self._driver.supports_line_editing and (self._nav_future is None or self._nav_future.done()):
+        if self._edits_lines() and (self._nav_future is None or self._nav_future.done()):
             self._nav_future = asyncio.get_running_loop().create_future()
         if not self._nav_busy and self._at_prompt:
             self._start_nav()
@@ -817,7 +830,8 @@ class Terminal(ScrollView, can_focus=True):
     async def run_command(self, line: str) -> None:
         """Run *line* in the shell as if the user typed it, and wait until it finishes.
 
-        Typed input is stashed first and restored after the command's precmd.
+        A line-editing shell first sets aside whatever its line holds, which is
+        restored after the command's precmd.
         The command is echoed and recorded in the shell history like a user command.
 
         Completion relies on the shell's precmd hook and has no timeout, since a
@@ -834,15 +848,14 @@ class Terminal(ScrollView, can_focus=True):
         if not self._started or not self._at_prompt or self._nav_busy or self._run_future is not None:
             raise TerminalBusyError("The terminal is busy")
         has_input = self.has_input()
-        if has_input and not self._driver.supports_line_editing:
+        if has_input and not self._edits_lines():
             raise TerminalBusyError("The terminal line holds typed input")
         future: Future[None] = asyncio.get_running_loop().create_future()
         self._run_future = future
-        self._run_stashed = has_input
-        if has_input:
+        # has_input cannot see lines the shell put back by itself, so a real shell always stashes.
+        self._run_stashed = self._edits_lines() and (has_input or not self._driver.supports_editor_protocol)
+        if self._run_stashed:
             self._stash_input()
-        else:
-            self._prepare_line()
         self._at_prompt = False
         self._command_owner = self.owner
         self._backend.write((line + "\n").encode())
@@ -860,40 +873,82 @@ class Terminal(ScrollView, can_focus=True):
         if not future.done():
             future.set_result(None)
 
+    def _edits_lines(self) -> bool:
+        """Return True if the shell can set its line aside now; otherwise it is treated as a plain shell."""
+        return self._driver.supports_line_editing and self._shell_edits
+
     def _stash_input(self) -> None:
-        """Remove typed input from the shell line so it can be restored later."""
+        """Make the shell set its line aside so it can be restored later."""
+        self._stash_held_input = self._stash_held_input or self.has_input()
         if self._driver.supports_editor_protocol:
             self._backend.write(STASH_SEQUENCE)
         else:
-            self._backend.write(self._driver.kill_line_sequence())
+            self._write_keys(self._driver.set_aside_sequence())
 
-    def _prepare_line(self) -> None:
-        """Make the line editor take typed text before a write that does not stash input first."""
-        sequence = self._driver.prepare_line_sequence()
-        if sequence:
-            self._backend.write(sequence)
+    def _write_keys(self, keys: bytes) -> None:
+        """Write private key sequences and expect the terminal driver to echo them.
+
+        The shell reports a prompt before its line editor reads: until then (a slow prompt) the PTY
+        is in its cooked mode and echoes the keys.  ``_strip_key_echo`` removes that echo; the keys
+        stay queued for the editor.
+        """
+        # Control characters are echoed as ^X with ``stty echoctl``, the default, and as they are without.
+        self._key_echoes.append("".join(f"^{chr(byte ^ 0x40)}" if byte < _FIRST_PRINTABLE else chr(byte) for byte in keys))
+        self._key_echoes.append(keys.decode("ascii"))
+        self._backend.write(keys)
+
+    def _strip_key_echo(self, chars: str) -> str:
+        """Remove the expected echoes of private keys from shell output.
+
+        An echo cut off at the end of *chars* is held back until the rest arrives.
+        """
+        chars, self._held_echo = self._held_echo + chars, ""
+        for echo in list(self._key_echoes):
+            if echo in chars:
+                chars = chars.replace(echo, "", 1)
+                self._key_echoes.remove(echo)
+        for echo in self._key_echoes:
+            # At least "^[[", so that a lone "^" at the end of a prompt is shown at once.
+            for length in range(min(len(echo) - 1, len(chars)), 2, -1):
+                if chars.endswith(echo[:length]):
+                    self._held_echo = chars[-length:]
+                    return chars[:-length]
+        return chars
 
     def _restore_input(self) -> None:
-        """Put back input removed by ``_stash_input``."""
+        """Put back what ``_stash_input`` set aside.
+
+        Nothing is written when line editing was switched off meanwhile: the keys would stay on the
+        line as text.  The shell keeps the saved line for the next restore.
+        The line counts as occupied afterwards only if a stash saw input on it or the user typed while
+        it was set aside; otherwise every navigation would make Enter on a panel go to the terminal.
+        """
+        held_input, self._stash_held_input = self._stash_held_input, False
+        if not self._edits_lines():
+            return
         if self._driver.supports_editor_protocol:
             self._backend.write(RESTORE_SEQUENCE)
         else:
-            self._backend.write(self._driver.yank_sequence())
-        # The restore/yank echo arrives after the prompt and would be absorbed into
+            self._write_keys(self._driver.put_back_sequence())
+        # The echo of the restored line arrives after the prompt and would be absorbed into
         # the snapshot, so report input as present for this prompt line.
-        self._input_since_precmd = True
+        if held_input:
+            self._input_since_precmd = True
 
     def _start_nav(self) -> None:
-        """Send the hidden ``cd`` for ``_nav_target``, stashing typed input first if needed.
+        """Send the hidden ``cd`` for ``_nav_target``, setting the shell's line aside first.
 
-        Drivers with ``supports_editor_protocol`` get an atomic stash request;
-        others get their driver's ``kill_line_sequence()``, which clears the
-        line editor's buffer using whatever keystrokes that shell needs.  The
-        stash/kill happens at most once per transaction chain; a ``cd`` without
-        it is preceded by the driver's ``prepare_line_sequence()``.
+        Drivers with ``supports_editor_protocol`` get an atomic stash request,
+        at most once per transaction chain and only with typed input.  Others get
+        their driver's ``set_aside_sequence()`` before every ``cd``: the line may
+        hold input that ``has_input`` cannot see, and the saved text accumulates
+        until the one restore at the end of the chain.
         """
-        if not self._driver.supports_line_editing:
+        if not self._edits_lines():
             self._send_plain_cd()
+            # A caller may wait since before the shell reported that it cannot edit lines.
+            if self._cwd is not None:
+                self._resolve_nav_future(self._cwd)
             return
         assert self._nav_target is not None
         if self._nav_target == self._nav_last_sent_target:
@@ -904,11 +959,9 @@ class Terminal(ScrollView, can_focus=True):
         self._nav_busy = True
         self._at_prompt = False
         self._draining = True
-        if not self._nav_stashed and self.has_input():
+        if not self._driver.supports_editor_protocol or (not self._nav_stashed and self.has_input()):
             self._nav_stashed = True
             self._stash_input()
-        else:
-            self._prepare_line()
         self._backend.write((" " + self._driver.cd_command(str(self._nav_target)) + "\n").encode())
         self._arm_watchdog()
 
@@ -990,7 +1043,9 @@ class Terminal(ScrollView, can_focus=True):
         if not self._hook_repaired:
             self._hook_repaired = True
             _logger.warning("No precmd after cd; re-installing the shell hook")
-            self._prepare_line()
+            if not self._driver.supports_editor_protocol:
+                # The setup line is a hidden line too; _start_nav marks the line as set aside.
+                self._stash_input()
             self._backend.write(self._driver.init_code().encode())
             self._start_nav()
             return
@@ -1010,9 +1065,13 @@ class Terminal(ScrollView, can_focus=True):
         self._nav_target = None
         self._nav_busy = False
         self._nav_stashed = False
+        self._stash_held_input = False
         self._plain_cd_sent = False
         self._at_prompt = False
         self._hook_repaired = False
+        self._shell_edits = True
+        self._key_echoes.clear()
+        self._held_echo = ""
         self._input_since_precmd = False
         self._startup_input = False
         self._prompt_snapshot = None
@@ -1051,8 +1110,7 @@ class Terminal(ScrollView, can_focus=True):
         # than what's actually visible.
         self.ncol = self.size.width - self.scrollbar_size_vertical
         self.nrow = max(self.size.height, self._driver.min_rows)
-        assert self.send_queue is not None
-        self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
+        self._send_size()
         self._resize_screen()
         if self._rebuild_handle is not None:
             self._rebuild_handle.cancel()
@@ -1073,6 +1131,16 @@ class Terminal(ScrollView, can_focus=True):
             self._follow_offset = target if was_one_row or self.nrow > old_rows else None
         elif resized:
             self._follow_offset = None
+
+    def _send_size(self) -> None:
+        """Give the PTY the screen's size, unless the driver makes it wait for the first hook report.
+
+        A held size is sent by the first hook report, or when the startup timeout ends the wait.
+        """
+        if self._startup_output is not None and self._driver.resize_waits_for_hook:
+            return
+        assert self.send_queue is not None
+        self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
 
     def _resize_screen(self) -> None:
         """Resize the screen model to ``nrow`` by ``ncol``.
@@ -1162,7 +1230,7 @@ class Terminal(ScrollView, can_focus=True):
     # recv loop
     # ------------------------------------------------------------------
 
-    def _handle_pre_cmd(self, raw: str, from_nn: bool = True) -> None:
+    def _handle_pre_cmd(self, raw: str, from_nn: bool = True, line_editing: bool = True) -> None:
         """Process a precmd notification from Nova Navigator's own shell hook.
 
         Third-party OSC 7 sequences (``from_nn`` False, e.g. oh-my-zsh) are
@@ -1172,15 +1240,23 @@ class Terminal(ScrollView, can_focus=True):
         row means the shell cannot reach it (e.g. the directory was deleted or
         is not accessible), so the transaction gives up rather than resending
         the identical ``cd`` forever.
+        A transaction also ends when the shell reports that it cannot set its line
+        aside (*line_editing* False): no further ``cd`` of it may be written now.  A target not
+        reached yet is kept and applied at the next precmd, as for a plain shell.
         Any other precmd is a user command cycle: it may report a user-initiated
         directory change and then applies a target stored while the shell was busy.
         """
         if not from_nn:
             return
+        # Keys written before this report were read by now, or their echo has arrived before it.
+        self._key_echoes.clear()
         self._shell_hooked = True
+        self._shell_edits = line_editing
         self._no_integration = False
         self._early_exits = 0
-        self._startup_output = None
+        held_back, self._startup_output = self._startup_output is not None, None
+        if held_back:
+            self._send_size()
         self._cancel_startup_timer()
         cwd = PurePath(raw.strip())
         plain_cd_sent, self._plain_cd_sent = self._plain_cd_sent, False
@@ -1194,7 +1270,13 @@ class Terminal(ScrollView, can_focus=True):
         if self._nav_busy:
             self._cancel_watchdog()
             can_retry = self._nav_same_target_attempts < _NAV_MAX_SAME_TARGET_ATTEMPTS
-            if self._nav_target is not None and cwd != self._nav_target and can_retry:
+            if self._nav_target is not None and cwd != self._nav_target and not self._edits_lines():
+                # The shell can no longer set its line aside: as with a plain shell, the target waits
+                # for the next prompt.
+                target = self._nav_target
+                self._finish_nav(cwd)
+                self._nav_target = target
+            elif self._nav_target is not None and cwd != self._nav_target and can_retry:
                 self._start_nav()
             else:
                 if self._nav_target is not None and cwd != self._nav_target:
@@ -1224,14 +1306,14 @@ class Terminal(ScrollView, can_focus=True):
                 for _ in range(_RECV_DRAIN_LIMIT):
                     cmd = message[0]
                     if cmd == "setup":
-                        assert self.send_queue is not None
-                        self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
+                        self._send_size()
                     elif cmd == "pre_cmd":
                         from_nn = bool(message[_PRE_CMD_FROM_NN_IDX]) if len(message) > _PRE_CMD_FROM_NN_IDX else True
-                        self._handle_pre_cmd(str(message[1]), from_nn)
+                        line_editing = bool(message[_PRE_CMD_LINE_EDITING_IDX]) if len(message) > _PRE_CMD_LINE_EDITING_IDX else True
+                        self._handle_pre_cmd(str(message[1]), from_nn, line_editing)
                     elif cmd == "stdout":
                         if not self._draining:
-                            self._feed_stdout(str(message[1]))
+                            self._feed_stdout(self._strip_key_echo(str(message[1])))
                             stdout_fed = True
                             self._refresh_prompt_snapshot()
                         elif self._startup_output is not None:
@@ -1278,6 +1360,7 @@ class Terminal(ScrollView, can_focus=True):
         self._cancel_startup_timer()
         self._draining = False
         self._no_integration = True
+        self._send_size()
         self._feed_stdout(text)
         self._refresh_prompt_snapshot()
         fallback = self._cwd if self._cwd is not None else self._nav_target_or_root()
