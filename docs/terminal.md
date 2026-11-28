@@ -152,7 +152,7 @@ The hook emits an OSC 7 CWD sequence.
 
 **BashDriver** — installs a precmd hook via `PROMPT_COMMAND`.
 The same init line turns readline's `horizontal-scroll-mode` off in the embedded shell, because bash can loop forever with it (see [Two-row minimum](#two-row-minimum-and-the-one-row-view)).
-This overrides the user's `inputrc` or rc setting for that shell only.
+This overrides the user's `inputrc` or rc setting for that shell only, from the moment the init line has run.
 
 **FallbackDriver** — generic POSIX sh driver.
 Installs a `PS1`-based hook that emits OSC 7.
@@ -275,7 +275,8 @@ Mouse reports name the cursor's row, and selection and double-click work on the 
 
 What remains:
 
-- Only the embedded shell has horizontal scrolling turned off.
+- Horizontal scrolling is turned off only by `BashDriver`, and only once its init line has run.
+  A bash behind `FallbackDriver` (`sh` linking to bash, or an SSH shell that could not be detected) keeps its own setting.
   A bash started inside it, or reached by a typed `ssh`, reads its own configuration and can still loop if that turns the mode on, also if you turn it on again yourself.
 - A bash started inside zsh, or reached by a typed `ssh` from a zsh terminal, gets a one-row PTY and can loop.
 - Closing the terminal does not end a shell that loops.

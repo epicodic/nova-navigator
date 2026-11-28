@@ -12,7 +12,8 @@
   The embedded terminal runs the shell named by `$SHELL`; bash and zsh have full integration.
   With bash and plain shells, a long line wraps when the terminal is one row high, and only the row with the cursor shows.
   zsh behaves as it does in any one-row terminal.
-  Horizontal scrolling of the command line (readline's `horizontal-scroll-mode`) is turned off in the embedded bash.
+  Horizontal scrolling of the command line (readline's `horizontal-scroll-mode`) is turned off in the embedded bash once the setup line has run.
+  It is not turned off for a bash that is treated as a plain shell: `sh` linked to bash, or an SSH shell that could not be detected.
 - A built-in text editor, `ned`, which opens from the file manager with F4 and can also run on its own.
 - Copy (F5), move (F6) and delete (F8), with progress and conflict resolution.
 - Long operations run in the background and can be cancelled.
