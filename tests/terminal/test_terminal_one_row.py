@@ -12,6 +12,7 @@ import contextlib
 import os
 import shutil
 import signal
+import subprocess
 import time
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
@@ -172,18 +173,41 @@ async def test_bash_with_horizontal_scroll_mode_in_inputrc_survives_a_width_chan
         assert "set horizontal-scroll-mode off" in (home / "variables").read_text()
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("prompt", [_SHORT_PROMPT, _LONG_PROMPT, _FULL_WIDTH_PROMPT], ids=["short", "long", "full-width"])
-async def test_deleting_a_wrapped_line_in_one_row_leaves_no_input(home: Path, prompt: str) -> None:
+def _bash_version() -> tuple[int, int]:
+    command = [_BASH, "--norc", "--noprofile", "-c", "echo ${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"]
+    major, minor = subprocess.run(command, capture_output=True, text=True, check=True).stdout.split()
+    return int(major), int(minor)
+
+
+async def _type_and_delete(home: Path, prompt: str, count: int, still_input: bool) -> None:
+    """Type *count* characters after a command in a one-row terminal, delete them and check ``has_input()``."""
     async with _real_bash(home, prompt, height=1) as (terminal, _pilot):
         # After some output the prompt is on the bottom row, so a line that wraps scrolls the screen.
         await asyncio.wait_for(terminal.run_command("echo done"), timeout=5)
         await asyncio.sleep(0.5)
         assert not terminal.has_input()
-        await _press(terminal, "x", "x", 90)
+        await _press(terminal, "x", "x", count)
         assert terminal.has_input()
-        await _press(terminal, "backspace", "\x7f", 90)
-        assert not terminal.has_input()
+        await _press(terminal, "backspace", "\x7f", count)
+        assert terminal.has_input() == still_input
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("prompt", "count"),
+    # The full-width prompt takes two rows itself: 70 characters still fit on the two-row screen.
+    [(_SHORT_PROMPT, 90), (_LONG_PROMPT, 90), (_FULL_WIDTH_PROMPT, 70)],
+    ids=["short", "long", "full-width"],
+)
+async def test_deleting_a_wrapped_line_in_one_row_leaves_no_input(home: Path, prompt: str, count: int) -> None:
+    await _type_and_delete(home, prompt, count, still_input=False)
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_line_taller_than_the_screen(home: Path) -> None:
+    # Three rows on a two-row screen.  Since 5.3, bash redraws such a line on a cleared screen, so the
+    # line then still counts as occupied.
+    await _type_and_delete(home, _FULL_WIDTH_PROMPT, 90, still_input=_bash_version() >= (5, 3))
 
 
 @pytest.mark.asyncio

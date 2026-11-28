@@ -490,6 +490,7 @@ A plain shell (no line editor) also holds back panel changes until then.
 
 - **bash:** after deleting a line that needed more rows than the screen has, which in the one-row view means more than two.
   The prompt has scrolled off, so the one-row view also shows an empty row until the prompt is drawn again (Ctrl+L or Enter).
+  bash 5.3 instead redraws such a line on a cleared screen (see the known issue below).
 - **zsh:** in a one-row terminal, after deleting a line that was wider than the terminal.
 - **Plain shells (sh, dash):** after deleting a line that had wrapped, at any height, because the cursor cannot be erased back over the line break.
 - **Any shell:** when the prompt is drawn late, for example by a slow command in it, and you type in the gap, deleting that text can likewise leave one Enter swallowed.
@@ -497,6 +498,10 @@ A plain shell (no line editor) also holds back panel changes until then.
 - **Any shell:** when the terminal was made smaller while input was in rows that the smaller screen dropped.
 
 The screen cannot tell an empty line from one with typed text in these cases, so no safe fix based on the screen is known.
+
+**Known issue (bash 5.3, as in Ubuntu 26.04).** Once a typed line is taller than the terminal, which in the one-row view means more than two rows, bash redraws it by clearing the screen.
+These redraws add copies of the prompt to the scrollback.
+After deleting such a line, `has_input()` stays True.
 
 ---
 
