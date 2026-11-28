@@ -212,7 +212,8 @@ The stored lines in `_display` are never mutated.
 | `_draining` | `bool` | When True, stdout is discarded (not fed to pyte) |
 | `_input_since_precmd` | `bool` | True once any user-originated byte was sent since the last precmd, or while `_startup_input` is set |
 | `_startup_input` | `bool` | User input was sent before the first hook report and no Enter has followed that report |
-| `_prompt_snapshot` | `tuple[int, int, str] \| None` | Cursor row, column, and row text captured after every stdout chunk until the first user byte |
+| `_prompt_snapshot` | `tuple[int, int, str] \| None` | Cursor line, column, and row text captured after every stdout chunk until the first user byte |
+| `_rows_snapshot` | `dict[int, str]` | The other screen rows at the same moment, keyed by their distance from the cursor |
 | `_at_prompt` | `bool` | True while the shell waits for a command line |
 | `owner` | `object \| None` | Token set by the host (the active pane); recorded on command submission |
 | `_command_owner` | `object \| None` | Copy of `owner` taken when the user submits a command; attached to the next user-initiated `PathChanged` |
@@ -433,21 +434,28 @@ After precmd, `_prompt_snapshot` is refreshed after every stdout chunk while `_i
 It is therefore frozen at the moment the user starts typing, when the prompt is fully drawn on screen.
 No prompt-end marker or timing guess is needed, and multi-chunk or asynchronous prompts are handled by construction.
 
-With a two-row minimum, the snapshot's row is a line number that counts the rows the screen has scrolled (`TerminalPyteScreen.scrolled`).
-A one-row view has a second screen row, so a typed line that wraps scrolls the prompt up, and deleting it leaves the cursor one screen row higher than before, on the same line.
-Without a minimum (zsh), the screen row is compared.
+The snapshot's row is a line number that counts the rows the screen has scrolled (`TerminalPyteScreen.scrolled`), for every shell.
+A typed line that wraps can scroll the prompt up, and deleting it leaves the cursor higher on the screen than before, on the same line.
+Input that scrolls the prompt up and leaves the cursor on the prompt's screen row is on another line.
+
+The snapshot also holds the other rows of the screen, keyed by their distance from the cursor.
+The cursor can be where the prompt left it while the input is elsewhere: Ctrl+A on a recalled command whose first line is empty or all spaces, or a screen redraw that puts a later line of a command there.
+A row counts as new when it is not blank and differs from the snapshot, so what an earlier program left around the prompt does not count.
+When the screen gets smaller and drops new rows, the snapshot is discarded, and the line counts as occupied until the next precmd.
 
 ### Decision
 
 | Bytes sent since precmd | Screen vs snapshot | Result |
 |---|---|---|
 | no | — | `False` |
-| yes | cursor and row text identical | `False` (typed, then deleted everything) |
-| yes | anything differs | `True` |
+| yes | cursor and row text identical, no new row | `False` (typed, then deleted everything) |
+| yes | cursor or row text differs, or a row is new | `True` |
 
 Comparing the row text as well as the cursor handles Home, wide characters, and wrapped input.
 After a navigation that restored typed text, the flag is set and the snapshot is left empty, so the answer is `True` for that prompt line.
-The only misjudgement is "typed, deleted everything, and the prompt repainted asynchronously", which yields `True`; Enter then executes an empty line, which is harmless.
+A `True` for an empty line is harmless: Enter then executes an empty line (see the limitations below).
+A `False` for a line with input is not, because an automatic `cd` is then written into it.
+The screen cannot show input that is not echoed (`stty -echo`), or input that leaves every row as it was when the prompt was drawn.
 
 The mechanism is identical for zsh, bash, local, and SSH terminals.
 
@@ -459,9 +467,10 @@ A plain shell (no line editor) also holds back panel changes until then.
 - **bash:** after deleting a line that needed more rows than the screen has, which in the one-row view means more than two.
   The prompt has scrolled off, so the one-row view also shows an empty row until the prompt is drawn again (Ctrl+L or Enter).
 - **zsh:** in a one-row terminal, after deleting a line that was wider than the terminal.
-  With more rows, this can happen when the prompt itself is wider than the terminal.
 - **Plain shells (sh, dash):** after deleting a line that had wrapped, at any height, because the cursor cannot be erased back over the line break.
 - **Any shell:** when the prompt is drawn late, for example by a slow command in it, and you type in the gap, deleting that text can likewise leave one Enter swallowed.
+- **Any shell:** when another row gets new text after you started typing, for example a part of the prompt that is redrawn later, or a list printed below the line and not erased again.
+- **Any shell:** when the terminal was made smaller while input was in rows that the smaller screen dropped.
 
 The screen cannot tell an empty line from one with typed text in these cases, so no safe fix based on the screen is known.
 

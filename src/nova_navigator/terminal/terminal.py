@@ -285,9 +285,6 @@ class Terminal(ScrollView, can_focus=True):
     on the last requested directory without showing intermediate prompts.
     """
 
-    # The widget showed only the cursor's row at the last resize (see _one_row_view).
-    _was_one_row: bool = False
-
     DEFAULT_CSS = """
     Terminal {
         background: $background;
@@ -351,6 +348,8 @@ class Terminal(ScrollView, can_focus=True):
         self.nrow = 24
         self.mouse_tracking = False
         self.bracketed_paste = False
+        # The widget showed only the cursor's row at the last resize (see _one_row_view).
+        self._was_one_row: bool = False
         self._scrollback_lines = scrollback_lines
         # Lines scrolled off the top of the live screen, oldest first; bounded by scrollback_lines.
         self._history: deque[Text] = deque(maxlen=max(0, scrollback_lines))
@@ -379,6 +378,8 @@ class Terminal(ScrollView, can_focus=True):
         # (cursor line, cursor column, text of the cursor row) captured after every
         # stdout chunk until the first user byte, i.e. the fully drawn prompt (see _cursor_line).
         self._prompt_snapshot: tuple[int, int, str] | None = None
+        # The other rows at the time of _prompt_snapshot, see _rows_around_cursor.
+        self._rows_snapshot: dict[int, str] = {}
         # True while the shell waits for a command line.  Set on precmd, cleared
         # when user input containing a newline is forwarded or an internal cd is sent.
         self._at_prompt: bool = False
@@ -386,26 +387,7 @@ class Terminal(ScrollView, can_focus=True):
         # _command_owner when the user submits a command.
         self.owner: object | None = None
         self._command_owner: object | None = None
-        # Newest requested directory not yet confirmed by the shell.
-        self._nav_target: PurePath | None = None
-        # A cd has been written and its precmd is awaited.
-        self._nav_busy: bool = False
-        # The target most recently sent to the shell, and how many consecutive
-        # times it has been (re)sent without the shell ever reporting it as cwd.
-        # Distinguishes "a newer target replaced this one" (reset, keep chaining)
-        # from "the shell can't reach this target" (bounded, then give up).
-        self._nav_last_sent_target: PurePath | None = None
-        self._nav_same_target_attempts: int = 0
-        # User text was killed before the cd and must be yanked back on completion.
-        self._nav_stashed: bool = False
-        # Resolved when the transaction chain completes; awaited by set_terminal_directory.
-        self._nav_future: Future[PurePath] | None = None
-        # A plain-shell cd was written; the precmd that follows is not a user navigation.
-        self._plain_cd_sent: bool = False
-        # Fires when no precmd follows a cd (hook lost); see _on_nav_timeout.
-        self._nav_watchdog: TimerHandle | None = None
-        # The precmd hook was re-installed once this shell session.
-        self._hook_repaired: bool = False
+        self._init_navigation_state()
         # Last known cwd reported by the shell via precmd.
         self._cwd: PurePath | None = None
         # Output of a new shell held back while startup draining is on; None once shown or dropped.
@@ -430,6 +412,29 @@ class Terminal(ScrollView, can_focus=True):
         # overlays terminal content; disabled entirely (no gutter) when scrollback is off.
         self.styles.overflow_y = "scroll" if scrollback_lines > 0 else "hidden"
         self.styles.overflow_x = "hidden"
+
+    def _init_navigation_state(self) -> None:
+        """Set the state of the directory navigation transaction; ``_reset_shell_state`` clears it again."""
+        # Newest requested directory not yet confirmed by the shell.
+        self._nav_target: PurePath | None = None
+        # A cd has been written and its precmd is awaited.
+        self._nav_busy: bool = False
+        # The target most recently sent to the shell, and how many consecutive
+        # times it has been (re)sent without the shell ever reporting it as cwd.
+        # Distinguishes "a newer target replaced this one" (reset, keep chaining)
+        # from "the shell can't reach this target" (bounded, then give up).
+        self._nav_last_sent_target: PurePath | None = None
+        self._nav_same_target_attempts: int = 0
+        # User text was killed before the cd and must be yanked back on completion.
+        self._nav_stashed: bool = False
+        # Resolved when the transaction chain completes; awaited by set_terminal_directory.
+        self._nav_future: Future[PurePath] | None = None
+        # A plain-shell cd was written; the precmd that follows is not a user navigation.
+        self._plain_cd_sent: bool = False
+        # Fires when no precmd follows a cd (hook lost); see _on_nav_timeout.
+        self._nav_watchdog: TimerHandle | None = None
+        # The precmd hook was re-installed once this shell session.
+        self._hook_repaired: bool = False
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -704,16 +709,33 @@ class Terminal(ScrollView, can_focus=True):
             return
         cursor = self._screen.cursor
         self._prompt_snapshot = (self._cursor_line(), cursor.x, self._row_text(cursor.y))
+        self._rows_snapshot = self._rows_around_cursor()
+
+    def _rows_around_cursor(self) -> dict[int, str]:
+        """Return the screen rows other than the cursor's, keyed by their distance from it.
+
+        Trailing spaces are removed.
+        """
+        cursor_y = self._screen.cursor.y
+        return {y - cursor_y: self._row_text(y).rstrip(" ") for y in range(self._screen.lines) if y != cursor_y}
+
+    def _count_new_rows(self) -> int:
+        """Count the non-blank rows around the cursor that differ from the prompt snapshot.
+
+        What was there when the prompt was drawn, such as output above it or text an earlier
+        program left below it, does not count.
+        """
+        before = self._rows_snapshot
+        return sum(1 for offset, text in self._rows_around_cursor().items() if text and text != before.get(offset, ""))
 
     def _cursor_line(self) -> int:
-        """Return the line the cursor is on, as ``has_input`` compares it.
+        """Return the line the cursor is on, counting the rows the screen has scrolled.
 
-        With a two-row minimum a one-row view has a second screen row, so a typed line that wraps
-        scrolls the prompt up and deleting it leaves the cursor one row higher than before.  Counting
-        the scrolled rows keeps the number of the prompt line the same.  Otherwise this is the screen row.
+        Unlike the screen row, this number stays with a line when the screen scrolls: input that
+        scrolls the prompt up cannot pass for it, and a wrapped line that was deleted again ends on
+        the same number as before.
         """
-        scrolled = self._screen.scrolled if self._driver.min_rows else 0
-        return scrolled + self._screen.cursor.y
+        return self._screen.scrolled + self._screen.cursor.y
 
     def _holds_startup_input(self) -> bool:
         """Return True if the shell reports prompts but input typed before its first report may still be on the line.
@@ -729,6 +751,8 @@ class Terminal(ScrollView, can_focus=True):
         No user byte since the last precmd means the line is empty; this is
         certain.  Otherwise the screen is compared with the snapshot frozen at
         the first user byte, which detects "typed, then deleted everything".
+        New text in another row counts as input too, because the cursor can be
+        where the prompt left it while the input is further down or up.
         Without a snapshot the answer is conservatively True; this is also the
         case after input sent before the first hook report (``_startup_input``).
         """
@@ -738,7 +762,9 @@ class Terminal(ScrollView, can_focus=True):
             return True
         line, col, text = self._prompt_snapshot
         cursor = self._screen.cursor
-        return self._cursor_line() != line or cursor.x != col or self._row_text(cursor.y) != text
+        if self._cursor_line() != line or cursor.x != col or self._row_text(cursor.y) != text:
+            return True
+        return self._count_new_rows() > 0
 
     def request_cd(self, path: PurePath) -> None:
         """Ask the shell to change to *path* without waiting for completion.
@@ -1015,7 +1041,7 @@ class Terminal(ScrollView, can_focus=True):
         self.nrow = max(self.size.height, self._driver.min_rows)
         assert self.send_queue is not None
         self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
-        self._screen.resize(self.nrow, self.ncol)
+        self._resize_screen()
         if self._rebuild_handle is not None:
             self._rebuild_handle.cancel()
             self._rebuild_handle = None
@@ -1035,6 +1061,17 @@ class Terminal(ScrollView, can_focus=True):
             self._follow_offset = target if was_one_row or self.nrow > old_rows else None
         elif resized:
             self._follow_offset = None
+
+    def _resize_screen(self) -> None:
+        """Resize the screen model to ``nrow`` by ``ncol``.
+
+        A smaller screen drops rows.  When that loses rows that count as input, the prompt
+        snapshot is discarded, so the line counts as occupied until the next precmd.
+        """
+        new_rows = self._count_new_rows() if self._input_since_precmd and self._prompt_snapshot else 0
+        self._screen.resize(self.nrow, self.ncol)
+        if new_rows and self._count_new_rows() < new_rows:
+            self._prompt_snapshot = None
 
     def _mouse_ready(self) -> bool:
         """Return True if the terminal is started and mouse tracking is active."""
