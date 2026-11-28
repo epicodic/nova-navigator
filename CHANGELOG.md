@@ -27,16 +27,14 @@
 
 #### Possible data loss
 
-- The same file reached through two separate SSH connections is not recognised, so copying or moving it onto itself can destroy it.
-- In the built-in shell, `cp` of a file onto itself is not refused and can destroy it.
-  This was not reproduced.
-- Copying a folder into its own subfolder is not refused.
-  The effect has not been verified.
+- The same storage reached in another way, for example under another host name, user or port, is not recognised, so copying or moving a file or folder onto itself that way can destroy it.
+- Servers with the same address, port and user name behind different jump hosts are treated as one machine.
+  So copying or moving a file or folder between them to the same path, or a folder to a path inside it, is skipped.
 - Two hard-linked names on SSH are not recognised as one file, so copying or moving one onto the other may destroy data.
   This was not tested.
-- With a dialog open, after Ctrl+S has been pressed and the application waits for the next key, or with Quit rebound, Ctrl+Q quits without asking and deletes local copies that were not written back.
-  Those edits are lost.
 - If a directory is replaced by a symbolic link while it is being deleted, moved, or removed with `rm -r` in the built-in shell, the operation can follow the link.
+- In the built-in shell, inside folder `d`, `cp -r d .` can overwrite a file in `d` with the file of the same name from `d/d`.
+  The command still exits with 0.
 - Killing the application while it replaces a link can leave the destination missing.
   Changes made by other programs during a copy are not detected.
 - An interrupted save can damage a configuration file: `remotes.toml` and `keybindings.toml` always, `settings.toml` and `bookmarks.toml` when the directory is read-only.
@@ -101,6 +99,8 @@
 - A failed download for F3 or F4 shows no message, only a failed job.
 - Choosing "Abort" in the error dialog for an unreadable file ends the application.
 - "Quit and keep files" while a file is still downloading for viewing can make that download fail.
+- If writing a local copy back to its source hangs, quitting waits for it and further quit keys are ignored.
+  The unsynced local file stays on disk.
 - Cancelling F4 just after the download may leave a local copy behind.
   This was not reproduced.
 - Saving in the editor creates a new file, except for a plain Save that only overwrites bytes (same length, nothing moved) in a file not changed on disk, which is patched in place.
@@ -141,6 +141,8 @@
 - On a slow shell, Enter pressed before the typed command appears may act on the file panel instead of the terminal.
   This was seen in the code, but not reproduced in the application.
 - A move across devices that follows links (or to a destination without links) can skip, as broken, a link whose target was already moved in the same move.
+- Where `P/d` is a symbolic link, copying or moving `P/d/d` into `P` removes the link and then fails; over SSH it can report success and leave an empty folder.
+  File contents are kept.
 - Relative links copied to another host keep their text even with the stable-links option.
 - The built-in shell's `cp` and `mv` have no link options.
 - With stable links, `..` after a linked directory is read textually.

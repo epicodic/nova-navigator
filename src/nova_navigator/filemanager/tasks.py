@@ -2,8 +2,9 @@ import asyncio
 import contextlib
 import logging
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
-from pathlib import PurePosixPath
+from pathlib import PurePath, PurePosixPath
 from typing import Literal
 
 from nova_navigator.scheduler import TaskContext
@@ -13,6 +14,7 @@ from ..file_filter import FileFilter
 from ..vfs import VPath
 from ..vfs.filesystem import Filesystem, StreamReaderLike, StreamWriterLike
 from ..vfs.filesystems.local import LocalFilesystem
+from ..vfs.local_copy import MAX_LINK_HOPS
 from ..vfs.types import Stat
 from .link_target import stable_link_target
 
@@ -29,6 +31,7 @@ SKIP_LINK_LOOP = "link loop"
 SKIP_UNREADABLE_LINK = "unreadable link"
 SKIP_FOLDER_EXISTS = "folder exists"
 SKIP_SAME_FILE = "same file"
+SKIP_INTO_ITSELF = "into itself"
 _MAX_LINK_DEPTH = 16
 
 
@@ -70,19 +73,23 @@ class EraseFilesOptions:
     """Refresh the cached stat of each path before erasing; internal children listings turn it off."""
 
 
+def _is_same_storage(a: VPath, b: VPath) -> bool:
+    """Return whether *a* and *b* are paths on the same storage."""
+    return a.filesystem.unwrap().is_same_storage(b.filesystem.unwrap()) or a.filesystem.is_same_device(a, b)
+
+
 def _is_same_entry(a: VPath, b: VPath) -> bool:
     """Return whether *a* and *b* name the same existing entry; a final link is not followed.
 
     Local paths compare by inode, so symlinked parent folders and hard links count.
     Elsewhere the paths must be equal, or the names equal and the parent folders resolve to the same folder.
     """
-    filesystem = a.filesystem.unwrap()
-    if filesystem != b.filesystem.unwrap() and not a.filesystem.is_same_device(a, b):
+    if not _is_same_storage(a, b):
         return False
     if a.path == b.path:  # same storage and same path: the same entry, so no stat is needed
         return True
     try:
-        if isinstance(filesystem, LocalFilesystem):
+        if isinstance(a.filesystem.unwrap(), LocalFilesystem):
             return os.path.samestat(os.lstat(a.path), os.lstat(b.path))
         if a.name != b.name:
             return False
@@ -99,19 +106,9 @@ def _is_onto_itself(src: VPath, dst: VPath) -> bool:
 
     That is the case when *dst* is *src* itself, or when *src* is a link and *dst* is on its way to the target.
     """
-    if _is_same_entry(src, dst):
-        return True
     if not src.stat.is_symlink:
-        return False
-    hop = src
-    for _ in range(_MAX_LINK_DEPTH):
-        try:
-            hop = hop.parent / hop.filesystem.readlink(hop)
-        except OSError:  # the end of the chain: not a link any more
-            return False
-        if _is_same_entry(hop, dst):
-            return True
-    return False
+        return _is_same_entry(src, dst)
+    return any(_is_same_entry(hop, dst) for hop in _walk_links(src))
 
 
 def _skip_onto_itself(ctx: TaskContext, src: VPath, dst: VPath) -> bool:
@@ -119,6 +116,73 @@ def _skip_onto_itself(ctx: TaskContext, src: VPath, dst: VPath) -> bool:
     if not _is_onto_itself(src, dst):
         return False
     ctx.report_skipped(src.uri, SKIP_SAME_FILE)
+    return True
+
+
+def _walk_links(path: VPath) -> Iterator[VPath]:
+    """Yield *path* and then, while it is a link, each next step towards its target (at most MAX_LINK_HOPS steps)."""
+    yield path
+    for _ in range(MAX_LINK_HOPS):
+        try:
+            path = path.parent / path.filesystem.readlink(path)
+        except OSError:  # the end of the chain: not a link any more
+            return
+        yield path
+
+
+def _link_chain(path: VPath) -> Iterator[VPath]:
+    """Yield *path* and then, on a filesystem with links, each next step towards its target."""
+    if not path.filesystem.supports_symlinks():
+        yield path
+        return
+    yield from _walk_links(path)
+
+
+def would_overwrite_source(src: VPath, dst: VPath) -> bool:
+    """Return whether writing through *dst* would overwrite what is read through *src*; links are followed on both."""
+    targets = list(_link_chain(dst))
+    return any(_is_same_entry(source, target) for source in _link_chain(src) for target in targets)
+
+
+def _resolved(path: VPath) -> PurePath:
+    """Return *path* with links resolved as far as it exists; the rest is appended as written."""
+    for existing in (path.path, *path.path.parents):
+        try:
+            real = path.filesystem.real_path(VPath(existing, path.filesystem))
+        except OSError:
+            continue
+        if real is None:
+            break
+        return real.path / path.path.relative_to(existing)
+    return path.path
+
+
+def is_into_itself(src: VPath, dst: VPath) -> bool:
+    """Return whether *dst* is the folder *src* or lies inside it."""
+    return _is_same_storage(src, dst) and _resolved(dst).is_relative_to(_resolved(src))
+
+
+def _is_into_itself_for_write(src: VPath, dst: VPath) -> bool:
+    """Return whether writing the folder *src* to *dst* would put it inside itself.
+
+    Unlike ``is_into_itself``, a final *dst* that is a link is not followed: writing a folder replaces that link
+    (see ``_ensure_directory``), so only its parent is resolved.
+    """
+    if not _is_same_storage(src, dst):
+        return False
+    dst_stat = _fresh_stat_or_none(dst.filesystem, dst)
+    if dst_stat is not None and dst_stat.is_symlink:
+        destination = _resolved(dst.parent) / dst.name
+    else:
+        destination = _resolved(dst)
+    return destination.is_relative_to(_resolved(src))
+
+
+def _skip_into_itself(ctx: TaskContext, src: VPath, dst: VPath) -> bool:
+    """Report the folder *src* as skipped and return True when *dst* lies inside it."""
+    if not _is_into_itself_for_write(src, dst):
+        return False
+    ctx.report_skipped(src.uri, SKIP_INTO_ITSELF)
     return True
 
 
@@ -588,9 +652,10 @@ async def _copy_dir(
 ) -> bool:
     """Copy the folder *src_path* into *dst_path*.
 
-    Return False only when the root was skipped, by the overwrite policy or because *dst_path* is the folder itself.
+    Return False only when the root was skipped, by the overwrite policy or because *dst_path* is the folder
+    itself or lies inside it.
     """
-    if _skip_onto_itself(ctx, src_path, dst_path):
+    if _skip_onto_itself(ctx, src_path, dst_path) or _skip_into_itself(ctx, src_path, dst_path):
         if count_root:
             ctx.status.update_progress(inc_completed=1)
         return False
@@ -859,7 +924,7 @@ async def _move_path(
         return
 
     # Before any branch: each of them removes or truncates the destination.
-    if _skip_onto_itself(ctx, src_path, actual_dst):
+    if _skip_onto_itself(ctx, src_path, actual_dst) or (is_dir and _skip_into_itself(ctx, src_path, actual_dst)):
         ctx.status.update_progress(inc_completed=1)
         return
 

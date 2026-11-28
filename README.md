@@ -75,6 +75,7 @@ These are the default bindings.
 Most of them can be changed in the Key Bindings dialog, which is in the first menu.
 `Tab` and `Shift+Tab` are fixed and cannot be changed.
 The Key Bindings dialog does not list `Insert`, `Ctrl+A` and `Ctrl+F`.
+`Ctrl+Q` quits even when Quit is bound to another key, and asks first if a local copy has unsynced changes.
 
 | Key | Action |
 |---|---|

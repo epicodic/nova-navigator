@@ -151,16 +151,21 @@ A move of a file onto a link on the same device renames over it, so the link is 
 A match is skipped as `"same file"` under every overwrite policy, without a question, and nothing is changed.
 It applies to files, links and folders, on copy and on move.
 
-- The destination is the source entry: the same path on the same filesystem, also behind `RemoteFilesystem` wrappers.
+- The destination is the source entry: the same path on the same storage (`Filesystem.is_same_storage`, or the same device), also behind `RemoteFilesystem` wrappers.
 - On the local filesystem the inode decides, so a path through a symlinked folder and a hard link count too.
 - Elsewhere, equal names in parent folders that `real_path` resolves to the same folder count too.
 - The source is a link and the destination is its target, or a link on the way to it.
 
 Copying or moving a file onto a link that points to it is not such a case: the link is replaced, as any destination link.
 
-Two separate SSH connections are never the same filesystem, even to the same host and account.
-The same file reached through both is not recognised.
-Copying a folder into its own subfolder is not recognised either.
+Two SSH connections with the same host name, port and user, as effective after `~/.ssh/config`, are the same storage (`Filesystem.is_same_storage`).
+They still compare unequal with `==`, so link rewriting and the move strategy treat them as separate.
+The same storage reached under another host name, user or port is not recognised, and neither is a hard link on SSH.
+
+A folder copied or moved into itself or one of its subfolders, with links resolved, is skipped as `"into itself"` in the same way.
+Only the parent folder of the destination is resolved when the destination itself is a link: that link is replaced, as a folder write replaces it, so a folder copied onto a link that points into the source is not skipped.
+
+`cp` refuses to copy a file onto itself, also through a link on a filesystem that supports symbolic links, and `cp -r` refuses to copy a directory into itself.
 
 ## Loop detection
 
@@ -181,13 +186,14 @@ When `real_path` returns `None`, the link is walked through a followed view and 
 ## Skip reasons
 
 An item that is left out is reported with `TaskContext.report_skipped(item.uri, reason)`.
-There are five exact reasons.
+There are six exact reasons.
 
 - `"broken link"`: the target does not exist, or no longer exists when the link is processed (for example moved earlier in the same move), and links are followed or the destination has no links.
 - `"link loop"`: the directory link loops, or the depth guard was hit.
 - `"unreadable link"`: `readlink` failed on the source.
 - `"folder exists"`: a file or link met a real folder of the same name at the destination; `item` is the source path.
 - `"same file"`: the destination is the source itself; see "Copy and move onto itself".
+- `"into itself"`: the destination of a folder lies inside it; see "Copy and move onto itself".
 
 The app shows one toast per finished job and the Jobs dialog lists each path with its reason.
 A skipped item counts as completed work.

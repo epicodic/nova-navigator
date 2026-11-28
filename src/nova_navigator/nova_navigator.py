@@ -485,8 +485,7 @@ class MainScreen(ActionsSupport, Screen[None]):
             self._jobs_dialog._update_position()
 
     def _action_quit(self) -> None:
-        # Exclusive: a repeated quit key while the prompt is being opened must not stack a second prompt.
-        self.app.run_worker(self.app.request_quit(), exclusive=True, group="quit")
+        self.app.start_quit()
 
     async def _on_key(self, event: events.Key) -> None:
         if await self._handle_key(event):
@@ -1350,12 +1349,18 @@ class NovaNavigator(NovaNavigatorCore, App[None]):
             screen.poll()
 
     async def action_quit(self) -> None:
-        """Quit: with an editor screen open the editor asks about unsaved text, else exit as Textual does."""
+        """Quit: with an editor screen open the editor asks about unsaved text, else ask about unsynced local copies."""
         for screen in reversed(self.screen_stack):
             if isinstance(screen, EditorScreen):
                 await screen.action_quit_editor()
                 return
-        await super().action_quit()
+        self.start_quit()
+
+    def start_quit(self) -> None:
+        """Run :meth:`request_quit` in a worker, unless a quit request is already under way."""
+        if any(worker.group == "quit" and not worker.is_finished for worker in self.workers):
+            return
+        self.run_worker(self.request_quit(), group="quit")
 
     def _handle_exception(self, error: Exception) -> None:
         sys.settrace(debug_analytics.trace_handler)

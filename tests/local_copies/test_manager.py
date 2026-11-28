@@ -586,3 +586,28 @@ async def test_close_still_forces_the_overwrite_of_a_conflict_entry(tmp_path: Pa
 
     assert fs.read(fs.path("/d/f.txt")).read(10) == b"local"
     await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_keeps_the_files_of_an_unsynced_copy(tmp_path: Path) -> None:
+    fs = SchemeFs({"/d/f.txt": b"old"})
+    manager = LocalCopyManager(tmp_path / "root", _Runner(), poll_interval=3600, settle_time=3600)
+    entry = await manager.open(fs.path("/d/f.txt"))
+    assert entry is not None
+    entry.copy.path.write_bytes(b"unsynced edit")
+
+    await manager.shutdown()
+
+    assert entry.copy.path.read_bytes() == b"unsynced edit"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_removes_the_files_when_everything_is_synced(tmp_path: Path) -> None:
+    fs = SchemeFs({"/d/f.txt": b"old"})
+    manager = await _manager(tmp_path, _Runner())
+    entry = await manager.open(fs.path("/d/f.txt"))
+    assert entry is not None
+
+    await manager.shutdown()
+
+    assert not (tmp_path / "root").exists()
