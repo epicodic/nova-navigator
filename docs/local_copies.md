@@ -96,7 +96,12 @@ Quitting Nova Navigator while any local copy has unsynced, failed, or conflictin
 With nothing unsynced, Nova Navigator quits immediately and removes its local-copy directory.
 
 `Ctrl+Q` asks only when a local copy is unsynced.
-The quit key works with a dialog open, also when Quit is rebound; only the dialog that captures a new key binding takes a rebound quit key for itself.
+`Ctrl+Q` works with a dialog open, and still does so when Quit is rebound.
+A rebound quit key works with a dialog open only when the focused control and the dialog do not use it themselves.
+A text field keeps the characters typed into it, Space included, and its editing keys such as `Ctrl+X`.
+Buttons, tables, lists and menus keep the keys they act on, such as Enter, the arrow keys or the hotkey of a menu entry.
+The Key Bindings dialog keeps Space, Backspace and Delete in its table, and the dialog that captures a new key binding takes every key.
+A rebound quit chord such as `Ctrl+X Ctrl+C` must be typed again from the start after the screen or the focus changed, or after one of its keys was used by the focused control.
 With the built-in editor or viewer open, `Ctrl+Q` first closes that screen and asks about its unsaved text; the quit prompt for the copies is asked by a later `Ctrl+Q`.
 While a quit is under way, a quit key is ignored, except that it still closes a built-in editor or viewer opened meanwhile, and except while the quit waits for a write-back.
 A running write-back cannot be interrupted, so the application stays open until it finishes or fails.
@@ -265,6 +270,9 @@ This skips `atexit` handlers, on purpose, because some of them can block on the 
 The forced quit has `BACKSTOP_SECONDS` in all.
 A timer is armed right after `abandon()`, so a hang in reading the unsynced state, saving the session state or the teardown is covered.
 It fires early enough to leave the shells time to end, restores the terminal itself if Textual has not, and ends the process the same way.
+To restore the terminal, it first gives back the line settings and stops Textual's input thread, which would otherwise swallow what is typed after the report.
+Both come before the first write, because a write blocks for ever when Textual's output queue is full.
+Input that is pending after the writes, such as mouse reports, is dropped.
 The joins of the shell threads share the one deadline.
 If the terminal does not take the output, the process is ended `_LAST_OUTPUT_SECONDS` after the deadline without it.
 
@@ -273,6 +281,12 @@ If the terminal does not take the output, the process is ended `_LAST_OUTPUT_SEC
 The keymap registry is consulted only on the main screen.
 On other screens `NovaNavigator.on_event` matches the configured quit key alone, so a rebound Quit works there too.
 `KeyCaptureDialog` is left out, and the editor handles its own keys.
+A key is not matched when the focused widget or the screen uses it: it is in the screen's active bindings, or a widget declares it with `check_consume_key()`.
+A text field declares its printable characters this way.
+A widget or dialog that takes a key in a key handler, without a binding, must declare it with `check_consume_key()` too, as `KeybindingsDialog` and `UserMenuPopup` do.
+The `Ctrl+C` binding that every screen has for copying selected text counts only while text is selected.
+A half-typed chord is dropped when another screen becomes active, when the focus moves, and on every key that is not matched against it.
+With Quit rebound, Textual's own `Ctrl+Q` binding of the application still quits.
 `run_test()` does not call `run_async()`, so a pilot test never ends the test process; `tests/integration/test_hung_write_back_exit.py` runs the application in a child process instead.
 
 ### Editor session (`local_copies/editor_session.py`)
