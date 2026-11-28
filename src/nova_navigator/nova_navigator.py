@@ -73,6 +73,7 @@ from nova_navigator.scheduler import Job, ResponseRequest, skipped_summary
 from nova_navigator.session_state import PanelState, SessionState, load_session_state, usable_directory
 from nova_navigator.session_state import save_session_state as write_session_state_file
 from nova_navigator.terminal import Terminal, TerminalPool
+from nova_navigator.terminal.local_shell import resolve_local_shell
 from nova_navigator.usermenu import (
     USER_MENU_FILENAME,
     MenuEntry,
@@ -258,6 +259,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         self._user_menu_store = UserMenuStore(_config_dir / USER_MENU_FILENAME)
         self._command_runner: CommandRunner | None = None
         self._session_state = load_session_state()
+        self._local_shell = resolve_local_shell(os.environ)
 
     @property
     def app(self) -> NovaNavigator:  # type: ignore[override]
@@ -388,7 +390,7 @@ class MainScreen(ActionsSupport, Screen[None]):
         )
 
         local_terminal = Terminal(
-            "/usr/bin/zsh",
+            shlex.quote(self._local_shell.path),
             id="terminal",
             keep_alive=True,
             scrollback_lines=conf_.settings.terminal.scrollback_lines,
@@ -426,6 +428,12 @@ class MainScreen(ActionsSupport, Screen[None]):
         return VPath(stored, local) if stored is not None else local.cwd()
 
     async def on_mount(self) -> None:
+        if self._local_shell.rejected is not None:
+            self.app.notify(
+                f"SHELL={self._local_shell.rejected} cannot be executed; using {self._local_shell.path}",
+                severity="warning",
+                markup=False,
+            )
         self._keymap_registry = KeymapRegistry(self._hint_bar)
         self._reload_keymap()
         panels_state = (

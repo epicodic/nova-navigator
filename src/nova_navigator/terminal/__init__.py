@@ -6,10 +6,12 @@ This package provides the ``Terminal`` widget and its supporting abstractions:
 - ``ShellDriver`` / ``ZshDriver`` / ``BashDriver`` / ``FallbackDriver`` — shell-specific
   hook installation, argument quoting, and precmd parsing.
 - ``detect_driver()`` — auto-detect the appropriate driver from a command string.
+- ``resolve_local_shell()`` — choose the local shell from ``$SHELL``, the login shell or ``/bin/sh``.
 
 Architecture overview: see ``docs/terminal.md``.
 """
 
+from nova_navigator.terminal.local_shell import resolve_local_shell
 from nova_navigator.terminal.pty_backend import LocalPtyBackend, PtyBackend
 from nova_navigator.terminal.shell_driver import (
     BashDriver,
@@ -37,4 +39,5 @@ __all__ = [
     "VirtualPtyBackend",
     "ZshDriver",
     "detect_driver",
+    "resolve_local_shell",
 ]

@@ -16,6 +16,7 @@ Related modules:
 from __future__ import annotations
 
 import logging
+import shlex
 from abc import ABC, abstractmethod
 from pathlib import PurePath
 
@@ -247,7 +248,7 @@ def detect_driver(command: str) -> ShellDriver:
     Returns:
         A ``ZshDriver``, ``BashDriver``, or ``FallbackDriver`` instance.
     """
-    name = PurePath(command.split()[0]).name
+    name = PurePath(shlex.split(command)[0]).name
     if name == "zsh":
         return ZshDriver()
     if name == "bash":

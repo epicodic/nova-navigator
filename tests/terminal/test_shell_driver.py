@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shlex
+
 from nova_navigator.terminal.shell_driver import (
     _ZSH_RAW_END_OF_LINE_SEQUENCE,
     BashDriver,
@@ -234,6 +236,11 @@ def test_detect_driver_bash() -> None:
 def test_detect_driver_sh() -> None:
     driver = detect_driver("/bin/sh")
     assert isinstance(driver, FallbackDriver)
+
+
+def test_detect_driver_handles_quoted_path_with_space() -> None:
+    driver = detect_driver(shlex.quote("/opt/my shells/zsh"))
+    assert isinstance(driver, ZshDriver)
 
 
 # ---------------------------------------------------------------------------
