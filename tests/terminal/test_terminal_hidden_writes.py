@@ -644,3 +644,114 @@ async def test_run_command_on_an_empty_line_works_without_bash_line_editing(home
         await asyncio.wait_for(terminal.run_command("touch RAN"), timeout=5)
         await asyncio.sleep(0.5)
         assert (home / "RAN").exists()
+
+
+# Questions of bash that read single keys: a space would answer "yes", and would then be missing as
+# the history-hiding space of the cd line, or let the line behind it be typed into the editor.
+_LONG_NAME = "x" * 70
+
+
+def _screen_text(terminal: Terminal) -> str:
+    return "\n".join(terminal._screen.display)
+
+
+async def _wait_for_screen(terminal: Terminal, text: str) -> None:
+    await _wait_until(lambda: text in _screen_text(terminal), f"{text!r} on the screen")
+
+
+def _make_matches(home: Path, count: int, suffix: str = "", first: int = 0) -> None:
+    """Create *count* files that share no more than "f" as the start of their names."""
+    for number in range(first, first + count):
+        (home / f"f{number:03d}{suffix}").touch()
+
+
+# The mode, an rc line, the keys that make bash ask, and the line the question was asked for.
+_BASH_QUESTIONS = {
+    "tab-tab": ("emacs", "", ["\t", "\t"]),
+    "show-all-if-ambiguous": ("emacs", "bind 'set show-all-if-ambiguous on'", ["\t"]),
+    "meta-question-mark": ("emacs", "", [_ESC + "?"]),
+    "vi-insert-tab-tab": ("vi-insert", "", ["\t", "\t"]),
+    "vi-insert-show-all": ("vi-insert", "bind -m vi-insert 'set show-all-if-ambiguous on'", ["\t"]),
+    "vi-command-list": ("vi-command", "", ["="]),
+}
+
+
+async def _ask_bash(terminal: Terminal, case: str) -> None:
+    mode, _rc, keys = _BASH_QUESTIONS[case]
+    await _send(terminal, "touch EXECUTED f")
+    await _enter_mode(terminal, mode)
+    await _send(terminal, *keys)
+    await _wait_for_screen(terminal, "Display all")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", _BASH_QUESTIONS)
+async def test_cd_dismisses_a_bash_completion_question(home: Path, case: str) -> None:
+    _make_matches(home, 150)
+    async with _editing_shell(home, "bash", _BASH_QUESTIONS[case][0], _BASH_QUESTIONS[case][1]) as terminal:
+        await _ask_bash(terminal, case)
+        await _change_directory(terminal, home)
+        assert not terminal._hook_repaired
+        await _assert_line_survives(terminal, home, "touch EXECUTED f")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", _BASH_QUESTIONS)
+async def test_run_command_dismisses_a_bash_completion_question(home: Path, case: str) -> None:
+    _make_matches(home, 150)
+    async with _editing_shell(home, "bash", _BASH_QUESTIONS[case][0], _BASH_QUESTIONS[case][1]) as terminal:
+        await _ask_bash(terminal, case)
+        await asyncio.wait_for(terminal.run_command("touch RAN"), timeout=5)
+        assert (home / "RAN").exists()
+        await _assert_line_survives(terminal, home, "touch EXECUTED f")
+
+
+@pytest.mark.asyncio
+async def test_setup_line_sent_again_dismisses_a_bash_completion_question(home: Path) -> None:
+    _make_matches(home, 150)
+    async with _editing_shell(home, "bash", "emacs") as terminal:
+        await _ask_bash(terminal, "tab-tab")
+        terminal._nav_target = home / "sub"
+        terminal._nav_busy = True
+        terminal._at_prompt = False
+        terminal._draining = True
+        terminal._on_nav_timeout()
+        await _wait_until(lambda: not terminal._nav_busy, "the navigation to end")
+        assert terminal.cwd == home / "sub"
+        await _assert_line_survives(terminal, home, "touch EXECUTED f")
+
+
+@pytest.mark.asyncio
+async def test_restore_dismisses_a_bash_completion_question_typed_during_a_cd(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(terminal_module, "_NAV_WATCHDOG_TIMEOUT", 30)
+    _make_matches(home, 150)
+    waiting_cd = 'cd() { builtin cd "$@"; until [[ -e "$HOME/go" ]]; do sleep 0.05; done; }'
+    async with _editing_shell(home, "bash", "emacs", waiting_cd) as terminal:
+        await _send(terminal, "touch EXECUTED")
+        terminal.request_cd(home / "sub")
+        # Typed while the cd runs: bash asks at the next prompt, before the line is put back.
+        await _send(terminal, "echo " + str(home) + "/f", "\t", "\t")
+        (home / "go").touch()
+        await _wait_until(lambda: not terminal._nav_busy, "the navigation to end")
+        await _assert_line_survives(terminal, home, f"echo {home}/ftouch EXECUTED")
+
+
+# More matches than rows but fewer than the question's limit of 100, so only the pager reads keys.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["cd", "run_command"])
+@pytest.mark.parametrize("queried", [False, True], ids=["pager", "question-then-pager"])
+async def test_hidden_write_leaves_the_bash_completion_pager(home: Path, operation: str, queried: bool) -> None:
+    _make_matches(home, 150 if queried else 60, _LONG_NAME, first=0 if queried else 70)
+    async with _editing_shell(home, "bash", "emacs") as terminal:
+        await _send(terminal, "touch EXECUTED f", "\t", "\t")
+        if queried:
+            await _wait_for_screen(terminal, "Display all")
+            await _send(terminal, "y")
+        await _wait_for_screen(terminal, "--More--")
+        if operation == "cd":
+            await _change_directory(terminal, home)
+            assert not terminal._hook_repaired
+        else:
+            await asyncio.wait_for(terminal.run_command("touch RAN"), timeout=5)
+            assert (home / "RAN").exists()
+        await _assert_line_survives(terminal, home, "touch EXECUTED f")

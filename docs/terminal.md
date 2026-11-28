@@ -517,12 +517,22 @@ What is set aside accumulates in shell variables until the restore, so a second 
 `ZshDriver` and `BashDriver` bind private, unassigned CSI sequences in their init code.
 No other binding is changed.
 Standard keys are not usable here: in vi insert mode Ctrl+E inserts itself (and in zsh so does Ctrl+Y), in vi command mode characters are editor commands, and the user can bind any of them to something else.
-zsh binds them in every keymap except the protected `.safe` and the special `isearch` and `command` ones; bash in the emacs and vi insert keymaps, and the first one also in vi command mode.
+zsh binds them in every keymap except the protected `.safe` and the special `isearch` and `command` ones; bash in the emacs and vi insert keymaps, and `ESC[95~` and the dismiss key also in vi command mode.
 
 | Sequence | zsh | bash |
 |---|---|---|
-| `set_aside_sequence()` | S, `ESC[93~` (vi-history-search-backward), `ESC[92~` (send-break), S, where S is `ESC[95~`, `ESC[96~` (stash widget) | `ESC[95~`, `ESC[96~` (stash function) |
-| `put_back_sequence()` | `ESC[94~` (restore widget) | `ESC[95~`, `ESC[94~` (restore function) |
+| `set_aside_sequence()` | S, `ESC[93~` (vi-history-search-backward), `ESC[92~` (send-break), S, where S is `ESC[95~`, `ESC[96~` (stash widget) | I, D, I, `ESC[96~` (stash function) |
+| `put_back_sequence()` | `ESC[94~` (restore widget) | I, D, I, `ESC[94~` (restore function) |
+
+In the bash column, I is `ESC[95~` (leave vi command mode) and D is the dismiss key, `ESC[93` followed by Ctrl+G.
+
+readline's completion question (`Display all 150 possibilities? (y or n)`) and its `--More--` list read single keys.
+They would ignore the private keys and take the space in front of ` cd` as "yes", so that the rest, with its Enter, reached the line editor behind the typed line and ran it.
+Both ignore the bytes of I and of `ESC[93`, and Ctrl+G ends them without touching the line.
+At the line editor D is bound to nothing, so the user's own Ctrl+G binding is not involved.
+The first I takes the escape byte that a pending Ctrl+V or lone Escape reads, and the second one is needed because a question asked in vi command mode leaves that mode on.
+The put-back starts the same way, because keys typed while a `cd` ran can open a question before it arrives.
+zsh needs no extra key: its question and its scrolling list take the private keys without running anything.
 
 `ESC[95~` leaves vi command mode, so after a hidden write the shell is in vi insert mode also when the user was in vi command mode before.
 The zsh widgets also leave visual mode, and every keymap that is not `main`, `emacs` or `viins`, for `main`.
@@ -577,9 +587,9 @@ Like any plain shell, it does not detect input typed while a command was still r
 
 A line editor command that waits for further keys takes the first bytes of a hidden write.
 The first key of `set_aside_sequence()` absorbs this for a pending Ctrl+V or a lone Escape, and the stash key still arrives whole.
-A pending zsh vi search or named command is cancelled (see above).
+bash's completion question and `--More--` list are ended (see above), and a pending zsh vi search or named command is cancelled.
 
-In the cases tried nothing typed was run, but the line can differ:
+With bash 5.2 and zsh 5.9, none of the pending commands tried ran the typed line or one recalled from the history, but the line can differ:
 
 - after a pending Ctrl+V, lone Escape or Ctrl+X, and in emacs mode after Alt+[ or Esc O, it ends with characters of the first key (such as `[95~`);
 - the same happens when zsh asks whether to list all completions;
@@ -589,17 +599,8 @@ In the cases tried nothing typed was run, but the line can differ:
 - in a zsh completion menu, the selected completion is accepted into the line;
 - in bash, an emacs mode search with Alt+P or Alt+N drops a line recalled from the history (it stays in the history).
 
-In bash, a pending vi command mode `m`, backtick, `@`, `R`, `/` or `?`, Ctrl+V, and a search with Alt+P or Alt+N also take the first `cd`.
-The watchdog then sends it again, which uses up the one hook repair of the session; after that, such a navigation gives up and the shell does not follow the panel.
+The following can still run what was typed.
 
-What also remains:
-
-- Lines that zsh puts back at the prompt by itself (`setopt hist_verify`, `push-line`, `print -z`) are kept by hidden writes but count as empty for Enter on a panel, because no key was sent since the prompt (see [Input Detection](#input-detection-has_input)).
-- With zsh `hist_verify`, a `run_command()` line that contains a history expansion is put back expanded instead of run, and the call reports done.
-- bash with `shopt -s histverify` puts the expanded line back without reporting a new prompt.
-  The terminal still takes the entered command as running: it writes no `cd` while the line is there, and the line is not run.
-  The panel's folder is followed after you enter the line, or cancel it with Ctrl+C.
-  `shopt -s histreedit` behaves the same way after a failed history expansion.
 - bash without line editing (see [above](#bash-without-line-editing)): a panel change can run input that was typed while a command was still running.
   With `stty -echo` typed input is invisible to the terminal, and a panel change runs it.
 - A zsh keymap first created after the prompt hook ran has no private bindings until the next prompt, and a panel change can run the typed line while it is selected.
@@ -609,6 +610,15 @@ What also remains:
 - A plain shell with a vi mode (bash running as `sh`, for example) gets a `cd` on a line that is empty in vi command mode as editor commands.
   The `cd` is garbled, and what runs then is unpredictable.
   dash has no vi mode editing: Escape becomes part of the line, which then counts as typed input.
+
+These remain too, and run nothing:
+
+- Lines that zsh puts back at the prompt by itself (`setopt hist_verify`, `push-line`, `print -z`) are kept by hidden writes but count as empty for Enter on a panel, because no key was sent since the prompt (see [Input Detection](#input-detection-has_input)).
+- With zsh `hist_verify`, a `run_command()` line that contains a history expansion is put back expanded instead of run, and the call reports done.
+- bash with `shopt -s histverify` puts the expanded line back without reporting a new prompt.
+  The terminal still takes the entered command as running: it writes no `cd` while the line is there, and the line is not run.
+  The panel's folder is followed after you enter the line, or cancel it with Ctrl+C.
+  `shopt -s histreedit` behaves the same way after a failed history expansion.
 
 `has_input()`'s snapshot cannot be safely recaptured immediately after a restore: the shell's echo of the restored text can arrive fused with the freshly drawn prompt in the very same stdout chunk, so there is no reliable way to isolate "prompt only" from "prompt plus restored text" by observing chunk boundaries.
 This is why a restore of input sets `_input_since_precmd` rather than trying to snapshot.

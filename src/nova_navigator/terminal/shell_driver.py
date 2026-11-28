@@ -50,6 +50,10 @@ _INSERT_MODE_SEQUENCE = b"\x1b[95~"
 # One widget (zsh) or shell function (bash) each sets the whole line aside and puts it back.
 _SET_ASIDE_SEQUENCE = b"\x1b[96~"
 _PUT_BACK_SEQUENCE = b"\x1b[94~"
+# bash only: dismisses readline's completion question and pager, which read single keys.  They ignore
+# the bytes before the final Ctrl+G, which ends them without touching the line.  At the line editor
+# the whole sequence is bound to nothing, so the user's own Ctrl+G is not involved.
+_DISMISS_SEQUENCE = b"\x1b[93\x07"
 # zsh only: bound to vi-history-search-backward and send-break, to cancel a search or named command
 # that is waiting for more keys.
 _ZSH_SEARCH_SEQUENCE = b"\x1b[93~"
@@ -263,6 +267,8 @@ class BashDriver(ShellDriver):
     def init_code(self) -> str:
         """Install the hook and the keys for hidden writes, and turn readline's horizontal scrolling off.
 
+        The key that dismisses a completion question is bound to an empty macro in all three keymaps.
+
         The hook reports ``noedit`` before a prompt without line editing (``set +o emacs`` and no vi
         mode) and in a bash older than ``_BASH_MIN_EDITING_VERSION``.
 
@@ -281,9 +287,11 @@ class BashDriver(ShellDriver):
             "_nn_restore() { READLINE_LINE+=${_nn_line-}; _nn_line=; READLINE_POINT=999999; }; "
             "for _nn_map in emacs vi-insert; do "
             """bind -m $_nn_map '"\\e[95~": ""' 2>/dev/null; """
+            """bind -m $_nn_map '"\\e[93\\C-g": ""' 2>/dev/null; """
             """bind -m $_nn_map -x '"\\e[96~": _nn_stash' 2>/dev/null; """
             """bind -m $_nn_map -x '"\\e[94~": _nn_restore' 2>/dev/null; done; unset _nn_map; """
             """bind -m vi-command '"\\e[95~": vi-insertion-mode' 2>/dev/null; """
+            """bind -m vi-command '"\\e[93\\C-g": ""' 2>/dev/null; """
             f"HISTCONTROL=\"${{HISTCONTROL:+${{HISTCONTROL}}:}}ignorespace\"; _nn_precmd() {{ {hook}; }}; PROMPT_COMMAND=${{PROMPT_COMMAND:+${{PROMPT_COMMAND}}$'\\n'}}_nn_precmd\n"
         )
 
@@ -291,15 +299,23 @@ class BashDriver(ShellDriver):
         return _ansi_c_quote(arg)
 
     def set_aside_sequence(self) -> bytes:
-        """Send the insert mode key and then the private stash key.
+        """Dismiss a completion question, enter a mode that takes text and send the private stash key.
+
+        readline's ``Display all N possibilities?`` and ``--More--`` read single keys.  They would
+        ignore the private keys, take the space in front of a hidden ``cd`` as "yes" and run or
+        change the typed line.  They ignore the insert mode key, and the dismiss key ends them.  The
+        insert mode key goes first: a command that waits for one key (Ctrl+V, a lone Escape) takes
+        its first byte, and the keys after it still arrive whole.  It goes out again after the
+        dismiss key, because a question asked in vi command mode leaves that mode on.
 
         Without line editing (``set +o emacs``) this does not remove the typed line, so the terminal
         does not send it while the hook reports ``noedit``.
         """
-        return _INSERT_MODE_SEQUENCE + _SET_ASIDE_SEQUENCE
+        return _INSERT_MODE_SEQUENCE + _DISMISS_SEQUENCE + _INSERT_MODE_SEQUENCE + _SET_ASIDE_SEQUENCE
 
     def put_back_sequence(self) -> bytes:
-        return _INSERT_MODE_SEQUENCE + _PUT_BACK_SEQUENCE
+        """Like ``set_aside_sequence``: input typed while a hidden ``cd`` ran can leave a question waiting."""
+        return _INSERT_MODE_SEQUENCE + _DISMISS_SEQUENCE + _INSERT_MODE_SEQUENCE + _PUT_BACK_SEQUENCE
 
 
 class FallbackDriver(ShellDriver):

@@ -260,13 +260,13 @@ def test_bash_driver_set_aside_sequence_sends_only_private_keys() -> None:
     """No text is typed and no readline kill is used, so the kill ring stays as it was."""
     driver = BashDriver()
     seq = driver.set_aside_sequence()
-    assert seq == b"\x1b[95~\x1b[96~"
+    assert seq == b"\x1b[95~\x1b[93\x07\x1b[95~\x1b[96~"
 
 
 def test_bash_driver_put_back_sequence_sends_only_private_keys() -> None:
     driver = BashDriver()
     seq = driver.put_back_sequence()
-    assert seq == b"\x1b[95~\x1b[94~"
+    assert seq == b"\x1b[95~\x1b[93\x07\x1b[95~\x1b[94~"
 
 
 def test_zsh_driver_set_aside_sequence_does_not_use_real_ctrl_e() -> None:

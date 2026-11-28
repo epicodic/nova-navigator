@@ -51,7 +51,9 @@
 - Changing the panel's folder while a line editor command waits for more keys can change the typed line.
   This happens, for example, in the middle of a vi command or search:
   after Ctrl+V, Esc, Alt+[, Esc O or Ctrl+X the line can end in extra characters such as `[95~`, in vi command mode the case of letters can change (zsh `'` swaps the case of the whole line), and Ctrl+R with a pattern leaves the line found in the history.
-  In bash, an Alt+P or Alt+N search drops a line recalled from the history, and after some of these keys the shell can stop following the panels.
+  zsh's question whether to list all completions also leaves `[95~`, and a zsh completion menu accepts the selected completion.
+  In bash, an Alt+P or Alt+N search drops a line recalled from the history.
+- A bash completion question (`Display all ... possibilities?`) or `--More--` list is closed by a change of the panel's folder or by a command.
 - A pending zsh vi search or named command (`/`, `?`, `:`, Alt+x) is cancelled by a change of the panel's folder.
 - A line that the shell puts back at the prompt by itself (zsh `hist_verify`, `push-line`, `print -z`) is kept, but Enter on a file panel treats the command line as empty.
 - With zsh `hist_verify`, a user menu or other command that contains `!` is put back at the prompt instead of run.
@@ -60,7 +62,7 @@
   Text typed while a command was still running is not noticed there, and a change of the panel's folder runs it; so is text typed with `stty -echo`.
 - In bash with `shopt -s histverify` or `histreedit`, the shell does not follow the panels while a line waits at the prompt for your review, until you enter or cancel it.
 - An editor opened from the command line (bash vi `v`, Ctrl+X Ctrl+E) receives the `cd` that follows a panel change as its input.
-- bash and zsh get private key bindings (`ESC[92~` to `ESC[96~`) for this.
+- bash and zsh get private key bindings for this (`ESC[92~` to `ESC[96~`, in bash also `ESC[93` followed by Ctrl+G).
   In bash, removing them can make a panel change run the typed line.
   The same can happen with a `DEBUG` trap that returns non-zero under `shopt -s extdebug`.
   Tools that use the `DEBUG` trap see two extra shell functions, `_nn_stash` and `_nn_restore`, at every panel change.
