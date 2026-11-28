@@ -879,6 +879,8 @@ A row is the offset, the hex pane and the character pane.
 
 The view keeps one window of bytes: the rows from one screen above the first visible row up to two screens below its start.
 A miss refills the window with one `LazyDocument.read_bytes` call.
+`byte_at_cursor` (the byte of the status line) uses the window only for a cursor on a visible row.
+For a cursor outside the visible rows it reads that one byte and leaves the window in place, so a status refresh and a paint do not evict each other.
 The view never asks for rows, lines or the line index, so it works while the scan runs and on a document of billions of rows (the virtual height is the row count; Textual's scrollbar maths holds at 8 GiB, see `widget/test_hex_scroll_spike.py`).
 The window is dropped when the document is replaced, its revision changes or the row size changes.
 A failed read keeps the old window and draws blanks.

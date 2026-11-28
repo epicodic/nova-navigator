@@ -8,7 +8,7 @@ import pytest
 
 from nova_editor.core import SourceChanged
 from nova_editor.widget import HexView
-from tests.nova_editor.widget.hex_helpers import CountingSource, HexHost, logged_reads, opened, write_file
+from tests.nova_editor.widget.hex_helpers import CountingSource, HexHost, logged_reads, opened, row_texts, write_file
 
 SIZE = (80, 24)
 PATTERN = bytes(range(256)) * 4096
@@ -75,6 +75,23 @@ async def test_a_far_cursor_costs_one_window_read(tmp_path: Path) -> None:
                 assert log.calls[0][1] <= limit
                 assert view.byte_at_cursor() == far % 256
                 assert len(log.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_far_cursor_leaves_the_window_of_the_visible_rows(tmp_path: Path) -> None:
+    """The status line may ask before or after the repaint that follows a move; neither order costs a second read."""
+    with opened(write_file(tmp_path, PATTERN)) as document:
+        view = HexView(lambda: document)
+        async with HexHost(view).run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            visible = row_texts(view)
+            far = 900_001
+            with logged_reads(document) as log:
+                view.set_cursor(far)
+                assert view.byte_at_cursor() == far % 256
+                assert [text[:8] for text in row_texts(view)] == [text[:8] for text in visible]
+                assert view.byte_at_cursor() == far % 256
+                assert len(log.calls) <= 1, log.calls
 
 
 @pytest.mark.asyncio

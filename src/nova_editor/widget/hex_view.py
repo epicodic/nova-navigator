@@ -228,6 +228,8 @@ HexView {
         """One past the last row of the window."""
         self._failed_key: _WindowKey | None = None
         """The key a read failed for; no read is tried again until the key changes."""
+        self._far_byte: tuple[_WindowKey, int, int | None] | None = None
+        """`(key, offset, byte)` of the last single byte read for a cursor outside the visible rows, or `None`."""
         self._reported = False
         """Whether a source change of `_document` was reported."""
         self._dragging = False
@@ -272,7 +274,8 @@ HexView {
     def byte_at_cursor(self) -> int | None:
         """Return the byte under the cursor, or `None` at the end position or when it cannot be read.
 
-        Reads from the byte window; costs at most one window read when the cursor is outside it.
+        A cursor on a visible row is served from the byte window. Outside the visible rows one byte is read and remembered, and the window stays on the visible rows,
+        so the next paint costs no read.
         """
         self._sync()
         offset = self.cursor.offset
@@ -280,6 +283,11 @@ HexView {
             return None
         bytes_per_row = self._layout.bytes_per_row
         row = offset // bytes_per_row
+        top = self.scroll_offset.y
+        document = self._document
+        if document is not None and not top <= row < top + max(1, self.scrollable_content_region.height):
+            if not self._window_holds((document, self._revision, bytes_per_row), row):
+                return self._read_far_byte(document, offset)
         data = self._row_bytes(row)
         index = offset - row * bytes_per_row
         if data is None or index >= len(data):
@@ -849,6 +857,7 @@ HexView {
         self._win_first_row = 0
         self._win_end_row = 0
         self._failed_key = None
+        self._far_byte = None
 
     # -- the byte window ------------------------------------------------------------------------------------------------
 
@@ -878,16 +887,8 @@ HexView {
             top = row
         first = max(0, top - _WINDOW_SCREENS_BEFORE * height)
         end = min(total_rows(self._length, bytes_per_row), top + _WINDOW_SCREENS_AFTER * height)
-        try:
-            data = document.read_bytes(first * bytes_per_row, (end - first) * bytes_per_row)
-        except SourceChanged as error:
-            self._failed_key = key
-            if not self._reported:
-                self._reported = True
-                if self.on_source_changed is not None:
-                    self.on_source_changed(error)
-            return
-        except (ValueError, RowUnavailable):
+        data = self._read(document, first * bytes_per_row, (end - first) * bytes_per_row)
+        if data is None:
             self._failed_key = key
             return
         self._win_key = key
@@ -895,6 +896,28 @@ HexView {
         self._win_data = data
         self._win_first_row = first
         self._win_end_row = end
+
+    def _read_far_byte(self, document: LazyDocument, offset: int) -> int | None:
+        """Return the byte at `offset` without touching the window; a result, a failed one included, is read once per document revision."""
+        key: _WindowKey = (document, self._revision, self._layout.bytes_per_row)
+        held = self._far_byte
+        if held is None or held[0] != key or held[1] != offset:
+            data = self._read(document, offset, 1)
+            held = self._far_byte = (key, offset, data[0] if data else None)
+        return held[2]
+
+    def _read(self, document: LazyDocument, offset: int, size: int) -> bytes | None:
+        """Read from `document`; `None` when it cannot be read, and a changed source is reported once."""
+        try:
+            return document.read_bytes(offset, size)
+        except SourceChanged as error:
+            if not self._reported:
+                self._reported = True
+                if self.on_source_changed is not None:
+                    self.on_source_changed(error)
+        except (ValueError, RowUnavailable):
+            pass
+        return None
 
     # -- rendering ------------------------------------------------------------------------------------------------------
 
