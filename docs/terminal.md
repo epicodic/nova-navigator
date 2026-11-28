@@ -437,6 +437,8 @@ Every path into the shell goes through the widget: `on_key`, `_paste_text`, and 
 Each sets `_input_since_precmd`; every precmd clears it, except while input typed before the first hook report may still be on the line (see [Input typed before the first hook report](#input-typed-before-the-first-hook-report)).
 Internal writes (set aside, `cd`, put back, init code) never set it.
 A restore sets it only when the line set aside held input or the user typed meanwhile.
+Keys typed into a running command count as such typing: after a `run_command()` line that read keys (a question, a pager, an editor), `has_input()` stays True also when the line was and is empty.
+The terminal cannot tell whether the program read the keys or left them for the prompt, so it takes the safe side: the next Enter on a panel goes to the terminal, and the one after it navigates.
 If no user byte was sent since the last precmd, the line is taken to be empty.
 This is wrong for input typed while a command was still running: that command's precmd clears the flag, so such input is not detected, for any driver.
 It is also wrong for a line that the shell puts at the prompt by itself, such as zsh's `hist_verify`, `push-line` and `print -z`.

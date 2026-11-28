@@ -35,8 +35,8 @@ _SHELLS = ["bash", "zsh"]
 _MODES = ["emacs", "vi-insert", "vi-command"]
 _MULTI_LINE = "touch EXECUTED1\ntouch EXECUTED2\ntouch EXECUTED3"
 
-_BASH_DUMP = """for m in emacs vi-insert vi-command; do bind -m $m -x '"\\C-x\\C-p": printf %s "$READLINE_LINE" >"$HOME/buffer"'; done"""
-_ZSH_DUMP = '_dump() { print -rn -- "$BUFFER" >"$HOME/buffer" }; zle -N _dump; for m in emacs viins vicmd; do bindkey -M $m "^X^P" _dump; done'
+_BASH_DUMP = """for m in emacs vi-insert vi-command; do bind -m $m -x '"\\C-x\\C-p": printf %s "$READLINE_LINE" >"$HOME/buffer.part"; command mv "$HOME/buffer.part" "$HOME/buffer"'; done"""
+_ZSH_DUMP = '_dump() { print -rn -- "$BUFFER" >"$HOME/buffer.part"; command mv "$HOME/buffer.part" "$HOME/buffer" }; zle -N _dump; for m in emacs viins vicmd; do bindkey -M $m "^X^P" _dump; done'
 
 
 @contextlib.asynccontextmanager
@@ -308,6 +308,7 @@ async def test_bash_line_editing_switched_on_again_keeps_the_line(home: Path, sw
         if switch == "prompt":
             await _send(terminal, f"{_NO_EDITING}\r")
         await _send(terminal, "set -o emacs\r")
+        await _wait_until(lambda: terminal._shell_edits, "line editing to be reported")
         await _send(terminal, "touch EXECUTED")
         await _change_directory(terminal, home)
         await _assert_line_survives(terminal, home, "touch EXECUTED")
@@ -324,6 +325,7 @@ async def test_a_command_that_switches_bash_line_editing_off_gets_no_restore_key
         # The line set aside comes back with the first restore after editing is on again,
         # in front of what was typed meanwhile, and nothing of it is lost.
         await _send(terminal, "set -o emacs\r")
+        await _wait_until(lambda: terminal._shell_edits, "line editing to be reported")
         await _send(terminal, "echo ")
         await _change_directory(terminal, home)
         assert _executed(home) == []
@@ -427,7 +429,6 @@ async def test_a_cd_that_times_out_keeps_the_typed_line(home: Path, shell: str, 
         assert terminal._nav_busy is False
         # The shell still has the first cd, the setup line and the second cd to get through.
         await _wait_until(lambda: terminal.cwd == home / "sub", "the cd")
-        await asyncio.sleep(2.5)
         await _assert_line_survives(terminal, home, "touch EXECUTED")
 
 
@@ -825,6 +826,23 @@ async def test_a_target_requested_before_bash_stopped_editing_is_followed_after_
         await asyncio.sleep(0.5)
         await _send(terminal, "\r")
         await _wait_until(lambda: terminal.cwd == home, "the cd to the newest target")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shell", _SHELLS)
+async def test_line_counts_as_input_after_keys_were_sent_to_a_command(home: Path, shell: str) -> None:
+    # The terminal cannot tell whether the program read the keys or left them for the next prompt,
+    # so Enter on a panel goes to the terminal once.
+    async with _editing_shell(home, shell, "emacs") as terminal:
+        assert not terminal.has_input()
+        command = asyncio.ensure_future(terminal.run_command("echo ASK; read answer; echo $answer >ANSWER"))
+        await _wait_for_screen(terminal, "\nASK")
+        await terminal.send("yes\r")
+        await asyncio.wait_for(command, timeout=10)
+        assert (home / "ANSWER").read_text() == "yes\n"
+        await asyncio.sleep(0.5)
+        assert await _buffer(terminal, home) == ""
+        assert terminal.has_input()
 
 
 @pytest.mark.parametrize("echo", ["^[[95~^[[93^G^[[95~^[[94~", "\x1b[95~\x1b[93\x07\x1b[95~\x1b[94~"], ids=["echoctl", "raw"])
