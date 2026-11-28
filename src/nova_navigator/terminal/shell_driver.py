@@ -26,6 +26,10 @@ _SAFE_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012
 
 _LINE_CONTINUATION_LIMIT = 250
 
+# bash 5.2 can loop forever when the PTY has one row and its width changes, or shrinks to one row,
+# while a typed line is wider than the terminal and the prompt has invisible characters.
+_MIN_PTY_ROWS = 2
+
 # Private, unassigned CSI function-key sequences used to request an atomic
 # line-editor stash/restore from drivers with supports_editor_protocol.
 STASH_SEQUENCE = b"\x1b[98~"
@@ -101,6 +105,14 @@ class ShellDriver(ABC):
         return self._line_editing
 
     @property
+    def min_rows(self) -> int:
+        """The smallest height the PTY and the screen model get, however small the widget is.
+
+        A widget with fewer rows shows only the cursor's row of that screen.
+        """
+        return _MIN_PTY_ROWS
+
+    @property
     def supports_editor_protocol(self) -> bool:
         """True if hidden navigation can stash/restore the line editor atomically.
 
@@ -172,6 +184,11 @@ class ZshDriver(ShellDriver):
     def __init__(self) -> None:
         super().__init__(line_editing=True)
 
+    @property
+    def min_rows(self) -> int:
+        """No minimum: zsh handles a one-row terminal itself."""
+        return 0
+
     def init_code(self) -> str:
         return (
             f" setopt HIST_IGNORE_SPACE; _nn_precmd() {{ {self._hook_body()} }}; precmd_functions+=(_nn_precmd); "
@@ -215,7 +232,15 @@ class BashDriver(ShellDriver):
         super().__init__(line_editing=True)
 
     def init_code(self) -> str:
-        return f" HISTCONTROL=\"${{HISTCONTROL:+${{HISTCONTROL}}:}}ignorespace\"; _nn_precmd() {{ {self._hook_body()}; }}; PROMPT_COMMAND=${{PROMPT_COMMAND:+${{PROMPT_COMMAND}}$'\\n'}}_nn_precmd\n"
+        """Install the hook and turn readline's horizontal scrolling off.
+
+        With horizontal scrolling, bash 5.2 can loop forever when the width changes, whatever the
+        height.  A bash without line editing only reports the ``bind`` as unusable, which is discarded.
+        """
+        return (
+            f" bind 'set horizontal-scroll-mode off' 2>/dev/null; "
+            f"HISTCONTROL=\"${{HISTCONTROL:+${{HISTCONTROL}}:}}ignorespace\"; _nn_precmd() {{ {self._hook_body()}; }}; PROMPT_COMMAND=${{PROMPT_COMMAND:+${{PROMPT_COMMAND}}$'\\n'}}_nn_precmd\n"
+        )
 
     def quote(self, arg: str) -> str:
         return _ansi_c_quote(arg)

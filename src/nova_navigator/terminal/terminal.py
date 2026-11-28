@@ -100,6 +100,9 @@ class TerminalPyteScreen(pyte.Screen):
         on_scroll_off: Callable[[Mapping[int, Char]], None] | None = None,
         on_clear_scrollback: Callable[[], None] | None = None,
     ) -> None:
+        # Rows the screen content has moved up so far.  Added to a row number it names a line
+        # that stays the same when the screen scrolls.
+        self.scrolled = 0
         super().__init__(columns, lines)
         self._on_scroll_off = on_scroll_off
         self._on_clear_scrollback = on_clear_scrollback
@@ -123,6 +126,7 @@ class TerminalPyteScreen(pyte.Screen):
                 self._on_scroll_off(self.buffer[y])
         visible = {y - scroll_rows: row for y, row in self.buffer.items() if scroll_rows <= y < scroll_rows + new_lines}
         cursor_y = self.cursor.y - scroll_rows
+        self.scrolled += scroll_rows
 
         super().resize(new_lines, new_columns)
         self.buffer.clear()
@@ -137,8 +141,10 @@ class TerminalPyteScreen(pyte.Screen):
     def index(self) -> None:
         """Report the row about to scroll off the top of the full screen, then scroll as normal."""
         top, bottom = self.margins or Margins(0, self.lines - 1)
-        if self._on_scroll_off is not None and self.cursor.y == bottom and top == 0:
-            self._on_scroll_off(self.buffer[top])
+        if self.cursor.y == bottom and top == 0:
+            self.scrolled += 1
+            if self._on_scroll_off is not None:
+                self._on_scroll_off(self.buffer[top])
         super().index()
 
     def erase_in_display(self, how: int = 0, *args: Any, **kwargs: Any) -> None:
@@ -279,6 +285,9 @@ class Terminal(ScrollView, can_focus=True):
     on the last requested directory without showing intermediate prompts.
     """
 
+    # The widget showed only the cursor's row at the last resize (see _one_row_view).
+    _was_one_row: bool = False
+
     DEFAULT_CSS = """
     Terminal {
         background: $background;
@@ -367,8 +376,8 @@ class Terminal(ScrollView, can_focus=True):
         # User input was forwarded before this shell's first hook report and has not been
         # followed by a later Enter, so a prompt line may hold text nobody can see as typed.
         self._startup_input: bool = False
-        # (cursor row, cursor column, text of the cursor row) captured after every
-        # stdout chunk until the first user byte, i.e. the fully drawn prompt.
+        # (cursor line, cursor column, text of the cursor row) captured after every
+        # stdout chunk until the first user byte, i.e. the fully drawn prompt (see _cursor_line).
         self._prompt_snapshot: tuple[int, int, str] | None = None
         # True while the shell waits for a command line.  Set on precmd, cleared
         # when user input containing a newline is forwarded or an internal cd is sent.
@@ -694,7 +703,17 @@ class Terminal(ScrollView, can_focus=True):
         if self._input_since_precmd:
             return
         cursor = self._screen.cursor
-        self._prompt_snapshot = (cursor.y, cursor.x, self._row_text(cursor.y))
+        self._prompt_snapshot = (self._cursor_line(), cursor.x, self._row_text(cursor.y))
+
+    def _cursor_line(self) -> int:
+        """Return the line the cursor is on, as ``has_input`` compares it.
+
+        With a two-row minimum a one-row view has a second screen row, so a typed line that wraps
+        scrolls the prompt up and deleting it leaves the cursor one row higher than before.  Counting
+        the scrolled rows keeps the number of the prompt line the same.  Otherwise this is the screen row.
+        """
+        scrolled = self._screen.scrolled if self._driver.min_rows else 0
+        return scrolled + self._screen.cursor.y
 
     def _holds_startup_input(self) -> bool:
         """Return True if the shell reports prompts but input typed before its first report may still be on the line.
@@ -717,9 +736,9 @@ class Terminal(ScrollView, can_focus=True):
             return False
         if self._prompt_snapshot is None:
             return True
-        row, col, text = self._prompt_snapshot
+        line, col, text = self._prompt_snapshot
         cursor = self._screen.cursor
-        return cursor.y != row or cursor.x != col or self._row_text(cursor.y) != text
+        return self._cursor_line() != line or cursor.x != col or self._row_text(cursor.y) != text
 
     def request_cd(self, path: PurePath) -> None:
         """Ask the shell to change to *path* without waiting for completion.
@@ -984,11 +1003,16 @@ class Terminal(ScrollView, can_focus=True):
         if not self._started:
             return
         old_rows = self._screen.lines
+        was_one_row, self._was_one_row = self._was_one_row, self._one_row_view
         was_at_end = self.scroll_offset.y >= len(self._history) or self.is_vertical_scroll_end
+        # A view that was following new output may start above the live screen; a one-row view
+        # that keeps following has to show the cursor's row, not that first row.
+        if self._one_row_view and self._follow_offset is not None and self._follow_offset == self.scroll_offset.y:
+            was_at_end = True
         # Exclude the reserved scrollbar gutter column so the shell isn't sized wider
         # than what's actually visible.
         self.ncol = self.size.width - self.scrollbar_size_vertical
-        self.nrow = self.size.height
+        self.nrow = max(self.size.height, self._driver.min_rows)
         assert self.send_queue is not None
         self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
         self._screen.resize(self.nrow, self.ncol)
@@ -996,17 +1020,42 @@ class Terminal(ScrollView, can_focus=True):
             self._rebuild_handle.cancel()
             self._rebuild_handle = None
         self._rebuild_display(follow_output=False)
-        if was_at_end and self.nrow != old_rows:
-            new_history_rows = max(0, self.nrow - old_rows)
+        # With a two-row minimum the widget can change height while the screen does not.
+        resized = self.nrow != old_rows or self._one_row_view != was_one_row
+        if was_at_end and resized:
+            if self._one_row_view:
+                self.scroll_end(animate=False, force=True, immediate=True)
+                self._follow_offset = None
+                return
+            # The rows of the old view that stay in sight: after a one-row view, those down to the cursor.
+            shown_rows = self._screen.cursor.y + 1 if was_one_row else old_rows
+            new_history_rows = max(0, self.nrow - shown_rows)
             target = max(0, len(self._history) - new_history_rows)
             self.scroll_to(y=target, animate=False, force=True, immediate=True)
-            self._follow_offset = target if self.nrow > old_rows else None
-        elif self.nrow != old_rows:
+            self._follow_offset = target if was_one_row or self.nrow > old_rows else None
+        elif resized:
             self._follow_offset = None
 
     def _mouse_ready(self) -> bool:
         """Return True if the terminal is started and mouse tracking is active."""
         return self._started and self.mouse_tracking
+
+    @property
+    def _one_row_view(self) -> bool:
+        """True while a one-row widget shows only the cursor's row of a screen with more rows.
+
+        The document then ends with the cursor's row: the rows above it are reached by scrolling
+        back, the rows below it are not shown.
+        """
+        return self.size.height == 1 and self._driver.min_rows > 1
+
+    def _live_rows(self) -> int:
+        """Return how many rows of the screen belong to the document."""
+        return self._screen.cursor.y + 1 if self._one_row_view else self._screen.lines
+
+    def _screen_row(self, y: int) -> int:
+        """Return the screen row a mouse report names for widget row *y*."""
+        return self._screen.cursor.y + y if self._one_row_view else y
 
     async def on_click(self, event: events.Click) -> None:
         if event.button == _MIDDLE_MOUSE_BUTTON:
@@ -1016,7 +1065,7 @@ class Terminal(ScrollView, can_focus=True):
         if not self._mouse_ready():
             return
         assert self.send_queue is not None
-        self.send_queue.put_nowait(["click", event.x, event.y, event.button])
+        self.send_queue.put_nowait(["click", event.x, self._screen_row(event.y), event.button])
 
     async def _on_click(self, event: events.Click) -> None:
         """Select the word under the pointer on double-click instead of Textual's default select-all.
@@ -1048,13 +1097,13 @@ class Terminal(ScrollView, can_focus=True):
         if not self._mouse_ready():
             return
         assert self.send_queue is not None
-        self.send_queue.put_nowait(["scroll", "down", event.x, event.y])
+        self.send_queue.put_nowait(["scroll", "down", event.x, self._screen_row(event.y)])
 
     async def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
         if not self._mouse_ready():
             return
         assert self.send_queue is not None
-        self.send_queue.put_nowait(["scroll", "up", event.x, event.y])
+        self.send_queue.put_nowait(["scroll", "up", event.x, self._screen_row(event.y)])
 
     async def _on_mouse_up(self, event: events.MouseUp) -> None:
         await super()._on_mouse_up(event)
@@ -1251,7 +1300,7 @@ class Terminal(ScrollView, can_focus=True):
         """Rebuild Rich Text lines from the current pyte screen state and schedule a repaint."""
         was_at_end = self.is_vertical_scroll_end
         follow_recent = follow_output and self._follow_offset is not None and self._follow_offset == self.scroll_offset.y
-        lines = [self._row_to_text(self._screen.buffer[y], self._screen.columns) for y in range(self._screen.lines)]
+        lines = [self._row_to_text(self._screen.buffer[y], self._screen.columns) for y in range(self._live_rows())]
         self._display = TerminalDisplay(lines, self._screen.cursor.x, self._screen.cursor.y)
         self._update_virtual_size()
         if follow_recent and self.is_mounted:
@@ -1300,7 +1349,8 @@ class Terminal(ScrollView, can_focus=True):
 
     def _update_virtual_size(self) -> None:
         """Sync ``virtual_size`` with the combined scrollback + live screen line count."""
-        self.virtual_size = Size(self.ncol, len(self._history) + self.nrow)
+        live_rows = self._live_rows() if self._one_row_view else self.nrow
+        self.virtual_size = Size(self.ncol, len(self._history) + live_rows)
 
     def _process_stdout(self, chars: str) -> None:
         """Parse ANSI output, update the pyte screen, and refresh the display."""

@@ -10,6 +10,9 @@
 - Open tar and zip archives as folders.
 - A live shell in the same window.
   The embedded terminal runs the shell named by `$SHELL`; bash and zsh have full integration.
+  With bash and plain shells, a long line wraps when the terminal is one row high, and only the row with the cursor shows.
+  zsh behaves as it does in any one-row terminal.
+  Horizontal scrolling of the command line (readline's `horizontal-scroll-mode`) is turned off in the embedded bash.
 - A built-in text editor, `ned`, which opens from the file manager with F4 and can also run on its own.
 - Copy (F5), move (F6) and delete (F8), with progress and conflict resolution.
 - Long operations run in the background and can be cancelled.
@@ -139,9 +142,14 @@
 
 #### Terminal
 
-- With bash or zsh, when the shell prompt is about as wide as the terminal or wider and the terminal is one row high, typing text and then deleting it can leave Nova Navigator treating the line as still occupied.
+- Typing text and then deleting it can leave Nova Navigator treating the line as still occupied.
   One Enter on a file panel is then sent to the terminal instead of navigating.
   That Enter clears the state, and the next Enter navigates.
+  It happens with bash after a line of more than two rows in the one-row terminal (which then shows an empty row until Ctrl+L or Enter), with zsh after a line wider than a one-row terminal, with `sh` or dash after a line that had wrapped, and after typing before a slow prompt has appeared.
+- bash can loop forever, using a whole CPU, when its prompt has colour or other invisible codes, the typed line is wider than the terminal and the width changes, with a one-row terminal or with `horizontal-scroll-mode` on.
+  The embedded bash is protected from this.
+  A bash started inside zsh or inside the embedded shell, or reached by a typed `ssh`, can still do it where one of these applies.
+- Nothing ends a looping shell if Nova Navigator itself crashes or is killed, and a looping shell on an SSH server cannot be killed by closing its terminal.
 
 #### Other
 

@@ -138,6 +138,7 @@ Nothing ends the shell when Nova Navigator itself crashes or is killed; it only 
 |--------|---------|
 | `init_code()` | Return shell code to inject at startup (installs precmd hook) |
 | `quote(arg)` | Return a shell-safe quoted form of an argument |
+| `min_rows` | Property — smallest height of the PTY and the screen model, 0 for none (see [Two-row minimum](#two-row-minimum-and-the-one-row-view)) |
 | `cd_command(path)` | Return a complete `cd` command string |
 | `supports_line_editing` | Property — True if the shell has an emacs-style line editor (kill and yank) used for hidden navigation |
 
@@ -147,6 +148,8 @@ Nothing ends the shell when Nova Navigator itself crashes or is killed; it only 
 The hook emits an OSC 7 CWD sequence.
 
 **BashDriver** — installs a precmd hook via `PROMPT_COMMAND`.
+The same init line turns readline's `horizontal-scroll-mode` off in the embedded shell, because bash can loop forever with it (see [Two-row minimum](#two-row-minimum-and-the-one-row-view)).
+This overrides the user's `inputrc` or rc setting for that shell only.
 
 **FallbackDriver** — generic POSIX sh driver.
 Installs a `PS1`-based hook that emits OSC 7.
@@ -244,6 +247,36 @@ Terminal.respawn()    → tears down and restarts backend (keeps recv loop alive
 
 `start()` and `stop()` are called explicitly by the host (`MainScreen`).
 The widget renders an empty line until `start()` is called.
+
+---
+
+## Two-row minimum and the one-row view
+
+bash 5.2 can loop forever, using a whole CPU and ignoring `SIGTERM`, `SIGHUP` and `SIGINT`, when its prompt has invisible `\[...\]` characters, the typed line is wider than the terminal, and
+
+- the PTY has one row and its width changes, or it shrinks to one row, or
+- readline's `horizontal-scroll-mode` is on and the width changes, at any height.
+
+The navigator's terminal is one row high by default, so for every driver whose `min_rows` is 2 the PTY and the pyte screen never have fewer rows, also when the widget has one row or none.
+`BashDriver` and `FallbackDriver` have this minimum, local and over SSH.
+`FallbackDriver` has it because the shell behind it can be anything, bash included (`sh` linking to bash, or a failed shell detection on SSH).
+`ZshDriver` has none: zsh handles a one-row terminal, and gets the widget's height.
+`VfsShellDriver` has none either: the virtual shell does not use readline.
+The driver is fixed when the `Terminal` is constructed, so no size reaches a shell without its minimum applied.
+
+When a widget of such a terminal has one row, the document it displays ends with the cursor's row.
+The rows above the cursor and the scrollback are reached by scrolling back; rows below the cursor are not shown.
+A long line therefore wraps, and the view shows the part with the cursor.
+Mouse reports name the cursor's row, and selection and double-click work on the visible text.
+
+What remains:
+
+- Only the embedded shell has horizontal scrolling turned off.
+  A bash started inside it, or reached by a typed `ssh`, reads its own configuration and can still loop if that turns the mode on, also if you turn it on again yourself.
+- A bash started inside zsh, or reached by a typed `ssh` from a zsh terminal, gets a one-row PTY and can loop.
+- Closing the terminal does not end a shell that loops.
+  A local embedded shell is killed (see [LocalPtyBackend](#localptybackend)); a shell on an SSH server, and a nested bash, stay.
+- If Nova Navigator crashes or is killed, nothing kills a looping shell.
 
 ---
 
@@ -397,6 +430,10 @@ After precmd, `_prompt_snapshot` is refreshed after every stdout chunk while `_i
 It is therefore frozen at the moment the user starts typing, when the prompt is fully drawn on screen.
 No prompt-end marker or timing guess is needed, and multi-chunk or asynchronous prompts are handled by construction.
 
+With a two-row minimum, the snapshot's row is a line number that counts the rows the screen has scrolled (`TerminalPyteScreen.scrolled`).
+A one-row view has a second screen row, so a typed line that wraps scrolls the prompt up, and deleting it leaves the cursor one screen row higher than before, on the same line.
+Without a minimum (zsh), the screen row is compared.
+
 ### Decision
 
 | Bytes sent since precmd | Screen vs snapshot | Result |
@@ -411,10 +448,19 @@ The only misjudgement is "typed, deleted everything, and the prompt repainted as
 
 The mechanism is identical for zsh, bash, local, and SSH terminals.
 
-**Known limitation.** With bash or zsh, when the shell prompt is about as wide as the terminal or wider, and the terminal is one row high, typing text and then deleting it can leave `has_input()` True on the empty line.
+**Known limitation.** `has_input()` can stay True on a line that is empty again.
 The line is then treated as occupied, so one Enter on a file panel goes to the terminal instead of navigating.
 That Enter clears the state, and the next Enter navigates.
-The screen cannot tell an empty line from one with typed text in this case, so no safe fix based on the screen is known.
+A plain shell (no line editor) also holds back panel changes until then.
+
+- **bash:** after deleting a line that needed more rows than the screen has, which in the one-row view means more than two.
+  The prompt has scrolled off, so the one-row view also shows an empty row until the prompt is drawn again (Ctrl+L or Enter).
+- **zsh:** in a one-row terminal, after deleting a line that was wider than the terminal.
+  With more rows, this can happen when the prompt itself is wider than the terminal.
+- **Plain shells (sh, dash):** after deleting a line that had wrapped, at any height, because the cursor cannot be erased back over the line break.
+- **Any shell:** when the prompt is drawn late, for example by a slow command in it, and you type in the gap, deleting that text can likewise leave one Enter swallowed.
+
+The screen cannot tell an empty line from one with typed text in these cases, so no safe fix based on the screen is known.
 
 ---
 
@@ -662,7 +708,8 @@ To add a new shell driver:
 2. Implement `init_code()` — install a precmd hook that emits OSC 7 with the `panel=;file:///path` format.
 3. Implement `quote(arg)` — return a safely quoted string for that shell's syntax.
 4. Pass `line_editing=True` to the base constructor if the shell has an emacs-style line editor.
-5. Update `detect_driver()` in `shell_driver.py` to recognise the shell name.
+5. Override `min_rows` with 0 only if the shell is known to handle a one-row terminal.
+6. Update `detect_driver()` in `shell_driver.py` to recognise the shell name.
 
 All drivers share the same draining mechanism.
 No special synchronisation is needed.
