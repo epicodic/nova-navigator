@@ -190,19 +190,25 @@ class LocalPtyBackend(PtyBackend):
     def open(self, command: str, rows: int, cols: int) -> int | None:
         pid, fd = pty.fork()
         if pid == 0:
-            # Child process
-            argv = shlex.split(command)
-            env = os.environ.copy()
-            env["TERM"] = "xterm-256color"
-            env["LC_ALL"] = "en_US.UTF-8"
-            # Remove virtualenv variables inherited from the parent process
-            # (e.g. when launched via ``uv run``).  The child shell has no
-            # ``deactivate`` function, so plugins like autoswitch_virtualenv
-            # break when they see $VIRTUAL_ENV and try to call it.
-            env.pop("VIRTUAL_ENV", None)
-            env.pop("VIRTUAL_ENV_PROMPT", None)
-            os.execvpe(argv[0], argv, env)
-            raise RuntimeError("execvpe failed")
+            # Child process.  It must never return into the application: any failure
+            # is reported on the terminal and ends the child with status 127.
+            try:
+                argv = shlex.split(command)
+                env = os.environ.copy()
+                env["TERM"] = "xterm-256color"
+                env["LC_ALL"] = "en_US.UTF-8"
+                # Remove virtualenv variables inherited from the parent process
+                # (e.g. when launched via ``uv run``).  The child shell has no
+                # ``deactivate`` function, so plugins like autoswitch_virtualenv
+                # break when they see $VIRTUAL_ENV and try to call it.
+                env.pop("VIRTUAL_ENV", None)
+                env.pop("VIRTUAL_ENV_PROMPT", None)
+                os.execvpe(argv[0], argv, env)
+            except (OSError, ValueError, IndexError) as error:
+                with contextlib.suppress(OSError):
+                    os.write(2, f"nn: cannot start {command}: {error}\r\n".encode())
+            finally:
+                os._exit(127)
 
         self._pid = pid
         self._master_fd = fd
@@ -250,6 +256,12 @@ class LocalPtyBackend(PtyBackend):
                 self._loop.remove_reader(self._p_out)
 
     def teardown(self) -> None:
+        if self._pid <= 0:
+            return
         with contextlib.suppress(OSError):
-            if self._pid > 0:
-                os.kill(self._pid, signal.SIGTERM)
+            os.kill(self._pid, signal.SIGTERM)
+        # Reap the child if it has already exited, so it does not stay a zombie.  Once reaped
+        # the pid may be reused by another process, so it is forgotten and never signalled again.
+        with contextlib.suppress(ChildProcessError, OSError):
+            if os.waitpid(self._pid, os.WNOHANG)[0] == self._pid:
+                self._pid = -1

@@ -359,3 +359,18 @@ async def test_attach_readers_posts_osc7_as_pre_cmd_via_stdout() -> None:
     finally:
         backend.detach_readers()
         backend.teardown()
+
+
+def test_failed_exec_exits_the_child() -> None:
+    backend = LocalPtyBackend()
+    backend.open("/nonexistent/shell", rows=24, cols=80)
+    _, status = os.waitpid(backend._pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 127
+    backend.teardown()
+
+
+def test_teardown_twice_is_safe() -> None:
+    backend = LocalPtyBackend()
+    backend.open("/bin/sh", rows=24, cols=80)
+    backend.teardown()
+    backend.teardown()

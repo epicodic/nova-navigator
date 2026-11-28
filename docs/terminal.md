@@ -70,6 +70,7 @@ The inherited `PtyBackend._process_chunk()` method scans stdout for OSC sequence
 It uses `pty.fork()` to create a pseudo-terminal.
 
 In `open()`, the child process prepares a clean environment (sets `TERM`, removes inherited `VIRTUAL_ENV` variables) and calls `os.execvpe()`.
+The child never returns into the application: a failed start is reported on the terminal and the child exits with status 127 (`os._exit` in a `finally`).
 The parent process stores the master fd and applies the initial terminal size.
 
 A reader callback registered via `attach_readers()` uses `loop.add_reader()` on the master fd.
@@ -86,6 +87,7 @@ The `resume()` method is a no-op since SIGSTOP is not used over SSH.
 
 The full lifecycle is: `open()` → `attach_readers()` → normal operation → `detach_readers()` → `teardown()`.
 `teardown()` sends `SIGTERM` (local) or closes the channel (SSH), then closes file objects.
+A local child that has already exited is reaped with `WNOHANG`; after that its pid is forgotten (`-1`), so a later `teardown()` never signals a reused pid.
 
 ---
 
@@ -294,6 +296,16 @@ Once the shell's precmd hook fires, draining ends and the display is live again.
 `_start_backend()` sets `_draining = True` before writing the init code.
 The shell processes the init code (echo suppressed) and fires its first precmd hook.
 When the first OSC 7 arrives, draining ends and the prompt is displayed.
+
+While startup draining is on, the discarded output is also kept in `_startup_output` (last 64 KiB).
+A timer (`_STARTUP_TIMEOUT`, 5 s) is armed per shell process; it is cancelled on every hook report, restart and `stop()`, and a timer of an older shell is ignored.
+If no hook report arrives in time, `_reveal_startup_output()` shows the buffer and ends draining.
+The terminal is then a plain terminal: `_at_prompt` stays False, a pending `cd` is dropped, a waiting navigation is resolved, and `run_command()` reports busy.
+A hook report that arrives later still enables the integration.
+
+A shell that exits within `_EARLY_EXIT_SECONDS` (2 s) without any hook report counts as a quick exit.
+After `_MAX_EARLY_EXITS` (3) quick exits in a row the shell is not restarted (`_give_up()`): its output and a message stay visible, the reader and run task are removed, `send()` is ignored, and the pid is reaped by `teardown()`.
+Any hook report resets the count.
 
 ---
 

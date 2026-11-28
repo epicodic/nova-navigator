@@ -74,6 +74,10 @@ _DISPLAY_FPS: float = 60.0
 _ED_ERASE_SCROLLBACK = 3  # ED (erase in display) parameter for "erase saved lines"
 _NAV_WATCHDOG_TIMEOUT = 2.0
 _NAV_MAX_SAME_TARGET_ATTEMPTS = 3
+_STARTUP_TIMEOUT = 5.0  # seconds a new shell may take to report its hook before its output is shown
+_EARLY_EXIT_SECONDS = 2.0  # a shell that exits sooner than this, without a hook report, is a quick exit
+_MAX_EARLY_EXITS = 3  # quick exits in a row after which the shell is not restarted
+_STARTUP_BUFFER_CHARS = 65536
 
 _re_ansi_sequence = re.compile(r"(\x1b\[\??[\d;]*[a-zA-Z])")
 _DECSET_PREFIX = "\x1b[?"
@@ -392,6 +396,18 @@ class Terminal(ScrollView, can_focus=True):
         self._hook_repaired: bool = False
         # Last known cwd reported by the shell via precmd.
         self._cwd: PurePath | None = None
+        # Output of a new shell held back while startup draining is on; None once shown or dropped.
+        self._startup_output: str | None = None
+        self._startup_timer: TimerHandle | None = None
+        # Counts shell processes so a startup timer of an old shell can never act on a new one.
+        self._shell_generation: int = 0
+        self._started_at: float = 0.0
+        # True once this shell process reported through the NN hook.
+        self._shell_hooked: bool = False
+        self._early_exits: int = 0
+        # The shell gave up on or never reported its hook: it is shown as a plain terminal.
+        self._no_integration: bool = False
+        self._gave_up: bool = False
         # Resolved by the precmd that follows a run_command() line.
         self._run_future: Future[None] | None = None
         # Typed input was stashed before run_command() and must be restored.
@@ -433,12 +449,19 @@ class Terminal(ScrollView, can_focus=True):
         precmd fires (the shell's hook emits an OSC 7 CWD sequence).
         """
         self._reset_shell_state()
+        self._shell_generation += 1
+        self._gave_up = False
+        self._no_integration = False
+        loop = asyncio.get_running_loop()
+        self._started_at = loop.time()
         self._backend.open(self.command, self.nrow, self.ncol)
         self.send_queue = asyncio.Queue()
         self._run_task = asyncio.create_task(self._run())
         # Suppress init code echo until the first precmd arrives.
         if self._backend.supports_precmd:
             self._draining = True
+            self._startup_output = ""
+            self._startup_timer = loop.call_later(_STARTUP_TIMEOUT, self._on_startup_timeout, self._shell_generation)
         init = self._driver.init_code()
         if init:
             self._backend.write(init.encode())
@@ -686,7 +709,10 @@ class Terminal(ScrollView, can_focus=True):
         otherwise it is sent on the next precmd.  See ``_start_nav`` for the
         hidden, input-preserving transaction.
         """
-        if not self._started:
+        if not self._started or self._gave_up:
+            return
+        if self._no_integration:
+            # Without the hook the shell is never at a prompt, so a cd could never be written.
             return
         if not self._nav_busy and self._nav_target is None and path == self._cwd:
             return
@@ -883,6 +909,9 @@ class Terminal(ScrollView, can_focus=True):
     def _reset_shell_state(self) -> None:
         """Forget prompt and navigation state when the shell process goes away."""
         self._cancel_watchdog()
+        self._cancel_startup_timer()
+        self._startup_output = None
+        self._shell_hooked = False
         fallback = self._cwd if self._cwd is not None else self._nav_target_or_root()
         self._nav_target = None
         self._nav_busy = False
@@ -906,7 +935,7 @@ class Terminal(ScrollView, can_focus=True):
         When *mode* is ``"silent"`` and the backend supports precmd,
         the echo of *data* is suppressed until the next precmd fires.
         """
-        if not self._started:
+        if not self._started or self._gave_up:
             return
         self._note_user_input(data)
         if mode == "silent" and self._backend.supports_precmd:
@@ -1012,6 +1041,11 @@ class Terminal(ScrollView, can_focus=True):
         """
         if not from_nn:
             return
+        self._shell_hooked = True
+        self._no_integration = False
+        self._early_exits = 0
+        self._startup_output = None
+        self._cancel_startup_timer()
         cwd = PurePath(raw.strip())
         plain_cd_sent, self._plain_cd_sent = self._plain_cd_sent, False
         cwd_changed = cwd != self._cwd and not plain_cd_sent
@@ -1063,6 +1097,8 @@ class Terminal(ScrollView, can_focus=True):
                             self._feed_stdout(str(message[1]))
                             stdout_fed = True
                             self._refresh_prompt_snapshot()
+                        elif self._startup_output is not None:
+                            self._startup_output = (self._startup_output + str(message[1]))[-_STARTUP_BUFFER_CHARS:]
                     elif cmd == "disconnect":
                         disconnected = True
                         break
@@ -1074,14 +1110,68 @@ class Terminal(ScrollView, can_focus=True):
                     self._schedule_rebuild()
                 if disconnected:
                     _logger.info("Terminal disconnected")
-                    self._reset_shell_state()
-                    if self.keep_alive:
-                        self.respawn()
-                    else:
-                        self.post_message(Terminal.Closed(self))
-                        self.stop()
+                    self._shell_exited()
         except asyncio.CancelledError:
             pass
+
+    def _on_startup_timeout(self, generation: int) -> None:
+        """Show a new shell's held-back output when its hook has not reported in time."""
+        if generation == self._shell_generation:
+            self._reveal_startup_output()
+
+    def _cancel_startup_timer(self) -> None:
+        if self._startup_timer is not None:
+            self._startup_timer.cancel()
+            self._startup_timer = None
+
+    def _reveal_startup_output(self) -> None:
+        """Show what the shell printed before its hook reported and stop draining.
+
+        Without the hook the terminal is a plain terminal: it is never at a prompt, a pending
+        ``cd`` is dropped and a waiting navigation is resolved so no caller waits forever.
+        A hook report that arrives later still enables the integration.
+        """
+        if self._startup_output is None:
+            return
+        text, self._startup_output = self._startup_output, None
+        self._cancel_startup_timer()
+        self._draining = False
+        self._no_integration = True
+        self._feed_stdout(text)
+        self._refresh_prompt_snapshot()
+        fallback = self._cwd if self._cwd is not None else self._nav_target_or_root()
+        self._nav_target = None
+        self._resolve_nav_future(fallback)
+        self._schedule_rebuild()
+
+    def _shell_exited(self) -> None:
+        """Handle the end of a shell process: restart it, unless it keeps exiting before any hook report."""
+        quick = not self._shell_hooked and asyncio.get_running_loop().time() - self._started_at < _EARLY_EXIT_SECONDS
+        self._early_exits = self._early_exits + 1 if quick else 0
+        if self.keep_alive and self._early_exits >= _MAX_EARLY_EXITS:
+            self._give_up()
+            return
+        self._reset_shell_state()
+        if self.keep_alive:
+            self.respawn()
+        else:
+            self.post_message(Terminal.Closed(self))
+            self.stop()
+
+    def _give_up(self) -> None:
+        """Stop restarting a shell that keeps exiting; its output and a message stay on screen."""
+        self._reveal_startup_output()
+        self._reset_shell_state()
+        self._early_exits = 0
+        self._gave_up = True
+        self._no_integration = True
+        self._feed_stdout("\r\n[nn] The shell keeps exiting and was not restarted.\r\n")
+        self._schedule_rebuild()
+        if self._run_task is not None:
+            self._run_task.cancel()
+            self._run_task = None
+        self._backend.detach_readers()
+        self._backend.teardown()
 
     # ------------------------------------------------------------------
     # Internal: screen rendering
