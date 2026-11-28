@@ -16,6 +16,7 @@
   zsh behaves as it does in any one-row terminal.
   Horizontal scrolling of the command line (readline's `horizontal-scroll-mode`) is turned off in the embedded bash once the setup line has run.
   It is not turned off for a bash that is treated as a plain shell: `sh` linked to bash, or an SSH shell that could not be detected.
+  Until the embedded bash has reported its first prompt, size changes do not reach it, so that this setting cannot make it hang at startup; the protection ends after 5 s.
 - A built-in text editor, `ned`, which opens from the file manager with F4 and can also run on its own.
 - Copy (F5), move (F6) and delete (F8), with progress and conflict resolution.
 - Long operations run in the background and can be cancelled.

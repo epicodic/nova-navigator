@@ -1110,8 +1110,7 @@ class Terminal(ScrollView, can_focus=True):
         # than what's actually visible.
         self.ncol = self.size.width - self.scrollbar_size_vertical
         self.nrow = max(self.size.height, self._driver.min_rows)
-        assert self.send_queue is not None
-        self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
+        self._send_size()
         self._resize_screen()
         if self._rebuild_handle is not None:
             self._rebuild_handle.cancel()
@@ -1132,6 +1131,16 @@ class Terminal(ScrollView, can_focus=True):
             self._follow_offset = target if was_one_row or self.nrow > old_rows else None
         elif resized:
             self._follow_offset = None
+
+    def _send_size(self) -> None:
+        """Give the PTY the screen's size, unless the driver makes it wait for the first hook report.
+
+        A held size is sent by the first hook report, or when the startup timeout ends the wait.
+        """
+        if self._startup_output is not None and self._driver.resize_waits_for_hook:
+            return
+        assert self.send_queue is not None
+        self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
 
     def _resize_screen(self) -> None:
         """Resize the screen model to ``nrow`` by ``ncol``.
@@ -1245,7 +1254,9 @@ class Terminal(ScrollView, can_focus=True):
         self._shell_edits = line_editing
         self._no_integration = False
         self._early_exits = 0
-        self._startup_output = None
+        held_back, self._startup_output = self._startup_output is not None, None
+        if held_back:
+            self._send_size()
         self._cancel_startup_timer()
         cwd = PurePath(raw.strip())
         plain_cd_sent, self._plain_cd_sent = self._plain_cd_sent, False
@@ -1295,8 +1306,7 @@ class Terminal(ScrollView, can_focus=True):
                 for _ in range(_RECV_DRAIN_LIMIT):
                     cmd = message[0]
                     if cmd == "setup":
-                        assert self.send_queue is not None
-                        self.send_queue.put_nowait(["set_size", self.nrow, self.ncol])
+                        self._send_size()
                     elif cmd == "pre_cmd":
                         from_nn = bool(message[_PRE_CMD_FROM_NN_IDX]) if len(message) > _PRE_CMD_FROM_NN_IDX else True
                         line_editing = bool(message[_PRE_CMD_LINE_EDITING_IDX]) if len(message) > _PRE_CMD_LINE_EDITING_IDX else True
@@ -1350,6 +1360,7 @@ class Terminal(ScrollView, can_focus=True):
         self._cancel_startup_timer()
         self._draining = False
         self._no_integration = True
+        self._send_size()
         self._feed_stdout(text)
         self._refresh_prompt_snapshot()
         fallback = self._cwd if self._cwd is not None else self._nav_target_or_root()

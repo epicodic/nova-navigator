@@ -126,6 +126,11 @@ class ShellDriver(ABC):
         return _MIN_PTY_ROWS
 
     @property
+    def resize_waits_for_hook(self) -> bool:
+        """True if size changes of the PTY are held back until the shell's first hook report."""
+        return False
+
+    @property
     def supports_editor_protocol(self) -> bool:
         """True if hidden navigation can stash/restore the line editor atomically.
 
@@ -263,6 +268,11 @@ class BashDriver(ShellDriver):
 
     def __init__(self) -> None:
         super().__init__(line_editing=True)
+
+    @property
+    def resize_waits_for_hook(self) -> bool:
+        """True: until the init line has run, a size change can make bash loop (``horizontal-scroll-mode``)."""
+        return True
 
     def init_code(self) -> str:
         """Install the hook and the keys for hidden writes, and turn readline's horizontal scrolling off.

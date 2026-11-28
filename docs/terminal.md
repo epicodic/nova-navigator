@@ -145,6 +145,7 @@ Nothing ends the shell when Nova Navigator itself crashes or is killed; it only 
 | `init_code()` | Return shell code to inject at startup (installs precmd hook) |
 | `quote(arg)` | Return a shell-safe quoted form of an argument |
 | `min_rows` | Property — smallest height of the PTY and the screen model, 0 for none (see [Two-row minimum](#two-row-minimum-and-the-one-row-view)) |
+| `resize_waits_for_hook` | Property — True if the PTY's size changes wait for the first hook report (see [Two-row minimum](#two-row-minimum-and-the-one-row-view)) |
 | `cd_command(path)` | Return a complete `cd` command string |
 | `supports_line_editing` | Property — True if the shell has a line editor the terminal can clear and refill for hidden navigation |
 | `set_aside_sequence()`, `put_back_sequence()` | Bytes that make the shell set aside everything its line editor holds and put it back (see [Line sequences](#the-line-sequences-are-driver-specific)) |
@@ -278,6 +279,11 @@ The navigator's terminal is one row high by default, so for every driver whose `
 `VfsShellDriver` has none either: the virtual shell does not use readline.
 The driver is fixed when the `Terminal` is constructed, so no size reaches a shell without its minimum applied.
 
+A shell starts with horizontal scrolling still as the user configured it, and a size change that arrives while bash reads the setup line can already start the loop.
+For a driver with `resize_waits_for_hook` (`BashDriver`), the PTY therefore keeps the size it was opened with until the first hook report, also after a restart of the shell.
+The screen model follows the widget at once, and `_send_size()` gives the PTY the same size with that report.
+When no report arrives within the startup timeout (5 s, see [Startup Bootstrap](#startup-bootstrap)), the size is sent then, so that a shell without the hook is not left with a stale one.
+
 When a widget of such a terminal has one row, the document it displays ends with the cursor's row.
 The rows above the cursor and the scrollback are reached by scrolling back; rows below the cursor are not shown.
 A long line therefore wraps, and the view shows the part with the cursor.
@@ -285,6 +291,8 @@ Mouse reports name the cursor's row, and selection and double-click work on the 
 
 What remains:
 
+- A bash that takes longer than the startup timeout (5 s) to report, for example because of a slow rc file, gets size changes again while it may still be reading the setup line.
+  With `horizontal-scroll-mode` on, it can then loop.
 - Horizontal scrolling is turned off only by `BashDriver`, and only once its init line has run.
   A bash behind `FallbackDriver` (`sh` linking to bash, or an SSH shell that could not be detected) keeps its own setting.
   A bash started inside it, or reached by a typed `ssh`, reads its own configuration and can still loop if that turns the mode on, also if you turn it on again yourself.
@@ -792,7 +800,7 @@ Both queues carry `list[object]` messages with a string command as the first ele
 | Message | Format | Purpose |
 |---------|--------|---------|
 | `stdin` | `["stdin", str]` | Text to write to the PTY |
-| `set_size` | `["set_size", rows, cols]` | Resize the PTY window |
+| `set_size` | `["set_size", rows, cols]` | Resize the PTY window (held back for bash until its first hook report) |
 | `click` | `["click", x, y, button]` | Mouse click event |
 | `scroll` | `["scroll", "up"/"down", x, y]` | Mouse scroll event |
 

@@ -250,11 +250,57 @@ def _visible(terminal: Terminal) -> list[str]:
 @pytest.mark.parametrize("driver", [BashDriver, FallbackDriver])
 @pytest.mark.parametrize("height", [0, 1])
 async def test_pty_and_screen_keep_two_rows(driver: Callable[[], ShellDriver], height: int) -> None:
-    async with _widget(driver(), height) as (terminal, backend, _pilot):
+    async with _widget(driver(), height) as (terminal, backend, pilot):
+        await _output(terminal, pilot, "")  # bash gets no size change before its first hook report
         assert terminal.size.height == height
         assert terminal.nrow == 2
         assert terminal._screen.lines == 2
         assert backend.sizes[-1][0] == 2
+
+
+async def _set_height(terminal: Terminal, pilot: Pilot[None], height: int) -> None:
+    terminal.styles.height = height
+    await pilot.pause(0.1)
+
+
+@pytest.mark.asyncio
+async def test_bash_pty_is_resized_only_after_the_first_hook_report() -> None:
+    async with _widget(BashDriver(), 10) as (terminal, backend, pilot):
+        await _set_height(terminal, pilot, 7)
+        await _set_height(terminal, pilot, 5)
+        assert backend.sizes == [(24, 80)]  # only the size the PTY was opened with
+        assert terminal._screen.lines == 5
+        await _output(terminal, pilot, "")
+        assert backend.sizes[1:] == [(5, terminal.ncol)]
+        assert (terminal._screen.lines, terminal._screen.columns) == backend.sizes[-1]
+        await _set_height(terminal, pilot, 1)
+        assert backend.sizes[-1] == (2, terminal.ncol)
+
+
+@pytest.mark.asyncio
+async def test_bash_pty_gets_the_held_size_when_the_startup_times_out() -> None:
+    async with _widget(BashDriver(), 10) as (terminal, backend, pilot):
+        await _set_height(terminal, pilot, 5)
+        assert backend.sizes == [(24, 80)]
+        terminal._on_startup_timeout(terminal._shell_generation)
+        await pilot.pause(0.1)
+        assert backend.sizes[1:] == [(5, terminal.ncol)]
+        await _set_height(terminal, pilot, 8)
+        assert backend.sizes[-1] == (8, terminal.ncol)
+
+
+@pytest.mark.asyncio
+async def test_restarted_bash_pty_is_resized_only_after_its_first_hook_report() -> None:
+    async with _widget(BashDriver(), 10) as (terminal, backend, pilot):
+        await _output(terminal, pilot, "")
+        terminal.respawn()
+        await pilot.pause(0.1)
+        opened = list(backend.sizes)
+        assert opened[-1] == (10, terminal.ncol)
+        await _set_height(terminal, pilot, 5)
+        assert backend.sizes == opened
+        await _output(terminal, pilot, "")
+        assert backend.sizes == [*opened, (5, terminal.ncol)]
 
 
 @pytest.mark.asyncio
