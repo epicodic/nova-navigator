@@ -164,7 +164,7 @@ A `cd` is written only at a prompt whose line looks empty to the terminal; other
 The check covers a command that is running, text typed at a ready prompt that is still on the line, and input sent before the shell's first hook report (see [Input typed before the first hook report](#input-typed-before-the-first-hook-report)).
 It does not detect input typed while a command is still running, whether or not it was entered, nor further lines of a multi-line paste made at a prompt in shells without bracketed paste (sh, dash).
 A panel change then can write the `cd` into that input, so the combined line may run.
-A vi mode of such a shell is not handled either (see [Kill/yank sequences](#killyank-sequences-are-driver-specific)).
+A vi mode of such a shell is not handled either (see [Known limits of hidden writes](#known-limits-of-hidden-writes)).
 No `_nav_future` is created for this driver, so `set_terminal_directory` returns at once and `run_command` never waits for a plain `cd`.
 The init code sets `stty erase '^H'` so that Backspace erases in shells that do not use the PTY's `^?` default.
 The same fallback init code is used for SSH hosts whose shell gets `FallbackDriver` (remote shells are started through `remotes/ssh.py`), so the erase setting also applies on those remote hosts.
@@ -432,6 +432,7 @@ Each sets `_input_since_precmd`; every precmd clears it, except while input type
 Internal writes (kill, `cd`, yank, init code) never set it.
 If no user byte was sent since the last precmd, the line is taken to be empty.
 This is wrong for input typed while a command was still running: that command's precmd clears the flag, so such input is not detected, for any driver.
+It is also wrong for a line that the shell puts at the prompt by itself, such as zsh's `hist_verify`, `push-line` and `print -z` (see [Known limits of hidden writes](#known-limits-of-hidden-writes)).
 
 ### Fact B: the screen before the first user byte
 
@@ -501,17 +502,24 @@ See [Giving up on an unreachable target](#giving-up-on-an-unreachable-target) fo
 `ShellDriver.kill_line_sequence()`, `yank_sequence()` and `prepare_line_sequence()` return the exact bytes each shell needs, so `Terminal` never hardcodes control characters itself.
 
 `ZshDriver` and `BashDriver` bind private, unassigned CSI sequences in their init code, in the emacs, vi insert and vi command keymaps.
+zsh also binds them in `main`, which can be a keymap of the user's own.
 No other binding is changed.
 Standard keys are not usable here: in vi insert mode Ctrl+E inserts itself (and in zsh so does Ctrl+Y), in vi command mode characters are editor commands, and the user can bind any of them to something else.
 
 | Sequence | zsh | bash |
 |---|---|---|
-| `prepare_line_sequence()` | `ESC[95~`: leave vi command mode | `ESC[95~`: leave vi command mode |
+| `prepare_line_sequence()` | `ESC[95~`: leave vi command mode | `ESC[95` Ctrl+U: leave vi command mode |
 | `kill_line_sequence()` | `ESC[95~`, `ESC[96~` (stash widget) | `ESC[95~`, `ESC[91~` (end-of-line), a space, `ESC[92~` (unix-line-discard) |
 | `yank_sequence()` | `ESC[94~` (restore widget) | `ESC[95~`, `ESC[93~` (yank), `ESC[94~` (backward-delete-char) |
 
 Every hidden write starts with a sequence that leaves vi command mode: a `cd` with or without a stash, the line of `run_command()`, the restore, and the setup line the watchdog sends again.
 The shell is then in vi insert mode, also when the user was in vi command mode before.
+
+bash without line editing (`set +o emacs` with no vi mode) reads all of these as plain input.
+The sequence of `prepare_line_sequence()` ends in Ctrl+U for this case: the terminal's line discipline then erases it, so a `cd` or `run_command()` on an empty line works.
+readline takes the whole sequence as one key.
+It relies on Ctrl+U being the terminal's kill character.
+The stash sends no Ctrl+U, because a pending readline search or vi command would take it as editing (see [Known limits](#known-limits-of-hidden-writes)).
 
 The stash clears the whole buffer, which holds several lines after a multi-line command was recalled from the history.
 The restored text is the same, with the cursor at its end.
@@ -519,7 +527,7 @@ The restored text is the same, with the cursor at its end.
 The zsh widget keeps the buffer in a shell variable and leaves the kill ring alone.
 `kill-buffer` would append to a kill the user made just before, so the restore would add text.
 The widgets set the buffer themselves, so no key that zsh-autosuggestions treats as accepting a suggestion is involved.
-The zsh precmd hook binds the sequences again before every prompt, so they survive `bindkey -d`.
+The zsh precmd hook binds the sequences again before every prompt, so they survive `bindkey -d` and follow a `main` keymap that was changed.
 An unbound stash key would leave the typed line in place, to be run together with the `cd`.
 
 bash kills and yanks.
@@ -528,16 +536,33 @@ The space makes sure the kill is never empty.
 An empty kill leaves the kill ring untouched, so a spurious kill on an already-empty line (`has_input()` can return a conservative `True` after a restore, see below) would otherwise yank back stale text from an earlier kill.
 The space is killed last and therefore restored last, so the backspace removes exactly it.
 
+#### Known limits of hidden writes
+
 A line editor command that waits for further keys takes the first bytes of a hidden write.
 The first of the two keys in `kill_line_sequence()` absorbs this for a pending Ctrl+V or a lone Escape, and the stash key still arrives whole.
-Nothing typed was run in the cases tried, but the restored line can differ:
 
-- after a pending Ctrl+V or lone Escape it ends with the characters of the first key;
-- in zsh vi command mode, after a pending `r`, `f` or `"` or `g`, the case of one character can change;
-- a pending vi command mode search (`/`), and in bash replace mode (`R`), lose the line.
+**A pending vi search in zsh runs the line.**
+After Esc and then `/` or `?`, a panel change runs the typed line, or the command recalled from the history that is on the line.
+The command need not run as it was shown: in a test a recalled command lost its last character and got other text appended.
 
-What remains:
+In the other cases tried nothing typed was run, but the line can differ:
 
+- after a pending Ctrl+V or lone Escape it ends with characters of the first key;
+- in bash emacs mode, a pending Alt+[ or Esc O leaves `[95~` at the end of the restored line;
+- in zsh vi command mode, after a pending `r`, `f` or `"` or `g`, the case of one character can change, and after a pending `'` the case of the whole line is swapped;
+- in bash, a pending vi command mode `m`, `@` or search (`/`, `?`), replace mode (`R`), and an emacs mode search with Alt+P or Alt+N lose the line.
+
+What also remains:
+
+- Lines that zsh puts back at the prompt by itself (`setopt hist_verify`, `push-line`, `print -z`) count as empty, because no key was sent since the prompt (see [Input Detection](#input-detection-has_input)).
+  A panel change writes the `cd` into such a line and runs it.
+- bash with `shopt -s histverify` puts the expanded line back without reporting a new prompt.
+  The terminal still takes the entered command as running: it writes no `cd` while the line is there, and the line is not run.
+  The panel's folder is followed after you enter the line, or cancel it with Ctrl+C.
+  `shopt -s histreedit` behaves the same way after a failed history expansion.
+- bash without line editing: a panel change runs the typed line, with the stash keys and the `cd` appended to it as arguments.
+  The restore then leaves its key sequences on the next line as text.
+- A zsh keymap selected with `zle -K` that is none of `main`, `emacs`, `viins` and `vicmd` has no private bindings, and a panel change can run the typed line.
 - An editor opened from the line (bash vi `v`, Ctrl+X Ctrl+E) gets the hidden writes as its input, because no precmd or Enter tells the terminal that the prompt is gone.
 - In bash, removing the private bindings (`bind -r`) makes the stash do nothing, and the typed line can run with the `cd`.
 - The private bindings were not tried together with line editor plugins such as zsh-vi-mode or zsh-autosuggestions.
