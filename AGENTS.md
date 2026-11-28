@@ -112,6 +112,8 @@ Key documents in `docs/` — read every one whose topic overlaps with your task:
 | `docs/commands.md` | Command execution service — read before touching `commands/` or `Filesystem.exec_command` |
 | `docs/local_copies.md` | Local copies of non-local files — read before touching `vfs/local_copy.py`, `vfs/change_detector.py`, `local_copies/`, or archive writes |
 | `docs/symlinks.md` | Symbolic links in the VFS and in copy/move — read before touching `Filesystem.readlink/symlink/real_path`, link handling in `filemanager/tasks.py`, or `terminal/vfs_shell/commands/{rm,cp}.py` |
+| `docs/testing.md` | Real-server tests in `tests/real_servers/` (Docker, `real_server` marker, the `qa` passes) — read before touching `tests/real_servers/` or the test runner |
+| `docs/azure_verification.md` | Manual checklist against a real Azure storage account — read before touching `vfs/filesystems/azure.py` or `remotes/azure.py` |
 
 ---
 
@@ -134,7 +136,7 @@ The codebase lives under `src/` and contains three packages:
 - `parse_uri.py` — URI parsing supporting nested schemes (e.g. `ssh://host/archive.tar.gz/tar://file.txt`)
 - `filesystems/local.py` — `LocalFilesystem` singleton
 - `filesystems/ssh.py` — `SSHFilesystem` via paramiko
-- `filesystems/azure.py` — Azure blob stub (incomplete)
+- `filesystems/azure.py` — Azure Blob Storage
 
 **Task system:** `nova_navigator/scheduler/` — async scheduler for long-running operations with user response support. See `docs/scheduler.md` for the complete scheduler framework guide.
 - `AsyncTaskScheduler` runs async task functions in worker threads with isolated event loops

@@ -31,6 +31,7 @@ jobs:
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
       - run: uv sync --locked --all-groups
       - run: uv run python --version
+      - run: uv run python -m tests.real_servers.docker prepare
       - run: uv run qa
         env:
           PYTEST_ADDOPTS: "-n 4 --dist worksteal -v"

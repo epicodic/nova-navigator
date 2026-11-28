@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 from collections.abc import Callable
@@ -10,6 +11,7 @@ from enum import StrEnum
 from pathlib import Path, PurePosixPath
 
 from .change_detector import file_digest
+from .filesystem import Filesystem
 from .filesystems.archive import ArchiveFilesystem
 from .filesystems.local import LocalFilesystem
 from .vpath import VPath
@@ -17,6 +19,7 @@ from .vpath import VPath
 _MAX_SEGMENT_BYTES = 255
 _MAX_SUFFIX_BYTES = 16
 _CHUNK_SIZE = 1024 * 1024
+_MAX_LINK_HOPS = 40  # the Linux limit on symbolic links followed in one path
 
 
 def sanitize_segment(segment: str) -> str:
@@ -107,6 +110,24 @@ def is_local_source(source: VPath) -> bool:
     # check alone already rejects archive members. The explicit exclusion keeps members of local
     # archives non-local even if unwrap() is ever changed to return the container's filesystem.
     return isinstance(source.filesystem.unwrap(), LocalFilesystem) and not isinstance(source.filesystem, ArchiveFilesystem)
+
+
+def _final_target(filesystem: Filesystem, path: VPath) -> VPath:
+    """Follow the links at *path* to the file they name, which may be missing.
+
+    Raises:
+        OSError: ``ELOOP`` when the links do not end within the hop limit.
+    """
+    current = path
+    for _ in range(_MAX_LINK_HOPS):
+        try:
+            stat = filesystem.stat_uncached(current)
+        except FileNotFoundError:
+            return current  # the last name of the chain: a write creates it
+        if not stat.is_symlink:
+            return current
+        current = filesystem.resolve_link(current)
+    raise OSError(errno.ELOOP, "Too many levels of symbolic links", str(path.path))
 
 
 class LocalCopy:
@@ -210,6 +231,20 @@ class LocalCopy:
         self._baseline = Baseline(SourceFingerprint.of(self._source), "")
         self._download(progress)
 
+    def _write_target(self) -> VPath:
+        """The file a write-back replaces: the target of a link, so that the link stays."""
+        filesystem = self._source.filesystem
+        try:
+            if not filesystem.stat_uncached(self._source).is_symlink:
+                return self._source
+        except FileNotFoundError:
+            return self._source
+        try:
+            start = filesystem.real_path(self._source) or self._source
+        except FileNotFoundError:
+            start = self._source  # dangling link: the file it names is created (docs/editor.md)
+        return _final_target(filesystem, start)
+
     def write_back(self, progress: ProgressCallback | None = None) -> None:
         """Replace the source with the local file's content and advance the baseline.
 
@@ -220,7 +255,8 @@ class LocalCopy:
             raise PermissionError(f"Local copy is read-only: {self._source.uri}")
         if self._pass_through:
             return
-        writer = self._source.filesystem.write_atomic(self._source)
+        filesystem = self._source.filesystem
+        writer = filesystem.write_atomic(self._write_target())
         digest = hashlib.sha256()
         try:
             with self._path.open("rb") as reader:
@@ -233,6 +269,7 @@ class LocalCopy:
             writer.abort()
             raise
         writer.close()
+        filesystem.refresh(filesystem.parent(self._source))  # the writer refreshes only the target's directory
         self._baseline = Baseline(SourceFingerprint.of(self._source), digest.hexdigest())
 
     def rebase_container(self) -> None:

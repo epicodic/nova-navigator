@@ -1,73 +1,47 @@
-"""Integration tests for AzureFilesystem against a local Azurite emulator.
+"""Integration tests for AzureFilesystem against the pinned Azurite container.
 
-Skipped automatically when `azurite-blob` is not on PATH.
-Install Azurite with: npm install -g azurite
+The container is started once per process by `tests.real_servers.azurite`; without Docker the tests skip, and
+they fail instead when real servers are required (CI or NOVA_REQUIRE_REAL_SERVERS).
 """
 
 from __future__ import annotations
 
 import contextlib
-import shutil
-import subprocess
-import tempfile
-import time
-from collections.abc import Generator
 
 import pytest
 from azure.core.exceptions import ResourceExistsError
 from azure.storage.blob import BlobServiceClient, ContainerClient
 
 from nova_navigator.vfs.filesystems.azure import AzureFilesystem
+from tests.real_servers.azurite import ACCOUNT, ACCOUNT_KEY, Azurite, azurite_or_unavailable
 
-# ── Azurite setup ─────────────────────────────────────────────────────────────
+pytestmark = [pytest.mark.real_server, pytest.mark.integration]
 
-_AZURITE_CONN_STR = (
-    "DefaultEndpointsProtocol=http;"
-    "AccountName=devstoreaccount1;"
-    "AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;"
-    "BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
-)
 _CONTAINER = "testcontainer"
-_ACCOUNT_URL = "http://127.0.0.1:10000/devstoreaccount1"
-
-
-def _azurite_available() -> bool:
-    return shutil.which("azurite-blob") is not None
 
 
 @pytest.fixture(scope="session")
-def azurite_process() -> Generator[subprocess.Popen[bytes], None, None]:
-    """Start azurite-blob on port 10000; skip session if not available."""
-    if not _azurite_available():
-        pytest.skip("azurite-blob not on PATH — skipping integration tests")
-    tmp_dir = tempfile.mkdtemp(prefix="azurite_")
-    proc = subprocess.Popen(
-        ["azurite-blob", "--blobPort", "10000", "--blobHost", "127.0.0.1", "--silent", "--location", tmp_dir],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    time.sleep(1.5)
-    yield proc
-    proc.terminate()
-    proc.wait()
+def azurite() -> Azurite:
+    """The shared Azurite container, or a skip or failure of the requesting test."""
+    return azurite_or_unavailable()
 
 
 @pytest.fixture(scope="session")
-def container_client(azurite_process: subprocess.Popen[bytes]) -> ContainerClient:
+def container_client(azurite: Azurite) -> ContainerClient:
     """Create the test container once per session and return its ContainerClient."""
-    assert azurite_process.poll() is None, "azurite-blob process terminated unexpectedly"
-    svc = BlobServiceClient.from_connection_string(_AZURITE_CONN_STR)
+    connection_string = f"DefaultEndpointsProtocol=https;AccountName={ACCOUNT};AccountKey={ACCOUNT_KEY};BlobEndpoint={azurite.path_style_url};"
+    svc = BlobServiceClient.from_connection_string(connection_string, connection_verify=str(azurite.cert))
     with contextlib.suppress(ResourceExistsError):
         svc.create_container(_CONTAINER)
     return svc.get_container_client(_CONTAINER)
 
 
 @pytest.fixture
-def fs(container_client: ContainerClient) -> AzureFilesystem:
+def fs(azurite: Azurite, container_client: ContainerClient) -> AzureFilesystem:
     """Return a fresh AzureFilesystem for each test, with container wiped clean."""
     for blob in container_client.list_blobs():
         container_client.get_blob_client(blob.name).delete_blob()
-    return AzureFilesystem(_ACCOUNT_URL, _CONTAINER, client=container_client)
+    return AzureFilesystem(azurite.path_style_url, _CONTAINER, client=container_client)
 
 
 # ── tests ─────────────────────────────────────────────────────────────────────
